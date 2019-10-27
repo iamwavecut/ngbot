@@ -3,7 +3,6 @@ package ngbot
 import (
 	"strings"
 
-	"github.com/davecgh/go-spew/spew"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/iamwavecut/ngbot/config"
 	"github.com/pkg/errors"
@@ -15,9 +14,9 @@ type UpdateHandler interface {
 }
 
 type UpdateProcessor struct {
-	cfg             *config.Config
-	bot             *tgbotapi.BotAPI
-	messageHandlers []UpdateHandler
+	cfg            *config.Config
+	bot            *tgbotapi.BotAPI
+	updateHandlers []UpdateHandler
 }
 
 func NewUpdateProcessor(cfg *config.Config, bot *tgbotapi.BotAPI) *UpdateProcessor {
@@ -27,33 +26,20 @@ func NewUpdateProcessor(cfg *config.Config, bot *tgbotapi.BotAPI) *UpdateProcess
 	}
 }
 
-func (up *UpdateProcessor) AddHandler(uh UpdateHandler) {
-	up.messageHandlers = append(up.messageHandlers, uh)
+func (up *UpdateProcessor) AddUpdateHandler(uh UpdateHandler) {
+	up.updateHandlers = append(up.updateHandlers, uh)
 }
 
 func (up *UpdateProcessor) Process(u tgbotapi.Update) (result error) {
-	switch {
-	case u.Message != nil, u.EditedMessage != nil:
-		for _, handler := range up.messageHandlers {
-			proceed, err := handler.Handle(u)
-			if err != nil {
-				return errors.Wrap(err, "handling error")
-			}
-			if !proceed {
-				break
-			}
+	for _, handler := range up.updateHandlers {
+		proceed, err := handler.Handle(u)
+		if err != nil {
+			return errors.Wrap(err, "handling error")
 		}
-	case u.ChannelPost != nil, u.EditedChannelPost != nil:
-	case u.InlineQuery != nil:
-	case u.ChosenInlineResult != nil:
-	case u.CallbackQuery != nil:
-	case u.ShippingQuery != nil:
-		// ignore for now
-	case u.PreCheckoutQuery != nil:
-	// ignore for now
-
-	default:
-		log.Info("unhandled update", spew.Sdump(u))
+		if !proceed {
+			log.Debug("not proceeding")
+			break
+		}
 	}
 
 	return result

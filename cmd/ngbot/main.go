@@ -11,6 +11,7 @@ import (
 	"github.com/iamwavecut/ngbot/infra"
 	"github.com/iamwavecut/ngbot/ngbot"
 	"github.com/iamwavecut/ngbot/ngbot/handlers"
+	"github.com/iamwavecut/ngbot/ngbot/i18n"
 	"github.com/jinzhu/configor"
 	log "github.com/sirupsen/logrus"
 )
@@ -30,8 +31,9 @@ func main() {
 	if err := configor.New(&configor.Config{ErrorOnUnmatchedKeys: true}).Load(&cfg, "etc/config.yml"); err != nil {
 		log.WithError(err).Fatalln("cant load config")
 	}
-
 	log.Traceln("loaded config", spew.Sdump(cfg))
+
+	i18n.SetLanguage(cfg.Language)
 
 	ctx, cancelFunc := context.WithCancel(context.Background())
 	infra.GoRecoverable(-1, "getUpdates", func() {
@@ -43,14 +45,14 @@ func main() {
 			time.Sleep(1 * time.Second)
 			log.Fatalln("exiting")
 		}
-		bot.Debug = true
+		bot.Debug = false
 
 		updateConfig := tgbotapi.NewUpdate(0)
 		updateConfig.Timeout = 60
 		updateHandler := ngbot.NewUpdateProcessor(&cfg, bot)
 
 		gatekeeper := handlers.NewGatekeeper(&cfg, bot)
-		updateHandler.AddHandler(gatekeeper)
+		updateHandler.AddUpdateHandler(gatekeeper)
 
 		for update := range bot.GetUpdatesChan(updateConfig) {
 			if err := updateHandler.Process(update); err != nil {
