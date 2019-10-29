@@ -7,11 +7,11 @@ import (
 
 	"github.com/davecgh/go-spew/spew"
 	"github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"github.com/iamwavecut/ngbot/bot"
 	"github.com/iamwavecut/ngbot/config"
+	"github.com/iamwavecut/ngbot/handlers"
+	"github.com/iamwavecut/ngbot/i18n"
 	"github.com/iamwavecut/ngbot/infra"
-	"github.com/iamwavecut/ngbot/ngbot"
-	"github.com/iamwavecut/ngbot/ngbot/handlers"
-	"github.com/iamwavecut/ngbot/ngbot/i18n"
 	"github.com/jinzhu/configor"
 	log "github.com/sirupsen/logrus"
 )
@@ -39,22 +39,22 @@ func main() {
 	infra.GoRecoverable(-1, "getUpdates", func() {
 		defer cancelFunc()
 
-		bot, err := tgbotapi.NewBotAPI(cfg.TelegramAPIToken)
+		tgbot, err := tgbotapi.NewBotAPI(cfg.TelegramAPIToken)
 		if err != nil {
 			log.WithError(err).Errorln("cant initialize bot api")
 			time.Sleep(1 * time.Second)
 			log.Fatalln("exiting")
 		}
-		bot.Debug = false
+		tgbot.Debug = false
 
 		updateConfig := tgbotapi.NewUpdate(0)
 		updateConfig.Timeout = 60
-		updateHandler := ngbot.NewUpdateProcessor(&cfg, bot)
+		updateHandler := bot.NewUpdateProcessor(&cfg, tgbot)
 
-		gatekeeper := handlers.NewGatekeeper(&cfg, bot)
+		gatekeeper := handlers.NewGatekeeper(&cfg, tgbot)
 		updateHandler.AddUpdateHandler(gatekeeper)
 
-		for update := range bot.GetUpdatesChan(updateConfig) {
+		for update := range tgbot.GetUpdatesChan(updateConfig) {
 			if err := updateHandler.Process(update); err != nil {
 				log.WithError(err).Errorln("cant process update")
 			}

@@ -1,4 +1,4 @@
-package ngbot
+package bot
 
 import (
 	"strings"
