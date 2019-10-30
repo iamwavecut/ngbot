@@ -2,6 +2,7 @@ package bot
 
 import (
 	"strings"
+	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/iamwavecut/ngbot/config"
@@ -43,6 +44,22 @@ func (up *UpdateProcessor) Process(u tgbotapi.Update) (result error) {
 	}
 
 	return result
+}
+
+func KickUserFromChat(bot *tgbotapi.BotAPI, userID int, chatID int64) error {
+	log.WithField("context", "bot")
+	_, err := bot.Request(tgbotapi.KickChatMemberConfig{
+		ChatMemberConfig: tgbotapi.ChatMemberConfig{
+			ChatID: chatID,
+			UserID: userID,
+		},
+		UntilDate: time.Now().Add(10 * time.Minute).Unix(),
+	})
+	if err != nil {
+		return errors.Wrap(err, "cant kick")
+	}
+
+	return nil
 }
 
 func GetFullName(user *tgbotapi.User) (string, int) {

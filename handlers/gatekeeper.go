@@ -45,29 +45,32 @@ func NewGatekeeper(cfg *config.Config, bot *tgbotapi.BotAPI) *Gatekeeper {
 		bot:     bot,
 		joiners: make(map[int64][]*challengedUser),
 	}
+	entry := g.getLogEntry()
 
-	log.Traceln("loading localized challenges")
+	entry.Traceln("loading localized challenges")
 	challengesData, err := ioutil.ReadFile(fmt.Sprintf("resources/challenges.%s.yml", cfg.Language))
 	if err != nil {
-		log.WithError(err).Errorln("cant load challenges file")
+		entry.WithError(err).Errorln("cant load challenges file")
 	}
 
-	log.Traceln("unmarshal localized challenges")
+	entry.Traceln("unmarshal localized challenges")
 	if err := yaml.Unmarshal(challengesData, &g.Challenges); err != nil {
-		log.WithError(err).Errorln("cant unmarshal challenges yaml")
+		entry.WithError(err).Errorln("cant unmarshal challenges yaml")
 	}
 
 	return g
 }
 
 func (g *Gatekeeper) Handle(u tgbotapi.Update) (proceed bool, err error) {
+	entry := g.getLogEntry()
+
 	switch {
 	case u.CallbackQuery != nil:
-		log.Traceln("gatekeeper handle challenge")
+		entry.Traceln("handle challenge")
 		err = g.handleChallenge(u)
 
 	case u.Message != nil && u.Message.NewChatMembers != nil:
-		log.Traceln("gatekeeper handle new chat members")
+		entry.Traceln("handle new chat members")
 		err = g.handleNewChatMembers(u)
 	}
 
@@ -75,12 +78,14 @@ func (g *Gatekeeper) Handle(u tgbotapi.Update) (proceed bool, err error) {
 }
 
 func (g *Gatekeeper) handleChallenge(u tgbotapi.Update) (err error) {
+	entry := g.getLogEntry()
+
 	cq := u.CallbackQuery
-	log.Traceln(cq.Data, cq.From.UserName)
+	entry.Traceln(cq.Data, cq.From.UserName)
 
 	users, ok := g.joiners[cq.Message.Chat.ID]
 	if !ok {
-		log.Warnln("no challenges for chat", cq.Message.Chat.ID)
+		entry.Warnln("no challenges for chat", cq.Message.Chat.ID)
 		return nil
 	}
 
@@ -94,34 +99,34 @@ func (g *Gatekeeper) handleChallenge(u tgbotapi.Update) (err error) {
 		newUsers = append(newUsers, user)
 	}
 	if joiner == nil {
-		log.Debug("no user matched for challenge in chat", cq.Message.Chat.ID)
+		entry.Debug("no user matched for challenge in chat", cq.Message.Chat.ID)
 		return nil
 	}
 	g.joiners[cq.Message.Chat.ID] = newUsers
 
 	switch cq.Data {
 	case challengeSucceeded:
-		log.Debug("successful challenge")
+		entry.Debug("successful challenge")
 		if _, err := g.bot.Request(tgbotapi.NewCallback(cq.ID, i18n.Get("Welcome, bro!"))); err != nil {
-			log.WithError(err).Errorln("cant answer callback query")
+			entry.WithError(err).Errorln("cant answer callback query")
 		}
 		if joiner.successFunc != nil {
 			joiner.successFunc()
 		}
 
 	case challengeFailed:
-		log.Debug("failed challenge")
+		entry.Debug("failed challenge")
 		if _, err := g.bot.Request(tgbotapi.NewCallbackWithAlert(cq.ID, i18n.Get("Your answer is WRONG. Try again in 10 minutes"))); err != nil {
-			log.WithError(err).Errorln("cant answer callback query")
+			entry.WithError(err).Errorln("cant answer callback query")
 		}
 		// stop timer anyway
 		if joiner.successFunc != nil {
 			joiner.successFunc()
 		}
 
-		err = g.kickUserFromChat(joiner.user, cq.Message.Chat)
+		err = bot.KickUserFromChat(g.bot, joiner.user.ID, cq.Message.Chat.ID)
 		if err != nil {
-			log.WithError(err).Errorln("cant kick failed")
+			entry.WithError(err).Errorln("cant kick failed")
 		}
 	}
 
@@ -129,8 +134,10 @@ func (g *Gatekeeper) handleChallenge(u tgbotapi.Update) (err error) {
 }
 
 func (g *Gatekeeper) handleNewChatMembers(u tgbotapi.Update) error {
+	entry := g.getLogEntry()
+
 	n := u.Message.NewChatMembers
-	log.Traceln("gatekeeper handle new", len(n))
+	entry.Traceln("handle new", len(n))
 
 	var challengedUsers = make([]*challengedUser, len(n), len(n))
 	var wg sync.WaitGroup
@@ -149,17 +156,17 @@ func (g *Gatekeeper) handleNewChatMembers(u tgbotapi.Update) error {
 		}
 		go func() {
 			defer wg.Done()
-			log.Traceln("gatekeeper setting timer for", joinedUser.UserName)
+			entry.Traceln("setting timer for", joinedUser.UserName)
 			timeout := time.NewTimer(3 * time.Minute)
 
 			select {
 			case <-ctx.Done():
-				log.Info("aborting challenge timer")
+				entry.Info("aborting challenge timer")
 				timeout.Stop()
 			case <-timeout.C:
-				log.Info("challenge timed out")
+				entry.Info("challenge timed out")
 				cancel()
-				if err := g.kickUserFromChat(&joinedUser, u.Message.Chat); err != nil {
+				if err := bot.KickUserFromChat(g.bot, joinedUser.ID, u.Message.Chat.ID); err != nil {
 					return
 				}
 			}
@@ -221,31 +228,19 @@ func (g *Gatekeeper) handleNewChatMembers(u tgbotapi.Update) error {
 		return errors.Wrap(err, "cant send")
 	}
 
-	log.Traceln("gatekeeper waiting for challenge")
+	entry.Traceln("waiting for challenge")
 	go func() {
 		wg.Wait()
 		_, err = g.bot.Request(tgbotapi.NewDeleteMessage(sentMsg.Chat.ID, sentMsg.MessageID))
 		if err != nil {
-			log.WithError(err).Error("cant delete")
+			entry.WithError(err).Error("cant delete")
 		}
-		log.Traceln("end challenge")
+		entry.Traceln("end challenge")
 	}()
 
 	return nil
 }
 
-func (g *Gatekeeper) kickUserFromChat(user *tgbotapi.User, chat *tgbotapi.Chat) error {
-	log.Traceln("kicking user")
-	_, err := g.bot.Request(tgbotapi.KickChatMemberConfig{
-		ChatMemberConfig: tgbotapi.ChatMemberConfig{
-			ChatID: chat.ID,
-			UserID: user.ID,
-		},
-		UntilDate: time.Now().Add(10 * time.Minute).Unix(),
-	})
-	if err != nil {
-		return errors.Wrap(err, "cant kick")
-	}
-
-	return nil
+func (g *Gatekeeper) getLogEntry() *log.Entry {
+	return log.WithField("context", "gatekeeper")
 }
