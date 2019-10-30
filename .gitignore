@@ -1,6 +1,5 @@
 /etc/config.yml
-/ngbot.
-!/ngbot/*.*
+/ngbot
 
 .DS_Store
 .DS_Store?

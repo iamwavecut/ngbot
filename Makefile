@@ -1,7 +1,9 @@
 FILE=cmd/ngbot/main.go
+NGBOT_CONFIG=$(shell pwd)/etc/config.yml
+NGBOT_RESOURCES_PATH=$(shell pwd)/resources
 
 run:
-	go run $(FILE)
+	NGBOT_CONFIG=$(NGBOT_CONFIG) NGBOT_RESOURCES_PATH=$(NGBOT_RESOURCES_PATH) go run $(FILE)
 
 build:
-	go build -o ngbot $(FILE)
+	NGBOT_CONFIG=$(NGBOT_CONFIG) NGBOT_RESOURCES_PATH=$(NGBOT_RESOURCES_PATH)  go build -o ngbot $(FILE)

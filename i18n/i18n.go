@@ -3,6 +3,7 @@ package i18n
 import (
 	"fmt"
 	"io/ioutil"
+	"path"
 
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v2"
@@ -12,6 +13,8 @@ var state = struct {
 	language     string
 	translations map[string]string
 	loaded       bool
+
+	resourcesPath string
 }{
 	language:     "en",
 	translations: make(map[string]string),
@@ -19,11 +22,20 @@ var state = struct {
 
 func SetLanguage(value string) {
 	state.language = value
-	load()
 }
+
+func SetResourcesPath(value string) {
+	state.resourcesPath = value
+}
+
 func load() {
 	state.loaded = true
-	i18n, err := ioutil.ReadFile(fmt.Sprintf("resources/i18n/%s.yml", state.language))
+
+	if state.resourcesPath == "" {
+		state.resourcesPath = "."
+	}
+
+	i18n, err := ioutil.ReadFile(path.Join(state.resourcesPath, "i18n", fmt.Sprintf("%s.yml", state.language)))
 	if err != nil {
 		log.WithError(err).Errorln("cant load i18n")
 		return

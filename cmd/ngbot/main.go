@@ -25,16 +25,26 @@ func main() {
 		QuoteEmptyFields: true,
 	})
 	log.SetOutput(os.Stdout)
-	log.SetLevel(log.TraceLevel)
+	log.SetLevel(log.DebugLevel)
+
+	configPath := os.Getenv("NGBOT_CONFIG")
+	if configPath == "" {
+		configPath = "etc/config.yml"
+	}
 
 	var cfg config.Config
-	if err := configor.New(&configor.Config{ErrorOnUnmatchedKeys: true}).Load(&cfg, "etc/config.yml"); err != nil {
+	if err := configor.New(&configor.Config{ErrorOnUnmatchedKeys: true}).Load(&cfg, configPath); err != nil {
 		log.WithError(err).Fatalln("cant load config")
 	}
 	log.Traceln("loaded config", spew.Sdump(cfg))
 
 	i18n.SetLanguage(cfg.Language)
 
+	resourcesPath := os.Getenv("NGBOT_RESOURCES_PATH")
+	if resourcesPath == "" {
+		resourcesPath = "resources"
+	}
+	i18n.SetResourcesPath(resourcesPath)
 	ctx, cancelFunc := context.WithCancel(context.Background())
 	infra.GoRecoverable(-1, "getUpdates", func() {
 		defer cancelFunc()
