@@ -74,8 +74,8 @@ func (g *Gatekeeper) Handle(u tgbotapi.Update) (proceed bool, err error) {
 		err = g.handleNewChatMembers(u)
 
 	case u.Message != nil && u.Message.NewChatMembers == nil:
-		entry.Traceln("handle challenge message")
-		err = g.deleteChallengedMessages(u)
+		//entry.Traceln("handle challenge message")
+		//err = g.deleteChallengedMessages(u)
 	}
 
 	return true, err
@@ -271,7 +271,12 @@ func (g *Gatekeeper) extractChallengedUser(userID int, chatID int64) *challenged
 	if joiner == nil {
 		return nil
 	}
-	g.joiners[chatID] = users[:i+copy(users[i:], users[i+1:])]
+	if i < len(users)-1 {
+		copy(users[i:], users[i+1:])
+	}
+	users[len(users)-1] = nil
+	users = users[:len(users)-1]
+	g.joiners[chatID] = users
 
 	return joiner
 }

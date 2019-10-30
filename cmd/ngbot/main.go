@@ -25,7 +25,7 @@ func main() {
 		QuoteEmptyFields: true,
 	})
 	log.SetOutput(os.Stdout)
-	log.SetLevel(log.DebugLevel)
+	log.SetLevel(log.TraceLevel)
 
 	configPath := os.Getenv("NGBOT_CONFIG")
 	if configPath == "" {
