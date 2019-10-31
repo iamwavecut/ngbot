@@ -254,6 +254,10 @@ func (g *Gatekeeper) handleNewChatMembers(u tgbotapi.Update) error {
 		if err != nil {
 			entry.WithError(err).Error("cant delete")
 		}
+		_, err = g.bot.Request(tgbotapi.NewDeleteMessage(u.Message.Chat.ID, u.Message.MessageID))
+		if err != nil {
+			entry.WithError(err).Error("cant delete")
+		}
 		entry.Traceln("end challenge")
 	}()
 

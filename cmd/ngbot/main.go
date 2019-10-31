@@ -45,8 +45,9 @@ func main() {
 		resourcesPath = "resources"
 	}
 	i18n.SetResourcesPath(resourcesPath)
+
 	ctx, cancelFunc := context.WithCancel(context.Background())
-	infra.GoRecoverable(-1, "getUpdates", func() {
+	infra.GoRecoverable(-1, "process_updates", func() {
 		defer cancelFunc()
 
 		tgbot, err := tgbotapi.NewBotAPI(cfg.TelegramAPIToken)
@@ -74,5 +75,6 @@ func main() {
 	select {
 	case <-ctx.Done():
 		log.WithError(ctx.Err()).Errorln("no more updates")
+		os.Exit(0)
 	}
 }
