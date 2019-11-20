@@ -111,6 +111,10 @@ func (g *Gatekeeper) handleChallenge(u tgbotapi.Update) (err error) {
 		if _, err := g.bot.Request(tgbotapi.NewCallbackWithAlert(cq.ID, i18n.Get("Your answer is WRONG. Try again in 10 minutes"))); err != nil {
 			entry.WithError(err).Errorln("cant answer callback query")
 		}
+		_, err := g.bot.Request(tgbotapi.NewDeleteMessage(u.Message.Chat.ID, u.Message.MessageID))
+		if err != nil {
+			entry.WithError(err).Error("cant delete join message")
+		}
 		// stop timer anyway
 		if joiner.successFunc != nil {
 			joiner.successFunc()
@@ -185,6 +189,10 @@ func (g *Gatekeeper) handleNewChatMembers(u tgbotapi.Update) error {
 			case <-timeout.C:
 				entry.Info("challenge timed out")
 				cancel()
+				_, err := g.bot.Request(tgbotapi.NewDeleteMessage(u.Message.Chat.ID, u.Message.MessageID))
+				if err != nil {
+					entry.WithError(err).Error("cant delete join message")
+				}
 				if err := bot.KickUserFromChat(g.bot, joinedUser.ID, u.Message.Chat.ID); err != nil {
 					return
 				}
@@ -251,10 +259,6 @@ func (g *Gatekeeper) handleNewChatMembers(u tgbotapi.Update) error {
 	go func() {
 		wg.Wait()
 		_, err = g.bot.Request(tgbotapi.NewDeleteMessage(sentMsg.Chat.ID, sentMsg.MessageID))
-		if err != nil {
-			entry.WithError(err).Error("cant delete")
-		}
-		_, err = g.bot.Request(tgbotapi.NewDeleteMessage(u.Message.Chat.ID, u.Message.MessageID))
 		if err != nil {
 			entry.WithError(err).Error("cant delete")
 		}
