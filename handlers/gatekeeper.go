@@ -73,9 +73,9 @@ func (g *Gatekeeper) Handle(u tgbotapi.Update) (proceed bool, err error) {
 		entry.Traceln("handle new chat members")
 		err = g.handleNewChatMembers(u)
 
-	case u.Message != nil && u.Message.NewChatMembers == nil:
-		//entry.Traceln("handle challenge message")
-		//err = g.deleteChallengedMessages(u)
+	// case u.Message != nil && u.Message.NewChatMembers == nil:
+	// 	//entry.Traceln("handle challenge message")
+	// 	//err = g.deleteChallengedMessages(u)
 	}
 
 	return true, err
@@ -111,10 +111,12 @@ func (g *Gatekeeper) handleChallenge(u tgbotapi.Update) (err error) {
 		if _, err := g.bot.Request(tgbotapi.NewCallbackWithAlert(cq.ID, i18n.Get("Your answer is WRONG. Try again in 10 minutes"))); err != nil {
 			entry.WithError(err).Errorln("cant answer callback query")
 		}
-		_, err := g.bot.Request(tgbotapi.NewDeleteMessage(u.Message.Chat.ID, u.Message.MessageID))
-		if err != nil {
-			entry.WithError(err).Error("cant delete join message")
-		}
+
+		// _, err := g.bot.Request(tgbotapi.NewDeleteMessage(u.Message.Chat.ID, u.Message.MessageID))
+		// if err != nil {
+		// 	entry.WithError(err).Error("cant delete join message")
+		// }
+
 		// stop timer anyway
 		if joiner.successFunc != nil {
 			joiner.successFunc()
