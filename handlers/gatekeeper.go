@@ -3,6 +3,8 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"github.com/iamwavecut/ngbot/db"
+	"github.com/iamwavecut/ngbot/infra"
 	"io/ioutil"
 	"math/rand"
 	"strings"
@@ -11,7 +13,6 @@ import (
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/iamwavecut/ngbot/bot"
-	"github.com/iamwavecut/ngbot/config"
 	"github.com/iamwavecut/ngbot/i18n"
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
@@ -30,8 +31,7 @@ type challengedUser struct {
 }
 
 type Gatekeeper struct {
-	cfg     *config.Config
-	bot     *tgbotapi.BotAPI
+	s       bot.Service
 	joiners map[int64][]*challengedUser
 
 	Challenges struct {
@@ -39,16 +39,15 @@ type Gatekeeper struct {
 	}
 }
 
-func NewGatekeeper(cfg *config.Config, bot *tgbotapi.BotAPI) *Gatekeeper {
+func NewGatekeeper(s bot.Service) *Gatekeeper {
 	g := &Gatekeeper{
-		cfg:     cfg,
-		bot:     bot,
+		s:       s,
 		joiners: make(map[int64][]*challengedUser),
 	}
 	entry := g.getLogEntry()
 
 	entry.Traceln("loading localized challenges")
-	challengesData, err := ioutil.ReadFile(fmt.Sprintf("resources/challenges.%s.yml", cfg.Language))
+	challengesData, err := ioutil.ReadFile(infra.GetResourcesDir("gatekeeper", "challenges", g.s.GetConfig().Language+".yml"))
 	if err != nil {
 		entry.WithError(err).Errorln("cant load challenges file")
 	}
@@ -57,32 +56,31 @@ func NewGatekeeper(cfg *config.Config, bot *tgbotapi.BotAPI) *Gatekeeper {
 	if err := yaml.Unmarshal(challengesData, &g.Challenges); err != nil {
 		entry.WithError(err).Errorln("cant unmarshal challenges yaml")
 	}
-
 	return g
 }
 
-func (g *Gatekeeper) Handle(u tgbotapi.Update) (proceed bool, err error) {
+func (g *Gatekeeper) Handle(u *tgbotapi.Update, chatMeta *db.ChatMeta) (proceed bool, err error) {
 	entry := g.getLogEntry()
 
 	switch {
 	case u.CallbackQuery != nil:
 		entry.Traceln("handle challenge")
-		err = g.handleChallenge(u)
+		err = g.handleChallenge(u, chatMeta)
 
 	case u.Message != nil && u.Message.NewChatMembers != nil:
 		entry.Traceln("handle new chat members")
-		err = g.handleNewChatMembers(u)
+		err = g.handleNewChatMembers(u, chatMeta)
 
-	// case u.Message != nil && u.Message.NewChatMembers == nil:
-	// 	//entry.Traceln("handle challenge message")
-	// 	//err = g.deleteChallengedMessages(u)
+		// case u.Message != nil && u.Message.NewChatMembers == nil:
+		// 	//entry.Traceln("handle challenge message")
+		// 	//err = g.deleteChallengedMessages(u)
 	}
-
 	return true, err
 }
 
-func (g *Gatekeeper) handleChallenge(u tgbotapi.Update) (err error) {
+func (g *Gatekeeper) handleChallenge(u *tgbotapi.Update, cm *db.ChatMeta) (err error) {
 	entry := g.getLogEntry()
+	b := g.s.GetBot()
 
 	cq := u.CallbackQuery
 	entry.Traceln(cq.Data, cq.From.UserName)
@@ -90,7 +88,7 @@ func (g *Gatekeeper) handleChallenge(u tgbotapi.Update) (err error) {
 	joiner := g.extractChallengedUser(cq.From.ID, cq.Message.Chat.ID)
 	if joiner == nil {
 		entry.Debug("no user matched for challenge in chat", cq.Message.Chat.ID)
-		if _, err := g.bot.Request(tgbotapi.NewCallback(cq.ID, i18n.Get("Stop it! You're too real"))); err != nil {
+		if _, err := b.Request(tgbotapi.NewCallback(cq.ID, i18n.Get("Stop it! You're too real", cm.Language))); err != nil {
 			entry.WithError(err).Errorln("cant answer callback query")
 		}
 		return nil
@@ -99,7 +97,7 @@ func (g *Gatekeeper) handleChallenge(u tgbotapi.Update) (err error) {
 	switch cq.Data {
 	case challengeSucceeded:
 		entry.Debug("successful challenge")
-		if _, err := g.bot.Request(tgbotapi.NewCallback(cq.ID, i18n.Get("Welcome, bro!"))); err != nil {
+		if _, err := b.Request(tgbotapi.NewCallback(cq.ID, i18n.Get("Welcome, bro!", cm.Language))); err != nil {
 			entry.WithError(err).Errorln("cant answer callback query")
 		}
 		if joiner.successFunc != nil {
@@ -108,11 +106,11 @@ func (g *Gatekeeper) handleChallenge(u tgbotapi.Update) (err error) {
 
 	case challengeFailed:
 		entry.Debug("failed challenge")
-		if _, err := g.bot.Request(tgbotapi.NewCallbackWithAlert(cq.ID, i18n.Get("Your answer is WRONG. Try again in 10 minutes"))); err != nil {
+		if _, err := b.Request(tgbotapi.NewCallbackWithAlert(cq.ID, i18n.Get("Your answer is WRONG. Try again in 10 minutes", cm.Language))); err != nil {
 			entry.WithError(err).Errorln("cant answer callback query")
 		}
 
-		// _, err := g.bot.Request(tgbotapi.NewDeleteMessage(u.Message.Chat.ID, u.Message.MessageID))
+		// _, err := b.Request(tgbotapi.NewDeleteMessage(u.Message.Chat.ID, u.Message.MessageID))
 		// if err != nil {
 		// 	entry.WithError(err).Error("cant delete join message")
 		// }
@@ -122,23 +120,23 @@ func (g *Gatekeeper) handleChallenge(u tgbotapi.Update) (err error) {
 			joiner.successFunc()
 		}
 
-		err = bot.KickUserFromChat(g.bot, joiner.user.ID, cq.Message.Chat.ID)
+		err = bot.KickUserFromChat(b, joiner.user.ID, cq.Message.Chat.ID)
 		if err != nil {
 			entry.WithError(err).Errorln("cant kick failed")
 		}
 
 	default:
-		if _, err := g.bot.Request(tgbotapi.NewCallback(cq.ID, i18n.Get("I have no idea what is going on"))); err != nil {
+		if _, err := b.Request(tgbotapi.NewCallback(cq.ID, i18n.Get("I have no idea what is going on", cm.Language))); err != nil {
 			entry.WithError(err).Errorln("cant answer callback query")
 		}
 	}
-
 	return err
 }
 
-func (g *Gatekeeper) deleteChallengedMessages(u tgbotapi.Update) error {
+func (g *Gatekeeper) deleteChallengedMessages(u *tgbotapi.Update) error {
 	entry := g.getLogEntry()
 	m := u.Message
+	b := g.s.GetBot()
 
 	if _, ok := g.joiners[m.Chat.ID]; !ok {
 		return nil
@@ -150,16 +148,16 @@ func (g *Gatekeeper) deleteChallengedMessages(u tgbotapi.Update) error {
 		return nil
 	}
 
-	_, err := g.bot.Request(tgbotapi.NewDeleteMessage(m.Chat.ID, m.MessageID))
+	_, err := b.Request(tgbotapi.NewDeleteMessage(m.Chat.ID, m.MessageID))
 	if err != nil {
 		entry.WithError(err).Error("cant delete challenged user message")
 	}
-
 	return nil
 }
 
-func (g *Gatekeeper) handleNewChatMembers(u tgbotapi.Update) error {
+func (g *Gatekeeper) handleNewChatMembers(u *tgbotapi.Update, cm *db.ChatMeta) error {
 	entry := g.getLogEntry()
+	b := g.s.GetBot()
 
 	n := u.Message.NewChatMembers
 	entry.Traceln("handle new", len(n))
@@ -191,11 +189,11 @@ func (g *Gatekeeper) handleNewChatMembers(u tgbotapi.Update) error {
 			case <-timeout.C:
 				entry.Info("challenge timed out")
 				cancel()
-				_, err := g.bot.Request(tgbotapi.NewDeleteMessage(u.Message.Chat.ID, u.Message.MessageID))
+				_, err := b.Request(tgbotapi.NewDeleteMessage(u.Message.Chat.ID, u.Message.MessageID))
 				if err != nil {
 					entry.WithError(err).Error("cant delete join message")
 				}
-				if err := bot.KickUserFromChat(g.bot, joinedUser.ID, u.Message.Chat.ID); err != nil {
+				if err := bot.KickUserFromChat(b, joinedUser.ID, u.Message.Chat.ID); err != nil {
 					return
 				}
 			}
@@ -244,7 +242,7 @@ func (g *Gatekeeper) handleNewChatMembers(u tgbotapi.Update) error {
 		namesList = append(namesList, fmt.Sprintf("[%s](tg://user?id=%d)", joinedUser.name, joinedUser.user.ID))
 	}
 
-	msgText := fmt.Sprintf(i18n.Get("Hi there, %s! Please, pick %s to bypass bot test (or be banned)"), strings.Join(namesList, ", "), correctVariant[1])
+	msgText := fmt.Sprintf(i18n.Get("Hi there, %s! Please, pick %s to bypass bot test (or be banned)", cm.Language), strings.Join(namesList, ", "), correctVariant[1])
 	msg := tgbotapi.NewMessage(u.Message.Chat.ID, msgText)
 	msg.ParseMode = "markdown"
 
@@ -252,21 +250,20 @@ func (g *Gatekeeper) handleNewChatMembers(u tgbotapi.Update) error {
 		tgbotapi.NewInlineKeyboardRow(buttons...),
 	)
 	msg.ReplyMarkup = kb
-	sentMsg, err := g.bot.Send(msg)
+	sentMsg, err := b.Send(msg)
 	if err != nil {
-		return errors.Wrap(err, "cant send")
+		return errors.WithMessage(err, "cant send")
 	}
 
 	entry.Traceln("waiting for challenge")
 	go func() {
 		wg.Wait()
-		_, err = g.bot.Request(tgbotapi.NewDeleteMessage(sentMsg.Chat.ID, sentMsg.MessageID))
+		_, err = b.Request(tgbotapi.NewDeleteMessage(sentMsg.Chat.ID, sentMsg.MessageID))
 		if err != nil {
 			entry.WithError(err).Error("cant delete")
 		}
 		entry.Traceln("end challenge")
 	}()
-
 	return nil
 }
 
@@ -287,7 +284,6 @@ func (g *Gatekeeper) extractChallengedUser(userID int, chatID int64) *challenged
 	users[len(users)-1] = nil
 	users = users[:len(users)-1]
 	g.joiners[chatID] = users
-
 	return joiner
 }
 
@@ -303,7 +299,6 @@ func (g *Gatekeeper) findChallengedUser(userID int, chatID int64) (*challengedUs
 			return user, i
 		}
 	}
-
 	return nil, -1
 }
 

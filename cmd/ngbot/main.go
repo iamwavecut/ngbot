@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"github.com/iamwavecut/ngbot/db/sqlite"
+	"github.com/iamwavecut/ngbot/handlers"
 	"os"
 	"time"
 
@@ -9,10 +12,10 @@ import (
 	"github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/iamwavecut/ngbot/bot"
 	"github.com/iamwavecut/ngbot/config"
-	"github.com/iamwavecut/ngbot/handlers"
 	"github.com/iamwavecut/ngbot/i18n"
 	"github.com/iamwavecut/ngbot/infra"
 	"github.com/jinzhu/configor"
+	_ "github.com/mattn/go-sqlite3"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -32,21 +35,16 @@ func main() {
 		configPath = "etc/config.yml"
 	}
 
-	var cfg config.Config
-	if err := configor.New(&configor.Config{ErrorOnUnmatchedKeys: true}).Load(&cfg, configPath); err != nil {
+	cfg := &config.Config{}
+	if err := configor.New(&configor.Config{ErrorOnUnmatchedKeys: true}).Load(cfg, configPath); err != nil {
 		log.WithError(err).Fatalln("cant load config")
 	}
 	log.Traceln("loaded config", spew.Sdump(cfg))
 
-	i18n.SetLanguage(cfg.Language)
-
-	resourcesPath := os.Getenv("NGBOT_RESOURCES_PATH")
-	if resourcesPath == "" {
-		resourcesPath = "resources"
-	}
-	i18n.SetResourcesPath(resourcesPath)
+	i18n.SetResourcesPath(infra.GetResourcesDir("i18n"))
 
 	ctx, cancelFunc := context.WithCancel(context.Background())
+
 	infra.GoRecoverable(-1, "process_updates", func() {
 		defer cancelFunc()
 
@@ -58,15 +56,18 @@ func main() {
 		}
 		tgbot.Debug = false
 
+		service := bot.NewService(tgbot, sqlite.NewSQLiteClient(fmt.Sprintf("file:%s?cache=shared&mode=rwc", "bot.db")), cfg)
+
+		bot.RegisterUpdateHandler("admin", handlers.NewAdmin(service))
+		bot.RegisterUpdateHandler("gatekeeper", handlers.NewGatekeeper(service))
+		bot.RegisterUpdateHandler("charades", handlers.NewCharades(service))
+
 		updateConfig := tgbotapi.NewUpdate(0)
 		updateConfig.Timeout = 60
-		updateHandler := bot.NewUpdateProcessor(&cfg, tgbot)
-
-		gatekeeper := handlers.NewGatekeeper(&cfg, tgbot)
-		updateHandler.AddUpdateHandler(gatekeeper)
+		updateHandler := bot.NewUpdateProcessor(service)
 
 		for update := range tgbot.GetUpdatesChan(updateConfig) {
-			if err := updateHandler.Process(update); err != nil {
+			if err := updateHandler.Process(&update); err != nil {
 				log.WithError(err).Errorln("cant process update")
 			}
 		}

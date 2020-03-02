@@ -10,47 +10,40 @@ import (
 )
 
 var state = struct {
-	language     string
-	translations map[string]string
-	loaded       bool
-
+	translations  map[string]map[string]string
+	loaded        bool
 	resourcesPath string
 }{
-	language:     "en",
-	translations: make(map[string]string),
-}
-
-func SetLanguage(value string) {
-	state.language = value
+	translations: make(map[string]map[string]string),
 }
 
 func SetResourcesPath(value string) {
 	state.resourcesPath = value
 }
 
-func load() {
+func load(lang string) {
 	state.loaded = true
 
 	if state.resourcesPath == "" {
 		state.resourcesPath = "."
 	}
 
-	i18n, err := ioutil.ReadFile(path.Join(state.resourcesPath, "i18n", fmt.Sprintf("%s.yml", state.language)))
+	i18n, err := ioutil.ReadFile(path.Join(state.resourcesPath, fmt.Sprintf("%s.yml", lang)))
 	if err != nil {
 		log.WithError(err).Errorln("cant load i18n")
 		return
 	}
-	if err := yaml.Unmarshal(i18n, &state.translations); err != nil {
+	if err := yaml.Unmarshal(i18n, state.translations[lang]); err != nil {
 		log.WithError(err).Errorln("cant unmarshal i18n")
 	}
 }
 
-func Get(key string) string {
+func Get(key, lang string) string {
 	if !state.loaded {
-		load()
+		load(lang)
 	}
 
-	if res, ok := state.translations[key]; ok {
+	if res, ok := state.translations[lang][key]; ok {
 		return res
 	}
 	log.Traceln(`no translation for key "%s"`, key)

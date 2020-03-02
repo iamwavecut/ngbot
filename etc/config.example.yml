@@ -1,4 +1,7 @@
 # copy this to actual config.yml
 telegram_api_token: ""
 language: "en" # TODO: chat specific setting
-
+enabled_handlers:
+  - admin
+  - gatekeeper
+  - charades
