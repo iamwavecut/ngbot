@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"github.com/iamwavecut/ngbot/db/sqlite"
 	"github.com/iamwavecut/ngbot/handlers"
 	"os"
@@ -56,7 +55,7 @@ func main() {
 		}
 		tgbot.Debug = false
 
-		service := bot.NewService(tgbot, sqlite.NewSQLiteClient(fmt.Sprintf("file:%s?cache=shared&mode=rwc", "bot.db")), cfg)
+		service := bot.NewService(tgbot, sqlite.NewSQLiteClient("bot.db"), cfg)
 
 		bot.RegisterUpdateHandler("admin", handlers.NewAdmin(service))
 		bot.RegisterUpdateHandler("gatekeeper", handlers.NewGatekeeper(service))

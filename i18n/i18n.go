@@ -11,10 +11,11 @@ import (
 
 var state = struct {
 	translations  map[string]map[string]string
-	loaded        bool
+	loaded        map[string]bool
 	resourcesPath string
 }{
 	translations: make(map[string]map[string]string),
+	loaded:       make(map[string]bool),
 }
 
 func SetResourcesPath(value string) {
@@ -22,8 +23,6 @@ func SetResourcesPath(value string) {
 }
 
 func load(lang string) {
-	state.loaded = true
-
 	if state.resourcesPath == "" {
 		state.resourcesPath = "."
 	}
@@ -33,13 +32,17 @@ func load(lang string) {
 		log.WithError(err).Errorln("cant load i18n")
 		return
 	}
-	if err := yaml.Unmarshal(i18n, state.translations[lang]); err != nil {
+	translations := make(map[string]string)
+	if err := yaml.Unmarshal(i18n, &translations); err != nil {
 		log.WithError(err).Errorln("cant unmarshal i18n")
+		return
 	}
+	state.translations[lang] = translations
+	state.loaded[lang] = true
 }
 
 func Get(key, lang string) string {
-	if !state.loaded {
+	if !state.loaded[lang] {
 		load(lang)
 	}
 

@@ -59,17 +59,20 @@ func NewGatekeeper(s bot.Service) *Gatekeeper {
 	return g
 }
 
-func (g *Gatekeeper) Handle(u *tgbotapi.Update, chatMeta *db.ChatMeta) (proceed bool, err error) {
+func (g *Gatekeeper) Handle(u *tgbotapi.Update, cm *db.ChatMeta) (proceed bool, err error) {
+	if cm == nil {
+		return true, nil
+	}
 	entry := g.getLogEntry()
 
 	switch {
 	case u.CallbackQuery != nil:
 		entry.Traceln("handle challenge")
-		err = g.handleChallenge(u, chatMeta)
+		err = g.handleChallenge(u, cm)
 
 	case u.Message != nil && u.Message.NewChatMembers != nil:
 		entry.Traceln("handle new chat members")
-		err = g.handleNewChatMembers(u, chatMeta)
+		err = g.handleNewChatMembers(u, cm)
 
 		// case u.Message != nil && u.Message.NewChatMembers == nil:
 		// 	//entry.Traceln("handle challenge message")

@@ -49,22 +49,32 @@ func (up *UpdateProcessor) Process(u *tgbotapi.Update) (result error) {
 		log.WithError(err).WithField("update", *u).Warn("cant get chat from update")
 	}
 
-	if chat != nil && chat.IsGroup() || chat.IsSuperGroup() {
-		if _, ok := up.chatMetaCache[chat.ID]; !ok {
-			cm, err := up.s.GetDB().GetChatMeta(chat.ID)
-			if err != nil {
-				log.WithError(err).Warn("cant get chat meta")
-			}
-			up.chatMetaCache[chat.ID] = cm
+	//if chat != nil && chat.IsGroup() || chat.IsSuperGroup() {
+	if _, ok := up.chatMetaCache[chat.ID]; !ok {
+		cm, err := up.s.GetDB().GetChatMeta(chat.ID)
+		if err != nil {
+			log.WithError(err).Warn("cant get chat meta")
+		}
+		up.chatMetaCache[chat.ID] = cm
 
-			if cm != nil && cm.Title != chat.Title {
+		if cm != nil {
+			updatedChatMeta := false
+			if cm.Title != chat.Title {
 				cm.Title = chat.Title
+				updatedChatMeta = true
+			}
+			if cm.Type != chat.Type {
+				cm.Type = chat.Type
+				updatedChatMeta = true
+			}
+			if updatedChatMeta {
 				if uErr := up.s.GetDB().UpsertChatMeta(cm); uErr != nil {
 					log.WithError(uErr).Warn("cant update chat title")
 				}
 			}
 		}
 	}
+	//}
 
 	for _, handler := range up.updateHandlers {
 		proceed, err := handler.Handle(u, up.chatMetaCache[chat.ID])
@@ -72,7 +82,7 @@ func (up *UpdateProcessor) Process(u *tgbotapi.Update) (result error) {
 			result = errors.WithMessage(err, "handling error")
 		}
 		if !proceed {
-			log.WithError(err).Error("not proceeding")
+			log.Trace("not proceeding")
 			return
 		}
 	}
@@ -80,21 +90,17 @@ func (up *UpdateProcessor) Process(u *tgbotapi.Update) (result error) {
 }
 
 func (up *UpdateProcessor) GetChat(u *tgbotapi.Update) (*tgbotapi.Chat, error) {
-	nn := func(v interface{}) bool {
-		return v != nil
-	}
-	if !nn(u) {
+	if u == nil {
 		return nil, errors.New("nil update")
 	}
 	switch {
-	case nn(u.CallbackQuery) && nn(u.CallbackQuery.Message) && nn(u.CallbackQuery.Message.Chat):
+	case u.CallbackQuery != nil && u.CallbackQuery.Message != nil && u.CallbackQuery.Message.Chat != nil:
 		return u.CallbackQuery.Message.Chat, nil
-	case nn(u.Message) && nn(u.Message.Chat):
+	case u.Message != nil && u.Message.Chat != nil:
 		return u.Message.Chat, nil
-	case nn(u.EditedMessage) && nn(u.EditedMessage.Chat):
+	case u.EditedMessage != nil && u.EditedMessage.Chat != nil:
 		return u.EditedMessage.Chat, nil
 	}
-
 	return nil, errors.New("no chat")
 }
 

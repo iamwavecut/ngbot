@@ -35,7 +35,7 @@ func NewSQLiteClient(dbPath string) *sqliteClient {
 }
 
 func (c *sqliteClient) GetChatMeta(chatID int64) (*db.ChatMeta, error) {
-	var res *db.ChatMeta
+	res := &db.ChatMeta{}
 	if err := c.db.Get(res, "SELECT * FROM chats WHERE id=$1", chatID); err != nil {
 		switch errors.Cause(err) {
 		case sql.ErrNoRows:
@@ -43,6 +43,7 @@ func (c *sqliteClient) GetChatMeta(chatID int64) (*db.ChatMeta, error) {
 				ID:       chatID,
 				Title:    "",
 				Language: "en",
+				Type:     "",
 			}
 			if err := c.UpsertChatMeta(res); err != nil {
 				log.WithError(err).Error("default insert failed")
@@ -56,9 +57,9 @@ func (c *sqliteClient) GetChatMeta(chatID int64) (*db.ChatMeta, error) {
 
 func (c *sqliteClient) UpsertChatMeta(chat *db.ChatMeta) error {
 	if _, err := c.db.NamedExec(`
-INSERT INTO chats (id, title, language) VALUES(:id, :title, :language)
-ON CONFLICT(word) DO UPDATE SET title=excluded.title, language=excluded.language;
-`, chat); err != nil {
+		INSERT INTO chats (id, title, language, type) VALUES(:id, :title, :language, :type)
+		ON CONFLICT(id) DO UPDATE SET title=excluded.title, language=excluded.language, type=excluded.type;;
+	`, chat); err != nil {
 		return errors.WithMessage(err, "cant insert chat meta")
 	}
 	return nil

@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS "chats"
     "id"       BIGINT NOT NULL,
     "title"    TEXT   NOT NULL,
     "language" TEXT,
+    "type"     TEXT,
     PRIMARY KEY ("id")
 );
 
