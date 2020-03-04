@@ -30,7 +30,7 @@ func GetResourcesDir(path ...string) string {
 		parts = append(parts, envPath)
 	} else {
 		if wd, err := os.Getwd(); err == nil {
-			parts = append(parts, wd)
+			parts = append(parts, wd, "resources")
 		}
 	}
 	parts = append(parts, path...)

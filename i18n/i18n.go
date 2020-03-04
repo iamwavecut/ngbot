@@ -3,7 +3,7 @@ package i18n
 import (
 	"fmt"
 	"io/ioutil"
-	"path"
+	"path/filepath"
 
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v2"
@@ -27,7 +27,7 @@ func load(lang string) {
 		state.resourcesPath = "."
 	}
 
-	i18n, err := ioutil.ReadFile(path.Join(state.resourcesPath, fmt.Sprintf("%s.yml", lang)))
+	i18n, err := ioutil.ReadFile(filepath.Join(state.resourcesPath, fmt.Sprintf("%s.yml", lang)))
 	if err != nil {
 		log.WithError(err).Errorln("cant load i18n")
 		return
