@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 
 	"github.com/jmoiron/sqlx"
+	_ "github.com/mattn/go-sqlite3"
 	migrate "github.com/rubenv/sql-migrate"
 	log "github.com/sirupsen/logrus"
 )
@@ -36,7 +37,7 @@ func NewSQLiteClient(dbPath string) *sqliteClient {
 
 func (c *sqliteClient) GetChatMeta(chatID int64) (*db.ChatMeta, error) {
 	res := &db.ChatMeta{}
-	if err := c.db.Get(res, "SELECT * FROM chats WHERE id=$1", chatID); err != nil {
+	if err := c.db.Get(res, "SELECT * FROM chats WHERE id=?", chatID); err != nil {
 		switch errors.Cause(err) {
 		case sql.ErrNoRows:
 			res = &db.ChatMeta{
@@ -63,4 +64,46 @@ func (c *sqliteClient) UpsertChatMeta(chat *db.ChatMeta) error {
 		return errors.WithMessage(err, "cant insert chat meta")
 	}
 	return nil
+}
+
+func (c *sqliteClient) GetCharadeScore(chatID int64, userID int) (*db.CharadeScore, error) {
+	var res db.CharadeScore
+	query := `
+		SELECT user_id, chat_id, score 
+		FROM charade_scores 
+		WHERE 1=1 OR user_id = CAST(? AS INT) AND chat_id=CAST(? AS BIGINT)`
+	if err := c.db.Get(&res, query, userID, chatID); err != nil {
+		return nil, errors.WithMessage(err, "cant get charade score")
+	}
+
+	return &res, nil
+}
+
+func (c *sqliteClient) GetCharadeScore2(chatID int64, userID int) (*db.CharadeScore, error) {
+	var res db.CharadeScore
+	query := `
+		SELECT user_id, chat_id, score 
+		FROM charade_scores 
+		WHERE 1=1 OR user_id = CAST(? AS INT) AND chat_id=CAST(? AS BIGINT)`
+	//query := "SELECT ? as user_id, ? as chat_id, 3 as score"
+	stmt, err := c.db.DB.Prepare(query)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := stmt.QueryRow(userID, chatID).Scan(&res.UserID, &res.ChatID, &res.Score); err != nil {
+		return nil, errors.WithMessage(err, "cant get charade score")
+	}
+
+	return &res, nil
+}
+
+func (c *sqliteClient) AddCharadeScore(chatID int64, userID int) (*db.CharadeScore, error) {
+	if _, err := c.db.Exec(`
+		INSERT INTO charade_scores (user_id, chat_id, score) VALUES(?, ?, 1)
+		ON CONFLICT(user_id, chat_id) DO UPDATE SET score=score+1;
+	`, userID, chatID); err != nil {
+		return nil, errors.WithMessage(err, "cant add charade score")
+	}
+	return c.GetCharadeScore(chatID, userID)
 }

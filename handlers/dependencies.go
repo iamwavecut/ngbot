@@ -6,5 +6,5 @@ import (
 )
 
 type Handler interface {
-	Handle(u *tgbotapi.Update, chatMeta *db.ChatMeta) (proceed bool, err error)
+	Handle(u *tgbotapi.Update, cm *db.ChatMeta) (proceed bool, err error)
 }

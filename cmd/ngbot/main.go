@@ -7,14 +7,12 @@ import (
 	"os"
 	"time"
 
-	"github.com/davecgh/go-spew/spew"
 	"github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/iamwavecut/ngbot/bot"
 	"github.com/iamwavecut/ngbot/config"
 	"github.com/iamwavecut/ngbot/i18n"
 	"github.com/iamwavecut/ngbot/infra"
 	"github.com/jinzhu/configor"
-	_ "github.com/mattn/go-sqlite3"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -38,7 +36,7 @@ func main() {
 	if err := configor.New(&configor.Config{ErrorOnUnmatchedKeys: true}).Load(cfg, configPath); err != nil {
 		log.WithError(err).Fatalln("cant load config")
 	}
-	log.Traceln("loaded config", spew.Sdump(cfg))
+	log.Traceln("loaded config")
 
 	i18n.SetResourcesPath(infra.GetResourcesDir("i18n"))
 

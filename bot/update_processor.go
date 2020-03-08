@@ -11,7 +11,7 @@ import (
 )
 
 type Handler interface {
-	Handle(u *tgbotapi.Update, chatMeta *db.ChatMeta) (proceed bool, err error)
+	Handle(u *tgbotapi.Update, cm *db.ChatMeta) (proceed bool, err error)
 }
 
 type UpdateProcessor struct {
@@ -49,32 +49,24 @@ func (up *UpdateProcessor) Process(u *tgbotapi.Update) (result error) {
 		log.WithError(err).WithField("update", *u).Warn("cant get chat from update")
 	}
 
-	//if chat != nil && chat.IsGroup() || chat.IsSuperGroup() {
-	if _, ok := up.chatMetaCache[chat.ID]; !ok {
-		cm, err := up.s.GetDB().GetChatMeta(chat.ID)
-		if err != nil {
-			log.WithError(err).Warn("cant get chat meta")
-		}
-		up.chatMetaCache[chat.ID] = cm
-
-		if cm != nil {
-			updatedChatMeta := false
-			if cm.Title != chat.Title {
-				cm.Title = chat.Title
-				updatedChatMeta = true
-			}
-			if cm.Type != chat.Type {
-				cm.Type = chat.Type
-				updatedChatMeta = true
-			}
-			if updatedChatMeta {
-				if uErr := up.s.GetDB().UpsertChatMeta(cm); uErr != nil {
-					log.WithError(uErr).Warn("cant update chat title")
-				}
-			}
+	cm, err := up.GetChatMeta(chat.ID)
+	if err != nil {
+		return errors.WithMessage(err, "cant get chat meta")
+	}
+	updatedChatMeta := false
+	if cm.Title != chat.Title {
+		cm.Title = chat.Title
+		updatedChatMeta = true
+	}
+	if cm.Type != chat.Type {
+		cm.Type = chat.Type
+		updatedChatMeta = true
+	}
+	if updatedChatMeta {
+		if uErr := up.s.GetDB().UpsertChatMeta(cm); uErr != nil {
+			log.WithError(uErr).Warn("cant update chat title")
 		}
 	}
-	//}
 
 	for _, handler := range up.updateHandlers {
 		proceed, err := handler.Handle(u, up.chatMetaCache[chat.ID])
@@ -102,6 +94,18 @@ func (up *UpdateProcessor) GetChat(u *tgbotapi.Update) (*tgbotapi.Chat, error) {
 		return u.EditedMessage.Chat, nil
 	}
 	return nil, errors.New("no chat")
+}
+
+func (up *UpdateProcessor) GetChatMeta(chatID int64) (*db.ChatMeta, error) {
+	if _, ok := up.chatMetaCache[chatID]; ok {
+		return up.chatMetaCache[chatID], nil
+	}
+	cm, err := up.s.GetDB().GetChatMeta(chatID)
+	if err != nil {
+		log.WithError(err).Warn("cant get chat meta")
+	}
+	up.chatMetaCache[chatID] = cm
+	return cm, nil
 }
 
 func KickUserFromChat(bot *tgbotapi.BotAPI, userID int, chatID int64) error {
