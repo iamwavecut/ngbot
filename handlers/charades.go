@@ -24,9 +24,15 @@ const (
 	charadeShowWord    = "CHARADE_SHOW_WORD"
 	charadeAnotherWord = "CHARADE_ANOTHER_WORD"
 	charadeContinue    = "CHARADE_CONTINUE"
+
+	charadeCommandStart = "charade"
+	charadeCommandStats = "charating"
 )
 
-var charadeCallbackData = []string{charadeShowWord, charadeAnotherWord, charadeContinue}
+var (
+	charadeCallbackData = []string{charadeShowWord, charadeAnotherWord, charadeContinue}
+	charadeCommands     = []string{charadeCommandStart, charadeCommandStats}
+)
 
 type actType struct {
 	userID     int
@@ -103,7 +109,7 @@ func (c *Charades) Handle(u *tgbotapi.Update, cm *db.ChatMeta) (bool, error) {
 	}
 
 	switch cm.Type {
-	case "supergroup", "group", "private": // TODO remove private
+	case "supergroup", "group":
 		break
 	default:
 		return true, nil
@@ -130,7 +136,7 @@ func (c *Charades) Handle(u *tgbotapi.Update, cm *db.ChatMeta) (bool, error) {
 		return true, nil
 	}
 
-	if m != nil && m.IsCommand() && m.Command() == "charade" {
+	if m != nil && m.IsCommand() && isValidCharadeCommand() {
 		c.processCommand(m, cm, act)
 		return false, nil
 	}
@@ -141,16 +147,37 @@ func (c *Charades) Handle(u *tgbotapi.Update, cm *db.ChatMeta) (bool, error) {
 func (c *Charades) processCommand(m *tgbotapi.Message, cm *db.ChatMeta, act *actType) {
 	l := c.getLogEntry()
 	l.Trace("charade trigger")
-	if act != nil {
-		userName, _ := bot.GetUN(m.From)
-		c.s.GetBot().Send(tgbotapi.NewMessage(cm.ID, fmt.Sprintf(i18n.Get("Charade is in progress, go and win it, %s!", cm.Language), userName)))
-		return
-	}
+	b := c.s.GetBot()
 
-	err := c.startCharade(m.From, cm)
-	if err != nil {
-		l.WithError(err).Error("cant start charade")
-	}
+	switch m.Command() {
+	case charadeCommandStart:
+		if act != nil {
+			userName, _ := bot.GetUN(m.From)
+			b.Send(tgbotapi.NewMessage(cm.ID, fmt.Sprintf(i18n.Get("Charade is in progress, go and win it, %s!", cm.Language), userName)))
+			return
+		}
+		err := c.startCharade(m.From, cm)
+		if err != nil {
+			l.WithError(err).Error("cant start")
+		}
+
+	case charadeCommandStats:
+		stats, err := c.s.GetDB().GetCharadeStats(cm.ID)
+		if err != nil {
+			l.WithError(err).Error("cant get stats")
+		}
+		if len(stats) > 0 {
+			chat, err := b.GetChat(tgbotapi.ChatInfoConfig{
+				ChatConfig: tgbotapi.ChatConfig{
+					ChatID: cm.ID,
+				},
+			})
+			if err != nil {
+				l.WithError(err).Error("cant get stats")
+			}
+			chat.
+		}
+}
 }
 
 func (c *Charades) processAnswer(m *tgbotapi.Message, cm *db.ChatMeta, act *actType) {
@@ -344,6 +371,16 @@ func appendContinueKeyboard(msg *tgbotapi.MessageConfig, lang string) {
 func isValidCharadeCallback(query *tgbotapi.CallbackQuery) bool {
 	var res bool
 	for _, data := range charadeCallbackData {
+		if data == query.Data {
+			res = true
+		}
+	}
+	return res
+}
+
+func isValidCharadeCommand(query *tgbotapi.CallbackQuery) bool {
+	var res bool
+	for _, data := range charadeCommands {
 		if data == query.Data {
 			res = true
 		}

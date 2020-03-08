@@ -18,6 +18,7 @@ type UpdateProcessor struct {
 	s              Service
 	updateHandlers []Handler
 	chatMetaCache  map[int64]*db.ChatMeta
+	userMetaCache  map[int64]*db.UserMeta
 }
 
 var registeredHandlers = make(map[string]Handler)
@@ -53,6 +54,11 @@ func (up *UpdateProcessor) Process(u *tgbotapi.Update) (result error) {
 	if err != nil {
 		return errors.WithMessage(err, "cant get chat meta")
 	}
+	um, err := up.GetUsertMeta(chat.ID)
+	if err != nil {
+		return errors.WithMessage(err, "cant get chat meta")
+	}
+
 	updatedChatMeta := false
 	if cm.Title != chat.Title {
 		cm.Title = chat.Title
@@ -106,6 +112,18 @@ func (up *UpdateProcessor) GetChatMeta(chatID int64) (*db.ChatMeta, error) {
 	}
 	up.chatMetaCache[chatID] = cm
 	return cm, nil
+}
+
+func (up *UpdateProcessor) GetUserMeta(userID int) (*db.ChatMeta, error) {
+	if _, ok := up.userMetaCache[userID]; ok {
+		return up.userMetaCache[userID], nil
+	}
+	um, err := up.s.GetDB().GetUserMeta(userID)
+	if err != nil {
+		log.WithError(err).Warn("cant get user meta")
+	}
+	up.userMetaCache[userID] = um
+	return um, nil
 }
 
 func KickUserFromChat(bot *tgbotapi.BotAPI, userID int, chatID int64) error {

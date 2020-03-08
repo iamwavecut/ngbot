@@ -57,10 +57,11 @@ func (c *sqliteClient) GetChatMeta(chatID int64) (*db.ChatMeta, error) {
 }
 
 func (c *sqliteClient) UpsertChatMeta(chat *db.ChatMeta) error {
-	if _, err := c.db.NamedExec(`
+	query := `
 		INSERT INTO chats (id, title, language, type) VALUES(:id, :title, :language, :type)
 		ON CONFLICT(id) DO UPDATE SET title=excluded.title, language=excluded.language, type=excluded.type;;
-	`, chat); err != nil {
+	`
+	if _, err := c.db.NamedExec(query, chat); err != nil {
 		return errors.WithMessage(err, "cant insert chat meta")
 	}
 	return nil
@@ -71,31 +72,17 @@ func (c *sqliteClient) GetCharadeScore(chatID int64, userID int) (*db.CharadeSco
 	query := `
 		SELECT user_id, chat_id, score 
 		FROM charade_scores 
-		WHERE 1=1 OR user_id = CAST(? AS INT) AND chat_id=CAST(? AS BIGINT)`
-	if err := c.db.Get(&res, query, userID, chatID); err != nil {
-		return nil, errors.WithMessage(err, "cant get charade score")
-	}
-
-	return &res, nil
+		WHERE user_id = CAST(? AS INT) AND chat_id=CAST(? AS BIGINT)`
+	return &res, c.db.Get(&res, query, userID, chatID)
 }
 
-func (c *sqliteClient) GetCharadeScore2(chatID int64, userID int) (*db.CharadeScore, error) {
-	var res db.CharadeScore
+func (c *sqliteClient) GetCharadeStats(chatID int64) ([]*db.CharadeScore, error) {
+	res := make([]*db.CharadeScore, 0)
 	query := `
-		SELECT user_id, chat_id, score 
-		FROM charade_scores 
-		WHERE 1=1 OR user_id = CAST(? AS INT) AND chat_id=CAST(? AS BIGINT)`
-	//query := "SELECT ? as user_id, ? as chat_id, 3 as score"
-	stmt, err := c.db.DB.Prepare(query)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := stmt.QueryRow(userID, chatID).Scan(&res.UserID, &res.ChatID, &res.Score); err != nil {
-		return nil, errors.WithMessage(err, "cant get charade score")
-	}
-
-	return &res, nil
+		SELECT user_id, chat_id, score
+		FROM charade_scores
+		WHERE chat_id=CAST(? AS BIGINT)`
+	return res, c.db.Select(&res, query, chatID)
 }
 
 func (c *sqliteClient) AddCharadeScore(chatID int64, userID int) (*db.CharadeScore, error) {
