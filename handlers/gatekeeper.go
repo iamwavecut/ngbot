@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"time"
 
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	api "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/iamwavecut/ngbot/bot"
 	"github.com/iamwavecut/ngbot/i18n"
 	"github.com/pkg/errors"
@@ -26,7 +26,7 @@ const (
 var challengeCallbackData = []string{challengeSucceeded, challengeFailed}
 
 type challengedUser struct {
-	user               *tgbotapi.User
+	user               *db.UserMeta
 	successFunc        func()
 	name               string
 	joinMessageID      int
@@ -66,7 +66,7 @@ func NewGatekeeper(s bot.Service) *Gatekeeper {
 	return g
 }
 
-func (g *Gatekeeper) Handle(u *tgbotapi.Update, cm *db.ChatMeta) (bool, error) {
+func (g *Gatekeeper) Handle(u *api.Update, cm *db.ChatMeta, um *db.UserMeta) (bool, error) {
 	if cm == nil {
 		return true, nil
 	}
@@ -75,17 +75,17 @@ func (g *Gatekeeper) Handle(u *tgbotapi.Update, cm *db.ChatMeta) (bool, error) {
 	switch {
 	case u.CallbackQuery != nil && isValidChallengeCallback(u.CallbackQuery):
 		entry.Traceln("handle challenge")
-		return false, g.handleChallenge(u, cm)
+		return false, g.handleChallenge(u, cm, um)
 
 	case u.Message != nil && u.Message.NewChatMembers != nil:
 		entry.Traceln("handle new chat members")
 
-		return true, g.handleNewChatMembers(u, cm)
+		return true, g.handleNewChatMembers(u, cm, um)
 	}
 	return true, nil
 }
 
-func isValidChallengeCallback(query *tgbotapi.CallbackQuery) bool {
+func isValidChallengeCallback(query *api.CallbackQuery) bool {
 	var res bool
 	for _, data := range challengeCallbackData {
 		if data == query.Data {
@@ -95,17 +95,17 @@ func isValidChallengeCallback(query *tgbotapi.CallbackQuery) bool {
 	return res
 }
 
-func (g *Gatekeeper) handleChallenge(u *tgbotapi.Update, cm *db.ChatMeta) (err error) {
+func (g *Gatekeeper) handleChallenge(u *api.Update, cm *db.ChatMeta, um *db.UserMeta) (err error) {
 	entry := g.getLogEntry()
 	b := g.s.GetBot()
 
 	cq := u.CallbackQuery
-	entry.Traceln(cq.Data, cq.From.UserName)
+	entry.Traceln(cq.Data, um.GetUN())
 
-	joiner := g.extractChallengedUser(cq.From.ID, cm.ID)
+	joiner := g.extractChallengedUser(um.ID, cm.ID)
 	if joiner == nil {
 		entry.Debug("no user matched for challenge in chat ", cm.Title)
-		if _, err := b.Request(tgbotapi.NewCallback(cq.ID, i18n.Get("Stop it! You're too real", cm.Language))); err != nil {
+		if _, err := b.Request(api.NewCallback(cq.ID, i18n.Get("Stop it! You're too real", cm.Language))); err != nil {
 			entry.WithError(err).Errorln("cant answer callback query")
 		}
 		return nil
@@ -114,11 +114,11 @@ func (g *Gatekeeper) handleChallenge(u *tgbotapi.Update, cm *db.ChatMeta) (err e
 	switch cq.Data {
 	case challengeSucceeded:
 		entry.Debug("successful challenge")
-		if _, err := b.Request(tgbotapi.NewCallback(cq.ID, i18n.Get("Welcome, bro!", cm.Language))); err != nil {
+		if _, err := b.Request(api.NewCallback(cq.ID, i18n.Get("Welcome, bro!", cm.Language))); err != nil {
 			entry.WithError(err).Errorln("cant answer callback query")
 		}
 
-		_, err = b.Request(tgbotapi.NewDeleteMessage(cm.ID, joiner.challengeMessageID))
+		_, err = b.Request(api.NewDeleteMessage(cm.ID, joiner.challengeMessageID))
 		if err != nil {
 			entry.WithError(err).Error("cant delete challenge message")
 		}
@@ -129,16 +129,16 @@ func (g *Gatekeeper) handleChallenge(u *tgbotapi.Update, cm *db.ChatMeta) (err e
 
 	case challengeFailed:
 		entry.Debug("failed challenge")
-		if _, err := b.Request(tgbotapi.NewCallbackWithAlert(cq.ID, i18n.Get("Your answer is WRONG. Try again in 10 minutes", cm.Language))); err != nil {
+		if _, err := b.Request(api.NewCallbackWithAlert(cq.ID, i18n.Get("Your answer is WRONG. Try again in 10 minutes", cm.Language))); err != nil {
 			entry.WithError(err).Errorln("cant answer callback query")
 		}
 
-		_, err := b.Request(tgbotapi.NewDeleteMessage(cm.ID, joiner.joinMessageID))
+		_, err := b.Request(api.NewDeleteMessage(cm.ID, joiner.joinMessageID))
 		if err != nil {
 			entry.WithError(err).Error("cant delete join message")
 		}
 
-		_, err = b.Request(tgbotapi.NewDeleteMessage(cm.ID, joiner.challengeMessageID))
+		_, err = b.Request(api.NewDeleteMessage(cm.ID, joiner.challengeMessageID))
 		if err != nil {
 			entry.WithError(err).Error("cant delete challenge message")
 		}
@@ -154,14 +154,14 @@ func (g *Gatekeeper) handleChallenge(u *tgbotapi.Update, cm *db.ChatMeta) (err e
 		}
 
 	default:
-		if _, err := b.Request(tgbotapi.NewCallback(cq.ID, i18n.Get("I have no idea what is going on", cm.Language))); err != nil {
+		if _, err := b.Request(api.NewCallback(cq.ID, i18n.Get("I have no idea what is going on", cm.Language))); err != nil {
 			entry.WithError(err).Errorln("cant answer callback query")
 		}
 	}
 	return err
 }
 
-func (g *Gatekeeper) handleNewChatMembers(u *tgbotapi.Update, cm *db.ChatMeta) error {
+func (g *Gatekeeper) handleNewChatMembers(u *api.Update, cm *db.ChatMeta, um *db.UserMeta) error {
 	entry := g.getLogEntry()
 	b := g.s.GetBot()
 
@@ -176,23 +176,24 @@ func (g *Gatekeeper) handleNewChatMembers(u *tgbotapi.Update, cm *db.ChatMeta) e
 	}
 
 	for _, joinedUser := range n {
-		if joinedUser.IsBot {
+		jum := db.MetaFromUser(&joinedUser)
+		if jum.IsBot {
 			continue
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
-		name, _ := bot.GetFullName(&joinedUser)
+
 		cu := &challengedUser{
-			user:          &joinedUser,
+			user:          jum,
 			successFunc:   cancel,
-			name:          name,
+			name:          jum.GetFullName(),
 			joinMessageID: u.Message.MessageID,
 		}
 		if _, ok := g.joiners[cm.ID]; !ok {
 			g.joiners[cm.ID] = map[int]*challengedUser{}
 		}
-		g.joiners[cm.ID][joinedUser.ID] = cu
+		g.joiners[cm.ID][jum.ID] = cu
 		go func() {
-			entry.Traceln("setting timer for", joinedUser.UserName)
+			entry.Traceln("setting timer for", jum.GetUN())
 			timeout := time.NewTimer(3 * time.Minute)
 
 			select {
@@ -202,15 +203,15 @@ func (g *Gatekeeper) handleNewChatMembers(u *tgbotapi.Update, cm *db.ChatMeta) e
 				delete(g.joiners[cm.ID], cu.user.ID)
 			case <-timeout.C:
 				entry.Info("challenge timed out")
-				_, err := b.Request(tgbotapi.NewDeleteMessage(cm.ID, cu.joinMessageID))
+				_, err := b.Request(api.NewDeleteMessage(cm.ID, cu.joinMessageID))
 				if err != nil {
 					entry.WithError(err).Error("cant delete join message")
 				}
-				_, err = b.Request(tgbotapi.NewDeleteMessage(cm.ID, cu.challengeMessageID))
+				_, err = b.Request(api.NewDeleteMessage(cm.ID, cu.challengeMessageID))
 				if err != nil {
 					entry.WithError(err).Error("cant delete challenge message")
 				}
-				if err := bot.KickUserFromChat(b, joinedUser.ID, cm.ID); err != nil {
+				if err := bot.KickUserFromChat(b, jum.ID, cm.ID); err != nil {
 					return
 				}
 			}
@@ -227,21 +228,21 @@ func (g *Gatekeeper) handleNewChatMembers(u *tgbotapi.Update, cm *db.ChatMeta) e
 			usedIDs[ID] = struct{}{}
 		}
 		correctVariant := captchaRandomSet[rand.Intn(3)]
-		var buttons []tgbotapi.InlineKeyboardButton
+		var buttons []api.InlineKeyboardButton
 		for _, v := range captchaRandomSet {
 			result := challengeFailed
 			if v[0] == correctVariant[0] {
 				result = challengeSucceeded
 			}
-			buttons = append(buttons, tgbotapi.NewInlineKeyboardButtonData(v[0], result))
+			buttons = append(buttons, api.NewInlineKeyboardButtonData(v[0], result))
 		}
 
 		msgText := fmt.Sprintf(i18n.Get("Hi there, %s! Please, pick %s to bypass bot test (or be banned)", cm.Language), cu.name, correctVariant[1])
-		msg := tgbotapi.NewMessage(cm.ID, msgText)
+		msg := api.NewMessage(cm.ID, msgText)
 		msg.ParseMode = "markdown"
 
-		kb := tgbotapi.NewInlineKeyboardMarkup(
-			tgbotapi.NewInlineKeyboardRow(buttons...),
+		kb := api.NewInlineKeyboardMarkup(
+			api.NewInlineKeyboardRow(buttons...),
 		)
 		msg.ReplyMarkup = kb
 		sentMsg, err := b.Send(msg)

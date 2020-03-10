@@ -5,6 +5,7 @@ import (
 	"github.com/iamwavecut/ngbot/bot"
 	"github.com/iamwavecut/ngbot/db"
 	"github.com/iamwavecut/ngbot/i18n"
+	"github.com/iamwavecut/ngbot/infra/reg"
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 	"strings"
@@ -23,7 +24,7 @@ func NewAdmin(s bot.Service) *Admin {
 	return a
 }
 
-func (a *Admin) Handle(u *tgbotapi.Update, cm *db.ChatMeta) (proceed bool, err error) {
+func (a *Admin) Handle(u *tgbotapi.Update, cm *db.ChatMeta, um *db.UserMeta) (proceed bool, err error) {
 	if cm == nil {
 		return true, nil
 	}
@@ -33,8 +34,7 @@ func (a *Admin) Handle(u *tgbotapi.Update, cm *db.ChatMeta) (proceed bool, err e
 	switch {
 	case
 		u.Message == nil,
-		u.Message.From == nil,
-		u.Message.From.IsBot,
+		um.IsBot,
 		!u.Message.IsCommand():
 		return true, nil
 	}
@@ -42,7 +42,7 @@ func (a *Admin) Handle(u *tgbotapi.Update, cm *db.ChatMeta) (proceed bool, err e
 
 	chatMember, err := b.GetChatMember(tgbotapi.GetChatMemberConfig{
 		ChatConfigWithUser: tgbotapi.ChatConfigWithUser{
-			UserID: m.From.ID,
+			UserID: um.ID,
 			ChatID: cm.ID,
 		},
 	})
@@ -86,6 +86,8 @@ func (a *Admin) Handle(u *tgbotapi.Update, cm *db.ChatMeta) (proceed bool, err e
 			if err != nil {
 				return false, errors.WithMessage(err, "cant update chat language")
 			}
+			reg.Get().RemoveCM(cm.ID)
+
 			b.Send(tgbotapi.NewMessage(
 				cm.ID,
 				i18n.Get("Language set successfully", cm.Language),

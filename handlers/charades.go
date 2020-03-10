@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bufio"
 	"compress/gzip"
 	"context"
 	"fmt"
@@ -11,8 +12,6 @@ import (
 	"github.com/iamwavecut/ngbot/infra"
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
-	"gopkg.in/yaml.v2"
-	"io/ioutil"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -46,7 +45,7 @@ type actType struct {
 type Charades struct {
 	s      bot.Service
 	path   string
-	data   map[string]map[string]string
+	data   map[string][]string
 	active map[int64]*actType
 }
 
@@ -54,7 +53,7 @@ func NewCharades(s bot.Service) *Charades {
 	c := &Charades{
 		s:      s,
 		path:   infra.GetResourcesDir("charades"),
-		data:   make(map[string]map[string]string),
+		data:   make(map[string][]string),
 		active: make(map[int64]*actType),
 	}
 	go c.dispatcher(context.Background()) // TODO graceful shutdown
@@ -103,8 +102,8 @@ func (c *Charades) dispatcher(ctx context.Context) {
 	}
 }
 
-func (c *Charades) Handle(u *tgbotapi.Update, cm *db.ChatMeta) (bool, error) {
-	if cm == nil {
+func (c *Charades) Handle(u *tgbotapi.Update, cm *db.ChatMeta, um *db.UserMeta) (bool, error) {
+	if cm == nil || um == nil {
 		return true, nil
 	}
 
@@ -119,32 +118,29 @@ func (c *Charades) Handle(u *tgbotapi.Update, cm *db.ChatMeta) (bool, error) {
 	cb := u.CallbackQuery
 	act := c.active[cm.ID]
 
-	switch {
-	case m != nil && m.From.IsBot:
-		return true, nil
-	case cb != nil && cb.From.IsBot:
+	if um.IsBot {
 		return true, nil
 	}
 
 	if cb != nil && isValidCharadeCallback(cb) {
-		c.processCallback(cb, cm, act)
+		c.processCallback(cb, cm, um, act)
 		return false, nil
 	}
 
 	if act != nil && m != nil && !m.IsCommand() {
-		c.processAnswer(m, cm, act)
+		c.processAnswer(m, cm, um, act)
 		return true, nil
 	}
 
-	if m != nil && m.IsCommand() && isValidCharadeCommand() {
-		c.processCommand(m, cm, act)
+	if m != nil && m.IsCommand() && isValidCharadeCommand(m.Command()) {
+		c.processCommand(m, cm, um, act)
 		return false, nil
 	}
 
 	return true, nil
 }
 
-func (c *Charades) processCommand(m *tgbotapi.Message, cm *db.ChatMeta, act *actType) {
+func (c *Charades) processCommand(m *tgbotapi.Message, cm *db.ChatMeta, um *db.UserMeta, act *actType) {
 	l := c.getLogEntry()
 	l.Trace("charade trigger")
 	b := c.s.GetBot()
@@ -152,35 +148,23 @@ func (c *Charades) processCommand(m *tgbotapi.Message, cm *db.ChatMeta, act *act
 	switch m.Command() {
 	case charadeCommandStart:
 		if act != nil {
-			userName, _ := bot.GetUN(m.From)
-			b.Send(tgbotapi.NewMessage(cm.ID, fmt.Sprintf(i18n.Get("Charade is in progress, go and win it, %s!", cm.Language), userName)))
+			b.Send(tgbotapi.NewMessage(cm.ID, fmt.Sprintf(i18n.Get("Charade is in progress, go and win it, %s!", cm.Language), um.GetFullName())))
 			return
 		}
-		err := c.startCharade(m.From, cm)
+		err := c.startCharade(um, cm)
 		if err != nil {
 			l.WithError(err).Error("cant start")
 		}
 
 	case charadeCommandStats:
-		stats, err := c.s.GetDB().GetCharadeStats(cm.ID)
-		if err != nil {
-			l.WithError(err).Error("cant get stats")
-		}
-		if len(stats) > 0 {
-			chat, err := b.GetChat(tgbotapi.ChatInfoConfig{
-				ChatConfig: tgbotapi.ChatConfig{
-					ChatID: cm.ID,
-				},
-			})
-			if err != nil {
-				l.WithError(err).Error("cant get stats")
-			}
-			chat.
-		}
-}
+		//stats, err := c.s.GetDB().GetCharadeStats(cm.ID)
+		//if err != nil {
+		//	l.WithError(err).Error("cant get stats")
+		//}
+	}
 }
 
-func (c *Charades) processAnswer(m *tgbotapi.Message, cm *db.ChatMeta, act *actType) {
+func (c *Charades) processAnswer(m *tgbotapi.Message, cm *db.ChatMeta, um *db.UserMeta, act *actType) {
 	l := c.getLogEntry()
 	if act.finishTime != nil {
 		return
@@ -195,14 +179,13 @@ func (c *Charades) processAnswer(m *tgbotapi.Message, cm *db.ChatMeta, act *actT
 		if act.finishTime != nil {
 			return
 		}
-		if m.From.ID != act.userID {
-			userName, _ := bot.GetUN(m.From)
-			msg.Text = fmt.Sprintf(i18n.Get("*%s* makes the right guess, smart pants!", cm.Language), userName)
+		if um.ID != act.userID {
+			msg.Text = fmt.Sprintf(i18n.Get("*%s* makes the right guess, smart pants!", cm.Language), um.GetFullName())
 			msg.ReplyToMessageID = m.MessageID
 			act.finishTime = func() *time.Time { t := time.Now(); return &t }()
-			act.winnerID = func() *int { ID := m.From.ID; return &ID }()
+			act.winnerID = func() *int { ID := um.ID; return &ID }()
 
-			winnerScore, err := c.s.GetDB().AddCharadeScore(cm.ID, m.From.ID)
+			winnerScore, err := c.s.GetDB().AddCharadeScore(cm.ID, um.ID)
 			if err != nil {
 				l.WithError(err).Error("cant add score for the winner")
 			}
@@ -221,7 +204,7 @@ func (c *Charades) processAnswer(m *tgbotapi.Message, cm *db.ChatMeta, act *actT
 	}
 }
 
-func (c *Charades) processCallback(cb *tgbotapi.CallbackQuery, cm *db.ChatMeta, act *actType) {
+func (c *Charades) processCallback(cb *tgbotapi.CallbackQuery, cm *db.ChatMeta, um *db.UserMeta, act *actType) {
 	l := c.getLogEntry()
 	l.Trace("charade valid")
 	answer := tgbotapi.CallbackConfig{
@@ -232,22 +215,22 @@ func (c *Charades) processCallback(cb *tgbotapi.CallbackQuery, cm *db.ChatMeta, 
 	switch cb.Data {
 
 	case charadeShowWord:
-		if act == nil || cb.From.ID != act.userID {
+		if act == nil || um.ID != act.userID {
 			break
 		}
 
-		if cb.From.ID == act.userID {
+		if um.ID == act.userID {
 			answer.Text = act.word
 			answer.ShowAlert = true
 		}
 
 	case charadeAnotherWord:
-		if act == nil || cb.From.ID != act.userID {
+		if act == nil || um.ID != act.userID {
 			break
 		}
 
-		if cb.From.ID == act.userID {
-			act, err := c.randomActForUser(cb.From.ID, cm)
+		if um.ID == act.userID {
+			act, err := c.randomAct(um.ID, cm)
 			if err != nil {
 				l.WithError(err).Error("cant get actType")
 			}
@@ -260,57 +243,48 @@ func (c *Charades) processCallback(cb *tgbotapi.CallbackQuery, cm *db.ChatMeta, 
 		switch {
 		case
 			act == nil,
-			act.winnerID != nil && *act.winnerID == cb.From.ID,
-			act.winnerID != nil && *act.winnerID != cb.From.ID && time.Now().Unix()-(*act.finishTime).Unix() >= 10:
+			act.winnerID != nil && *act.winnerID == um.ID,
+			act.winnerID != nil && *act.winnerID != um.ID && time.Now().Unix()-(*act.finishTime).Unix() >= 10:
 
-			err := c.startCharade(cb.From, cm)
+			err := c.startCharade(um, cm)
 			if err != nil {
 				l.WithError(err).Error("cant start charade continue")
 			}
 			answer.Text = ""
 
-		case act != nil && act.winnerID != nil && *act.winnerID != cb.From.ID && time.Now().Unix()-(*act.finishTime).Unix() < 10:
+		case act != nil && act.winnerID != nil && *act.winnerID != um.ID && time.Now().Unix()-(*act.finishTime).Unix() < 10:
 			answer.Text = i18n.Get("The winner has 10 seconds advantage, try later", cm.Language)
 		}
 	}
 	c.s.GetBot().Request(answer)
 }
 
-func (c *Charades) randomActForUser(userID int, cm *db.ChatMeta) (*actType, error) {
+func (c *Charades) randomAct(userID int, cm *db.ChatMeta) (*actType, error) {
 	if _, ok := c.data[cm.Language]; !ok {
 		if err := c.load(cm.Language); err != nil {
 			return nil, errors.WithMessagef(err, "cant load charades for %v", cm.Language)
 		}
 	}
 
-	wordIndex := rand.Intn(len(c.data[cm.Language]))
-	var currentIndex int
-	var word string
-	for currentWord := range c.data[cm.Language] {
-		if wordIndex == currentIndex {
-			word = currentWord
-			break
-		}
-		currentIndex++
-	}
-
+	s := rand.NewSource(time.Now().Unix())
+	r := rand.New(s) // initialize local pseudorandom generator
+	wordIndex := r.Intn(len(c.data[cm.Language]))
 	return &actType{
 		userID:    userID,
-		word:      word,
+		word:      c.data[cm.Language][wordIndex],
 		startTime: func() *time.Time { t := time.Now(); return &t }(),
 		chatMeta:  cm,
 	}, nil
 }
 
-func (c *Charades) startCharade(user *tgbotapi.User, cm *db.ChatMeta) error {
-	act, err := c.randomActForUser(user.ID, cm)
+func (c *Charades) startCharade(um *db.UserMeta, cm *db.ChatMeta) error {
+	act, err := c.randomAct(um.ID, cm)
 	if err != nil {
 		return errors.WithMessage(err, "cant get actType")
 	}
 
 	c.active[cm.ID] = act
-	userName, _ := bot.GetUN(user)
-	msg := tgbotapi.NewMessage(cm.ID, fmt.Sprintf(i18n.Get("Please, *%s*, explain the word, without using synonyms and other forms in three minutes. Both the explainer and the winner get a _point_ on success!", cm.Language), userName))
+	msg := tgbotapi.NewMessage(cm.ID, fmt.Sprintf(i18n.Get("Please, *%s*, explain the word, without using synonyms and other forms in three minutes. Both the explainer and the winner get a _point_ on success!", cm.Language), um.GetFullName()))
 	msg.ParseMode = "markdown"
 	kb := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
@@ -326,7 +300,7 @@ func (c *Charades) startCharade(user *tgbotapi.User, cm *db.ChatMeta) error {
 
 func (c *Charades) load(lang string) error {
 	l := c.getLogEntry()
-	f, err := os.Open(filepath.Join(c.path, lang+".yml.gz"))
+	f, err := os.Open(filepath.Join(c.path, lang+".txt.gz"))
 	if err != nil {
 		return errors.WithMessagef(err, "cant open charades lang %s", lang)
 	}
@@ -341,16 +315,11 @@ func (c *Charades) load(lang string) error {
 		}
 	}()
 
-	res, err := ioutil.ReadAll(r)
-	if err != nil {
-		return errors.WithMessage(err, "cant read charades")
+	scanner := bufio.NewScanner(r)
+	charades := make([]string, 0, 25000)
+	for scanner.Scan() {
+		charades = append(charades, scanner.Text())
 	}
-	charades := make(map[string]string)
-	if err = yaml.Unmarshal(res, &charades); err != nil {
-		l.WithError(err).Errorln()
-		return errors.WithMessage(err, "cant unmarshal charades")
-	}
-
 	c.data[lang] = charades
 	return nil
 }
@@ -378,10 +347,10 @@ func isValidCharadeCallback(query *tgbotapi.CallbackQuery) bool {
 	return res
 }
 
-func isValidCharadeCommand(query *tgbotapi.CallbackQuery) bool {
+func isValidCharadeCommand(command string) bool {
 	var res bool
 	for _, data := range charadeCommands {
-		if data == query.Data {
+		if data == command {
 			res = true
 		}
 	}

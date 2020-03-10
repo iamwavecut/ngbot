@@ -39,6 +39,7 @@ func main() {
 	log.Traceln("loaded config")
 
 	i18n.SetResourcesPath(infra.GetResourcesDir("i18n"))
+	i18n.SetDefaultLanguage(cfg.DefaultLanguage)
 
 	ctx, cancelFunc := context.WithCancel(context.Background())
 

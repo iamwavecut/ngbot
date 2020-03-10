@@ -10,9 +10,10 @@ import (
 )
 
 var state = struct {
-	translations  map[string]map[string]string
-	loaded        map[string]bool
-	resourcesPath string
+	translations    map[string]map[string]string
+	loaded          map[string]bool
+	resourcesPath   string
+	defaultLanguage string
 }{
 	translations: make(map[string]map[string]string),
 	loaded:       make(map[string]bool),
@@ -22,7 +23,15 @@ func SetResourcesPath(value string) {
 	state.resourcesPath = value
 }
 
+func SetDefaultLanguage(value string) {
+	state.defaultLanguage = value
+	log.Trace("default language ", value)
+}
+
 func load(lang string) {
+	if state.defaultLanguage == lang {
+		return
+	}
 	if state.resourcesPath == "" {
 		state.resourcesPath = "."
 	}
@@ -42,6 +51,9 @@ func load(lang string) {
 }
 
 func Get(key, lang string) string {
+	if state.defaultLanguage == lang {
+		return key
+	}
 	if !state.loaded[lang] {
 		load(lang)
 	}

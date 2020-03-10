@@ -13,6 +13,10 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+var (
+	ErrNoUser = errors.New("no user in db")
+)
+
 type sqliteClient struct {
 	db *sqlx.DB
 }
@@ -33,6 +37,28 @@ func NewSQLiteClient(dbPath string) *sqliteClient {
 	log.Infof("applied %d migrations!\n", n)
 
 	return &sqliteClient{db: dbx}
+}
+
+func (c *sqliteClient) GetUserMeta(userID int) (*db.UserMeta, error) {
+	res := &db.UserMeta{}
+	if err := c.db.Get(res, "SELECT * FROM users WHERE id=?", userID); err != nil {
+		if errors.Cause(err) == sql.ErrNoRows {
+			return nil, ErrNoUser
+		}
+		return nil, errors.WithMessage(err, "cant get user meta")
+	}
+	return res, nil
+}
+
+func (c *sqliteClient) UpsertUserMeta(chat *db.UserMeta) error {
+	query := `
+		INSERT INTO users (id, first_name, last_name, username, language_code, is_bot) VALUES(:id, :first_name, :last_name, :username, :language_code,:is_bot)
+		ON CONFLICT(id) DO UPDATE SET first_name=excluded.first_name, last_name=excluded.last_name, username=excluded.username, language_code=excluded.language_code, is_bot=excluded.is_bot;
+	`
+	if _, err := c.db.NamedExec(query, chat); err != nil {
+		return errors.WithMessage(err, "cant insert user meta")
+	}
+	return nil
 }
 
 func (c *sqliteClient) GetChatMeta(chatID int64) (*db.ChatMeta, error) {

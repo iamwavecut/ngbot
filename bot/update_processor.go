@@ -2,23 +2,22 @@ package bot
 
 import (
 	"github.com/iamwavecut/ngbot/db"
-	"strings"
+	"github.com/iamwavecut/ngbot/db/sqlite"
+	"github.com/iamwavecut/ngbot/infra/reg"
 	"time"
 
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	api "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 )
 
 type Handler interface {
-	Handle(u *tgbotapi.Update, cm *db.ChatMeta) (proceed bool, err error)
+	Handle(u *api.Update, cm *db.ChatMeta, um *db.UserMeta) (proceed bool, err error)
 }
 
 type UpdateProcessor struct {
 	s              Service
 	updateHandlers []Handler
-	chatMetaCache  map[int64]*db.ChatMeta
-	userMetaCache  map[int64]*db.UserMeta
 }
 
 var registeredHandlers = make(map[string]Handler)
@@ -40,42 +39,48 @@ func NewUpdateProcessor(s Service) *UpdateProcessor {
 	return &UpdateProcessor{
 		s:              s,
 		updateHandlers: enabledHandlers,
-		chatMetaCache:  make(map[int64]*db.ChatMeta),
 	}
 }
 
-func (up *UpdateProcessor) Process(u *tgbotapi.Update) (result error) {
-	chat, err := up.GetChat(u)
+func (up *UpdateProcessor) Process(u *api.Update) (result error) {
+	chat, err := GetChat(u)
 	if err != nil {
 		log.WithError(err).WithField("update", *u).Warn("cant get chat from update")
 	}
-
 	cm, err := up.GetChatMeta(chat.ID)
 	if err != nil {
 		return errors.WithMessage(err, "cant get chat meta")
 	}
-	um, err := up.GetUsertMeta(chat.ID)
-	if err != nil {
-		return errors.WithMessage(err, "cant get chat meta")
+	ucm := db.MetaFromChat(chat)
+	ucm.Language = cm.Language
+	if ucm != cm {
+		if uErr := up.s.GetDB().UpsertChatMeta(ucm); uErr != nil {
+			log.WithError(uErr).Warn("cant update chat meta")
+		}
+		cm = ucm
 	}
 
-	updatedChatMeta := false
-	if cm.Title != chat.Title {
-		cm.Title = chat.Title
-		updatedChatMeta = true
+	user, err := GetUser(u)
+	uum := db.MetaFromUser(user)
+	if err != nil {
+		log.WithError(err).WithField("update", *u).Warn("cant get user from update")
 	}
-	if cm.Type != chat.Type {
-		cm.Type = chat.Type
-		updatedChatMeta = true
-	}
-	if updatedChatMeta {
-		if uErr := up.s.GetDB().UpsertChatMeta(cm); uErr != nil {
-			log.WithError(uErr).Warn("cant update chat title")
+	um, err := up.GetUserMeta(user.ID)
+	if err != nil {
+		if errors.Cause(err) != sqlite.ErrNoUser {
+			return errors.WithMessage(err, "cant get user meta")
 		}
+		um = uum
+	}
+	if uum != um {
+		if uErr := up.s.GetDB().UpsertUserMeta(uum); uErr != nil {
+			log.WithError(uErr).Warn("cant update user meta")
+		}
+		um = uum
 	}
 
 	for _, handler := range up.updateHandlers {
-		proceed, err := handler.Handle(u, up.chatMetaCache[chat.ID])
+		proceed, err := handler.Handle(u, cm, um)
 		if err != nil {
 			result = errors.WithMessage(err, "handling error")
 		}
@@ -87,7 +92,7 @@ func (up *UpdateProcessor) Process(u *tgbotapi.Update) (result error) {
 	return
 }
 
-func (up *UpdateProcessor) GetChat(u *tgbotapi.Update) (*tgbotapi.Chat, error) {
+func GetChat(u *api.Update) (*api.Chat, error) {
 	if u == nil {
 		return nil, errors.New("nil update")
 	}
@@ -103,33 +108,67 @@ func (up *UpdateProcessor) GetChat(u *tgbotapi.Update) (*tgbotapi.Chat, error) {
 }
 
 func (up *UpdateProcessor) GetChatMeta(chatID int64) (*db.ChatMeta, error) {
-	if _, ok := up.chatMetaCache[chatID]; ok {
-		return up.chatMetaCache[chatID], nil
+	r := reg.Get()
+	if cm := r.GetCM(chatID); cm != nil {
+		return cm, nil
 	}
 	cm, err := up.s.GetDB().GetChatMeta(chatID)
 	if err != nil {
 		log.WithError(err).Warn("cant get chat meta")
 	}
-	up.chatMetaCache[chatID] = cm
+	r.SetCM(cm)
 	return cm, nil
 }
 
-func (up *UpdateProcessor) GetUserMeta(userID int) (*db.ChatMeta, error) {
-	if _, ok := up.userMetaCache[userID]; ok {
-		return up.userMetaCache[userID], nil
+func GetUser(u *api.Update) (*api.User, error) {
+	if u == nil {
+		return nil, errors.New("nil update")
+	}
+	switch {
+	case u.CallbackQuery != nil && u.CallbackQuery.From != nil:
+		return u.CallbackQuery.From, nil
+	case u.Message != nil && u.Message.From != nil:
+		return u.Message.From, nil
+	case u.EditedMessage != nil && u.EditedMessage.From != nil:
+		return u.EditedMessage.From, nil
+	case u.ChosenInlineResult != nil && u.ChosenInlineResult.From != nil:
+		return u.ChosenInlineResult.From, nil
+	case u.ChannelPost != nil && u.ChannelPost.From != nil:
+		return u.ChannelPost.From, nil
+	case u.EditedChannelPost != nil && u.EditedChannelPost.From != nil:
+		return u.EditedChannelPost.From, nil
+	case u.InlineQuery != nil && u.InlineQuery.From != nil:
+		return u.InlineQuery.From, nil
+	case u.PreCheckoutQuery != nil && u.PreCheckoutQuery.From != nil:
+		return u.PreCheckoutQuery.From, nil
+	case u.ShippingQuery != nil && u.ShippingQuery.From != nil:
+		return u.ShippingQuery.From, nil
+	}
+	return nil, errors.New("no user")
+}
+
+func (up *UpdateProcessor) GetUserMeta(userID int) (*db.UserMeta, error) {
+	r := reg.Get()
+	if cm := r.GetUM(userID); cm != nil {
+		return cm, nil
 	}
 	um, err := up.s.GetDB().GetUserMeta(userID)
 	if err != nil {
+		if errors.Cause(err) == sqlite.ErrNoUser {
+			log.WithError(err).Info("no user meta")
+			return nil, err
+		}
 		log.WithError(err).Warn("cant get user meta")
+		return nil, err
 	}
-	up.userMetaCache[userID] = um
+
 	return um, nil
 }
 
-func KickUserFromChat(bot *tgbotapi.BotAPI, userID int, chatID int64) error {
+func KickUserFromChat(bot *api.BotAPI, userID int, chatID int64) error {
 	log.WithField("context", "bot")
-	_, err := bot.Request(tgbotapi.KickChatMemberConfig{
-		ChatMemberConfig: tgbotapi.ChatMemberConfig{
+	_, err := bot.Request(api.KickChatMemberConfig{
+		ChatMemberConfig: api.ChatMemberConfig{
 			ChatID: chatID,
 			UserID: userID,
 		},
@@ -140,42 +179,4 @@ func KickUserFromChat(bot *tgbotapi.BotAPI, userID int, chatID int64) error {
 	}
 
 	return nil
-}
-
-func GetFullName(user *tgbotapi.User) (string, int) {
-	userId := user.ID
-	userName := user.FirstName + " " + user.LastName
-	userName = strings.TrimSpace(userName)
-	if 0 == len(userName) {
-		userName = user.UserName
-	}
-
-	return userName, userId
-}
-
-func GetUN(user *tgbotapi.User) (string, int) {
-	userId := user.ID
-	userName := user.UserName
-	if 0 == len(userName) {
-		userName = user.FirstName + " " + user.LastName
-		userName = strings.TrimSpace(userName)
-	}
-
-	return userName, userId
-}
-
-func GetTitle(chat *tgbotapi.Chat) string {
-	if chat == nil {
-		return ""
-	}
-	switch chat.Type {
-	case "private":
-		return "p2p"
-	case "supergroup", "group", "channel":
-		return chat.Title
-	default:
-		log.Warn("unknown chat type", chat.Type)
-	}
-
-	return ""
 }
