@@ -4,6 +4,7 @@ import (
 	"github.com/iamwavecut/ngbot/db"
 	"github.com/iamwavecut/ngbot/db/sqlite"
 	"github.com/iamwavecut/ngbot/infra/reg"
+	"strings"
 	"time"
 
 	api "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -154,11 +155,9 @@ func (up *UpdateProcessor) GetUserMeta(userID int) (*db.UserMeta, error) {
 	}
 	um, err := up.s.GetDB().GetUserMeta(userID)
 	if err != nil {
-		if errors.Cause(err) == sqlite.ErrNoUser {
-			log.WithError(err).Info("no user meta")
-			return nil, err
+		if errors.Cause(err) != sqlite.ErrNoUser {
+			log.WithError(err).Warn("cant get user meta")
 		}
-		log.WithError(err).Warn("cant get user meta")
 		return nil, err
 	}
 
@@ -179,4 +178,12 @@ func KickUserFromChat(bot *api.BotAPI, userID int, chatID int64) error {
 	}
 
 	return nil
+}
+
+func EscapeMarkdown(md string) string {
+	md = strings.Replace(md, "_", "\\_", -1)
+	md = strings.Replace(md, "*", "\\*", -1)
+	md = strings.Replace(md, "[", "\\[", -1)
+	md = strings.Replace(md, "]", "\\]", -1)
+	return strings.Replace(md, "`", "\\`", -1)
 }

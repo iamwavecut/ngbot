@@ -185,7 +185,7 @@ func (g *Gatekeeper) handleNewChatMembers(u *api.Update, cm *db.ChatMeta, um *db
 		cu := &challengedUser{
 			user:          jum,
 			successFunc:   cancel,
-			name:          jum.GetFullName(),
+			name:          bot.EscapeMarkdown(jum.GetFullName()),
 			joinMessageID: u.Message.MessageID,
 		}
 		if _, ok := g.joiners[cm.ID]; !ok {

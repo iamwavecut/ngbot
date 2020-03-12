@@ -148,7 +148,7 @@ func (c *Charades) processCommand(m *tgbotapi.Message, cm *db.ChatMeta, um *db.U
 	switch m.Command() {
 	case charadeCommandStart:
 		if act != nil {
-			b.Send(tgbotapi.NewMessage(cm.ID, fmt.Sprintf(i18n.Get("Charade is in progress, go and win it, %s!", cm.Language), um.GetFullName())))
+			b.Send(tgbotapi.NewMessage(cm.ID, fmt.Sprintf(i18n.Get("Charade is in progress, go and win it, %s!", cm.Language), bot.EscapeMarkdown(um.GetFullName()))))
 			return
 		}
 		err := c.startCharade(um, cm)
@@ -180,7 +180,7 @@ func (c *Charades) processAnswer(m *tgbotapi.Message, cm *db.ChatMeta, um *db.Us
 			return
 		}
 		if um.ID != act.userID {
-			msg.Text = fmt.Sprintf(i18n.Get("*%s* makes the right guess, smart pants!", cm.Language), um.GetFullName())
+			msg.Text = fmt.Sprintf(i18n.Get("*%s* makes the right guess, smart pants!", cm.Language), bot.EscapeMarkdown(um.GetFullName()))
 			msg.ReplyToMessageID = m.MessageID
 			act.finishTime = func() *time.Time { t := time.Now(); return &t }()
 			act.winnerID = func() *int { ID := um.ID; return &ID }()
@@ -284,7 +284,7 @@ func (c *Charades) startCharade(um *db.UserMeta, cm *db.ChatMeta) error {
 	}
 
 	c.active[cm.ID] = act
-	msg := tgbotapi.NewMessage(cm.ID, fmt.Sprintf(i18n.Get("Please, *%s*, explain the word, without using synonyms and other forms in three minutes. Both the explainer and the winner get a _point_ on success!", cm.Language), um.GetFullName()))
+	msg := tgbotapi.NewMessage(cm.ID, fmt.Sprintf(i18n.Get("Please, *%s*, explain the word, without using synonyms and other forms in three minutes. Both the explainer and the winner get a _point_ on success!", cm.Language), bot.EscapeMarkdown(um.GetFullName())))
 	msg.ParseMode = "markdown"
 	kb := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
