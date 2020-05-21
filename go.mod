@@ -3,6 +3,7 @@ module github.com/iamwavecut/ngbot
 go 1.12
 
 require (
+	github.com/davecgh/go-spew v1.1.1
 	github.com/go-telegram-bot-api/telegram-bot-api/v5 v5.0.0-rc1
 	github.com/jinzhu/configor v1.1.1
 	github.com/jmoiron/sqlx v1.2.0

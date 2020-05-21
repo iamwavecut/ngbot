@@ -2,8 +2,8 @@ package sqlite
 
 import (
 	"database/sql"
-	"github.com/iamwavecut/ngbot/db"
-	"github.com/iamwavecut/ngbot/infra"
+	"github.com/iamwavecut/ngbot/internal/db"
+	"github.com/iamwavecut/ngbot/internal/infra"
 	"github.com/pkg/errors"
 	"path/filepath"
 

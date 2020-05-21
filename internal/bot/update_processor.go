@@ -1,9 +1,10 @@
 package bot
 
 import (
-	"github.com/iamwavecut/ngbot/db"
-	"github.com/iamwavecut/ngbot/db/sqlite"
-	"github.com/iamwavecut/ngbot/infra/reg"
+	"github.com/iamwavecut/ngbot/internal/db"
+	"github.com/iamwavecut/ngbot/internal/db/sqlite"
+	"github.com/iamwavecut/ngbot/internal/event"
+	"github.com/iamwavecut/ngbot/internal/infra/reg"
 	"strings"
 	"time"
 
@@ -12,13 +13,28 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-type Handler interface {
-	Handle(u *api.Update, cm *db.ChatMeta, um *db.UserMeta) (proceed bool, err error)
-}
+type (
+	Handler interface {
+		Handle(u *api.Update, cm *db.ChatMeta, um *db.UserMeta) (proceed bool, err error)
+	}
 
-type UpdateProcessor struct {
-	s              Service
-	updateHandlers []Handler
+	UpdateProcessor struct {
+		s              Service
+		updateHandlers []Handler
+	}
+
+	UpdateEvent struct {
+		*event.Base
+		payload *api.Update
+	}
+
+	Handleable interface {
+		Get() *api.Update
+	}
+)
+
+func (u *UpdateEvent) Get() *api.Update {
+	return u.payload
 }
 
 var registeredHandlers = make(map[string]Handler)
@@ -79,6 +95,11 @@ func (up *UpdateProcessor) Process(u *api.Update) (result error) {
 		}
 		um = uum
 	}
+
+	event.Bus.Enqueue(&UpdateEvent{
+		Base:    event.CreateBase("api_update", time.Now().Add(time.Minute)),
+		payload: u,
+	})
 
 	for _, handler := range up.updateHandlers {
 		proceed, err := handler.Handle(u, cm, um)
@@ -162,6 +183,10 @@ func (up *UpdateProcessor) GetUserMeta(userID int) (*db.UserMeta, error) {
 	}
 
 	return um, nil
+}
+
+func (up *UpdateProcessor) HandleEvent() {
+
 }
 
 func KickUserFromChat(bot *api.BotAPI, userID int, chatID int64) error {

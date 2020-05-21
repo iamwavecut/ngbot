@@ -2,7 +2,7 @@ package handlers
 
 import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
-	"github.com/iamwavecut/ngbot/db"
+	"github.com/iamwavecut/ngbot/internal/db"
 )
 
 type Handler interface {

@@ -2,16 +2,17 @@ package main
 
 import (
 	"context"
-	"github.com/iamwavecut/ngbot/db/sqlite"
-	"github.com/iamwavecut/ngbot/handlers"
+	"github.com/iamwavecut/ngbot/internal/db/sqlite"
+	"github.com/iamwavecut/ngbot/internal/event"
+	"github.com/iamwavecut/ngbot/internal/handlers"
 	"os"
 	"time"
 
 	"github.com/go-telegram-bot-api/telegram-bot-api/v5"
-	"github.com/iamwavecut/ngbot/bot"
-	"github.com/iamwavecut/ngbot/config"
-	"github.com/iamwavecut/ngbot/i18n"
-	"github.com/iamwavecut/ngbot/infra"
+	"github.com/iamwavecut/ngbot/internal/bot"
+	"github.com/iamwavecut/ngbot/internal/config"
+	"github.com/iamwavecut/ngbot/internal/i18n"
+	"github.com/iamwavecut/ngbot/internal/infra"
 	"github.com/jinzhu/configor"
 	log "github.com/sirupsen/logrus"
 )
@@ -42,9 +43,12 @@ func main() {
 	i18n.SetDefaultLanguage(cfg.DefaultLanguage)
 
 	ctx, cancelFunc := context.WithCancel(context.Background())
+	defer cancelFunc()
 
 	infra.GoRecoverable(-1, "process_updates", func() {
-		defer cancelFunc()
+		//rateServer := rates.Get()
+		//go rateServer.RunContext(ctx)
+		event.RunWorker()
 
 		tgbot, err := tgbotapi.NewBotAPI(cfg.TelegramAPIToken)
 		if err != nil {

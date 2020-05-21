@@ -2,10 +2,10 @@ package handlers
 
 import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
-	"github.com/iamwavecut/ngbot/bot"
-	"github.com/iamwavecut/ngbot/db"
-	"github.com/iamwavecut/ngbot/i18n"
-	"github.com/iamwavecut/ngbot/infra/reg"
+	"github.com/iamwavecut/ngbot/internal/bot"
+	"github.com/iamwavecut/ngbot/internal/db"
+	"github.com/iamwavecut/ngbot/internal/i18n"
+	"github.com/iamwavecut/ngbot/internal/infra/reg"
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 	"strings"

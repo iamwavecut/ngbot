@@ -1,5 +1,6 @@
 # copy this to actual config.yml
 telegram_api_token: ""
+maintainer_id: 123 # tg user id, discover in t.me/my_id_bot
 default_language: "en"
 enabled_handlers:
   - admin

@@ -2,8 +2,8 @@ package bot
 
 import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
-	"github.com/iamwavecut/ngbot/config"
-	"github.com/iamwavecut/ngbot/db"
+	"github.com/iamwavecut/ngbot/internal/config"
+	"github.com/iamwavecut/ngbot/internal/db"
 )
 
 type ServiceBot interface {
