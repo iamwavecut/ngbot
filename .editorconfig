@@ -1,0 +1,19 @@
+[*]
+indent_style = space
+tab_width = 4
+trim_trailing_whitespace = false
+charset = utf-8
+end_of_line = lf
+
+[*.{yml, yaml}]
+tab_width = 2
+
+[Makefile]
+indent_style = tab
+insert_final_newline = true
+
+[*.go]
+indent_style = tab
+
+[*.{go, sql, html, tpl}]
+insert_final_newline = true
