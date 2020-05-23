@@ -237,7 +237,8 @@ func (g *Gatekeeper) handleNewChatMembers(u *api.Update, cm *db.ChatMeta, um *db
 			buttons = append(buttons, api.NewInlineKeyboardButtonData(v[0], result))
 		}
 
-		msgText := fmt.Sprintf(i18n.Get("Hi there, %s! Please, pick %s to bypass bot test (or be banned)", cm.Language), cu.name, correctVariant[1])
+		nameString := fmt.Sprintf("[%s](tg://user?id=%d) ", cu.user.GetFullName(), cu.user.ID)
+		msgText := fmt.Sprintf(i18n.Get("Hi there, %s! Please, pick %s to bypass bot test (or be banned)", cm.Language), nameString, correctVariant[1])
 		msg := api.NewMessage(cm.ID, msgText)
 		msg.ParseMode = "markdown"
 
