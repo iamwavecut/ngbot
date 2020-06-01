@@ -1,0 +1,777 @@
+aea
+aei
+aeo
+aeu
+aia
+aie
+aii
+aoi
+aou
+aue
+aya
+aye
+ayi
+ayo
+ayu
+eae
+eau
+eea
+eei
+eeu
+eia
+eiu
+eoi
+eou
+eya
+eye
+eyi
+eyo
+iae
+iai
+iao
+iau
+iei
+ieu
+ioa
+ioe
+iou
+iya
+oae
+oea
+oei
+oeo
+oeu
+oey
+oia
+oie
+ooe
+ooi
+oou
+oua
+oue
+oui
+oya
+oye
+oyi
+oyo
+uae
+uai
+uay
+uea
+uee
+uei
+ueo
+ueu
+uey
+uia
+uie
+uio
+uiu
+uoa
+uoi
+uou
+uoy
+uya
+uye
+uyi
+yae
+yao
+yau
+yea
+yei
+yeo
+yey
+yie
+yoi
+you
+yoy
+yua
+bldg
+blvd
+bscr
+bstr
+cbcm
+cbft
+chfr
+chmn
+chsc
+chsh
+chst
+chth
+chts
+ckbr
+ckch
+ckcl
+ckdr
+ckgr
+cksc
+cksf
+cksh
+cksk
+cksl
+cksm
+cksn
+cksp
+ckst
+cksw
+ckth
+cktr
+ckwh
+cmps
+dspr
+dstr
+dthw
+ffsc
+ffsh
+ffsp
+fthl
+ftsm
+ftsp
+gdns
+ghbr
+ghfl
+ghsh
+ghtb
+ghtc
+ghtf
+ghth
+ghtj
+ghtl
+ghtm
+ghtn
+ghtr
+ghts
+ghtw
+hdbk
+hnst
+jctn
+khsh
+khst
+lchr
+ldpr
+ldsh
+ldsm
+ldsp
+ldst
+lfsk
+lfth
+lgth
+llfl
+llfr
+llph
+llpl
+llsh
+llsp
+llst
+lltr
+llwr
+lmcr
+lmsm
+lnrk
+lnsh
+lptr
+lsgr
+lshm
+lshw
+lstr
+lthf
+ltsf
+ltsh
+ltst
+mbsc
+mbsh
+mbsk
+mbst
+mddx
+mdnt
+mpbl
+mpgr
+mphl
+mphr
+mpsh
+mpst
+mptl
+mptn
+mptr
+mpts
+mscr
+mstr
+nchb
+nchl
+nchm
+nchn
+nchp
+nchr
+nchw
+nctl
+nctn
+ndbk
+ndbr
+ndch
+ndfl
+ndgl
+ndgr
+ndsc
+ndsh
+ndsl
+ndsm
+ndsp
+ndst
+ndsw
+ndth
+ndwr
+ngcr
+ngsg
+ngsh
+ngsm
+ngsp
+ngst
+ngth
+ngtz
+nksg
+nksh
+nksm
+nkst
+nsch
+nscr
+nsgr
+nshr
+nskr
+nspl
+nspr
+nssh
+nstr
+ntbr
+nthl
+nthr
+nths
+ntsh
+ntsm
+phth
+pstr
+pthr
+pths
+ptwr
+rbst
+rchb
+rchd
+rchl
+rchm
+rchn
+rchp
+rchw
+rdsh
+rdsm
+rdst
+rghs
+rkpl
+rksc
+rksh
+rksk
+rksm
+rksp
+rkst
+rldl
+rldw
+rlfr
+rmch
+rmst
+rmth
+rnbl
+rndl
+rnsk
+rnsp
+rnst
+rsch
+rscr
+rshl
+rshn
+rspr
+rstl
+rstr
+rsts
+rstw
+rtbr
+rtch
+rtcr
+rthb
+rthc
+rthd
+rthf
+rthl
+rthm
+rthq
+rthr
+rths
+rthw
+rtsh
+rtsm
+rtsp
+rtsw
+schl
+schm
+schn
+schw
+scrp
+sgmt
+shcl
+shkh
+shpr
+shpt
+shst
+shtr
+shwh
+smth
+ssrs
+ssst
+sstd
+sstr
+stcr
+sthm
+stpl
+stpr
+stsc
+stwr
+tblt
+tchb
+tchc
+tchd
+tchf
+tchl
+tchm
+tchp
+tchw
+thdr
+thsh
+thsk
+thsp
+thst
+tsch
+tspr
+tstr
+tthr
+ttsb
+tzkr
+whsl
+wnbr
+wnpl
+wnsf
+wnsh
+wnsm
+wnsp
+wnst
+wnsw
+wnth
+wntr
+wrnt
+wsfl
+wspr
+wstr
+xthl
+'a 
+'b 
+'c 
+'f 
+'g 
+'h 
+'i 
+'j 
+'k 
+'l 
+'n 
+'o 
+'p 
+'q 
+'r 
+'u 
+'v 
+'w 
+'x 
+'z 
+ [
+ ]
+ 'f
+ 'p
+ 'q
+ 'r
+ 'x
+ 'y
+ 'z
+ bj
+ bq
+ bz
+ c'
+ cq
+ cv
+ cx
+ dq
+ dx
+ f'
+ fh
+ fk
+ fq
+ fv
+ fw
+ fz
+ g'
+ gv
+ gx
+ gz
+ h'
+ hj
+ hk
+ hn
+ hq
+ hx
+ iq
+ iw
+ iy
+ jb
+ jf
+ jh
+ jj
+ jk
+ jl
+ jm
+ jq
+ jw
+ jx
+ jy
+ jz
+ k'
+ kf
+ kj
+ kq
+ kt
+ kx
+ kz
+ lj
+ lk
+ lq
+ lv
+ mj
+ mq
+ mz
+ nj
+ nk
+ nq
+ nz
+ oq
+ pj
+ pz
+ qb
+ qe
+ qf
+ qg
+ qh
+ qj
+ qk
+ qo
+ qp
+ qs
+ qv
+ qx
+ qy
+ qz
+ rb
+ rk
+ rq
+ rv
+ rx
+ rz
+ sz
+ tf
+ tg
+ tj
+ tq
+ u'
+ ue
+ uj
+ uo
+ uq
+ uu
+ uy
+ vb
+ vj
+ vq
+ vr
+ vv
+ vw
+ vx
+ vy
+ vz
+ wj
+ wl
+ wn
+ wq
+ wx
+ wz
+ xb
+ xf
+ xg
+ xh
+ xj
+ xk
+ xq
+ xt
+ xu
+ xz
+ yf
+ yg
+ yh
+ yj
+ yk
+ yl
+ yn
+ yq
+ yv
+ yx
+ yy
+ yz
+ z'
+ zb
+ zc
+ zd
+ zf
+ zg
+ zh
+ zj
+ zk
+ zl
+ zm
+ zq
+ zr
+ zv
+ zw
+ zx
+ zz
+ ;
+ ,
+b' 
+bg 
+bh 
+bp 
+bq 
+bv 
+bx 
+bz 
+c' 
+cf 
+cj 
+cn 
+cq 
+cv 
+cw 
+cx 
+cz 
+db 
+dj 
+dk 
+dw 
+dx 
+eh 
+ej 
+f' 
+fg 
+fh 
+fj 
+fk 
+fq 
+fv 
+fw 
+fx 
+fz 
+g' 
+gc 
+gf 
+gj 
+gk 
+gl 
+gq 
+gv 
+gw 
+gx 
+gz 
+hb 
+hc 
+hg 
+hh 
+hj 
+hk 
+hv 
+hw 
+hx 
+i' 
+ih 
+iq 
+iw 
+j' 
+jb 
+jc 
+jg 
+jh 
+jj 
+jk 
+jl 
+jm 
+jn 
+jp 
+jq 
+jr 
+js 
+ju 
+jv 
+jw 
+jx 
+jy 
+jz 
+kb 
+kc 
+kd 
+kj 
+km 
+kp 
+kq 
+kv 
+kx 
+kz 
+lg 
+lh 
+lj 
+lq 
+lr 
+lv 
+lw 
+lz 
+m' 
+mg 
+mh 
+mj 
+mk 
+mq 
+mx 
+nb 
+nm 
+pj 
+pk 
+pq 
+pw 
+px 
+pz 
+q' 
+qa 
+qb 
+qc 
+qd 
+qe 
+qf 
+qg 
+qh 
+qj 
+qk 
+ql 
+qm 
+qn 
+qo 
+qp 
+qq 
+qs 
+qt 
+qu 
+qv 
+qw 
+qx 
+qy 
+qz 
+rq 
+rz 
+sg 
+sj 
+sx 
+sz 
+tg 
+tj 
+tq 
+tx 
+uj 
+uq 
+uu 
+uw 
+v' 
+vb 
+vf 
+vh 
+vj 
+vk 
+vl 
+vn 
+vp 
+vq 
+vr 
+vv 
+vw 
+vz 
+w' 
+wb 
+wc 
+wf 
+wg 
+wj 
+wq 
+wr 
+wv 
+wz 
+x' 
+xa 
+xb 
+xc 
+xd 
+xf 
+xg 
+xh 
+xj 
+xk 
+xl 
+xm 
+xn 
+xp 
+xq 
+xr 
+xs 
+xu 
+xv 
+xw 
+xz 
+yb 
+yc 
+yd 
+yf 
+yg 
+yh 
+yj 
+yq 
+yu 
+yv 
+yw 
+yy 
+yz 
+z' 
+zb 
+zc 
+zd 
+zf 
+zg 
+zh 
+zj 
+zk 
+zl 
+zn 
+zp 
+zq 
+zr 
+zs 
+zt 
+zu 
+zv 
+zw 
+zx 

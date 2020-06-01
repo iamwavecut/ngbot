@@ -63,6 +63,7 @@ func main() {
 		bot.RegisterUpdateHandler("admin", handlers.NewAdmin(service))
 		bot.RegisterUpdateHandler("gatekeeper", handlers.NewGatekeeper(service))
 		bot.RegisterUpdateHandler("charades", handlers.NewCharades(service))
+		bot.RegisterUpdateHandler("punto", handlers.NewPunto(service, infra.GetResourcesDir("punto")))
 
 		updateConfig := tgbotapi.NewUpdate(0)
 		updateConfig.Timeout = 60

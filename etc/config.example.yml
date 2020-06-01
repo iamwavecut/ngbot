@@ -6,3 +6,4 @@ enabled_handlers:
   - admin
   - gatekeeper
   - charades
+  - punto
