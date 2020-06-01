@@ -30,7 +30,6 @@ func NewPunto(s bot.Service, path string) *Punto {
 }
 
 func (p *Punto) Handle(u *tgbotapi.Update, cm *db.ChatMeta, um *db.UserMeta) (proceed bool, err error) {
-
 	if cm == nil || um == nil {
 		return true, nil
 	}
@@ -62,7 +61,7 @@ func (p *Punto) Handle(u *tgbotapi.Update, cm *db.ChatMeta, um *db.UserMeta) (pr
 	case
 		u.Message == nil,
 		um.IsBot,
-		!u.Message.IsCommand():
+		u.Message.IsCommand():
 		return true, nil
 	}
 	m := u.Message
@@ -76,7 +75,8 @@ func (p *Punto) Handle(u *tgbotapi.Update, cm *db.ChatMeta, um *db.UserMeta) (pr
 			}
 		}
 	}
-	if i > 2 {
+	l.Trace("i = " + string(i))
+	if i > 0 {
 		pMessage, err := p.puntonize(m, cm)
 		if err != nil {
 			return true, nil // skip no mapping
@@ -97,16 +97,16 @@ func (p *Punto) Handle(u *tgbotapi.Update, cm *db.ChatMeta, um *db.UserMeta) (pr
 }
 
 func (p *Punto) puntonize(m *tgbotapi.Message, cm *db.ChatMeta) (string, error) {
-	ru := `!"№;%:?*()йцукенгшщзхъфывапролджэячсмитьбю.ЙЦУКЕНГШЩЗХЪФЫВАПРОЛДЖЭЯЧСМИТЬБЮ,Ёё"`
+	ru := `!"№;%:?*()йцукенгшщзхъфывапролджэячсмитьбю.ЙЦУКЕНГШЩЗХЪФЫВАПРОЛДЖЭЯЧСМИТЬБЮ,Ёё`
 	en := `!@#$%^&*()qwertyuiop[]asdfghjkl;'zxcvbnm,./QWERTYUIOP{}ASDFGHJKL:"ZXCVBNM<>?~` + "`"
-	mappings := map[string][2][]byte{
+	mappings := map[string][2][]rune{
 		"ru": {
-			[]byte(ru),
-			[]byte(en),
+			[]rune(ru),
+			[]rune(en),
 		},
 		"en": {
-			[]byte(en),
-			[]byte(ru),
+			[]rune(en),
+			[]rune(ru),
 		},
 	}
 
