@@ -9,6 +9,7 @@ import (
 	log "github.com/sirupsen/logrus"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -66,7 +67,7 @@ func (p *Punto) Handle(u *tgbotapi.Update, cm *db.ChatMeta, um *db.UserMeta) (pr
 	}
 	m := u.Message
 
-	tokens := strings.Split(m.Text, " ")
+	tokens := regexp.MustCompile(`[\s\-]+`).Split(m.Text, -1)
 	i := 0
 	for _, token := range tokens {
 		for _, ngram := range p.data[cm.Language] {
