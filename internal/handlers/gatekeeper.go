@@ -21,6 +21,7 @@ import (
 const (
 	challengeSucceeded = "CHALLENGE_ACCEPTED"
 	challengeFailed    = "CHALLENGE_FAILED"
+	captchaSize        = 5
 )
 
 var challengeCallbackData = []string{challengeSucceeded, challengeFailed}
@@ -161,7 +162,7 @@ func (g *Gatekeeper) handleChallenge(u *api.Update, cm *db.ChatMeta, um *db.User
 	return err
 }
 
-func (g *Gatekeeper) handleNewChatMembers(u *api.Update, cm *db.ChatMeta, um *db.UserMeta) error {
+func (g *Gatekeeper) handleNewChatMembers(u *api.Update, cm *db.ChatMeta, _ *db.UserMeta) error {
 	entry := g.getLogEntry()
 	b := g.s.GetBot()
 
@@ -217,9 +218,9 @@ func (g *Gatekeeper) handleNewChatMembers(u *api.Update, cm *db.ChatMeta, um *db
 			}
 		}()
 
-		captchaRandomSet := make([][2]string, 0, 3)
-		usedIDs := make(map[int]struct{}, 3)
-		for len(captchaRandomSet) < 3 {
+		captchaRandomSet := make([][2]string, 0, captchaSize)
+		usedIDs := make(map[int]struct{}, captchaSize)
+		for len(captchaRandomSet) < captchaSize {
 			ID := rand.Intn(len(captchaIndex))
 			if _, ok := usedIDs[ID]; ok {
 				continue
@@ -227,7 +228,7 @@ func (g *Gatekeeper) handleNewChatMembers(u *api.Update, cm *db.ChatMeta, um *db
 			captchaRandomSet = append(captchaRandomSet, captchaIndex[ID])
 			usedIDs[ID] = struct{}{}
 		}
-		correctVariant := captchaRandomSet[rand.Intn(3)]
+		correctVariant := captchaRandomSet[rand.Intn(captchaSize-1)+1]
 		var buttons []api.InlineKeyboardButton
 		for _, v := range captchaRandomSet {
 			result := challengeFailed
@@ -238,9 +239,10 @@ func (g *Gatekeeper) handleNewChatMembers(u *api.Update, cm *db.ChatMeta, um *db
 		}
 
 		nameString := fmt.Sprintf("[%s](tg://user?id=%d) ", cu.user.GetFullName(), cu.user.ID)
-		msgText := fmt.Sprintf(i18n.Get("Hi there, %s! Please, pick %s to bypass bot test (or be banned)", cm.Language), nameString, correctVariant[1])
+		msgText := fmt.Sprintf(i18n.Get("Hi there, %s! Please, pick %s to prove that you're human being (or be banned otherwise)", cm.Language), nameString, correctVariant[1])
 		msg := api.NewMessage(cm.ID, msgText)
 		msg.ParseMode = "markdown"
+		msg.DisableNotification = true
 
 		kb := api.NewInlineKeyboardMarkup(
 			api.NewInlineKeyboardRow(buttons...),
