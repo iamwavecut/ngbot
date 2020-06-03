@@ -14,9 +14,10 @@ import (
 )
 
 type Punto struct {
-	s    bot.Service
-	path string
-	data map[string][]string
+	s          bot.Service
+	path       string
+	data       map[string][]string
+	exclusions map[string][]string
 }
 
 var errNoFile = errors.New("no ngrams file for language")
@@ -77,7 +78,7 @@ func (p *Punto) Handle(u *tgbotapi.Update, cm *db.ChatMeta, um *db.UserMeta) (pr
 		}
 	}
 	l.Trace("i = " + string(i))
-	if i > 0 {
+	if i > 2 {
 		pMessage, err := p.puntonize(m, cm)
 		if err != nil {
 			return true, nil // skip no mapping
