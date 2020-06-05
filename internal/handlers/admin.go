@@ -49,7 +49,7 @@ func (a *Admin) Handle(u *tgbotapi.Update, cm *db.ChatMeta, um *db.UserMeta) (pr
 	if err != nil {
 		return true, errors.New("cant get chat member")
 	}
-	isAdmin := false
+	var isAdmin bool
 	switch {
 	case
 		chatMember.IsCreator(),

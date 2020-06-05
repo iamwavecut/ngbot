@@ -5,9 +5,12 @@ import (
 	"fmt"
 	"github.com/iamwavecut/ngbot/internal/db"
 	"github.com/iamwavecut/ngbot/internal/infra"
+	"github.com/pborman/uuid"
 	"io/ioutil"
 	"math/rand"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	api "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -19,12 +22,8 @@ import (
 )
 
 const (
-	challengeSucceeded = "CHALLENGE_ACCEPTED"
-	challengeFailed    = "CHALLENGE_FAILED"
-	captchaSize        = 5
+	captchaSize = 5
 )
-
-var challengeCallbackData = []string{challengeSucceeded, challengeFailed}
 
 type challengedUser struct {
 	user               *db.UserMeta
@@ -32,6 +31,7 @@ type challengedUser struct {
 	name               string
 	joinMessageID      int
 	challengeMessageID int
+	successUUID        string
 }
 
 type Gatekeeper struct {
@@ -74,7 +74,7 @@ func (g *Gatekeeper) Handle(u *api.Update, cm *db.ChatMeta, um *db.UserMeta) (bo
 	entry := g.getLogEntry()
 
 	switch {
-	case u.CallbackQuery != nil && isValidChallengeCallback(u.CallbackQuery):
+	case u.CallbackQuery != nil:
 		entry.Traceln("handle challenge")
 		return false, g.handleChallenge(u, cm, um)
 
@@ -86,16 +86,6 @@ func (g *Gatekeeper) Handle(u *api.Update, cm *db.ChatMeta, um *db.UserMeta) (bo
 	return true, nil
 }
 
-func isValidChallengeCallback(query *api.CallbackQuery) bool {
-	var res bool
-	for _, data := range challengeCallbackData {
-		if data == query.Data {
-			res = true
-		}
-	}
-	return res
-}
-
 func (g *Gatekeeper) handleChallenge(u *api.Update, cm *db.ChatMeta, um *db.UserMeta) (err error) {
 	entry := g.getLogEntry()
 	b := g.s.GetBot()
@@ -103,17 +93,56 @@ func (g *Gatekeeper) handleChallenge(u *api.Update, cm *db.ChatMeta, um *db.User
 	cq := u.CallbackQuery
 	entry.Traceln(cq.Data, um.GetUN())
 
-	joiner := g.extractChallengedUser(um.ID, cm.ID)
-	if joiner == nil {
-		entry.Debug("no user matched for challenge in chat ", cm.Title)
+	joinerID, challengeUUID, err := func(s string) (int, string, error) {
+		parts := strings.Split(s, ";")
+		if len(parts) != 2 {
+			return 0, "", errors.New("invalid string to split")
+		}
+		ID, err := strconv.Atoi(parts[0])
+		if err != nil {
+			return 0, "", errors.WithMessage(err, "cant parse user ID")
+		}
+
+		return ID, parts[1], nil
+	}(cq.Data)
+	if err != nil {
+		return err
+	}
+
+	chatMember, err := b.GetChatMember(api.GetChatMemberConfig{
+		ChatConfigWithUser: api.ChatConfigWithUser{
+			UserID: um.ID,
+			ChatID: cm.ID,
+		},
+	})
+	if err != nil {
+		return errors.New("cant get chat member")
+	}
+	var isAdmin bool
+	switch {
+	case
+		chatMember.IsCreator(),
+		chatMember.IsAdministrator() && chatMember.CanRestrictMembers:
+		isAdmin = true
+	}
+
+	if !isAdmin && joinerID != um.ID {
 		if _, err := b.Request(api.NewCallback(cq.ID, i18n.Get("Stop it! You're too real", cm.Language))); err != nil {
 			entry.WithError(err).Errorln("cant answer callback query")
 		}
 		return nil
 	}
+	joiner := g.extractChallengedUser(joinerID, cm.ID)
+	if joiner == nil {
+		entry.Debug("no user matched for challenge in chat ", cm.Title)
+		if _, err := b.Request(api.NewCallback(cq.ID, i18n.Get("No challenge for you", cm.Language))); err != nil {
+			entry.WithError(err).Errorln("cant answer callback query")
+		}
+		return nil
+	}
 
-	switch cq.Data {
-	case challengeSucceeded:
+	switch {
+	case isAdmin, joiner.successUUID == challengeUUID:
 		entry.Debug("successful challenge")
 		if _, err := b.Request(api.NewCallback(cq.ID, i18n.Get("Welcome, bro!", cm.Language))); err != nil {
 			entry.WithError(err).Errorln("cant answer callback query")
@@ -128,7 +157,7 @@ func (g *Gatekeeper) handleChallenge(u *api.Update, cm *db.ChatMeta, um *db.User
 			joiner.successFunc()
 		}
 
-	case challengeFailed:
+	case joiner.successUUID != challengeUUID:
 		entry.Debug("failed challenge")
 		if _, err := b.Request(api.NewCallbackWithAlert(cq.ID, i18n.Get("Your answer is WRONG. Try again in 10 minutes", cm.Language))); err != nil {
 			entry.WithError(err).Errorln("cant answer callback query")
@@ -188,6 +217,7 @@ func (g *Gatekeeper) handleNewChatMembers(u *api.Update, cm *db.ChatMeta, _ *db.
 			successFunc:   cancel,
 			name:          bot.EscapeMarkdown(jum.GetFullName()),
 			joinMessageID: u.Message.MessageID,
+			successUUID:   uuid.New(),
 		}
 		if _, ok := g.joiners[cm.ID]; !ok {
 			g.joiners[cm.ID] = map[int]*challengedUser{}
@@ -231,9 +261,9 @@ func (g *Gatekeeper) handleNewChatMembers(u *api.Update, cm *db.ChatMeta, _ *db.
 		correctVariant := captchaRandomSet[rand.Intn(captchaSize-1)+1]
 		var buttons []api.InlineKeyboardButton
 		for _, v := range captchaRandomSet {
-			result := challengeFailed
+			result := strconv.Itoa(cu.user.ID) + ";" + uuid.New()
 			if v[0] == correctVariant[0] {
-				result = challengeSucceeded
+				result = strconv.Itoa(cu.user.ID) + ";" + cu.successUUID
 			}
 			buttons = append(buttons, api.NewInlineKeyboardButtonData(v[0], result))
 		}
