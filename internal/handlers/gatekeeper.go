@@ -3,9 +3,6 @@ package handlers
 import (
 	"context"
 	"fmt"
-	"github.com/iamwavecut/ngbot/internal/db"
-	"github.com/iamwavecut/ngbot/internal/infra"
-	"github.com/pborman/uuid"
 	"io/ioutil"
 	"math/rand"
 	"path/filepath"
@@ -14,11 +11,15 @@ import (
 	"time"
 
 	api "github.com/go-telegram-bot-api/telegram-bot-api/v5"
-	"github.com/iamwavecut/ngbot/internal/bot"
-	"github.com/iamwavecut/ngbot/internal/i18n"
+	"github.com/pborman/uuid"
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v2"
+
+	"github.com/iamwavecut/ngbot/internal/bot"
+	"github.com/iamwavecut/ngbot/internal/db"
+	"github.com/iamwavecut/ngbot/internal/i18n"
+	"github.com/iamwavecut/ngbot/internal/infra"
 )
 
 const (
@@ -223,6 +224,10 @@ func (g *Gatekeeper) handleNewChatMembers(u *api.Update, cm *db.ChatMeta, _ *db.
 			g.joiners[cm.ID] = map[int]*challengedUser{}
 		}
 		g.joiners[cm.ID][jum.ID] = cu
+
+		if err := bot.RestrictChatting(b, jum.ID, cm.ID); err != nil {
+			entry.Traceln("restrict failed", err)
+		}
 		go func() {
 			entry.Traceln("setting timer for", jum.GetUN())
 			timeout := time.NewTimer(3 * time.Minute)
@@ -232,6 +237,9 @@ func (g *Gatekeeper) handleNewChatMembers(u *api.Update, cm *db.ChatMeta, _ *db.
 				entry.Info("aborting challenge timer")
 				timeout.Stop()
 				delete(g.joiners[cm.ID], cu.user.ID)
+				if err := bot.UnrestrictChatting(b, jum.ID, cm.ID); err != nil {
+					entry.Traceln("unrestrict failed", err)
+				}
 			case <-timeout.C:
 				entry.Info("challenge timed out")
 				_, err := b.Request(api.NewDeleteMessage(cm.ID, cu.joinMessageID))
@@ -241,6 +249,9 @@ func (g *Gatekeeper) handleNewChatMembers(u *api.Update, cm *db.ChatMeta, _ *db.
 				_, err = b.Request(api.NewDeleteMessage(cm.ID, cu.challengeMessageID))
 				if err != nil {
 					entry.WithError(err).Error("cant delete challenge message")
+				}
+				if err := bot.UnrestrictChatting(b, jum.ID, cm.ID); err != nil {
+					entry.Traceln("unrestrict failed", err)
 				}
 				if err := bot.KickUserFromChat(b, jum.ID, cm.ID); err != nil {
 					return

@@ -1,12 +1,13 @@
 package bot
 
 import (
+	"strings"
+	"time"
+
 	"github.com/iamwavecut/ngbot/internal/db"
 	"github.com/iamwavecut/ngbot/internal/db/sqlite"
 	"github.com/iamwavecut/ngbot/internal/event"
 	"github.com/iamwavecut/ngbot/internal/infra/reg"
-	"strings"
-	"time"
 
 	api "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/pkg/errors"
@@ -190,7 +191,6 @@ func (up *UpdateProcessor) HandleEvent() {
 }
 
 func KickUserFromChat(bot *api.BotAPI, userID int, chatID int64) error {
-	log.WithField("context", "bot")
 	_, err := bot.Request(api.KickChatMemberConfig{
 		ChatMemberConfig: api.ChatMemberConfig{
 			ChatID: chatID,
@@ -200,6 +200,46 @@ func KickUserFromChat(bot *api.BotAPI, userID int, chatID int64) error {
 	})
 	if err != nil {
 		return errors.WithMessage(err, "cant kick")
+	}
+
+	return nil
+}
+
+func RestrictChatting(bot *api.BotAPI, userID int, chatID int64) error {
+	boolPtr := false
+	_, err := bot.Request(api.RestrictChatMemberConfig{
+		ChatMemberConfig: api.ChatMemberConfig{
+			ChatID: chatID,
+			UserID: userID,
+		},
+		UntilDate:             time.Now().Add(10 * time.Minute).Unix(),
+		CanSendMessages:       &boolPtr,
+		CanSendMediaMessages:  &boolPtr,
+		CanSendOtherMessages:  &boolPtr,
+		CanAddWebPagePreviews: &boolPtr,
+	})
+	if err != nil {
+		return errors.WithMessage(err, "cant restrict")
+	}
+
+	return nil
+}
+
+func UnrestrictChatting(bot *api.BotAPI, userID int, chatID int64) error {
+	boolPtr := true
+	_, err := bot.Request(api.RestrictChatMemberConfig{
+		ChatMemberConfig: api.ChatMemberConfig{
+			ChatID: chatID,
+			UserID: userID,
+		},
+		UntilDate:             time.Now().Add(10 * time.Minute).Unix(),
+		CanSendMessages:       &boolPtr,
+		CanSendMediaMessages:  &boolPtr,
+		CanSendOtherMessages:  &boolPtr,
+		CanAddWebPagePreviews: &boolPtr,
+	})
+	if err != nil {
+		return errors.WithMessage(err, "cant unrestrict")
 	}
 
 	return nil

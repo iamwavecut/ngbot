@@ -5,18 +5,20 @@ import (
 	"compress/gzip"
 	"context"
 	"fmt"
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
-	"github.com/iamwavecut/ngbot/internal/bot"
-	"github.com/iamwavecut/ngbot/internal/db"
-	"github.com/iamwavecut/ngbot/internal/i18n"
-	"github.com/iamwavecut/ngbot/internal/infra"
-	"github.com/pkg/errors"
-	log "github.com/sirupsen/logrus"
 	"math/rand"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	api "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"github.com/pkg/errors"
+	log "github.com/sirupsen/logrus"
+
+	"github.com/iamwavecut/ngbot/internal/bot"
+	"github.com/iamwavecut/ngbot/internal/db"
+	"github.com/iamwavecut/ngbot/internal/i18n"
+	"github.com/iamwavecut/ngbot/internal/infra"
 )
 
 const (
@@ -93,16 +95,16 @@ func (c *Charades) dispatcher(ctx context.Context) {
 					time.Now().Unix()-(*act.startTime).Unix() > 3*60:
 
 				delete(c.active, chatID)
-				msg := tgbotapi.NewMessage(chatID, fmt.Sprintf(i18n.Get("Nobody guessed the word *%s*, that is sad.", act.chatMeta.Language), act.word))
+				msg := api.NewMessage(chatID, fmt.Sprintf(i18n.Get("Nobody guessed the word *%s*, that is sad.", act.chatMeta.Language), act.word))
 				msg.ParseMode = "markdown"
 				appendContinueKeyboard(&msg, act.chatMeta.Language)
-				c.s.GetBot().Send(msg)
+				_, _ = c.s.GetBot().Send(msg)
 			}
 		}
 	}
 }
 
-func (c *Charades) Handle(u *tgbotapi.Update, cm *db.ChatMeta, um *db.UserMeta) (bool, error) {
+func (c *Charades) Handle(u *api.Update, cm *db.ChatMeta, um *db.UserMeta) (bool, error) {
 	if cm == nil || um == nil {
 		return true, nil
 	}
@@ -140,7 +142,7 @@ func (c *Charades) Handle(u *tgbotapi.Update, cm *db.ChatMeta, um *db.UserMeta) 
 	return true, nil
 }
 
-func (c *Charades) processCommand(m *tgbotapi.Message, cm *db.ChatMeta, um *db.UserMeta, act *actType) {
+func (c *Charades) processCommand(m *api.Message, cm *db.ChatMeta, um *db.UserMeta, act *actType) {
 	l := c.getLogEntry()
 	l.Trace("charade trigger")
 	b := c.s.GetBot()
@@ -148,7 +150,7 @@ func (c *Charades) processCommand(m *tgbotapi.Message, cm *db.ChatMeta, um *db.U
 	switch m.Command() {
 	case charadeCommandStart:
 		if act != nil {
-			b.Send(tgbotapi.NewMessage(cm.ID, fmt.Sprintf(i18n.Get("Charade is in progress, go and win it, %s!", cm.Language), bot.EscapeMarkdown(um.GetFullName()))))
+			_, _ = b.Send(api.NewMessage(cm.ID, fmt.Sprintf(i18n.Get("Charade is in progress, go and win it, %s!", cm.Language), bot.EscapeMarkdown(um.GetFullName()))))
 			return
 		}
 		err := c.startCharade(um, cm)
@@ -164,12 +166,12 @@ func (c *Charades) processCommand(m *tgbotapi.Message, cm *db.ChatMeta, um *db.U
 	}
 }
 
-func (c *Charades) processAnswer(m *tgbotapi.Message, cm *db.ChatMeta, um *db.UserMeta, act *actType) {
+func (c *Charades) processAnswer(m *api.Message, cm *db.ChatMeta, um *db.UserMeta, act *actType) {
 	l := c.getLogEntry()
 	if act.finishTime != nil {
 		return
 	}
-	msg := tgbotapi.NewMessage(cm.ID, i18n.Get("Draw", cm.Language))
+	msg := api.NewMessage(cm.ID, i18n.Get("Draw", cm.Language))
 	msg.ParseMode = "markdown"
 	appendContinueKeyboard(&msg, cm.Language)
 
@@ -200,14 +202,14 @@ func (c *Charades) processAnswer(m *tgbotapi.Message, cm *db.ChatMeta, um *db.Us
 			delete(c.active, cm.ID)
 		}
 
-		c.s.GetBot().Send(msg)
+		_, _ = c.s.GetBot().Send(msg)
 	}
 }
 
-func (c *Charades) processCallback(cb *tgbotapi.CallbackQuery, cm *db.ChatMeta, um *db.UserMeta, act *actType) {
+func (c *Charades) processCallback(cb *api.CallbackQuery, cm *db.ChatMeta, um *db.UserMeta, act *actType) {
 	l := c.getLogEntry()
 	l.Trace("charade valid")
-	answer := tgbotapi.CallbackConfig{
+	answer := api.CallbackConfig{
 		CallbackQueryID: cb.ID,
 		Text:            i18n.Get("It's not your turn!", cm.Language),
 	}
@@ -256,7 +258,7 @@ func (c *Charades) processCallback(cb *tgbotapi.CallbackQuery, cm *db.ChatMeta, 
 			answer.Text = i18n.Get("The winner has 10 seconds advantage, try later", cm.Language)
 		}
 	}
-	c.s.GetBot().Request(answer)
+	_, _ = c.s.GetBot().Request(answer)
 }
 
 func (c *Charades) randomAct(userID int, cm *db.ChatMeta) (*actType, error) {
@@ -284,16 +286,16 @@ func (c *Charades) startCharade(um *db.UserMeta, cm *db.ChatMeta) error {
 	}
 
 	c.active[cm.ID] = act
-	msg := tgbotapi.NewMessage(cm.ID, fmt.Sprintf(i18n.Get("Please, *%s*, explain the word, without using synonyms and other forms in three minutes. Both the explainer and the winner get a _point_ on success!", cm.Language), bot.EscapeMarkdown(um.GetFullName())))
+	msg := api.NewMessage(cm.ID, fmt.Sprintf(i18n.Get("Please, *%s*, explain the word, without using synonyms and other forms in three minutes. Both the explainer and the winner get a _point_ on success!", cm.Language), bot.EscapeMarkdown(um.GetFullName())))
 	msg.ParseMode = "markdown"
-	kb := tgbotapi.NewInlineKeyboardMarkup(
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData(i18n.Get("💬 Show word", cm.Language), charadeShowWord),
-			tgbotapi.NewInlineKeyboardButtonData(i18n.Get("🔄 Replace word", cm.Language), charadeAnotherWord),
+	kb := api.NewInlineKeyboardMarkup(
+		api.NewInlineKeyboardRow(
+			api.NewInlineKeyboardButtonData(i18n.Get("💬 Show word", cm.Language), charadeShowWord),
+			api.NewInlineKeyboardButtonData(i18n.Get("🔄 Replace word", cm.Language), charadeAnotherWord),
 		),
 	)
 	msg.ReplyMarkup = kb
-	c.s.GetBot().Send(msg)
+	_, _ = c.s.GetBot().Send(msg)
 
 	return nil
 }
@@ -328,16 +330,16 @@ func (c *Charades) getLogEntry() *log.Entry {
 	return log.WithField("context", "charades")
 }
 
-func appendContinueKeyboard(msg *tgbotapi.MessageConfig, lang string) {
-	kb := tgbotapi.NewInlineKeyboardMarkup(
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData(i18n.Get("I want to continue", lang), charadeContinue),
+func appendContinueKeyboard(msg *api.MessageConfig, lang string) {
+	kb := api.NewInlineKeyboardMarkup(
+		api.NewInlineKeyboardRow(
+			api.NewInlineKeyboardButtonData(i18n.Get("I want to continue", lang), charadeContinue),
 		),
 	)
 	msg.ReplyMarkup = kb
 }
 
-func isValidCharadeCallback(query *tgbotapi.CallbackQuery) bool {
+func isValidCharadeCallback(query *api.CallbackQuery) bool {
 	var res bool
 	for _, data := range charadeCallbackData {
 		if data == query.Data {

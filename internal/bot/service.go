@@ -1,13 +1,14 @@
 package bot
 
 import (
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	api "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+
 	"github.com/iamwavecut/ngbot/internal/config"
 	"github.com/iamwavecut/ngbot/internal/db"
 )
 
 type ServiceBot interface {
-	GetBot() *tgbotapi.BotAPI
+	GetBot() *api.BotAPI
 }
 
 type ServiceDB interface {
@@ -25,12 +26,12 @@ type Service interface {
 }
 
 type service struct {
-	bot *tgbotapi.BotAPI
+	bot *api.BotAPI
 	db  db.Client
 	cfg *config.Config
 }
 
-func NewService(bot *tgbotapi.BotAPI, db db.Client, cfg *config.Config) *service {
+func NewService(bot *api.BotAPI, db db.Client, cfg *config.Config) *service {
 	return &service{
 		bot: bot,
 		db:  db,
@@ -38,7 +39,7 @@ func NewService(bot *tgbotapi.BotAPI, db db.Client, cfg *config.Config) *service
 	}
 }
 
-func (s *service) GetBot() *tgbotapi.BotAPI {
+func (s *service) GetBot() *api.BotAPI {
 	return s.bot
 }
 

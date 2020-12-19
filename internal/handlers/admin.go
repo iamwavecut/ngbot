@@ -1,14 +1,16 @@
 package handlers
 
 import (
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"strings"
+
+	api "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"github.com/pkg/errors"
+	log "github.com/sirupsen/logrus"
+
 	"github.com/iamwavecut/ngbot/internal/bot"
 	"github.com/iamwavecut/ngbot/internal/db"
 	"github.com/iamwavecut/ngbot/internal/i18n"
 	"github.com/iamwavecut/ngbot/internal/infra/reg"
-	"github.com/pkg/errors"
-	log "github.com/sirupsen/logrus"
-	"strings"
 )
 
 var allowedLanguages = []string{"en", "ru"}
@@ -24,7 +26,7 @@ func NewAdmin(s bot.Service) *Admin {
 	return a
 }
 
-func (a *Admin) Handle(u *tgbotapi.Update, cm *db.ChatMeta, um *db.UserMeta) (proceed bool, err error) {
+func (a *Admin) Handle(u *api.Update, cm *db.ChatMeta, um *db.UserMeta) (proceed bool, err error) {
 	if cm == nil {
 		return true, nil
 	}
@@ -40,8 +42,8 @@ func (a *Admin) Handle(u *tgbotapi.Update, cm *db.ChatMeta, um *db.UserMeta) (pr
 	}
 	m := u.Message
 
-	chatMember, err := b.GetChatMember(tgbotapi.GetChatMemberConfig{
-		ChatConfigWithUser: tgbotapi.ChatConfigWithUser{
+	chatMember, err := b.GetChatMember(api.GetChatMemberConfig{
+		ChatConfigWithUser: api.ChatConfigWithUser{
 			UserID: um.ID,
 			ChatID: cm.ID,
 		},
@@ -74,7 +76,7 @@ func (a *Admin) Handle(u *tgbotapi.Update, cm *db.ChatMeta, um *db.UserMeta) (pr
 				}
 			}
 			if !isAllowed {
-				b.Send(tgbotapi.NewMessage(
+				_, _ = b.Send(api.NewMessage(
 					cm.ID,
 					i18n.Get("You should use one of the following options", cm.Language)+": "+strings.Join(allowedLanguages, ", "),
 				))
@@ -88,7 +90,7 @@ func (a *Admin) Handle(u *tgbotapi.Update, cm *db.ChatMeta, um *db.UserMeta) (pr
 			}
 			reg.Get().RemoveCM(cm.ID)
 
-			b.Send(tgbotapi.NewMessage(
+			_, _ = b.Send(api.NewMessage(
 				cm.ID,
 				i18n.Get("Language set successfully", cm.Language),
 			))
