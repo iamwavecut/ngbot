@@ -21,6 +21,7 @@ func GetWorkDir(path ...string) string {
 	if err = os.MkdirAll(workDir, os.ModePerm); err != nil {
 		log.Fatalln(err)
 	}
+	log.Println(workDir)
 	return workDir
 }
 

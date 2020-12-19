@@ -2,19 +2,21 @@ package main
 
 import (
 	"context"
-	"github.com/iamwavecut/ngbot/internal/db/sqlite"
-	"github.com/iamwavecut/ngbot/internal/event"
-	"github.com/iamwavecut/ngbot/internal/handlers"
 	"os"
 	"time"
 
+	"github.com/iamwavecut/ngbot/internal/db/sqlite"
+	"github.com/iamwavecut/ngbot/internal/event"
+	"github.com/iamwavecut/ngbot/internal/handlers"
+
 	"github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"github.com/jinzhu/configor"
+	log "github.com/sirupsen/logrus"
+
 	"github.com/iamwavecut/ngbot/internal/bot"
 	"github.com/iamwavecut/ngbot/internal/config"
 	"github.com/iamwavecut/ngbot/internal/i18n"
 	"github.com/iamwavecut/ngbot/internal/infra"
-	"github.com/jinzhu/configor"
-	log "github.com/sirupsen/logrus"
 )
 
 func main() {

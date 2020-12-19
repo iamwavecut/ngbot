@@ -2,15 +2,18 @@ package handlers
 
 import (
 	"bufio"
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
-	"github.com/iamwavecut/ngbot/internal/bot"
-	"github.com/iamwavecut/ngbot/internal/db"
-	"github.com/pkg/errors"
-	log "github.com/sirupsen/logrus"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
+
+	api "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"github.com/pkg/errors"
+	log "github.com/sirupsen/logrus"
+
+	"github.com/iamwavecut/ngbot/internal/bot"
+	"github.com/iamwavecut/ngbot/internal/db"
 )
 
 type Punto struct {
@@ -31,7 +34,7 @@ func NewPunto(s bot.Service, path string) *Punto {
 	return p
 }
 
-func (p *Punto) Handle(u *tgbotapi.Update, cm *db.ChatMeta, um *db.UserMeta) (proceed bool, err error) {
+func (p *Punto) Handle(u *api.Update, cm *db.ChatMeta, um *db.UserMeta) (proceed bool, err error) {
 	if cm == nil || um == nil {
 		return true, nil
 	}
@@ -77,14 +80,14 @@ func (p *Punto) Handle(u *tgbotapi.Update, cm *db.ChatMeta, um *db.UserMeta) (pr
 			}
 		}
 	}
-	l.Trace("i = " + string(i))
+	l.Trace("i = " + strconv.Itoa(i))
 	if i > 2 {
 		pMessage, err := p.puntonize(m, cm)
 		if err != nil {
 			return true, nil // skip no mapping
 		}
 
-		nm := tgbotapi.NewMessage(cm.ID, `^: `+pMessage)
+		nm := api.NewMessage(cm.ID, `^: `+pMessage)
 		nm.ReplyToMessageID = m.MessageID
 		nm.ParseMode = "markdown"
 
@@ -98,7 +101,7 @@ func (p *Punto) Handle(u *tgbotapi.Update, cm *db.ChatMeta, um *db.UserMeta) (pr
 	return true, nil
 }
 
-func (p *Punto) puntonize(m *tgbotapi.Message, cm *db.ChatMeta) (string, error) {
+func (p *Punto) puntonize(m *api.Message, cm *db.ChatMeta) (string, error) {
 	ru := `!"№;%:?*()йцукенгшщзхъфывапролджэячсмитьбю.ЙЦУКЕНГШЩЗХЪФЫВАПРОЛДЖЭЯЧСМИТЬБЮ,Ёё`
 	en := `!@#$%^&*()qwertyuiop[]asdfghjkl;'zxcvbnm,./QWERTYUIOP{}ASDFGHJKL:"ZXCVBNM<>?~` + "`"
 	mappings := map[string][2][]rune{
