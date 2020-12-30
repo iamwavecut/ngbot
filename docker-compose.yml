@@ -1,0 +1,14 @@
+version: '3'
+
+services:
+  app:
+    build:
+      context: .
+    restart: on-failure
+    environment:
+      NGBOT_CONFIG: etc/config.yml
+      NGBOT_RESOURCES: resources
+    command:
+      /ngbot
+    ports:
+      - 9123:9123
