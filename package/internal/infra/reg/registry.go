@@ -1,8 +1,9 @@
 package reg
 
 import (
-	"github.com/iamwavecut/ngbot/internal/db"
 	"sync"
+
+	"github.com/iamwavecut/ngbot/internal/db"
 )
 
 type (

@@ -1,0 +1,9 @@
+# copy this to actual config.yml
+telegram_api_token: "" # API token is provided by @BotFather
+maintainer_id: 0 # tg user id, discover in https://t.me/my_id_bot
+default_language: "en" # en, ru
+enabled_handlers:
+  - admin
+  - gatekeeper
+#  - charades # deprecated
+#  - punto # undone

@@ -4,11 +4,10 @@ services:
   app:
     build:
       context: .
+    user: "${UID}:${GID}"
     restart: on-failure
-    environment:
-      NGBOT_CONFIG: etc/config.yml
-      NGBOT_RESOURCES: resources
-    command:
-      /ngbot
+    volumes:
+      - ./var/etc:/app/etc:delegated
+      - ./var/resources:/app/resources:delegated
     ports:
       - 9123:9123

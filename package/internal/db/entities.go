@@ -1,9 +1,10 @@
 package db
 
 import (
+	"strings"
+
 	api "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	log "github.com/sirupsen/logrus"
-	"strings"
 )
 
 type (

@@ -3,12 +3,12 @@ package rates
 import (
 	"context"
 	"encoding/json"
-	"github.com/davecgh/go-spew/spew"
-	log "github.com/sirupsen/logrus"
 	"io/ioutil"
 	"net/http"
 	"sync"
 	"time"
+
+	log "github.com/sirupsen/logrus"
 )
 
 const cookieName = "ASP.NET_SessionId"
@@ -108,7 +108,7 @@ func (r *rates) RunContext(ctx context.Context) {
 
 		rq.AddCookie(r.cookie)
 
-		spew.Dump(rq)
+		//spew.Dump(rq)
 
 		resp, err := client.Do(rq)
 		if err != nil {
@@ -116,6 +116,7 @@ func (r *rates) RunContext(ctx context.Context) {
 			cancel()
 			return false
 		}
+		cancel()
 		l.Trace("got get resp ", resp.Status)
 
 		body, err := ioutil.ReadAll(resp.Body)
@@ -139,7 +140,7 @@ func (r *rates) RunContext(ctx context.Context) {
 			r.checkDate = now
 		}
 
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		cancel()
 		return true
 	}

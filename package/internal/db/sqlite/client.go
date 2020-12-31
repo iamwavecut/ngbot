@@ -2,10 +2,11 @@ package sqlite
 
 import (
 	"database/sql"
+	"path/filepath"
+
 	"github.com/iamwavecut/ngbot/internal/db"
 	"github.com/iamwavecut/ngbot/internal/infra"
 	"github.com/pkg/errors"
-	"path/filepath"
 
 	"github.com/jmoiron/sqlx"
 	_ "github.com/mattn/go-sqlite3"
@@ -22,7 +23,7 @@ type sqliteClient struct {
 }
 
 func NewSQLiteClient(dbPath string) *sqliteClient {
-	dbx, err := sqlx.Open("sqlite3", filepath.Join(infra.GetWorkDir(), dbPath))
+	dbx, err := sqlx.Open("sqlite3", filepath.Join(infra.GetHomeDir(), dbPath))
 	if err != nil {
 		log.WithError(err).Fatalln("cant open db")
 	}

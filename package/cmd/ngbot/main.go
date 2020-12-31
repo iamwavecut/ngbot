@@ -5,11 +5,10 @@ import (
 	"os"
 	"time"
 
+	"github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/iamwavecut/ngbot/internal/db/sqlite"
 	"github.com/iamwavecut/ngbot/internal/event"
 	"github.com/iamwavecut/ngbot/internal/handlers"
-
-	"github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/jinzhu/configor"
 	log "github.com/sirupsen/logrus"
 
@@ -30,13 +29,11 @@ func main() {
 	log.SetOutput(os.Stdout)
 	log.SetLevel(log.TraceLevel)
 
-	configPath := os.Getenv("NGBOT_CONFIG")
-	if configPath == "" {
-		configPath = "etc/config.yml"
-	}
+	infra.InitConfig(os.Getenv("NGBOT_CONFIG"))
+	infra.InitResourcesPath(os.Getenv("NGBOT_RESOURCES_PATH"))
 
 	cfg := &config.Config{}
-	if err := configor.New(&configor.Config{ErrorOnUnmatchedKeys: true}).Load(cfg, configPath); err != nil {
+	if err := configor.New(&configor.Config{ErrorOnUnmatchedKeys: true}).Load(cfg, infra.GetConfig()); err != nil {
 		log.WithError(err).Fatalln("cant load config")
 	}
 	log.Traceln("loaded config")

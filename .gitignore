@@ -1,7 +1,7 @@
 etc/config.yml
 ./ngbot.*
 .idea/
-bin/*
+var/*
 
 .DS_Store
 .DS_Store?

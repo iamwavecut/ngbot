@@ -11,15 +11,14 @@ import (
 	"time"
 
 	api "github.com/go-telegram-bot-api/telegram-bot-api/v5"
-	"github.com/pborman/uuid"
-	"github.com/pkg/errors"
-	log "github.com/sirupsen/logrus"
-	"gopkg.in/yaml.v2"
-
 	"github.com/iamwavecut/ngbot/internal/bot"
 	"github.com/iamwavecut/ngbot/internal/db"
 	"github.com/iamwavecut/ngbot/internal/i18n"
 	"github.com/iamwavecut/ngbot/internal/infra"
+	"github.com/pborman/uuid"
+	"github.com/pkg/errors"
+	log "github.com/sirupsen/logrus"
+	"gopkg.in/yaml.v2"
 )
 
 const (

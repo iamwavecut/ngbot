@@ -1,16 +1,19 @@
 FROM golang:alpine as builder
+ENV CGO_ENABLED=1 GO111MODULE=on GOOS=linux GOARCH=amd64
 WORKDIR /build
 RUN apk add --update git bash gcc musl-dev tzdata ca-certificates build-base && rm -rf /var/cache/apk/*
 
-COPY go.mod go.sum ./
+COPY package/go.mod package/go.sum ./
 RUN go mod download 
 
-COPY . .
-RUN GO111MODULE=on GOOS=linux GOARCH=amd64 go build -ldflags="-w -s" -o ./ngbot ./cmd/ngbot && chmod +x ./ngbot
+COPY package ./package
+RUN cd package && \
+    go build -ldflags='-w -s -extldflags "-static"' -o /build/ngbot ./cmd/ngbot && \
+    chmod +x /build/ngbot
 
-FROM gcr.io/distroless/base
+FROM gcr.io/distroless/static
+WORKDIR /app
 COPY --from=builder /build/ngbot .
-COPY --from=builder /build/resources ./resources
-COPY --from=builder /build/etc ./etc
-
+COPY dist ./dist
+CMD ["./ngbot"]
 EXPOSE 9123
