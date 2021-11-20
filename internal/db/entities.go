@@ -10,6 +10,8 @@ import (
 	api "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
+
+	"github.com/iamwavecut/ngbot/internal/config"
 )
 
 type (
@@ -36,7 +38,9 @@ type (
 		Score  int   `db:"score"`
 	}
 
-	ChatSettings map[string]string
+	ChatSettings struct {
+		cs map[string]string
+	}
 )
 
 const (
@@ -48,11 +52,11 @@ const (
 	defaultRejectTimeout    = 10 * time.Minute
 )
 
-func (s ChatSettings) Value() (driver.Value, error) {
+func (s *ChatSettings) Value() (driver.Value, error) {
 	return json.Marshal(s)
 }
 
-func (s ChatSettings) Scan(v interface{}) error {
+func (s *ChatSettings) Scan(v interface{}) error {
 	if v == nil {
 		return nil
 	}
@@ -66,29 +70,56 @@ func (s ChatSettings) Scan(v interface{}) error {
 	}
 }
 
-func (s ChatSettings) Get(key string) (string, bool) {
-	str, ok := s[key]
+func (s *ChatSettings) Get(key string) (string, bool) {
+	if s == nil {
+		return "", false
+	}
+	if s.cs == nil {
+		s.cs = map[string]string{}
+	}
+	str, ok := s.cs[key]
 	return str, ok
 }
 
-func (s ChatSettings) Set(key, value string) {
-	s[key] = value
+func (s *ChatSettings) Set(key, value string) {
+	if s == nil {
+		return
+	}
+	if s.cs == nil {
+		s.cs = map[string]string{}
+	}
+	s.cs[key] = value
 }
 
 // GetLanguage Returns chat's set language
 func (cm *ChatMeta) GetLanguage() (string, error) {
-	language, ok := (*cm.Settings)[language]
+	if cm == nil {
+		return "", errors.New("nill chat")
+	}
+	if cm.Settings == nil {
+		lang := config.Get().DefaultLanguage
+		cm.Settings = &ChatSettings{cs: map[string]string{}}
+		cm.Settings.Set(language, lang)
+		return lang, nil
+	}
+	language, ok := cm.Settings.Get(language)
 	if !ok {
-		return "", errors.New("no language set")
+		return config.Get().DefaultLanguage, errors.New("no language set")
 	}
 	return language, nil
 }
 
 // GetChallengeTimeout Returns chat entry challenge timeout duration
 func (cm *ChatMeta) GetChallengeTimeout() time.Duration {
-	ctStr, ok := (*cm.Settings)[challengeTimeout]
+	if cm == nil {
+		return defaultChallengeTimeout
+	}
+	if cm.Settings == nil {
+		cm.Settings = &ChatSettings{cs: map[string]string{}}
+	}
+	ctStr, ok := cm.Settings.Get(challengeTimeout)
 	if !ok {
-		(*cm.Settings)[challengeTimeout] = defaultChallengeTimeout.String()
+		cm.Settings.Set(challengeTimeout, defaultChallengeTimeout.String())
 		return defaultChallengeTimeout
 	}
 	if ct, err := time.ParseDuration(ctStr); err == nil {
@@ -99,9 +130,15 @@ func (cm *ChatMeta) GetChallengeTimeout() time.Duration {
 
 // GetRejectTimeout Returns chat entry reject timeout duration
 func (cm *ChatMeta) GetRejectTimeout() time.Duration {
-	rtStr, ok := (*cm.Settings)[rejectTimeout]
+	if cm == nil {
+		return defaultRejectTimeout
+	}
+	if cm.Settings == nil {
+		cm.Settings = &ChatSettings{cs: map[string]string{}}
+	}
+	rtStr, ok := cm.Settings.Get(rejectTimeout)
 	if !ok {
-		(*cm.Settings)[rejectTimeout] = defaultRejectTimeout.String()
+		cm.Settings.Set(rejectTimeout, defaultRejectTimeout.String())
 		return defaultRejectTimeout
 	}
 	if rt, err := time.ParseDuration(rtStr); err == nil {
@@ -134,9 +171,11 @@ func MetaFromChat(chat *api.Chat, defaultLanguage string) *ChatMeta {
 		Title: getChatTitle(chat),
 		Type:  chat.Type,
 		Settings: &ChatSettings{
-			language:         defaultLanguage,
-			challengeTimeout: defaultChallengeTimeout.String(),
-			rejectTimeout:    defaultRejectTimeout.String(),
+			cs: map[string]string{
+				language:         defaultLanguage,
+				challengeTimeout: defaultChallengeTimeout.String(),
+				rejectTimeout:    defaultRejectTimeout.String(),
+			},
 		},
 	}
 }
