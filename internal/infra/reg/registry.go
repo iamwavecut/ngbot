@@ -1,14 +1,15 @@
 package reg
 
 import (
-	"github.com/iamwavecut/ngbot/internal/db"
 	"sync"
+
+	"github.com/iamwavecut/ngbot/internal/db"
 )
 
 type (
 	registry struct {
 		cmCache map[int64]*db.ChatMeta
-		umCache map[int]*db.UserMeta
+		umCache map[int64]*db.UserMeta
 	}
 )
 
@@ -19,7 +20,7 @@ func Get() *registry {
 	once.Do(func() {
 		instance = &registry{
 			cmCache: map[int64]*db.ChatMeta{},
-			umCache: map[int]*db.UserMeta{},
+			umCache: map[int64]*db.UserMeta{},
 		}
 	})
 	return instance
@@ -35,12 +36,12 @@ func (r *registry) RemoveCM(ID int64) {
 	delete(r.cmCache, ID)
 }
 
-func (r *registry) GetUM(ID int) *db.UserMeta {
+func (r *registry) GetUM(ID int64) *db.UserMeta {
 	return r.umCache[ID]
 }
 func (r *registry) SetUM(um *db.UserMeta) {
 	r.umCache[um.ID] = um
 }
-func (r *registry) RemoveUM(ID int) {
+func (r *registry) RemoveUM(ID int64) {
 	delete(r.umCache, ID)
 }

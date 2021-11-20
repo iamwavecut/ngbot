@@ -11,14 +11,21 @@ const (
 	checkExecInterval = 5 * time.Second
 )
 
-func checkExecLoop() {
-	exeFilename, _ := os.Executable()
-	log.Debug(exeFilename)
-	stat, _ := os.Stat(exeFilename)
-	exeModTime := stat.ModTime()
-	for exeModTime.Equal(stat.ModTime()) {
-		time.Sleep(checkExecInterval)
-		stat, _ = os.Stat(exeFilename)
-	}
-	log.Fatalf("binary modified. old=%s new=%s", exeModTime, stat.ModTime())
+func MonitorExecutable() chan struct{} {
+	ch := make(chan struct{})
+	go func() {
+		exeFilename, _ := os.Executable()
+		log.Debug(exeFilename)
+		stat, _ := os.Stat(exeFilename)
+		originalTime := stat.ModTime()
+		for {
+			time.Sleep(checkExecInterval)
+			stat, _ := os.Stat(exeFilename)
+			if !originalTime.Equal(stat.ModTime()) {
+				ch <- struct{}{}
+				return
+			}
+		}
+	}()
+	return ch
 }

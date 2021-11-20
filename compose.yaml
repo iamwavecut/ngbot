@@ -1,0 +1,21 @@
+version: "3.9"
+services:
+  ngbot:
+    build:
+      args:
+        - NG_TOKEN
+        - NG_LANG
+        - NG_HANDLERS
+        - NG_LOG_LEVEL
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - ${HOME}/.ngbot:/root/.ngbot:delegated
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+    
+    
+    
+  

@@ -15,14 +15,9 @@ type ServiceDB interface {
 	GetDB() db.Client
 }
 
-type ServiceConfig interface {
-	GetConfig() *config.Config
-}
-
 type Service interface {
 	ServiceBot
 	ServiceDB
-	ServiceConfig
 }
 
 type service struct {
@@ -31,11 +26,10 @@ type service struct {
 	cfg *config.Config
 }
 
-func NewService(bot *api.BotAPI, db db.Client, cfg *config.Config) *service {
+func NewService(bot *api.BotAPI, db db.Client) *service {
 	return &service{
 		bot: bot,
 		db:  db,
-		cfg: cfg,
 	}
 }
 
@@ -45,8 +39,4 @@ func (s *service) GetBot() *api.BotAPI {
 
 func (s *service) GetDB() db.Client {
 	return s.db
-}
-
-func (s *service) GetConfig() *config.Config {
-	return s.cfg
 }

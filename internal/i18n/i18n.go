@@ -2,8 +2,11 @@ package i18n
 
 import (
 	"fmt"
-	"io/ioutil"
 	"path/filepath"
+
+	"github.com/iamwavecut/ngbot/internal/config"
+	"github.com/iamwavecut/ngbot/internal/infra"
+	"github.com/iamwavecut/ngbot/resources"
 
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v2"
@@ -15,28 +18,18 @@ var state = struct {
 	resourcesPath   string
 	defaultLanguage string
 }{
-	translations: make(map[string]map[string]string),
-	loaded:       make(map[string]bool),
-}
-
-func SetResourcesPath(value string) {
-	state.resourcesPath = value
-}
-
-func SetDefaultLanguage(value string) {
-	state.defaultLanguage = value
-	log.Trace("default language ", value)
+	translations:    make(map[string]map[string]string),
+	loaded:          make(map[string]bool),
+	defaultLanguage: config.Get().DefaultLanguage,
+	resourcesPath:   infra.GetResourcesDir("i18n"),
 }
 
 func load(lang string) {
-	if state.defaultLanguage == lang {
+	if "en" == lang {
 		return
 	}
-	if state.resourcesPath == "" {
-		state.resourcesPath = "."
-	}
 
-	i18n, err := ioutil.ReadFile(filepath.Join(state.resourcesPath, fmt.Sprintf("%s.yml", lang)))
+	i18n, err := resources.FS.ReadFile(filepath.Join(state.resourcesPath, fmt.Sprintf("%s.yml", lang)))
 	if err != nil {
 		log.WithError(err).Errorln("cant load i18n")
 		return
@@ -51,17 +44,15 @@ func load(lang string) {
 }
 
 func Get(key, lang string) string {
-	if state.defaultLanguage == lang {
+	if "en" == lang {
 		return key
 	}
 	if !state.loaded[lang] {
 		load(lang)
 	}
-
 	if res, ok := state.translations[lang][key]; ok {
 		return res
 	}
 	log.Traceln(`no translation for key "%s"`, key)
-
 	return key
 }

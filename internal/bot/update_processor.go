@@ -4,6 +4,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/iamwavecut/ngbot/internal/config"
 	"github.com/iamwavecut/ngbot/internal/db"
 	"github.com/iamwavecut/ngbot/internal/db/sqlite"
 	"github.com/iamwavecut/ngbot/internal/event"
@@ -46,7 +47,7 @@ func RegisterUpdateHandler(title string, handler Handler) {
 
 func NewUpdateProcessor(s Service) *UpdateProcessor {
 	enabledHandlers := make([]Handler, 0)
-	for _, handlerName := range s.GetConfig().EnabledHandlers {
+	for _, handlerName := range config.Get().EnabledHandlers {
 		if _, ok := registeredHandlers[handlerName]; !ok || registeredHandlers[handlerName] == nil {
 			log.Warnf("no registered handler: %s", handlerName)
 			continue
@@ -60,7 +61,7 @@ func NewUpdateProcessor(s Service) *UpdateProcessor {
 	}
 }
 
-func (up *UpdateProcessor) Process(u *api.Update) (result error) {
+func (up *UpdateProcessor) Process(u *api.Update) error {
 	chat, err := GetChat(u)
 	if err != nil {
 		log.WithError(err).WithField("update", *u).Warn("cant get chat from update")
@@ -69,7 +70,7 @@ func (up *UpdateProcessor) Process(u *api.Update) (result error) {
 	if err != nil {
 		return errors.WithMessage(err, "cant get chat meta")
 	}
-	ucm := db.MetaFromChat(chat)
+	ucm := db.MetaFromChat(chat, config.Get().DefaultLanguage)
 	ucm.Language = cm.Language
 	if ucm != cm {
 		if uErr := up.s.GetDB().UpsertChatMeta(ucm); uErr != nil {
@@ -105,14 +106,14 @@ func (up *UpdateProcessor) Process(u *api.Update) (result error) {
 	for _, handler := range up.updateHandlers {
 		proceed, err := handler.Handle(u, cm, um)
 		if err != nil {
-			result = errors.WithMessage(err, "handling error")
+			return errors.WithMessage(err, "handling error")
 		}
 		if !proceed {
 			log.Trace("not proceeding")
-			return
+			break
 		}
 	}
-	return
+	return nil
 }
 
 func GetChat(u *api.Update) (*api.Chat, error) {
@@ -170,7 +171,7 @@ func GetUser(u *api.Update) (*api.User, error) {
 	return nil, errors.New("no user")
 }
 
-func (up *UpdateProcessor) GetUserMeta(userID int) (*db.UserMeta, error) {
+func (up *UpdateProcessor) GetUserMeta(userID int64) (*db.UserMeta, error) {
 	r := reg.Get()
 	if cm := r.GetUM(userID); cm != nil {
 		return cm, nil
@@ -186,62 +187,69 @@ func (up *UpdateProcessor) GetUserMeta(userID int) (*db.UserMeta, error) {
 	return um, nil
 }
 
-func (up *UpdateProcessor) HandleEvent() {
-
+func DeleteChatMessage(bot *api.BotAPI, chatID int64, messageID int) error {
+	if _, err := bot.Request(api.NewDeleteMessage(chatID, messageID)); err != nil {
+		return err
+	}
+	return nil
 }
 
-func KickUserFromChat(bot *api.BotAPI, userID int, chatID int64) error {
-	_, err := bot.Request(api.KickChatMemberConfig{
+func KickUserFromChat(bot *api.BotAPI, userID int64, chatID int64) error {
+	if _, err := bot.Request(api.KickChatMemberConfig{
 		ChatMemberConfig: api.ChatMemberConfig{
 			ChatID: chatID,
 			UserID: userID,
 		},
 		UntilDate: time.Now().Add(10 * time.Minute).Unix(),
-	})
-	if err != nil {
+	}); err != nil {
 		return errors.WithMessage(err, "cant kick")
 	}
-
 	return nil
 }
 
-func RestrictChatting(bot *api.BotAPI, userID int, chatID int64) error {
-	boolPtr := false
-	_, err := bot.Request(api.RestrictChatMemberConfig{
+func RestrictChatting(bot *api.BotAPI, userID int64, chatID int64) error {
+	if _, err := bot.Request(api.RestrictChatMemberConfig{
 		ChatMemberConfig: api.ChatMemberConfig{
 			ChatID: chatID,
 			UserID: userID,
 		},
-		UntilDate:             time.Now().Add(10 * time.Minute).Unix(),
-		CanSendMessages:       &boolPtr,
-		CanSendMediaMessages:  &boolPtr,
-		CanSendOtherMessages:  &boolPtr,
-		CanAddWebPagePreviews: &boolPtr,
-	})
-	if err != nil {
+		UntilDate: time.Now().Add(10 * time.Minute).Unix(),
+		Permissions: &api.ChatPermissions{
+			CanSendMessages:       false,
+			CanSendMediaMessages:  false,
+			CanSendPolls:          false,
+			CanSendOtherMessages:  false,
+			CanAddWebPagePreviews: false,
+			CanChangeInfo:         false,
+			CanInviteUsers:        false,
+			CanPinMessages:        false,
+		},
+	}); err != nil {
 		return errors.WithMessage(err, "cant restrict")
 	}
-
 	return nil
 }
 
-func UnrestrictChatting(bot *api.BotAPI, userID int, chatID int64) error {
-	boolPtr := true
-	_, err := bot.Request(api.RestrictChatMemberConfig{
+func UnrestrictChatting(bot *api.BotAPI, userID int64, chatID int64) error {
+	if _, err := bot.Request(api.RestrictChatMemberConfig{
 		ChatMemberConfig: api.ChatMemberConfig{
 			ChatID: chatID,
 			UserID: userID,
 		},
-		UntilDate:             time.Now().Add(10 * time.Minute).Unix(),
-		CanSendMessages:       &boolPtr,
-		CanSendMediaMessages:  &boolPtr,
-		CanSendOtherMessages:  &boolPtr,
-		CanAddWebPagePreviews: &boolPtr,
-	})
-	if err != nil {
+		UntilDate: time.Now().Add(10 * time.Minute).Unix(),
+		Permissions: &api.ChatPermissions{
+			CanSendMessages:       true,
+			CanSendMediaMessages:  true,
+			CanSendPolls:          true,
+			CanSendOtherMessages:  true,
+			CanAddWebPagePreviews: true,
+			CanChangeInfo:         true,
+			CanInviteUsers:        true,
+			CanPinMessages:        true,
+		},
+	}); err != nil {
 		return errors.WithMessage(err, "cant unrestrict")
 	}
-
 	return nil
 }
 
@@ -251,4 +259,31 @@ func EscapeMarkdown(md string) string {
 	md = strings.Replace(md, "[", "\\[", -1)
 	md = strings.Replace(md, "]", "\\]", -1)
 	return strings.Replace(md, "`", "\\`", -1)
+}
+
+func GetUpdatesChans(bot *api.BotAPI, config api.UpdateConfig) (api.UpdatesChannel, chan error) {
+	ch := make(chan api.Update, bot.Buffer)
+	chErr := make(chan error)
+
+	go func() {
+		defer close(ch)
+		defer close(chErr)
+		for {
+			updates, err := bot.GetUpdates(config)
+			if err != nil {
+				bot.StopReceivingUpdates()
+				chErr <- err
+				return
+			}
+
+			for _, update := range updates {
+				if update.UpdateID >= config.Offset {
+					config.Offset = update.UpdateID + 1
+					ch <- update
+				}
+			}
+		}
+	}()
+
+	return ch, chErr
 }

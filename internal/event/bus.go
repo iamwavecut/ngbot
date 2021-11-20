@@ -6,10 +6,10 @@ import (
 
 type (
 	bus struct {
-		q chan Queuable
+		q chan Queueable
 	}
 
-	Queuable interface {
+	Queueable interface {
 		Process()
 		IsProcessed() bool
 		Drop()
@@ -57,13 +57,13 @@ func (b *Base) Type() string {
 	return b.eventType
 }
 
-var Bus = &bus{q: make(chan Queuable, 100000)}
+var Bus = &bus{q: make(chan Queueable, 100000)}
 
-func (b *bus) Enqueue(event Queuable) {
+func (b *bus) Enqueue(event Queueable) {
 	go func() { b.q <- event }()
 }
 
-func (b *bus) pop() Queuable {
+func (b *bus) pop() Queueable {
 	select {
 	case q := <-b.q:
 		return q

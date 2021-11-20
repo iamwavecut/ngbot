@@ -26,14 +26,5 @@ func GetWorkDir(path ...string) string {
 }
 
 func GetResourcesDir(path ...string) string {
-	var parts []string
-	if envPath := os.Getenv("NGBOT_RESOURCES_PATH"); envPath != "" {
-		parts = append(parts, envPath)
-	} else {
-		if wd, err := os.Getwd(); err == nil {
-			parts = append(parts, wd, "resources")
-		}
-	}
-	parts = append(parts, path...)
-	return filepath.Join(parts...)
+	return filepath.Join(path...)
 }
