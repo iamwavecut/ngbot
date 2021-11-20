@@ -1,6 +1,23 @@
 # :shield: Telegram Chat Gatekeeper bot
-> Get rid of noisy spam with ease
+> Get rid of the unwanted spam joins out of the box
 
+![Demo](https://user-images.githubusercontent.com/239034/142725561-5fd80514-dae9-4d29-aa19-a7d2ad41e362.png)
+
+Basically, that what happens, if the bot is set up in your chat:
+1. Triggered on the events, which introduces new chat members (invite, join, etc).
+2. Restrict newcomer to be read-only.
+3. Set up a challenge for the newcomer, which is a simple task as shown on the image above, but yet, unsolvable for the vast majority of automated spam robots.
+4. If the newcomer succeeds in choosing the right answer - restrictions gets fully lifted, challenge ends.
+5. Otherwise - newcomer gets banned for 10 minutes (There is a "false-positive" chance, rememeber? Most robots aint coming back, anyway).
+6. If the newcomer struggles to answer in a set period of time (defaults to 3 minutes) - challenge automatically fails the same way, as in p.5.
+7. After the challenge bot cleans up all related messages, only leaving join notification for the newcomers, that made it. There are no traces of unsuccesful joins left, and that is awesome.
+
+## Troubleshooting
+Don't hesitate to contact me
+
+[![telegram](https://user-images.githubusercontent.com/239034/142726254-d3378dee-5b73-41b0-858d-b2a6e85dc735.png)
+](https://t.me/WaveCut) [![linkedin](https://user-images.githubusercontent.com/239034/142726236-86c526e0-8fc3-4570-bd2d-fc7723d5dc09.png)
+](https://linkedin.com/in/wavecut)
 
 ## Installation
 
@@ -81,7 +98,9 @@ CGO_ENABLE=1 go run .
 
 ## TODO
 
+- [ ] Improve thread safety.
 - [ ] Individual chat's settings (behaviours, timeouts, custom welcome messages, etc).
 - [ ] Interactive  handy chat settings UI in private.
-- [ ] Web UI for chat owners.
+- [ ] Dynamic plugin system.
+- [ ] Handy web UI for chat owners.
 > Feel free to add your requests in issues.
