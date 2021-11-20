@@ -72,16 +72,15 @@ func NewSQLiteClient(dbPath string) *sqliteClient {
 					}
 					os.Exit(1)
 				}
-				n, err := res.RowsAffected()
-				if err != nil {
+				if _, err = res.RowsAffected(); err != nil {
 					log.WithError(err).Errorln("cant get affected rows, postprocess aborted (CRITICAL)")
 					if err := tx.Rollback(); err != nil {
 						log.WithError(err).Fatalln("cant rollback")
 					}
 					os.Exit(1)
 				}
-				log.Infof("chats updated: %d", n)
 			}
+			log.Infof("chats updated: %d", len(chats))
 		},
 	}
 
