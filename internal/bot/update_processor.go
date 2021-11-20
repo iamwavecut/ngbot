@@ -278,7 +278,6 @@ func GetUpdatesChans(bot *api.BotAPI, config api.UpdateConfig) (api.UpdatesChann
 		for {
 			updates, err := bot.GetUpdates(config)
 			if err != nil {
-				bot.StopReceivingUpdates()
 				chErr <- err
 				return
 			}
