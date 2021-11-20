@@ -66,36 +66,43 @@ func (up *UpdateProcessor) Process(u *api.Update) error {
 	if err != nil {
 		log.WithError(err).WithField("update", *u).Warn("cant get chat from update")
 	}
-	cm, err := up.GetChatMeta(chat.ID)
-	if err != nil {
-		return errors.WithMessage(err, "cant get chat meta")
-	}
-	ucm := db.MetaFromChat(chat, config.Get().DefaultLanguage)
-	ucm.Language = cm.Language
-	if ucm != cm {
-		if uErr := up.s.GetDB().UpsertChatMeta(ucm); uErr != nil {
-			log.WithError(uErr).Warn("cant update chat meta")
+	var cm *db.ChatMeta
+	if chat != nil {
+		ucm := db.MetaFromChat(chat, config.Get().DefaultLanguage)
+		cm, err := up.GetChatMeta(chat.ID)
+		if err != nil {
+			log.WithError(err).WithField("update", *u).Warn("cant get chat meta")
+			cm = ucm
 		}
-		cm = ucm
+		if ucm.Title != cm.Title || ucm.Type != cm.Type {
+			cm.Title = ucm.Title
+			cm.Type = ucm.Type
+			if uErr := up.s.GetDB().UpsertChatMeta(cm); uErr != nil {
+				log.WithError(uErr).Warn("cant update chat meta")
+			}
+		}
 	}
 
 	user, err := GetUser(u)
-	uum := db.MetaFromUser(user)
 	if err != nil {
 		log.WithError(err).WithField("update", *u).Warn("cant get user from update")
 	}
-	um, err := up.GetUserMeta(user.ID)
-	if err != nil {
-		if errors.Cause(err) != sqlite.ErrNoUser {
-			return errors.WithMessage(err, "cant get user meta")
+	var um *db.UserMeta
+	if user != nil {
+		uum := db.MetaFromUser(user)
+		um, err := up.GetUserMeta(user.ID)
+		if err != nil {
+			if errors.Cause(err) != sqlite.ErrNoUser {
+				return errors.WithMessage(err, "cant get user meta")
+			}
+			um = uum
 		}
-		um = uum
-	}
-	if uum != um {
-		if uErr := up.s.GetDB().UpsertUserMeta(uum); uErr != nil {
-			log.WithError(uErr).Warn("cant update user meta")
+		if uum != um {
+			if uErr := up.s.GetDB().UpsertUserMeta(uum); uErr != nil {
+				log.WithError(uErr).Warn("cant update user meta")
+			}
+			um = uum
 		}
-		um = uum
 	}
 
 	event.Bus.Enqueue(&UpdateEvent{
