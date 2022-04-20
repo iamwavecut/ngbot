@@ -150,7 +150,7 @@ func (g *Gatekeeper) handleChallenge(u *api.Update, cm *db.ChatMeta, um *db.User
 	switch {
 	case isAdmin, joiner.successUUID == challengeUUID:
 		entry.Debug("successful challenge")
-		if _, err := b.Request(api.NewCallback(cq.ID, i18n.Get("Welcome, bro!", cm.Language))); err != nil {
+		if _, err := b.Request(api.NewCallback(cq.ID, i18n.Get("Welcome, friend!", cm.Language))); err != nil {
 			entry.WithError(err).Errorln("cant answer callback query")
 		}
 
