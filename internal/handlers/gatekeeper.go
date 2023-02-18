@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/iamwavecut/tool"
+
 	"github.com/iamwavecut/ngbot/resources"
 
 	api "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -43,6 +45,14 @@ type Gatekeeper struct {
 	restricted       map[int64]map[int]map[int64]struct{}
 
 	Variants map[string]map[string]string `yaml:"variants"`
+}
+
+var challengeTitleKeys = []string{
+	"Hello, %s! We want to be sure you're not a bot, so please select %s. If not, we might have to say goodbye. Thanks for understanding!",
+	"Hey %s! To keep this group human-only, could you please choose %s? If you don't, we'll have to say bye-bye. Thanks for your cooperation!",
+	"Greetings, %s! We're just checking to make sure you're not a robot. Can you please pick %s? If not, we'll have to let you go. Thanks for your cooperation!",
+	"Hi there, %s! We like having humans in this group, so please select %s to prove you're not a bot. If you can't, we might have to remove you. Thanks in advance!",
+	"Welcome, %s! We need your help to keep this group human-only. Could you please select %s? If you can't, we might have to remove you. Thanks for your understanding!",
 }
 
 func NewGatekeeper(s bot.Service) *Gatekeeper {
@@ -246,7 +256,7 @@ func (g *Gatekeeper) handleNewChatMembers(u *api.Update, cm *db.ChatMeta, _ *db.
 		cu := &challengedUser{
 			user:          jum,
 			successFunc:   cancel,
-			name:          bot.EscapeMarkdown(jum.GetFullName()),
+			name:          api.EscapeText("markdown", jum.GetFullName()),
 			joinMessageID: u.Message.MessageID,
 			successUUID:   uuid.New(),
 		}
@@ -307,8 +317,9 @@ func (g *Gatekeeper) handleNewChatMembers(u *api.Update, cm *db.ChatMeta, _ *db.
 			buttons = append(buttons, api.NewInlineKeyboardButtonData(v[0], result))
 		}
 
-		nameString := fmt.Sprintf("[%s](tg://user?id=%d) ", cu.user.GetFullName(), cu.user.ID)
-		msgText := fmt.Sprintf(i18n.Get("Hi there, %s! Please, pick %s to prove that you're human being (or be banned otherwise)", cm.Language), nameString, correctVariant[1])
+		randomKey := challengeTitleKeys[tool.RandInt(0, len(challengeTitleKeys)-1)]
+		nameString := fmt.Sprintf("[%s](tg://user?id=%d) ", api.EscapeText("markdown", cu.user.GetFullName()), cu.user.ID)
+		msgText := fmt.Sprintf(i18n.Get(randomKey, cm.Language), nameString, correctVariant[1])
 		msg := api.NewMessage(cm.ID, msgText)
 		msg.ParseMode = "markdown"
 		msg.DisableNotification = true
@@ -437,7 +448,7 @@ func (g *Gatekeeper) handleFirstMessage(u *api.Update, cm *db.ChatMeta, um *db.U
 	entry.Debug("first message")
 	g.restricted[cm.ID][u.Message.MessageThreadID][um.ID] = struct{}{}
 
-	nameString := fmt.Sprintf("[%s](tg://user?id=%d) ", um.GetFullName(), um.ID)
+	nameString := fmt.Sprintf("[%s](tg://user?id=%d) ", api.EscapeText("markdown", um.GetFullName()), um.ID)
 	msgText := fmt.Sprintf(i18n.Get("Hi %s! Your first message should be text-only and without any links or media. Just a heads up - if you don't follow this rule, you'll get banned from the group. Cheers!", cm.Language), nameString)
 	msg := api.NewMessage(cm.ID, msgText)
 	msg.ParseMode = "markdown"
