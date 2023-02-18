@@ -256,7 +256,7 @@ func (g *Gatekeeper) handleNewChatMembers(u *api.Update, cm *db.ChatMeta, _ *db.
 		cu := &challengedUser{
 			user:          jum,
 			successFunc:   cancel,
-			name:          api.EscapeText("markdown", jum.GetFullName()),
+			name:          api.EscapeText(api.ModeMarkdown, jum.GetFullName()),
 			joinMessageID: u.Message.MessageID,
 			successUUID:   uuid.New(),
 		}
@@ -318,10 +318,10 @@ func (g *Gatekeeper) handleNewChatMembers(u *api.Update, cm *db.ChatMeta, _ *db.
 		}
 
 		randomKey := challengeTitleKeys[tool.RandInt(0, len(challengeTitleKeys)-1)]
-		nameString := fmt.Sprintf("[%s](tg://user?id=%d) ", api.EscapeText("markdown", cu.user.GetFullName()), cu.user.ID)
+		nameString := fmt.Sprintf("[%s](tg://user?id=%d) ", api.EscapeText(api.ModeMarkdown, cu.user.GetFullName()), cu.user.ID)
 		msgText := fmt.Sprintf(i18n.Get(randomKey, cm.Language), nameString, correctVariant[1])
 		msg := api.NewMessage(cm.ID, msgText)
-		msg.ParseMode = "markdown"
+		msg.ParseMode = api.ModeMarkdown
 		msg.DisableNotification = true
 
 		kb := api.NewInlineKeyboardMarkup(
@@ -448,10 +448,10 @@ func (g *Gatekeeper) handleFirstMessage(u *api.Update, cm *db.ChatMeta, um *db.U
 	entry.Debug("first message")
 	g.restricted[cm.ID][u.Message.MessageThreadID][um.ID] = struct{}{}
 
-	nameString := fmt.Sprintf("[%s](tg://user?id=%d) ", api.EscapeText("markdown", um.GetFullName()), um.ID)
+	nameString := fmt.Sprintf("[%s](tg://user?id=%d) ", api.EscapeText(api.ModeMarkdown, um.GetFullName()), um.ID)
 	msgText := fmt.Sprintf(i18n.Get("Hi %s! Your first message should be text-only and without any links or media. Just a heads up - if you don't follow this rule, you'll get banned from the group. Cheers!", cm.Language), nameString)
 	msg := api.NewMessage(cm.ID, msgText)
-	msg.ParseMode = "markdown"
+	msg.ParseMode = api.ModeMarkdown
 	msg.DisableNotification = true
 	reply, err := b.Send(msg)
 	if err != nil {

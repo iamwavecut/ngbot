@@ -1,7 +1,6 @@
 package bot
 
 import (
-	"strings"
 	"time"
 
 	"github.com/iamwavecut/ngbot/internal/config"
@@ -207,7 +206,8 @@ func KickUserFromChat(bot *api.BotAPI, userID int64, chatID int64) error {
 			ChatID: chatID,
 			UserID: userID,
 		},
-		UntilDate: time.Now().Add(10 * time.Minute).Unix(),
+		UntilDate:      time.Now().Add(10 * time.Minute).Unix(),
+		RevokeMessages: true,
 	}); err != nil {
 		return errors.WithMessage(err, "cant kick")
 	}
@@ -230,6 +230,7 @@ func RestrictChatting(bot *api.BotAPI, userID int64, chatID int64) error {
 			CanChangeInfo:         false,
 			CanInviteUsers:        false,
 			CanPinMessages:        false,
+			CanManageTopics:       false,
 		},
 	}); err != nil {
 		return errors.WithMessage(err, "cant restrict")
@@ -253,19 +254,12 @@ func UnrestrictChatting(bot *api.BotAPI, userID int64, chatID int64) error {
 			CanChangeInfo:         true,
 			CanInviteUsers:        true,
 			CanPinMessages:        true,
+			CanManageTopics:       true,
 		},
 	}); err != nil {
 		return errors.WithMessage(err, "cant unrestrict")
 	}
 	return nil
-}
-
-func EscapeMarkdown(md string) string {
-	md = strings.Replace(md, "_", "\\_", -1)
-	md = strings.Replace(md, "*", "\\*", -1)
-	md = strings.Replace(md, "[", "\\[", -1)
-	md = strings.Replace(md, "]", "\\]", -1)
-	return strings.Replace(md, "`", "\\`", -1)
 }
 
 func GetUpdatesChans(bot *api.BotAPI, config api.UpdateConfig) (api.UpdatesChannel, chan error) {
