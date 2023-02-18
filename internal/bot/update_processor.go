@@ -69,7 +69,7 @@ func (up *UpdateProcessor) Process(u *api.Update) error {
 	var cm *db.ChatMeta
 	if chat != nil {
 		ucm := db.MetaFromChat(chat, config.Get().DefaultLanguage)
-		cm, err := up.GetChatMeta(chat.ID)
+		cm, err = up.GetChatMeta(chat.ID)
 		if err != nil {
 			log.WithError(err).WithField("update", *u).Warn("cant get chat meta")
 			cm = ucm
@@ -90,7 +90,7 @@ func (up *UpdateProcessor) Process(u *api.Update) error {
 	var um *db.UserMeta
 	if user != nil {
 		uum := db.MetaFromUser(user)
-		um, err := up.GetUserMeta(user.ID)
+		um, err = up.GetUserMeta(user.ID)
 		if err != nil {
 			if errors.Cause(err) != sqlite.ErrNoUser {
 				return errors.WithMessage(err, "cant get user meta")

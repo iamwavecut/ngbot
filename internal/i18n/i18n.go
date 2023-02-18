@@ -2,7 +2,6 @@ package i18n
 
 import (
 	"fmt"
-	"path/filepath"
 
 	"github.com/iamwavecut/ngbot/internal/config"
 	"github.com/iamwavecut/ngbot/internal/infra"
@@ -21,7 +20,7 @@ var state = struct {
 	translations:    make(map[string]map[string]string),
 	loaded:          make(map[string]bool),
 	defaultLanguage: config.Get().DefaultLanguage,
-	resourcesPath:   infra.GetResourcesDir("i18n"),
+	resourcesPath:   infra.GetResourcesPath("i18n"),
 }
 
 func load(lang string) {
@@ -29,7 +28,7 @@ func load(lang string) {
 		return
 	}
 
-	i18n, err := resources.FS.ReadFile(filepath.Join(state.resourcesPath, fmt.Sprintf("%s.yml", lang)))
+	i18n, err := resources.FS.ReadFile(state.resourcesPath + "/" + fmt.Sprintf("%s.yml", lang))
 	if err != nil {
 		log.WithError(err).Errorln("cant load i18n")
 		return

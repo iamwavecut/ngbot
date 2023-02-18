@@ -45,7 +45,7 @@ func main() {
 
 		bot.RegisterUpdateHandler("admin", handlers.NewAdmin(service))
 		bot.RegisterUpdateHandler("gatekeeper", handlers.NewGatekeeper(service))
-		bot.RegisterUpdateHandler("punto", handlers.NewPunto(service, infra.GetResourcesDir("punto")))
+		bot.RegisterUpdateHandler("punto", handlers.NewPunto(service, infra.GetResourcesPath("punto")))
 
 		updateConfig := api.NewUpdate(0)
 		updateConfig.Timeout = 60

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -40,6 +39,8 @@ type Gatekeeper struct {
 	s                bot.Service
 	joiners          map[int64]map[int64]*challengedUser
 	welcomeMessageID int
+	newcomers        map[int64]map[int]map[int64]struct{}
+	restricted       map[int64]map[int]map[int64]struct{}
 
 	Variants map[string]map[string]string `yaml:"variants"`
 }
@@ -48,15 +49,17 @@ func NewGatekeeper(s bot.Service) *Gatekeeper {
 	g := &Gatekeeper{
 		s: s,
 
-		joiners:  map[int64]map[int64]*challengedUser{},
-		Variants: map[string]map[string]string{},
+		joiners:    map[int64]map[int64]*challengedUser{},
+		Variants:   map[string]map[string]string{},
+		newcomers:  map[int64]map[int]map[int64]struct{}{},
+		restricted: map[int64]map[int]map[int64]struct{}{},
 	}
 
 	entry := g.getLogEntry()
 
 	for _, lang := range [2]string{"en", "ru"} {
 		entry.Traceln("loading localized challenges")
-		challengesData, err := resources.FS.ReadFile(filepath.Join(infra.GetResourcesDir("gatekeeper", "challenges"), lang+".yml"))
+		challengesData, err := resources.FS.ReadFile(infra.GetResourcesPath("gatekeeper", "challenges", lang+".yml"))
 		if err != nil {
 			entry.WithError(err).Errorln("cant load challenges file")
 		}
@@ -79,15 +82,25 @@ func (g *Gatekeeper) Handle(u *api.Update, cm *db.ChatMeta, um *db.UserMeta) (bo
 	b := g.s.GetBot()
 	m := u.Message
 
+	var isFirstMessage bool
+	if m != nil && g.newcomers[cm.ID] != nil && g.newcomers[cm.ID][m.MessageThreadID] != nil {
+		_, isFirstMessage = g.newcomers[cm.ID][m.MessageThreadID][um.ID]
+		if !isFirstMessage && g.restricted[cm.ID] != nil && g.restricted[cm.ID][m.MessageThreadID] != nil {
+			_, isFirstMessage = g.restricted[cm.ID][m.MessageThreadID][um.ID]
+		}
+	}
+
 	switch {
 	case u.CallbackQuery != nil:
 		entry.Traceln("handle challenge")
 		return false, g.handleChallenge(u, cm, um)
-	case m != nil && m.NewChatMembers != nil:
+	case m != nil && (m.NewChatMembers != nil || m.Text == "!test"):
 		entry.Traceln("handle new chat members")
 		return true, g.handleNewChatMembers(u, cm, um)
 	case m != nil && m.From.ID == b.Self.ID && m.LeftChatMember != nil:
 		return true, bot.DeleteChatMessage(b, cm.ID, m.MessageID)
+	case isFirstMessage:
+		return true, g.handleFirstMessage(u, cm, um)
 	}
 	return true, nil
 }
@@ -161,6 +174,21 @@ func (g *Gatekeeper) handleChallenge(u *api.Update, cm *db.ChatMeta, um *db.User
 
 		if joiner.successFunc != nil {
 			joiner.successFunc()
+		}
+		if _, ok := g.newcomers[cm.ID]; !ok {
+			g.newcomers[cm.ID] = map[int]map[int64]struct{}{}
+		}
+		if _, ok := g.newcomers[cm.ID][cq.Message.MessageThreadID]; !ok {
+			g.newcomers[cm.ID][cq.Message.MessageThreadID] = map[int64]struct{}{}
+		}
+		if _, ok := g.newcomers[cm.ID][cq.Message.MessageThreadID][joiner.user.ID]; !ok {
+			g.newcomers[cm.ID][cq.Message.MessageThreadID][joiner.user.ID] = struct{}{}
+		}
+		if _, ok := g.restricted[cm.ID]; !ok {
+			g.restricted[cm.ID] = map[int]map[int64]struct{}{}
+		}
+		if _, ok := g.restricted[cm.ID][u.Message.MessageThreadID]; !ok {
+			g.restricted[cm.ID][u.Message.MessageThreadID] = map[int64]struct{}{}
 		}
 
 	case joiner.successUUID != challengeUUID:
@@ -295,6 +323,131 @@ func (g *Gatekeeper) handleNewChatMembers(u *api.Update, cm *db.ChatMeta, _ *db.
 		}
 		cu.challengeMessageID = sentMsg.MessageID
 	}
+
+	return nil
+}
+
+func (g *Gatekeeper) handleFirstMessage(u *api.Update, cm *db.ChatMeta, um *db.UserMeta) error {
+	b := g.s.GetBot()
+	entry := g.getLogEntry()
+	if u.FromChat() == nil {
+		return nil
+	}
+	if u.SentFrom() == nil {
+		return nil
+	}
+	m := u.Message
+	if m == nil {
+		return nil
+	}
+
+	// TODO: implement static ban list as a separate module
+	if m.Text != "" {
+		for _, v := range []string{"Оператор чата", "Нужны сотрудников", "Без опыта роботы", "@dasha234di", "@marinetthr", "На момент стажировке"} {
+			if strings.Contains(m.Text, v) {
+				if err := bot.KickUserFromChat(b, m.From.ID, m.Chat.ID); err != nil {
+					return errors.WithMessage(err, "cant kick")
+				}
+				return nil
+			}
+		}
+	}
+
+	toRestrict := true
+	switch {
+	// case m.ForwardFrom != nil:
+	// 	entry = entry.WithField("message_type", "forward")
+	// case m.ForwardFromChat != nil:
+	// 	entry = entry.WithField("message_type", "forward_chat")
+	case m.ViaBot != nil:
+		entry = entry.WithField("message_type", "via_bot")
+	case m.Audio != nil:
+		entry = entry.WithField("message_type", "audio")
+	case m.Document != nil:
+		entry = entry.WithField("message_type", "document")
+	case m.Photo != nil:
+		entry = entry.WithField("message_type", "photo")
+	case m.Video != nil:
+		entry = entry.WithField("message_type", "video")
+	case m.VideoNote != nil:
+		entry = entry.WithField("message_type", "video_note")
+	case m.Voice != nil:
+		entry = entry.WithField("message_type", "voice")
+	default:
+		toRestrict = false
+
+		// if len(m.Entities) == 0 {
+		// 	toRestrict = false
+		// 	break
+		// }
+		// for _, e := range m.Entities {
+		// 	switch e.Type {
+		// 	case "url", "text_link":
+		// 		entry = entry.WithField("message_type", "with link")
+		// 	case "email", "phone_number", "mention", "text_mention":
+		// 		entry = entry.WithField("message_type", "with mention")
+		// 	}
+		// }
+	}
+
+	if !toRestrict {
+		delete(g.restricted[cm.ID][u.Message.MessageThreadID], um.ID)
+		delete(g.newcomers[cm.ID][u.Message.MessageThreadID], um.ID)
+		return nil
+	}
+	entry.Debug("restricting user")
+	if err := bot.DeleteChatMessage(b, cm.ID, m.MessageID); err != nil {
+		entry.WithError(err).Error("cant delete first message")
+	}
+	if _, err := b.Request(api.RestrictChatMemberConfig{
+		ChatMemberConfig: api.ChatMemberConfig{
+			ChatID: cm.ID,
+			UserID: um.ID,
+		},
+		UntilDate: time.Now().Add(1 * time.Minute).Unix(),
+		Permissions: &api.ChatPermissions{
+			CanSendMessages:       true,
+			CanSendMediaMessages:  false,
+			CanSendPolls:          false,
+			CanSendOtherMessages:  false,
+			CanAddWebPagePreviews: false,
+			CanChangeInfo:         false,
+			CanInviteUsers:        false,
+			CanPinMessages:        false,
+		},
+	}); err != nil {
+		return errors.WithMessage(err, "cant restrict")
+	}
+
+	_, secondViolation := g.restricted[cm.ID][u.Message.MessageThreadID][um.ID]
+	if secondViolation {
+		entry.Debug("kicking user after second violation")
+		err := bot.KickUserFromChat(b, um.ID, cm.ID)
+		if err != nil {
+			return errors.WithMessage(err, "cant kick")
+		}
+		delete(g.restricted[cm.ID][u.Message.MessageThreadID], um.ID)
+		delete(g.newcomers[cm.ID][u.Message.MessageThreadID], um.ID)
+		return nil
+	}
+	entry.Debug("first message")
+	g.restricted[cm.ID][u.Message.MessageThreadID][um.ID] = struct{}{}
+
+	nameString := fmt.Sprintf("[%s](tg://user?id=%d) ", um.GetFullName(), um.ID)
+	msgText := fmt.Sprintf(i18n.Get("Hi %s! Your first message should be text-only and without any links or media. Just a heads up - if you don't follow this rule, you'll get banned from the group. Cheers!", cm.Language), nameString)
+	msg := api.NewMessage(cm.ID, msgText)
+	msg.ParseMode = "markdown"
+	msg.DisableNotification = true
+	reply, err := b.Send(msg)
+	if err != nil {
+		return errors.WithMessage(err, "cant send")
+	}
+	go func() {
+		time.Sleep(30 * time.Second)
+		if err := bot.DeleteChatMessage(b, cm.ID, reply.MessageID); err != nil {
+			entry.WithError(err).Error("cant delete message")
+		}
+	}()
 
 	return nil
 }

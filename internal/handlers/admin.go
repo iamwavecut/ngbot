@@ -64,39 +64,43 @@ func (a *Admin) Handle(u *api.Update, cm *db.ChatMeta, um *db.UserMeta) (proceed
 
 	switch m.Command() {
 	case "lang":
-		if isAdmin {
-			log.Trace("admin")
+		if !isAdmin {
+			break
+		}
 
-			argument := m.CommandArguments()
-			isAllowed := false
-			for _, allowedLanguage := range allowedLanguages {
-				if allowedLanguage == argument {
-					isAllowed = true
-					break
-				}
+		argument := m.CommandArguments()
+		isAllowed := false
+		for _, allowedLanguage := range allowedLanguages {
+			if allowedLanguage == argument {
+				isAllowed = true
+				break
 			}
-			if !isAllowed {
-				_, _ = b.Send(api.NewMessage(
-					cm.ID,
-					i18n.Get("You should use one of the following options", cm.Language)+": "+strings.Join(allowedLanguages, ", "),
-				))
-				return false, nil
-			}
-
-			cm.Language = argument
-			err = a.s.GetDB().UpsertChatMeta(cm)
-			if err != nil {
-				return false, errors.WithMessage(err, "cant update chat language")
-			}
-			reg.Get().RemoveCM(cm.ID)
-
+		}
+		if !isAllowed {
 			_, _ = b.Send(api.NewMessage(
 				cm.ID,
-				i18n.Get("Language set successfully", cm.Language),
+				i18n.Get("You should use one of the following options", cm.Language)+": "+strings.Join(allowedLanguages, ", "),
 			))
+			return false, nil
 		}
+
+		cm.Language = argument
+		err = a.s.GetDB().UpsertChatMeta(cm)
+		if err != nil {
+			return false, errors.WithMessage(err, "cant update chat language")
+		}
+		reg.Get().RemoveCM(cm.ID)
+
+		_, _ = b.Send(api.NewMessage(
+			cm.ID,
+			i18n.Get("Language set successfully", cm.Language),
+		))
+
 		log.Trace("not admin")
 		return false, nil
+
+	case "start":
+
 	}
 	log.Trace("unknown command")
 	return true, nil

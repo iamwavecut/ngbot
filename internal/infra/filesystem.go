@@ -3,6 +3,7 @@ package infra
 import (
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/mitchellh/go-homedir"
 	log "github.com/sirupsen/logrus"
@@ -25,6 +26,6 @@ func GetWorkDir(path ...string) string {
 	return workDir
 }
 
-func GetResourcesDir(path ...string) string {
-	return filepath.Join(path...)
+func GetResourcesPath(path ...string) string {
+	return strings.Join(path, "/")
 }
