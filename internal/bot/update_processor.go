@@ -202,7 +202,7 @@ func DeleteChatMessage(bot *api.BotAPI, chatID int64, messageID int) error {
 }
 
 func KickUserFromChat(bot *api.BotAPI, userID int64, chatID int64) error {
-	if _, err := bot.Request(api.KickChatMemberConfig{
+	if _, err := bot.Request(api.BanChatMemberConfig{
 		ChatMemberConfig: api.ChatMemberConfig{
 			ChatID: chatID,
 			UserID: userID,

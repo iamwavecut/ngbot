@@ -187,8 +187,8 @@ func (g *Gatekeeper) handleChallenge(u *api.Update, cm *db.ChatMeta, um *db.User
 		if _, ok := g.restricted[cm.ID]; !ok {
 			g.restricted[cm.ID] = map[int]map[int64]struct{}{}
 		}
-		if _, ok := g.restricted[cm.ID][u.Message.MessageThreadID]; !ok {
-			g.restricted[cm.ID][u.Message.MessageThreadID] = map[int64]struct{}{}
+		if _, ok := g.restricted[cm.ID][cq.Message.MessageThreadID]; !ok {
+			g.restricted[cm.ID][cq.Message.MessageThreadID] = map[int64]struct{}{}
 		}
 
 	case joiner.successUUID != challengeUUID:
@@ -343,9 +343,13 @@ func (g *Gatekeeper) handleFirstMessage(u *api.Update, cm *db.ChatMeta, um *db.U
 
 	// TODO: implement static ban list as a separate module
 	if m.Text != "" {
-		for _, v := range []string{"Оператор чата", "Нужны сотрудников", "Без опыта роботы", "@dasha234di", "@marinetthr", "На момент стажировке"} {
+		for _, v := range []string{"Нужны сотрудников", "Без опыта роботы", "@dasha234di", "@marinetthr", "На момент стажировке", "5 р\\час"} {
 			if strings.Contains(m.Text, v) {
+				if err := bot.DeleteChatMessage(b, m.Chat.ID, m.MessageID); err != nil {
+					entry.WithError(err).Error("cant delete message")
+				}
 				if err := bot.KickUserFromChat(b, m.From.ID, m.Chat.ID); err != nil {
+					entry.WithField("user", um.GetUN()).Info("banned by static list")
 					return errors.WithMessage(err, "cant kick")
 				}
 				return nil
