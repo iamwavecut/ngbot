@@ -59,11 +59,13 @@ func (b *Base) Type() string {
 
 var Bus = &bus{q: make(chan Queueable, 100000)}
 
-func (b *bus) Enqueue(event Queueable) {
+// NQ adds an event to the queue
+func (b *bus) NQ(event Queueable) {
 	go func() { b.q <- event }()
 }
 
-func (b *bus) pop() Queueable {
+// DQ returns the next event from the queue or nil if the queue is empty
+func (b *bus) DQ() Queueable {
 	select {
 	case q := <-b.q:
 		return q

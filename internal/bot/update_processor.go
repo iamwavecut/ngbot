@@ -61,11 +61,9 @@ func NewUpdateProcessor(s Service) *UpdateProcessor {
 }
 
 func (up *UpdateProcessor) Process(u *api.Update) error {
-	chat, err := GetChat(u)
-	if err != nil {
-		log.WithError(err).WithField("update", *u).Warn("cant get chat from update")
-	}
+	chat := u.FromChat()
 	var cm *db.ChatMeta
+	var err error
 	if chat != nil {
 		ucm := db.MetaFromChat(chat, config.Get().DefaultLanguage)
 		cm, err = up.GetChatMeta(chat.ID)
@@ -80,12 +78,14 @@ func (up *UpdateProcessor) Process(u *api.Update) error {
 				log.WithError(uErr).Warn("cant update chat meta")
 			}
 		}
+		if ucm.Settings == nil {
+			ucm.Settings = db.ChatSettings{}
+			ucm.Settings = *db.DefaultChatSettings
+			ucm.Settings["language"] = config.Get().DefaultLanguage
+		}
 	}
 
-	user, err := GetUser(u)
-	if err != nil {
-		log.WithError(err).WithField("update", *u).Warn("cant get user from update")
-	}
+	user := u.SentFrom()
 	var um *db.UserMeta
 	if user != nil {
 		uum := db.MetaFromUser(user)
@@ -104,10 +104,12 @@ func (up *UpdateProcessor) Process(u *api.Update) error {
 		}
 	}
 
-	event.Bus.Enqueue(&UpdateEvent{
-		Base:    event.CreateBase("api_update", time.Now().Add(time.Minute)),
-		payload: u,
-	})
+	// Commented out because of the lack of consumers, memory leak
+	// TODO: implement event bus based message processing
+	// event.Bus.NQ(&UpdateEvent{
+	// 	Base:    event.CreateBase("api_update", time.Now().Add(time.Minute)),
+	// 	payload: u,
+	// })
 
 	for _, handler := range up.updateHandlers {
 		proceed, err := handler.Handle(u, cm, um)
@@ -122,21 +124,6 @@ func (up *UpdateProcessor) Process(u *api.Update) error {
 	return nil
 }
 
-func GetChat(u *api.Update) (*api.Chat, error) {
-	if u == nil {
-		return nil, errors.New("nil update")
-	}
-	switch {
-	case u.CallbackQuery != nil && u.CallbackQuery.Message != nil && u.CallbackQuery.Message.Chat != nil:
-		return u.CallbackQuery.Message.Chat, nil
-	case u.Message != nil && u.Message.Chat != nil:
-		return u.Message.Chat, nil
-	case u.EditedMessage != nil && u.EditedMessage.Chat != nil:
-		return u.EditedMessage.Chat, nil
-	}
-	return nil, errors.New("no chat")
-}
-
 func (up *UpdateProcessor) GetChatMeta(chatID int64) (*db.ChatMeta, error) {
 	r := reg.Get()
 	if cm := r.GetCM(chatID); cm != nil {
@@ -148,33 +135,6 @@ func (up *UpdateProcessor) GetChatMeta(chatID int64) (*db.ChatMeta, error) {
 	}
 	r.SetCM(cm)
 	return cm, nil
-}
-
-func GetUser(u *api.Update) (*api.User, error) {
-	if u == nil {
-		return nil, errors.New("nil update")
-	}
-	switch {
-	case u.CallbackQuery != nil && u.CallbackQuery.From != nil:
-		return u.CallbackQuery.From, nil
-	case u.Message != nil && u.Message.From != nil:
-		return u.Message.From, nil
-	case u.EditedMessage != nil && u.EditedMessage.From != nil:
-		return u.EditedMessage.From, nil
-	case u.ChosenInlineResult != nil && u.ChosenInlineResult.From != nil:
-		return u.ChosenInlineResult.From, nil
-	case u.ChannelPost != nil && u.ChannelPost.From != nil:
-		return u.ChannelPost.From, nil
-	case u.EditedChannelPost != nil && u.EditedChannelPost.From != nil:
-		return u.EditedChannelPost.From, nil
-	case u.InlineQuery != nil && u.InlineQuery.From != nil:
-		return u.InlineQuery.From, nil
-	case u.PreCheckoutQuery != nil && u.PreCheckoutQuery.From != nil:
-		return u.PreCheckoutQuery.From, nil
-	case u.ShippingQuery != nil && u.ShippingQuery.From != nil:
-		return u.ShippingQuery.From, nil
-	}
-	return nil, errors.New("no user")
 }
 
 func (up *UpdateProcessor) GetUserMeta(userID int64) (*db.UserMeta, error) {

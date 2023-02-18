@@ -33,7 +33,7 @@ func (w *worker) Run(ctx context.Context) {
 		for {
 			select {
 			case <-done:
-				//l.Info("shutting down event profile ticker by cancelled context")
+				// l.Info("shutting down event profile ticker by cancelled context")
 				return
 			case <-profileTicker.C:
 				toProfile = true
@@ -51,37 +51,37 @@ func (w *worker) Run(ctx context.Context) {
 				return
 			default:
 				time.Sleep(1 * time.Millisecond)
-				event = Bus.pop()
+				event = Bus.DQ()
 				if event == nil {
 					continue
 				}
 
 				if event.Expired() {
-					//l.Trace("skip event ", event)
+					// l.Trace("skip event ", event)
 					continue
 				}
 
 				subscribers, ok := w.subscriptions[event.Type()]
 				if !ok {
-					//l.Trace("no event subs")
-					Bus.Enqueue(event)
+					// l.Trace("no event subs")
+					Bus.NQ(event)
 					continue
 				}
 				for _, sub := range subscribers {
 					sub(event)
 					if event.IsDropped() {
-						//l.Trace("drop event after sub process", event)
+						// l.Trace("drop event after sub process", event)
 						continue
 					}
 				}
 
 				if event.IsDropped() {
-					//l.Trace("drop event after all sub processed", event)
+					// l.Trace("drop event after all sub processed", event)
 					continue
 				}
 				if !event.IsProcessed() {
-					//l.Trace("unprocessed event, re-queueing ", event)
-					Bus.Enqueue(event)
+					// l.Trace("unprocessed event, re-queueing ", event)
+					Bus.NQ(event)
 				}
 
 				if qlen := len(Bus.q); toProfile && qlen > 0 {

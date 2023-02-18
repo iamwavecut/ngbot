@@ -49,7 +49,7 @@ func NewSQLiteClient(dbPath string) *sqliteClient {
 				if lang == "" {
 					lang = config.Get().DefaultLanguage
 				}
-				chats[i].Settings.Set("language", lang)
+				chats[i].Settings["language"] = lang
 			}
 			tx, err := dbx.BeginTxx(context.Background(), nil)
 			if err != nil {
@@ -144,7 +144,10 @@ func (c *sqliteClient) GetChatMeta(chatID int64) (*db.ChatMeta, error) {
 				Title:    "",
 				Language: config.Get().DefaultLanguage,
 				Type:     "",
+				Settings: map[string]string{},
 			}
+			res.Settings = *db.DefaultChatSettings
+			res.Settings["language"] = res.Language
 			if err := c.UpsertChatMeta(res); err != nil {
 				log.WithError(err).Error("default insert failed")
 			}

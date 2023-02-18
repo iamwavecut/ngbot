@@ -16,11 +16,11 @@ import (
 
 type (
 	ChatMeta struct {
-		ID       int64         `db:"id"`
-		Title    string        `db:"title"`
-		Language string        `db:"language"`
-		Type     string        `db:"type"`
-		Settings *ChatSettings `db:"settings"`
+		ID       int64        `db:"id"`
+		Title    string       `db:"title"`
+		Language string       `db:"language"`
+		Type     string       `db:"type"`
+		Settings ChatSettings `db:"settings"`
 	}
 
 	UserMeta struct {
@@ -38,9 +38,7 @@ type (
 		Score  int   `db:"score"`
 	}
 
-	ChatSettings struct {
-		cs map[string]string
-	}
+	ChatSettings map[string]string
 )
 
 const (
@@ -51,6 +49,11 @@ const (
 	defaultChallengeTimeout = 3 * time.Minute
 	defaultRejectTimeout    = 10 * time.Minute
 )
+
+var DefaultChatSettings = &ChatSettings{
+	challengeTimeout: defaultChallengeTimeout.String(),
+	rejectTimeout:    defaultRejectTimeout.String(),
+}
 
 func (s *ChatSettings) Value() (driver.Value, error) {
 	return json.Marshal(s)
@@ -70,43 +73,21 @@ func (s *ChatSettings) Scan(v interface{}) error {
 	}
 }
 
-func (s *ChatSettings) Get(key string) (string, bool) {
-	if s == nil {
-		return "", false
-	}
-	if s.cs == nil {
-		s.cs = map[string]string{}
-	}
-	str, ok := s.cs[key]
-	return str, ok
-}
-
-func (s *ChatSettings) Set(key, value string) {
-	if s == nil {
-		return
-	}
-	if s.cs == nil {
-		s.cs = map[string]string{}
-	}
-	s.cs[key] = value
-}
-
 // GetLanguage Returns chat's set language
 func (cm *ChatMeta) GetLanguage() (string, error) {
 	if cm == nil {
 		return "", errors.New("nill chat")
 	}
 	if cm.Settings == nil {
-		lang := config.Get().DefaultLanguage
-		cm.Settings = &ChatSettings{cs: map[string]string{}}
-		cm.Settings.Set(language, lang)
-		return lang, nil
+		cm.Settings = ChatSettings{}
+		cm.Settings = *DefaultChatSettings
+		cm.Settings[language] = config.Get().DefaultLanguage
 	}
-	language, ok := cm.Settings.Get(language)
-	if !ok {
-		return config.Get().DefaultLanguage, errors.New("no language set")
+
+	if language, ok := cm.Settings[language]; ok {
+		return language, nil
 	}
-	return language, nil
+	return config.Get().DefaultLanguage, errors.New("no language set")
 }
 
 // GetChallengeTimeout Returns chat entry challenge timeout duration
@@ -115,16 +96,15 @@ func (cm *ChatMeta) GetChallengeTimeout() time.Duration {
 		return defaultChallengeTimeout
 	}
 	if cm.Settings == nil {
-		cm.Settings = &ChatSettings{cs: map[string]string{}}
+		cm.Settings = ChatSettings{}
 	}
-	ctStr, ok := cm.Settings.Get(challengeTimeout)
-	if !ok {
-		cm.Settings.Set(challengeTimeout, defaultChallengeTimeout.String())
-		return defaultChallengeTimeout
+
+	if ctStr, ok := cm.Settings[challengeTimeout]; ok {
+		if ct, err := time.ParseDuration(ctStr); err == nil {
+			return ct
+		}
 	}
-	if ct, err := time.ParseDuration(ctStr); err == nil {
-		return ct
-	}
+	cm.Settings[challengeTimeout] = defaultChallengeTimeout.String()
 	return defaultChallengeTimeout
 }
 
@@ -134,16 +114,16 @@ func (cm *ChatMeta) GetRejectTimeout() time.Duration {
 		return defaultRejectTimeout
 	}
 	if cm.Settings == nil {
-		cm.Settings = &ChatSettings{cs: map[string]string{}}
+		cm.Settings = ChatSettings{}
 	}
-	rtStr, ok := cm.Settings.Get(rejectTimeout)
-	if !ok {
-		cm.Settings.Set(rejectTimeout, defaultRejectTimeout.String())
-		return defaultRejectTimeout
+
+	if rtStr, ok := cm.Settings[rejectTimeout]; !ok {
+		if rt, err := time.ParseDuration(rtStr); err == nil {
+			return rt
+		}
 	}
-	if rt, err := time.ParseDuration(rtStr); err == nil {
-		return rt
-	}
+	cm.Settings[rejectTimeout] = defaultRejectTimeout.String()
+
 	return defaultRejectTimeout
 }
 
@@ -170,12 +150,10 @@ func MetaFromChat(chat *api.Chat, defaultLanguage string) *ChatMeta {
 		ID:    chat.ID,
 		Title: getChatTitle(chat),
 		Type:  chat.Type,
-		Settings: &ChatSettings{
-			cs: map[string]string{
-				language:         defaultLanguage,
-				challengeTimeout: defaultChallengeTimeout.String(),
-				rejectTimeout:    defaultRejectTimeout.String(),
-			},
+		Settings: ChatSettings{
+			language:         defaultLanguage,
+			challengeTimeout: defaultChallengeTimeout.String(),
+			rejectTimeout:    defaultRejectTimeout.String(),
 		},
 	}
 }
