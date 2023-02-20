@@ -4,7 +4,7 @@
 ![Demo](https://user-images.githubusercontent.com/239034/142725561-5fd80514-dae9-4d29-aa19-a7d2ad41e362.png)
 
 Basically, that what happens, if the bot is set up in your chat:
-1. Triggered on the events, which introduces new chat members (invite, join, etc).
+1. Triggered on the events, which introduces new chat members (invite, join, etc). Also works with join requests.
 2. Restrict newcomer to be read-only.
 3. Set up a challenge for the newcomer, which is a simple task as shown on the image above, but yet, unsolvable for the vast majority of automated spam robots.
 4. If the newcomer succeeds in choosing the right answer - restrictions gets fully lifted, challenge ends.
