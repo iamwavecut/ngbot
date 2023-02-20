@@ -52,6 +52,6 @@ func Get(key, lang string) string {
 	if res, ok := state.translations[lang][key]; ok {
 		return res
 	}
-	log.Traceln(`no translation for key "%s"`, key)
+	log.Traceln(`no "` + lang + `" translation for key "` + key + `"`)
 	return key
 }

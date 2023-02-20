@@ -62,6 +62,9 @@ func NewUpdateProcessor(s Service) *UpdateProcessor {
 
 func (up *UpdateProcessor) Process(u *api.Update) error {
 	chat := u.FromChat()
+	if chat == nil && u.ChatJoinRequest != nil {
+		chat = &u.ChatJoinRequest.Chat
+	}
 	var cm *db.ChatMeta
 	var err error
 	if chat != nil {
@@ -86,6 +89,9 @@ func (up *UpdateProcessor) Process(u *api.Update) error {
 	}
 
 	user := u.SentFrom()
+	if user == nil && u.ChatJoinRequest != nil {
+		user = &u.ChatJoinRequest.From
+	}
 	var um *db.UserMeta
 	if user != nil {
 		uum := db.MetaFromUser(user)
@@ -160,7 +166,7 @@ func DeleteChatMessage(bot *api.BotAPI, chatID int64, messageID int) error {
 	return nil
 }
 
-func KickUserFromChat(bot *api.BotAPI, userID int64, chatID int64) error {
+func BanUserFromChat(bot *api.BotAPI, userID int64, chatID int64) error {
 	if _, err := bot.Request(api.BanChatMemberConfig{
 		ChatMemberConfig: api.ChatMemberConfig{
 			ChatID: chatID,
@@ -183,7 +189,12 @@ func RestrictChatting(bot *api.BotAPI, userID int64, chatID int64) error {
 		UntilDate: time.Now().Add(10 * time.Minute).Unix(),
 		Permissions: &api.ChatPermissions{
 			CanSendMessages:       false,
-			CanSendMediaMessages:  false,
+			CanSendAudios:         false,
+			CanSendDocuments:      false,
+			CanSendPhotos:         false,
+			CanSendVideos:         false,
+			CanSendVideoNotes:     false,
+			CanSendVoiceNotes:     false,
 			CanSendPolls:          false,
 			CanSendOtherMessages:  false,
 			CanAddWebPagePreviews: false,
@@ -207,7 +218,12 @@ func UnrestrictChatting(bot *api.BotAPI, userID int64, chatID int64) error {
 		UntilDate: time.Now().Add(10 * time.Minute).Unix(),
 		Permissions: &api.ChatPermissions{
 			CanSendMessages:       true,
-			CanSendMediaMessages:  true,
+			CanSendAudios:         true,
+			CanSendDocuments:      true,
+			CanSendPhotos:         true,
+			CanSendVideos:         true,
+			CanSendVideoNotes:     true,
+			CanSendVoiceNotes:     true,
 			CanSendPolls:          true,
 			CanSendOtherMessages:  true,
 			CanAddWebPagePreviews: true,
@@ -218,6 +234,30 @@ func UnrestrictChatting(bot *api.BotAPI, userID int64, chatID int64) error {
 		},
 	}); err != nil {
 		return errors.WithMessage(err, "cant unrestrict")
+	}
+	return nil
+}
+
+func ApproveJoinRequest(bot *api.BotAPI, userID int64, chatID int64) error {
+	if _, err := bot.Request(api.ApproveChatJoinRequestConfig{
+		ChatConfig: api.ChatConfig{
+			ChatID: chatID,
+		},
+		UserID: userID,
+	}); err != nil {
+		return errors.WithMessage(err, "cant accept join request")
+	}
+	return nil
+}
+
+func DeclineJoinRequest(bot *api.BotAPI, userID int64, chatID int64) error {
+	if _, err := bot.Request(api.DeclineChatJoinRequest{
+		ChatConfig: api.ChatConfig{
+			ChatID: chatID,
+		},
+		UserID: userID,
+	}); err != nil {
+		return errors.WithMessage(err, "cant accept join request")
 	}
 	return nil
 }
