@@ -204,6 +204,8 @@ func (g *Gatekeeper) handleChallenge(u *api.Update, cm *db.ChatMeta, um *db.User
 	isPublic := cu.commChatID == cu.targetChatID
 	if !isPublic {
 		isAdmin = false
+	} else {
+		bot.RestrictChatting(b, user.ID, cu.targetChatID)
 	}
 
 	if !isAdmin && joinerID != um.ID {
@@ -229,6 +231,8 @@ func (g *Gatekeeper) handleChallenge(u *api.Update, cm *db.ChatMeta, um *db.User
 			msg := api.NewMessage(cu.commChatID, i18n.Get("Awesome, you're good to go! Feel free to start chatting in the group.", lang))
 			msg.ParseMode = api.ModeMarkdown
 			b.Send(msg)
+		} else {
+			bot.UnrestrictChatting(b, user.ID, cu.targetChatID)
 		}
 
 		if cu.successFunc != nil {
