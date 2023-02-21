@@ -84,8 +84,8 @@ func (w *worker) Run(ctx context.Context) {
 					Bus.NQ(event)
 				}
 
-				if qlen := len(Bus.q); toProfile && qlen > 0 {
-					l.Debugf("unprocessed queue length: %d", qlen)
+				if qLen := len(Bus.q); toProfile && qLen > 0 {
+					l.Debugf("unprocessed queue length: %d", qLen)
 				}
 			}
 		}

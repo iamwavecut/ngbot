@@ -9,11 +9,12 @@ import (
 	"strings"
 
 	api "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"github.com/iamwavecut/tool"
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 
 	"github.com/iamwavecut/ngbot/internal/bot"
-	"github.com/iamwavecut/ngbot/internal/db"
+	"github.com/iamwavecut/ngbot/internal/config"
 )
 
 type Punto struct {
@@ -34,28 +35,29 @@ func NewPunto(s bot.Service, path string) *Punto {
 	return p
 }
 
-func (p *Punto) Handle(u *api.Update, cm *db.ChatMeta, um *db.UserMeta) (proceed bool, err error) {
-	if cm == nil || um == nil {
+func (p *Punto) Handle(u *api.Update, chat *api.Chat, user *api.User) (proceed bool, err error) {
+	if chat == nil || user == nil {
+		return true, nil
+	}
+	if user.IsBot {
 		return true, nil
 	}
 
+	lang := p.getLanguage(chat, user)
+
 	l := p.getLogEntry()
-	if _, ok := p.data[cm.Language]; !ok {
-		err := p.load(cm.Language)
+	if _, ok := p.data[lang]; !ok {
+		err := p.load(lang)
 		if err != nil {
 			if err == errNoFile {
 				return true, nil
 			}
-			l.WithError(err).Trace("cant load punto for lang " + cm.Language)
+			l.WithError(err).Trace("cant load punto for lang " + lang)
 			return true, nil // drop error
 		}
 	}
 
-	if um.IsBot {
-		return true, nil
-	}
-
-	switch cm.Type {
+	switch chat.Type {
 	case "supergroup", "group":
 		break
 	default:
@@ -65,7 +67,7 @@ func (p *Punto) Handle(u *api.Update, cm *db.ChatMeta, um *db.UserMeta) (proceed
 	switch {
 	case
 		u.Message == nil,
-		um.IsBot,
+		user.IsBot,
 		u.Message.IsCommand():
 		return true, nil
 	}
@@ -74,7 +76,7 @@ func (p *Punto) Handle(u *api.Update, cm *db.ChatMeta, um *db.UserMeta) (proceed
 	tokens := regexp.MustCompile(`[\s\-]+`).Split(m.Text, -1)
 	i := 0
 	for _, token := range tokens {
-		for _, ngram := range p.data[cm.Language] {
+		for _, ngram := range p.data[lang] {
 			if strings.Contains(" "+token+" ", ngram) {
 				i++
 			}
@@ -82,12 +84,12 @@ func (p *Punto) Handle(u *api.Update, cm *db.ChatMeta, um *db.UserMeta) (proceed
 	}
 	l.Trace("i = " + strconv.Itoa(i))
 	if i > 2 {
-		pMessage, err := p.puntonize(m, cm)
+		pMessage, err := p.puntonize(m, lang)
 		if err != nil {
 			return true, nil // skip no mapping
 		}
 
-		nm := api.NewMessage(cm.ID, `^: `+pMessage)
+		nm := api.NewMessage(chat.ID, `^: `+pMessage)
 		nm.ReplyToMessageID = m.MessageID
 		nm.ParseMode = "markdown"
 
@@ -101,7 +103,7 @@ func (p *Punto) Handle(u *api.Update, cm *db.ChatMeta, um *db.UserMeta) (proceed
 	return true, nil
 }
 
-func (p *Punto) puntonize(m *api.Message, cm *db.ChatMeta) (string, error) {
+func (p *Punto) puntonize(m *api.Message, lang string) (string, error) {
 	ru := `!"№;%:?*()йцукенгшщзхъфывапролджэячсмитьбю.ЙЦУКЕНГШЩЗХЪФЫВАПРОЛДЖЭЯЧСМИТЬБЮ,Ёё`
 	en := `!@#$%^&*()qwertyuiop[]asdfghjkl;'zxcvbnm,./QWERTYUIOP{}ASDFGHJKL:"ZXCVBNM<>?~` + "`"
 	mappings := map[string][2][]rune{
@@ -115,7 +117,7 @@ func (p *Punto) puntonize(m *api.Message, cm *db.ChatMeta) (string, error) {
 		},
 	}
 
-	mapping, ok := mappings[cm.Language]
+	mapping, ok := mappings[lang]
 	if !ok {
 		return "", errors.New("no mapping")
 	}
@@ -145,4 +147,14 @@ func (p *Punto) load(lang string) error {
 	}
 	p.data[lang] = ngrams
 	return nil
+}
+
+func (p *Punto) getLanguage(chat *api.Chat, user *api.User) string {
+	if user != nil && tool.In(user.LanguageCode, []string{"en", "ru"}) {
+		return user.LanguageCode
+	}
+	if lang, err := p.s.GetDB().GetChatLanguage(chat.ID); !tool.Try(err) {
+		return lang
+	}
+	return config.Get().DefaultLanguage
 }

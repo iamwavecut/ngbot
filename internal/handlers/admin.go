@@ -1,16 +1,17 @@
 package handlers
 
 import (
+	"database/sql"
 	"strings"
 
 	api "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"github.com/iamwavecut/tool"
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 
 	"github.com/iamwavecut/ngbot/internal/bot"
-	"github.com/iamwavecut/ngbot/internal/db"
+	"github.com/iamwavecut/ngbot/internal/config"
 	"github.com/iamwavecut/ngbot/internal/i18n"
-	"github.com/iamwavecut/ngbot/internal/infra/reg"
 )
 
 var allowedLanguages = []string{"en", "ru"}
@@ -26,8 +27,8 @@ func NewAdmin(s bot.Service) *Admin {
 	return a
 }
 
-func (a *Admin) Handle(u *api.Update, cm *db.ChatMeta, um *db.UserMeta) (proceed bool, err error) {
-	if cm == nil {
+func (a *Admin) Handle(u *api.Update, chat *api.Chat, user *api.User) (proceed bool, err error) {
+	if chat == nil || user == nil {
 		return true, nil
 	}
 
@@ -36,7 +37,7 @@ func (a *Admin) Handle(u *api.Update, cm *db.ChatMeta, um *db.UserMeta) (proceed
 	switch {
 	case
 		u.Message == nil,
-		um.IsBot,
+		user.IsBot,
 		!u.Message.IsCommand():
 		return true, nil
 	}
@@ -44,8 +45,8 @@ func (a *Admin) Handle(u *api.Update, cm *db.ChatMeta, um *db.UserMeta) (proceed
 
 	chatMember, err := b.GetChatMember(api.GetChatMemberConfig{
 		ChatConfigWithUser: api.ChatConfigWithUser{
-			UserID: um.ID,
-			ChatID: cm.ID,
+			UserID: user.ID,
+			ChatID: chat.ID,
 		},
 	})
 	if err != nil {
@@ -55,13 +56,21 @@ func (a *Admin) Handle(u *api.Update, cm *db.ChatMeta, um *db.UserMeta) (proceed
 	switch {
 	case
 		chatMember.IsCreator(),
-		chatMember.IsAdministrator() && chatMember.CanRestrictMembers,
-		m.Chat.IsPrivate():
+		chatMember.IsAdministrator() && chatMember.CanRestrictMembers:
 		isAdmin = true
 	}
+	entry := a.getLogEntry()
 
-	log.Trace("command: " + m.Command())
-
+	entry.Trace("command:", m.Command())
+	lang, err := a.s.GetDB().GetChatLanguage(chat.ID)
+	if tool.Try(err) {
+		if errors.Cause(err) != sql.ErrNoRows {
+			return true, errors.WithMessage(err, "cant get chat language")
+		}
+	}
+	if lang == "" {
+		lang = config.Get().DefaultLanguage
+	}
 	switch m.Command() {
 	case "lang":
 		if !isAdmin {
@@ -78,31 +87,30 @@ func (a *Admin) Handle(u *api.Update, cm *db.ChatMeta, um *db.UserMeta) (proceed
 		}
 		if !isAllowed {
 			_, _ = b.Send(api.NewMessage(
-				cm.ID,
-				i18n.Get("You should use one of the following options", cm.Language)+": "+strings.Join(allowedLanguages, ", "),
+				chat.ID,
+				i18n.Get("You should use one of the following options", lang)+": "+strings.Join(allowedLanguages, ", "),
 			))
 			return false, nil
 		}
 
-		cm.Language = argument
-		err = a.s.GetDB().UpsertChatMeta(cm)
-		if err != nil {
+		lang = argument
+		err = a.s.GetDB().SetChatLanguage(chat.ID, lang)
+		if tool.Try(err) {
 			return false, errors.WithMessage(err, "cant update chat language")
 		}
-		reg.Get().RemoveCM(cm.ID)
 
 		_, _ = b.Send(api.NewMessage(
-			cm.ID,
-			i18n.Get("Language set successfully", cm.Language),
+			chat.ID,
+			i18n.Get("Language set successfully", lang),
 		))
 
-		log.Trace("not admin")
+		entry.Trace("not admin")
 		return false, nil
 
 	case "start":
 
 	}
-	log.Trace("unknown command")
+	entry.Trace("unknown command")
 	return true, nil
 }
 

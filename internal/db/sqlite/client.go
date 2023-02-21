@@ -129,6 +129,22 @@ func (c *sqliteClient) GetChatMeta(chatID int64) (*db.ChatMeta, error) {
 	return res, c.db.Get(res, "select * from chats where id=?", chatID)
 }
 
+func (c *sqliteClient) GetChatLanguage(chatID int64) (string, error) {
+	var res string
+	return res, c.db.Get(&res, "select lang from meta where id=?", chatID)
+}
+
+func (c *sqliteClient) SetChatLanguage(chatID int64, lang string) error {
+	query := `
+		insert into "meta" (id, lang) values(:id, :lang)
+		on conflict(id) do update set lang=excluded.lang;
+	`
+	return tool.Err(c.db.NamedExec(query, map[string]any{
+		"id":   chatID,
+		"lang": lang,
+	}))
+}
+
 func (c *sqliteClient) UpsertChatMeta(chat *db.ChatMeta) error {
 	query := `
 		insert into chats (id, title, language, type, settings) values(:id, :title, :language, :type, :settings)

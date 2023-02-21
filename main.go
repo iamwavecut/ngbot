@@ -55,6 +55,7 @@ func main() {
 
 			updateChan, errorChan := bot.GetUpdatesChans(botAPI, updateConfig)
 
+		loop:
 			for {
 				select {
 				case err := <-errorChan:
@@ -65,7 +66,7 @@ func main() {
 					}
 				case <-ctx.Done():
 					log.WithError(ctx.Err()).Errorln("no more updates")
-					return
+					break loop
 				}
 			}
 			time.Sleep(time.Second)

@@ -1,24 +1,20 @@
 package bot
 
 import (
-	"database/sql"
+	"strings"
 	"time"
-
-	"github.com/iamwavecut/tool"
-
-	"github.com/iamwavecut/ngbot/internal/config"
-	"github.com/iamwavecut/ngbot/internal/db"
-	"github.com/iamwavecut/ngbot/internal/event"
-	"github.com/iamwavecut/ngbot/internal/infra/reg"
 
 	api "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
+
+	"github.com/iamwavecut/ngbot/internal/config"
+	"github.com/iamwavecut/ngbot/internal/event"
 )
 
 type (
 	Handler interface {
-		Handle(u *api.Update, cm *db.ChatMeta, um *db.UserMeta) (proceed bool, err error)
+		Handle(u *api.Update, chat *api.Chat, user *api.User) (proceed bool, err error)
 	}
 
 	UpdateProcessor struct {
@@ -67,55 +63,10 @@ func (up *UpdateProcessor) Process(u *api.Update) error {
 	if chat == nil && u.ChatJoinRequest != nil {
 		chat = &u.ChatJoinRequest.Chat
 	}
-	var cm *db.ChatMeta
-	var err error
-	if chat != nil {
-		ucm := db.MetaFromChat(chat, config.Get().DefaultLanguage)
-		cm, err = up.GetChatMeta(chat.ID)
-		if err != nil {
-			log.WithError(err).WithField("ucm", *ucm).Warn("cant get chat meta")
-		}
-		if cm != nil && (ucm.Title != cm.Title || ucm.Type != cm.Type) {
-			cm.Title = ucm.Title
-			cm.Type = ucm.Type
-			if uErr := up.s.GetDB().UpsertChatMeta(cm); uErr != nil {
-				log.WithError(uErr).Warn("cant update chat meta")
-			}
-		} else if cm == nil {
-			if uErr := up.s.GetDB().UpsertChatMeta(cm); uErr != nil {
-				log.WithError(uErr).Warn("cant insert chat meta")
-			}
-			cm = ucm
-		}
-		if len(cm.Settings) == 0 {
-			cm.Settings = db.ChatSettings{}
-			cm.Settings = *db.DefaultChatSettings
-			cm.Settings["language"] = config.Get().DefaultLanguage
-			if uErr := up.s.GetDB().UpsertChatMeta(cm); uErr != nil {
-				log.WithError(uErr).Warn("cant update chat meta settings")
-			}
-		}
-	}
 
 	user := u.SentFrom()
 	if user == nil && u.ChatJoinRequest != nil {
 		user = &u.ChatJoinRequest.From
-	}
-	var um *db.UserMeta
-	if user != nil {
-		uum := db.MetaFromUser(user)
-		um, err = up.GetUserMeta(user.ID)
-		if err != nil {
-			if errors.Cause(err) != sql.ErrNoRows {
-				return errors.WithMessage(err, "cant get user meta")
-			}
-		}
-		if um == nil || (uum.FirstName != um.FirstName || uum.LastName != um.LastName || uum.UserName != um.UserName && uum.LanguageCode != um.LanguageCode) {
-			if uErr := up.s.GetDB().UpsertUserMeta(uum); uErr != nil {
-				log.WithError(uErr).Warn("cant update user meta")
-			}
-			um = uum
-		}
 	}
 
 	// Commented out because of the lack of consumers, memory leak
@@ -126,7 +77,7 @@ func (up *UpdateProcessor) Process(u *api.Update) error {
 	// })
 
 	for _, handler := range up.updateHandlers {
-		proceed, err := handler.Handle(u, cm, um)
+		proceed, err := handler.Handle(u, chat, user)
 		if err != nil {
 			return errors.WithMessage(err, "handling error")
 		}
@@ -136,33 +87,6 @@ func (up *UpdateProcessor) Process(u *api.Update) error {
 		}
 	}
 	return nil
-}
-
-func (up *UpdateProcessor) GetChatMeta(chatID int64) (cm *db.ChatMeta, err error) {
-	defer tool.Catch(func(catch error) {
-		err = catch
-	})
-	r := reg.Get()
-	if cm := r.GetCM(chatID); cm != nil {
-		return cm, nil
-	}
-	cm, err = up.s.GetDB().GetChatMeta(chatID)
-	tool.Must(err)
-	r.SetCM(cm)
-	return cm, nil
-}
-
-func (up *UpdateProcessor) GetUserMeta(userID int64) (um *db.UserMeta, err error) {
-	defer tool.Catch(func(catch error) {
-		err = catch
-	})
-	r := reg.Get()
-	if cm := r.GetUM(userID); cm != nil {
-		return cm, nil
-	}
-	um, err = up.s.GetDB().GetUserMeta(userID)
-	tool.Must(err)
-	return um, nil
 }
 
 func DeleteChatMessage(bot *api.BotAPI, chatID int64, messageID int) error {
@@ -292,4 +216,28 @@ func GetUpdatesChans(bot *api.BotAPI, config api.UpdateConfig) (api.UpdatesChann
 	}()
 
 	return ch, chErr
+}
+
+func GetUN(user *api.User) string {
+	if user == nil {
+		return ""
+	}
+	userName := user.UserName
+	if 0 == len(userName) {
+		userName = user.FirstName + " " + user.LastName
+		userName = strings.TrimSpace(userName)
+	}
+	return userName
+}
+
+func GetFullName(user *api.User) string {
+	if user == nil {
+		return ""
+	}
+	fullName := user.FirstName + " " + user.LastName
+	fullName = strings.TrimSpace(fullName)
+	if 0 == len(fullName) {
+		fullName = user.UserName
+	}
+	return fullName
 }

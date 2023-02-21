@@ -8,4 +8,6 @@ type Client interface {
 	GetCharadeScore(chatID int64, userID int64) (*CharadeScore, error)
 	GetCharadeStats(chatID int64) ([]*CharadeScore, error)
 	AddCharadeScore(chatID int64, userID int64) (*CharadeScore, error)
+	GetChatLanguage(chatID int64) (string, error)
+	SetChatLanguage(chatID int64, lang string) error
 }

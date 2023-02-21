@@ -42,16 +42,16 @@ Ok, I've got something for ya.
 5. Obtain code either via `git clone` :arrow_upper_right: or by [downloading zip](https://github.com/iamwavecut/ngbot/archive/refs/heads/master.zip) and extracting it.
 6. Open terminal app of your choice and navigate into the code folder.
 7. Run this command, replacing the **T** with the actual token string
-```
-docker compose build --build-arg NG_TOKEN=<REPLACE_THIS>
-docker compose up -d --no-recreate
-```
-9. Add your bot to chat, give him permissions to **Ban** and **Delete**.
-10. Change bot language for this chat, if needed.
+    ```
+    docker compose build --build-arg NG_TOKEN=<REPLACE_THIS>
+    docker compose up -d --no-recreate
+    ```
+8. Add your bot to chat, give him permissions to **Ban** and **Delete**.
+9. Change bot language for this chat, if needed.
     - `/lang ru` (`en`, `ru`)
-11. `docker compose stop` to stop bot `docker compose start` to get it up and running again.
-12. `docker compose down` to remove bot's artifacs.
-13. `rm ~/.ngbot/bot.db` to start clean.
+10. `docker compose stop` to stop bot `docker compose start` to get it up and running again.
+11. `docker compose down` to remove bot's artifacs.
+12. `rm ~/.ngbot/bot.db` to start clean.
 
 
 ### "Hurt me plenty"
