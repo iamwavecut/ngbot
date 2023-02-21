@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/iamwavecut/tool"
 	"github.com/pkg/errors"
 
 	"github.com/iamwavecut/ngbot/internal/config"
@@ -163,10 +164,7 @@ func (c *sqliteClient) UpsertChatMeta(chat *db.ChatMeta) error {
 		insert into chats (id, title, language, type, settings) values(:id, :title, :language, :type, :settings)
 		on conflict(id) do update set title=excluded.title, language=excluded.language, type=excluded.type, settings=excluded.settings;
 	`
-	if _, err := c.db.NamedExec(query, chat); err != nil {
-		return errors.WithMessage(err, "cant insert chat meta")
-	}
-	return nil
+	return tool.Err(c.db.NamedExec(query, chat))
 }
 
 func (c *sqliteClient) GetCharadeScore(chatID int64, userID int64) (*db.CharadeScore, error) {
