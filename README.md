@@ -26,7 +26,7 @@ Don't hesitate to contact me
 
 Ok, I've got something for ya.
 1. Invite the [Quarantino](https://tg.me/nedoibot) into your chat group. 
-2. Promote him to Admin with at least **Ban** and **Delete** permissions enabled.
+2. Promote him to Admin with at least **Ban**, **Delete**, and **Invite** permissions enabled.
 3. *(optional)* Message`/lang ru` to change chat language.
 4. ...
 5. PROFIT.

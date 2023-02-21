@@ -24,8 +24,8 @@ func main() {
 	log.SetFormatter(&config.NbFormatter{})
 	log.SetOutput(os.Stdout)
 	log.SetLevel(log.Level(cfg.LogLevel))
-	tool.SetLogger(log.WithField("context", "bot_api"))
-	tool.Try(api.SetLogger(log.StandardLogger()), true)
+	tool.SetLogger(log.StandardLogger())
+	tool.Try(api.SetLogger(log.WithField("context", "bot_api")), true)
 
 	go func() {
 		err := tool.Recoverer(-1, func() {
