@@ -30,6 +30,9 @@ func (r *registry) GetCM(ID int64) *db.ChatMeta {
 	return r.cmCache[ID]
 }
 func (r *registry) SetCM(cm *db.ChatMeta) {
+	if cm == nil {
+		return
+	}
 	r.cmCache[cm.ID] = cm
 }
 func (r *registry) RemoveCM(ID int64) {
@@ -40,6 +43,9 @@ func (r *registry) GetUM(ID int64) *db.UserMeta {
 	return r.umCache[ID]
 }
 func (r *registry) SetUM(um *db.UserMeta) {
+	if um == nil {
+		return
+	}
 	r.umCache[um.ID] = um
 }
 func (r *registry) RemoveUM(ID int64) {
