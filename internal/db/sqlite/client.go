@@ -2,7 +2,6 @@ package sqlite
 
 import (
 	"context"
-	"database/sql"
 	"os"
 	"path/filepath"
 
@@ -127,26 +126,7 @@ func (c *sqliteClient) UpsertUserMeta(chat *db.UserMeta) error {
 
 func (c *sqliteClient) GetChatMeta(chatID int64) (*db.ChatMeta, error) {
 	res := &db.ChatMeta{}
-	if err := c.db.Get(res, "select * from chats where id=?", chatID); err != nil {
-		switch errors.Cause(err) {
-		case sql.ErrNoRows:
-			res = &db.ChatMeta{
-				ID:       chatID,
-				Title:    "",
-				Language: config.Get().DefaultLanguage,
-				Type:     "",
-				Settings: map[string]string{},
-			}
-			res.Settings = *db.DefaultChatSettings
-			res.Settings["language"] = res.Language
-			if err := c.UpsertChatMeta(res); err != nil {
-				log.WithError(err).Error("default insert failed")
-			}
-		default:
-			return nil, errors.WithMessage(err, "cant get chat meta")
-		}
-	}
-	return res, nil
+	return res, c.db.Get(res, "select * from chats where id=?", chatID)
 }
 
 func (c *sqliteClient) UpsertChatMeta(chat *db.ChatMeta) error {

@@ -73,8 +73,7 @@ func (up *UpdateProcessor) Process(u *api.Update) error {
 		ucm := db.MetaFromChat(chat, config.Get().DefaultLanguage)
 		cm, err = up.GetChatMeta(chat.ID)
 		if err != nil {
-			log.WithError(err).WithField("update", *u).Warn("cant get chat meta")
-			cm = ucm
+			log.WithError(err).WithField("ucm", *ucm).Warn("cant get chat meta")
 		}
 		if cm != nil && (ucm.Title != cm.Title || ucm.Type != cm.Type) {
 			cm.Title = ucm.Title
@@ -84,14 +83,17 @@ func (up *UpdateProcessor) Process(u *api.Update) error {
 			}
 		} else if cm == nil {
 			if uErr := up.s.GetDB().UpsertChatMeta(cm); uErr != nil {
-				log.WithError(uErr).Warn("cant update chat meta")
+				log.WithError(uErr).Warn("cant insert chat meta")
 			}
 			cm = ucm
 		}
-		if cm.Settings == nil {
+		if len(cm.Settings) == 0 {
 			cm.Settings = db.ChatSettings{}
 			cm.Settings = *db.DefaultChatSettings
 			cm.Settings["language"] = config.Get().DefaultLanguage
+			if uErr := up.s.GetDB().UpsertChatMeta(cm); uErr != nil {
+				log.WithError(uErr).Warn("cant update chat meta settings")
+			}
 		}
 	}
 
@@ -108,7 +110,7 @@ func (up *UpdateProcessor) Process(u *api.Update) error {
 				return errors.WithMessage(err, "cant get user meta")
 			}
 		}
-		if uum != nil && (um == nil || (uum.FirstName != um.FirstName || uum.LastName != um.LastName || uum.UserName != um.UserName && uum.LanguageCode != um.LanguageCode)) {
+		if um == nil || (uum.FirstName != um.FirstName || uum.LastName != um.LastName || uum.UserName != um.UserName && uum.LanguageCode != um.LanguageCode) {
 			if uErr := up.s.GetDB().UpsertUserMeta(uum); uErr != nil {
 				log.WithError(uErr).Warn("cant update user meta")
 			}

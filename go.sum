@@ -223,14 +223,6 @@ github.com/huandu/xstrings v1.3.3/go.mod h1:y5/lhBue+AyNmUVz9RLU9xbLR0o4KIIExikq
 github.com/huandu/xstrings v1.4.0/go.mod h1:y5/lhBue+AyNmUVz9RLU9xbLR0o4KIIExikq4ovT0aE=
 github.com/iamwavecut/telegram-bot-api v0.0.0-20230218213054-8b84e43be657 h1:BgJgdZ8+dwodLhXUF7ZFkMrFRCFHzMpSKN5GJ9bbvys=
 github.com/iamwavecut/telegram-bot-api v0.0.0-20230218213054-8b84e43be657/go.mod h1:QugM636QKZNuC6jdISliecG0SgPttMuOTbWGlS0vQ7Q=
-github.com/iamwavecut/tool v1.0.2 h1:z6jm4qGgEAJm7RumQFBWoOil7DajHDqd2UjHc6D2D8s=
-github.com/iamwavecut/tool v1.0.2/go.mod h1:D8DIv/UOk1AsEJYl+anmcLzbg1uHBVNQB0oeG/qWse0=
-github.com/iamwavecut/tool v1.0.3 h1:M6amuHCr9Cm/L6XsdZIRfDqXPb0ssUwWOFDYqj9QY2w=
-github.com/iamwavecut/tool v1.0.3/go.mod h1:D8DIv/UOk1AsEJYl+anmcLzbg1uHBVNQB0oeG/qWse0=
-github.com/iamwavecut/tool v1.0.4 h1:pdGBb/JXSnjF8AD6ybmrjvswCa3IqcgBjZIpPJu0Bkw=
-github.com/iamwavecut/tool v1.0.4/go.mod h1:D8DIv/UOk1AsEJYl+anmcLzbg1uHBVNQB0oeG/qWse0=
-github.com/iamwavecut/tool v1.0.5 h1:sEuvDDrsKSawoN2EgLYxB/l76jFS1Zpt6tfBzGAuvDw=
-github.com/iamwavecut/tool v1.0.5/go.mod h1:D8DIv/UOk1AsEJYl+anmcLzbg1uHBVNQB0oeG/qWse0=
 github.com/iamwavecut/tool v1.0.6 h1:qHrhgLslXITMvmcHHW+cli/HMdA5iHBDNV0p0i1JAic=
 github.com/iamwavecut/tool v1.0.6/go.mod h1:D8DIv/UOk1AsEJYl+anmcLzbg1uHBVNQB0oeG/qWse0=
 github.com/ianlancetaylor/demangle v0.0.0-20181102032728-5e5cf60278f6/go.mod h1:aSSvb/t6k1mPoxDqO4vJh6VOCGPwU4O0C2/Eqndh1Sc=
