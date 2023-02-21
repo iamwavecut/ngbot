@@ -231,6 +231,8 @@ github.com/iamwavecut/tool v1.0.4 h1:pdGBb/JXSnjF8AD6ybmrjvswCa3IqcgBjZIpPJu0Bkw
 github.com/iamwavecut/tool v1.0.4/go.mod h1:D8DIv/UOk1AsEJYl+anmcLzbg1uHBVNQB0oeG/qWse0=
 github.com/iamwavecut/tool v1.0.5 h1:sEuvDDrsKSawoN2EgLYxB/l76jFS1Zpt6tfBzGAuvDw=
 github.com/iamwavecut/tool v1.0.5/go.mod h1:D8DIv/UOk1AsEJYl+anmcLzbg1uHBVNQB0oeG/qWse0=
+github.com/iamwavecut/tool v1.0.6 h1:qHrhgLslXITMvmcHHW+cli/HMdA5iHBDNV0p0i1JAic=
+github.com/iamwavecut/tool v1.0.6/go.mod h1:D8DIv/UOk1AsEJYl+anmcLzbg1uHBVNQB0oeG/qWse0=
 github.com/ianlancetaylor/demangle v0.0.0-20181102032728-5e5cf60278f6/go.mod h1:aSSvb/t6k1mPoxDqO4vJh6VOCGPwU4O0C2/Eqndh1Sc=
 github.com/ianlancetaylor/demangle v0.0.0-20200824232613-28f6c0f3b639/go.mod h1:aSSvb/t6k1mPoxDqO4vJh6VOCGPwU4O0C2/Eqndh1Sc=
 github.com/imdario/mergo v0.3.11/go.mod h1:jmQim1M+e3UYxmgPu/WyfjB3N3VflVyUjjjwH0dnCYA=

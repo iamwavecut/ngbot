@@ -18,7 +18,7 @@ require github.com/google/uuid v1.3.0 // indirect
 
 require (
 	github.com/go-gorp/gorp/v3 v3.1.0 // indirect
-	github.com/iamwavecut/tool v1.0.5
+	github.com/iamwavecut/tool v1.0.6
 	github.com/sethvargo/go-envconfig v0.9.0
 	golang.org/x/exp v0.0.0-20230213192124-5e25df0256eb // indirect
 	golang.org/x/sys v0.5.0 // indirect
