@@ -1,6 +1,9 @@
 package db
 
 import (
+	"database/sql/driver"
+	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -50,6 +53,24 @@ const (
 var DefaultChatSettings = &ChatSettings{
 	challengeTimeout: defaultChallengeTimeout.String(),
 	rejectTimeout:    defaultRejectTimeout.String(),
+}
+
+func (s *ChatSettings) Value() (driver.Value, error) {
+	return json.Marshal(s)
+}
+
+func (s *ChatSettings) Scan(v interface{}) error {
+	if v == nil {
+		return nil
+	}
+	switch data := v.(type) {
+	case string:
+		return json.Unmarshal([]byte(data), &s)
+	case []byte:
+		return json.Unmarshal(data, &s)
+	default:
+		return fmt.Errorf("cannot scan type %t into Dict", v)
+	}
 }
 
 // GetLanguage Returns chat's set language

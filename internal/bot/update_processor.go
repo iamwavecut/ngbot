@@ -1,11 +1,13 @@
 package bot
 
 import (
+	"database/sql"
 	"time"
+
+	"github.com/iamwavecut/tool"
 
 	"github.com/iamwavecut/ngbot/internal/config"
 	"github.com/iamwavecut/ngbot/internal/db"
-	"github.com/iamwavecut/ngbot/internal/db/sqlite"
 	"github.com/iamwavecut/ngbot/internal/event"
 	"github.com/iamwavecut/ngbot/internal/infra/reg"
 
@@ -74,17 +76,22 @@ func (up *UpdateProcessor) Process(u *api.Update) error {
 			log.WithError(err).WithField("update", *u).Warn("cant get chat meta")
 			cm = ucm
 		}
-		if ucm.Title != cm.Title || ucm.Type != cm.Type {
+		if cm != nil && (ucm.Title != cm.Title || ucm.Type != cm.Type) {
 			cm.Title = ucm.Title
 			cm.Type = ucm.Type
 			if uErr := up.s.GetDB().UpsertChatMeta(cm); uErr != nil {
 				log.WithError(uErr).Warn("cant update chat meta")
 			}
+		} else if cm == nil {
+			if uErr := up.s.GetDB().UpsertChatMeta(cm); uErr != nil {
+				log.WithError(uErr).Warn("cant update chat meta")
+			}
+			cm = ucm
 		}
-		if ucm.Settings == nil {
-			ucm.Settings = db.ChatSettings{}
-			ucm.Settings = *db.DefaultChatSettings
-			ucm.Settings["language"] = config.Get().DefaultLanguage
+		if cm.Settings == nil {
+			cm.Settings = db.ChatSettings{}
+			cm.Settings = *db.DefaultChatSettings
+			cm.Settings["language"] = config.Get().DefaultLanguage
 		}
 	}
 
@@ -97,12 +104,11 @@ func (up *UpdateProcessor) Process(u *api.Update) error {
 		uum := db.MetaFromUser(user)
 		um, err = up.GetUserMeta(user.ID)
 		if err != nil {
-			if errors.Cause(err) != sqlite.ErrNoUser {
+			if errors.Cause(err) != sql.ErrNoRows {
 				return errors.WithMessage(err, "cant get user meta")
 			}
-			um = uum
 		}
-		if uum != um {
+		if uum != nil && (um == nil || (uum.FirstName != um.FirstName || uum.LastName != um.LastName || uum.UserName != um.UserName && uum.LanguageCode != um.LanguageCode)) {
 			if uErr := up.s.GetDB().UpsertUserMeta(uum); uErr != nil {
 				log.WithError(uErr).Warn("cant update user meta")
 			}
@@ -130,32 +136,30 @@ func (up *UpdateProcessor) Process(u *api.Update) error {
 	return nil
 }
 
-func (up *UpdateProcessor) GetChatMeta(chatID int64) (*db.ChatMeta, error) {
+func (up *UpdateProcessor) GetChatMeta(chatID int64) (cm *db.ChatMeta, err error) {
+	defer tool.Catch(func(catch error) {
+		err = catch
+	})
 	r := reg.Get()
 	if cm := r.GetCM(chatID); cm != nil {
 		return cm, nil
 	}
-	cm, err := up.s.GetDB().GetChatMeta(chatID)
-	if err != nil {
-		log.WithError(err).Warn("cant get chat meta")
-	}
+	cm, err = up.s.GetDB().GetChatMeta(chatID)
+	tool.Must(err)
 	r.SetCM(cm)
 	return cm, nil
 }
 
-func (up *UpdateProcessor) GetUserMeta(userID int64) (*db.UserMeta, error) {
+func (up *UpdateProcessor) GetUserMeta(userID int64) (um *db.UserMeta, err error) {
+	defer tool.Catch(func(catch error) {
+		err = catch
+	})
 	r := reg.Get()
 	if cm := r.GetUM(userID); cm != nil {
 		return cm, nil
 	}
-	um, err := up.s.GetDB().GetUserMeta(userID)
-	if err != nil {
-		if errors.Cause(err) != sqlite.ErrNoUser {
-			log.WithError(err).Warn("cant get user meta")
-		}
-		return nil, err
-	}
-
+	um, err = up.s.GetDB().GetUserMeta(userID)
+	tool.Must(err)
 	return um, nil
 }
 

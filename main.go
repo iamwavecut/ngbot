@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"os"
+	"time"
 
 	"github.com/iamwavecut/tool"
 
@@ -23,6 +24,8 @@ func main() {
 	log.SetFormatter(&config.NbFormatter{})
 	log.SetOutput(os.Stdout)
 	log.SetLevel(log.Level(cfg.LogLevel))
+	tool.SetLogger(log.WithField("context", "bot_api"))
+	tool.Try(api.SetLogger(log.StandardLogger()), true)
 
 	go func() {
 		err := tool.Recoverer(-1, func() {
@@ -65,6 +68,7 @@ func main() {
 					return
 				}
 			}
+			time.Sleep(time.Second)
 		})
 		log.WithError(err).Errorln("recoverer exited")
 		os.Exit(1)

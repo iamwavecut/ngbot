@@ -20,10 +20,6 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-var (
-	ErrNoUser = errors.New("no user in db")
-)
-
 type sqliteClient struct {
 	db *sqlx.DB
 }
@@ -115,13 +111,7 @@ func NewSQLiteClient(dbPath string) *sqliteClient {
 
 func (c *sqliteClient) GetUserMeta(userID int64) (*db.UserMeta, error) {
 	res := &db.UserMeta{}
-	if err := c.db.Get(res, "select * from users where id=?", userID); err != nil {
-		if errors.Cause(err) == sql.ErrNoRows {
-			return nil, ErrNoUser
-		}
-		return nil, errors.WithMessage(err, "cant get user meta")
-	}
-	return res, nil
+	return res, c.db.Get(res, "select * from users where id=?", userID)
 }
 
 func (c *sqliteClient) UpsertUserMeta(chat *db.UserMeta) error {
