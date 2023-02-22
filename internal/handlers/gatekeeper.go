@@ -227,7 +227,7 @@ func (g *Gatekeeper) handleChallenge(u *api.Update, chat *api.Chat, user *api.Us
 
 		if !isPublic {
 			_ = bot.ApproveJoinRequest(b, cu.user.ID, cu.targetChat.ID)
-			msg := api.NewMessage(cu.commChat.ID, i18n.Get("Awesome, you're good to go! Feel free to start chatting in the group.", lang))
+			msg := api.NewMessage(cu.commChat.ID, fmt.Sprintf(i18n.Get("Awesome, you're good to go! Feel free to start chatting in the group \"%s\".", lang), api.EscapeText(api.ModeMarkdown, cu.targetChat.Title)))
 			msg.ParseMode = api.ModeMarkdown
 			_ = tool.Err(b.Send(msg))
 		} else {

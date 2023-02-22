@@ -21,5 +21,5 @@
 "You should use one of the following options": "Вы должны использовать один из следующего списка"
 "Language set successfully": "Язык успешно установлен"
 "Hi %s! Your first message should be text-only and without any links or media. Just a heads up - if you don't follow this rule, you'll get banned from the group. Cheers!": "Привет, %s! Ваше первое сообщение должно содержать только текст и не должно включать ссылки или медиафайлы. Обратите внимание, что если вы нарушите это правило еще раз, вы будете исключены из группы. Удачи!"
-"Awesome, you're good to go! Feel free to start chatting in the group.": "Замечательно, теперь вы можете начать общаться в группе."
+"Awesome, you're good to go! Feel free to start chatting in the group \"%s\".": "Замечательно, теперь вы можете начать общаться в группе \"%s\"."
 "This challenge isn't your concern": "Это не ваше задание"
