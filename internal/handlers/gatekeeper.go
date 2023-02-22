@@ -216,7 +216,7 @@ func (g *Gatekeeper) handleChallenge(u *api.Update, chat *api.Chat, user *api.Us
 
 	switch {
 	case isAdmin, cu.successUUID == challengeUUID:
-		entry.Debug("successful challenge")
+		entry.Debug("successful challenge for ", bot.GetUN(cu.user))
 		if _, err := b.Request(api.NewCallback(cq.ID, i18n.Get("Welcome, friend!", lang))); err != nil {
 			entry.WithError(err).Errorln("cant answer callback query")
 		}
@@ -249,7 +249,7 @@ func (g *Gatekeeper) handleChallenge(u *api.Update, chat *api.Chat, user *api.Us
 		g.removeChallengedUser(cu.user.ID, cu.commChat.ID)
 
 	case cu.successUUID != challengeUUID:
-		entry.Debug("failed challenge")
+		entry.Debug("failed challenge for ", bot.GetUN(cu.user))
 
 		if _, err := b.Request(api.NewCallbackWithAlert(cq.ID, fmt.Sprintf(i18n.Get("Oops, it looks like you missed the deadline to join \"%s\", but don't worry! You can try again in %s minutes. Keep trying, I believe in you!", lang), cu.targetChat.Title, 10))); err != nil {
 			entry.WithError(err).Errorln("cant answer callback query")
@@ -338,18 +338,18 @@ func (g *Gatekeeper) handleJoin(u *api.Update, jus []api.User, target *api.Chat,
 		commLang := g.getLanguage(cu.commChat, cu.user)
 
 		go func() {
-			entry.Traceln("setting timer for", bot.GetUN(cu.user))
+			entry.Traceln("setting timer for ", bot.GetUN(cu.user))
 			timeout := time.NewTimer(3 * time.Minute)
 			defer delete(g.joiners[cu.commChat.ID], cu.user.ID)
 
 			select {
 			case <-ctx.Done():
-				entry.Info("removing challenge timer for", bot.GetUN(cu.user))
+				entry.Info("removing challenge timer for ", bot.GetUN(cu.user))
 				timeout.Stop()
 				return
 
 			case <-timeout.C:
-				entry.Info("challenge timed out for", bot.GetUN(cu.user))
+				entry.Info("challenge timed out for ", bot.GetUN(cu.user))
 				if cu.challengeMessageID != 0 {
 					if err := bot.DeleteChatMessage(b, cu.commChat.ID, cu.challengeMessageID); err != nil {
 						entry.WithError(err).Error("cant delete challenge message")
@@ -361,7 +361,7 @@ func (g *Gatekeeper) handleJoin(u *api.Update, jus []api.User, target *api.Chat,
 					}
 				}
 				if err := bot.BanUserFromChat(b, cu.user.ID, cu.targetChat.ID); err != nil {
-					entry.WithError(err).Errorln("cant ban", bot.GetUN(cu.user))
+					entry.WithError(err).Errorln("cant ban ", bot.GetUN(cu.user))
 				}
 				if cu.commChat.ID != cu.targetChat.ID {
 					if err := bot.DeclineJoinRequest(b, cu.user.ID, cu.targetChat.ID); err != nil {
