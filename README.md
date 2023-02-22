@@ -46,7 +46,7 @@ Ok, I've got something for ya.
     docker compose build --build-arg NG_TOKEN=<REPLACE_THIS>
     docker compose up -d --no-recreate
     ```
-8. Add your bot to chat, give him permissions to **Ban** and **Delete**.
+8. Add your bot to chat, give him permissions to **Ban**, **Delete**, and **Invite**.
 9. Change bot language for this chat, if needed.
     - `/lang ru` (`en`, `ru`)
 10. `docker compose stop` to stop bot `docker compose start` to get it up and running again.

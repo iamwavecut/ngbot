@@ -246,17 +246,18 @@ func (g *Gatekeeper) handleChallenge(u *api.Update, chat *api.Chat, user *api.Us
 		if _, ok := g.restricted[cu.targetChat.ID]; !ok {
 			g.restricted[cu.targetChat.ID] = map[int64]struct{}{}
 		}
+		g.removeChallengedUser(cu.user.ID, cu.commChat.ID)
 
 	case cu.successUUID != challengeUUID:
 		entry.Debug("failed challenge")
 
-		if _, err := b.Request(api.NewCallbackWithAlert(cq.ID, i18n.Get("Your answer is WRONG. Try again in 10 minutes", lang))); err != nil {
+		if _, err := b.Request(api.NewCallbackWithAlert(cq.ID, fmt.Sprintf(i18n.Get("Oops, it looks like you missed the deadline to join \"%s\", but don't worry! You can try again in %s minutes. Keep trying, I believe in you!", lang), cu.targetChat.Title, 10))); err != nil {
 			entry.WithError(err).Errorln("cant answer callback query")
 		}
 
 		if !isPublic {
 			_ = bot.DeclineJoinRequest(b, cu.user.ID, cu.targetChat.ID)
-			msg := api.NewMessage(cu.commChat.ID, i18n.Get("Your answer is WRONG. Try again in 10 minutes", lang))
+			msg := api.NewMessage(cu.commChat.ID, fmt.Sprintf(i18n.Get("Oops, it looks like you missed the deadline to join \"%s\", but don't worry! You can try again in %s minutes. Keep trying, I believe in you!", lang), cu.targetChat.Title, 10))
 			msg.ParseMode = api.ModeMarkdown
 			_ = tool.Err(b.Send(msg))
 		}
@@ -278,7 +279,7 @@ func (g *Gatekeeper) handleChallenge(u *api.Update, chat *api.Chat, user *api.Us
 		if cu.successFunc != nil {
 			cu.successFunc()
 		}
-
+		g.removeChallengedUser(cu.user.ID, cu.commChat.ID)
 	default:
 		if _, err := b.Request(api.NewCallback(cq.ID, i18n.Get("I have no idea what is going on", lang))); err != nil {
 			entry.WithError(err).Errorln("cant answer callback query")
@@ -343,12 +344,12 @@ func (g *Gatekeeper) handleJoin(u *api.Update, jus []api.User, target *api.Chat,
 
 			select {
 			case <-ctx.Done():
-				entry.Info("aborting challenge timer")
+				entry.Info("removing challenge timer for", bot.GetUN(cu.user))
 				timeout.Stop()
 				return
 
 			case <-timeout.C:
-				entry.Info("challenge timed out")
+				entry.Info("challenge timed out for", bot.GetUN(cu.user))
 				if cu.challengeMessageID != 0 {
 					if err := bot.DeleteChatMessage(b, cu.commChat.ID, cu.challengeMessageID); err != nil {
 						entry.WithError(err).Error("cant delete challenge message")
@@ -356,11 +357,11 @@ func (g *Gatekeeper) handleJoin(u *api.Update, jus []api.User, target *api.Chat,
 				}
 				if cu.joinMessageID != 0 {
 					if err := bot.DeleteChatMessage(b, cu.commChat.ID, cu.joinMessageID); err != nil {
-						entry.WithError(err).Error("cant delete challenge message")
+						entry.WithError(err).Error("cant delete join message")
 					}
 				}
 				if err := bot.BanUserFromChat(b, cu.user.ID, cu.targetChat.ID); err != nil {
-					entry.WithError(err).Errorln("cant ban join requester")
+					entry.WithError(err).Errorln("cant ban", bot.GetUN(cu.user))
 				}
 				if cu.commChat.ID != cu.targetChat.ID {
 					if err := bot.DeclineJoinRequest(b, cu.user.ID, cu.targetChat.ID); err != nil {
@@ -573,6 +574,18 @@ func (g *Gatekeeper) findChallengedUser(userID int64, chatID int64) *challengedU
 
 	g.getLogEntry().Warnln("no challenges for chat user", chatID, userID)
 	return nil
+}
+
+func (g *Gatekeeper) removeChallengedUser(userID int64, chatID int64) {
+	if _, ok := g.joiners[chatID]; !ok {
+		g.getLogEntry().Traceln("no challenges for chat", chatID)
+		return
+	}
+	if _, ok := g.joiners[chatID][userID]; ok {
+		delete(g.joiners[chatID], userID)
+		return
+	}
+	g.getLogEntry().Traceln("no challenges for chat user", chatID, userID)
 }
 
 func (g *Gatekeeper) createCaptchaIndex(lang string) [][2]string {
