@@ -48,7 +48,7 @@ Ok, I've got something for ya.
     ```
 8. Add your bot to chat, give him permissions to **Ban**, **Delete**, and **Invite**.
 9. Change bot language for this chat, if needed.
-    - `/lang ru` (`en`, `ru`)
+    - `/lang ru` (see below for the complete list of available languages)
 10. `docker compose stop` to stop bot `docker compose start` to get it up and running again.
 11. `docker compose down` to remove bot's artifacs.
 12. `rm ~/.ngbot/bot.db` to start clean.
@@ -92,9 +92,9 @@ CGO_ENABLE=1 go run .
 | Required | Variable name | Description | Default | Options |
 |---|---|---|---|---|
 | :heavy_check_mark: | `NG_TOKEN` | Telegram BOT API token |  |  |
-| :x: | `NG_LANG` | Default language to use in new chats. | `en` | `en`, `ru` |
+| :x: | `NG_LANG` | Default language to use in new chats. | `en` | `bg`, `cs`, `da`, `de`, `el`, `en`, `es`, `et`, `fi`, `fr`, `hu`, `id`, `it`, `ja`, `ko`, `lt`, `lv`, `nb`, `nl`, `pl`, `pt`, `ro`, `ru`, `sk`, `sl`, `sv`, `tr`, `uk`, `zh` |
 | :x: | `NG_HANDLERS` | If for some silly reason you want to get rid of admin or gateway function. Or if you are awesome and want to add yours. Or to change an invocation order. Go for it! | `admin,gatekeeper` | any combination of comma-separated default items. |
-| :x: | `NG_LOG_LEVEL` | Limits the logs spam, maximum verbosity by default. | `6` | 0=Panic, 1=Fatal, 2=Error, 3=Warn, 4=Info, 5=Debug, 6=Trace |
+| :x: | `NG_LOG_LEVEL` | Limits the logs spam, maximum verbosity by default. | `6` | `0`=Panic, `1`=Fatal, `2`=Error, `3`=Warn, `4`=Info, `5`=Debug, `6`=Trace |
 
 ## TODO
 
