@@ -10,6 +10,7 @@ import (
 	"github.com/iamwavecut/ngbot/internal/db/sqlite"
 	"github.com/iamwavecut/ngbot/internal/event"
 	"github.com/iamwavecut/ngbot/internal/handlers"
+	"github.com/iamwavecut/ngbot/internal/i18n"
 
 	api "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	log "github.com/sirupsen/logrus"
@@ -26,6 +27,7 @@ func main() {
 	log.SetLevel(log.Level(cfg.LogLevel))
 	tool.SetLogger(log.StandardLogger())
 	tool.Try(api.SetLogger(log.WithField("context", "bot_api")), true)
+	i18n.Init()
 
 	go func() {
 		err := tool.Recoverer(-1, func() {

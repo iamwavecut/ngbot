@@ -80,18 +80,16 @@ func NewGatekeeper(s bot.Service) *Gatekeeper {
 	}
 
 	entry := g.getLogEntry()
-
-	for _, lang := range [2]string{"en", "ru"} {
-		entry.Traceln("loading localized challenges")
+	for _, lang := range i18n.GetLanguagesList() {
 		challengesData, err := resources.FS.ReadFile(infra.GetResourcesPath("gatekeeper", "challenges", lang+".yml"))
 		if err != nil {
-			entry.WithError(err).Errorln("cant load challenges file")
+			entry.WithError(err).Errorln("cant load challenges file", lang)
 		}
 
-		entry.Traceln("unmarshal localized challenges")
+		// entry.Traceln("unmarshal localized challenges", lang)
 		localVariants := map[string]string{}
 		if err := yaml.Unmarshal(challengesData, &localVariants); err != nil {
-			entry.WithError(err).Errorln("cant unmarshal challenges yaml")
+			entry.WithError(err).Errorln("cant unmarshal challenges yaml", lang)
 		}
 		g.Variants[lang] = localVariants
 	}
@@ -628,11 +626,11 @@ func (g *Gatekeeper) getLogEntry() *log.Entry {
 }
 
 func (g *Gatekeeper) getLanguage(chat *api.Chat, user *api.User) string {
-	if user != nil && tool.In(user.LanguageCode, []string{"en", "ru"}) {
-		return user.LanguageCode
-	}
 	if lang, err := g.s.GetDB().GetChatLanguage(chat.ID); !tool.Try(err) {
 		return lang
+	}
+	if user != nil && tool.In(user.LanguageCode, i18n.GetLanguagesList()) {
+		return user.LanguageCode
 	}
 	return config.Get().DefaultLanguage
 }

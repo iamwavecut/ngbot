@@ -1,7 +1,7 @@
 package i18n
 
 import (
-	"fmt"
+	"strings"
 
 	"github.com/iamwavecut/ngbot/internal/config"
 	"github.com/iamwavecut/ngbot/internal/infra"
@@ -12,44 +12,50 @@ import (
 )
 
 var state = struct {
-	translations    map[string]map[string]string
-	loaded          map[string]bool
-	resourcesPath   string
-	defaultLanguage string
+	translations       map[string]map[string]string // [key][lang][translation]
+	resourcesPath      string
+	defaultLanguage    string
+	availableLanguages []string
 }{
-	translations:    make(map[string]map[string]string),
-	loaded:          make(map[string]bool),
+	translations:    map[string]map[string]string{},
 	defaultLanguage: config.Get().DefaultLanguage,
 	resourcesPath:   infra.GetResourcesPath("i18n"),
 }
 
-func load(lang string) {
-	if "en" == lang {
+func Init() {
+	if len(state.translations) > 0 {
 		return
 	}
-
-	i18n, err := resources.FS.ReadFile(state.resourcesPath + "/" + fmt.Sprintf("%s.yml", lang))
+	i18n, err := resources.FS.ReadFile(state.resourcesPath + "/translations.yml")
 	if err != nil {
-		log.WithError(err).Errorln("cant load i18n")
+		log.WithError(err).Errorln("cant load translations")
 		return
 	}
-	translations := make(map[string]string)
-	if err := yaml.Unmarshal(i18n, &translations); err != nil {
-		log.WithError(err).Errorln("cant unmarshal i18n")
+	if err := yaml.Unmarshal(i18n, &(state.translations)); err != nil {
+		log.WithError(err).Errorln("cant unmarshal translations")
 		return
 	}
-	state.translations[lang] = translations
-	state.loaded[lang] = true
+	languages := map[string]struct{}{}
+	for _, langs := range state.translations {
+		for lang := range langs {
+			languages[strings.ToLower(lang)] = struct{}{}
+		}
+	}
+	for lang := range languages {
+		state.availableLanguages = append(state.availableLanguages, lang)
+	}
+	log.Traceln("languages count:", len(state.availableLanguages))
+}
+
+func GetLanguagesList() []string {
+	return state.availableLanguages[:]
 }
 
 func Get(key, lang string) string {
 	if "en" == lang {
 		return key
 	}
-	if !state.loaded[lang] {
-		load(lang)
-	}
-	if res, ok := state.translations[lang][key]; ok {
+	if res, ok := state.translations[key][strings.ToUpper(lang)]; ok {
 		return res
 	}
 	log.Traceln(`no "` + lang + `" translation for key "` + key + `"`)

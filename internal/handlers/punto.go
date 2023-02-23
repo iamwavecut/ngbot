@@ -15,6 +15,7 @@ import (
 
 	"github.com/iamwavecut/ngbot/internal/bot"
 	"github.com/iamwavecut/ngbot/internal/config"
+	"github.com/iamwavecut/ngbot/internal/i18n"
 )
 
 type Punto struct {
@@ -150,11 +151,11 @@ func (p *Punto) load(lang string) error {
 }
 
 func (p *Punto) getLanguage(chat *api.Chat, user *api.User) string {
-	if user != nil && tool.In(user.LanguageCode, []string{"en", "ru"}) {
-		return user.LanguageCode
-	}
 	if lang, err := p.s.GetDB().GetChatLanguage(chat.ID); !tool.Try(err) {
 		return lang
+	}
+	if user != nil && tool.In(user.LanguageCode, i18n.GetLanguagesList()) {
+		return user.LanguageCode
 	}
 	return config.Get().DefaultLanguage
 }

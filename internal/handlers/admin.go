@@ -14,16 +14,17 @@ import (
 	"github.com/iamwavecut/ngbot/internal/i18n"
 )
 
-var allowedLanguages = []string{"en", "ru"}
-
 type Admin struct {
-	s bot.Service
+	s         bot.Service
+	languages []string
 }
 
 func NewAdmin(s bot.Service) *Admin {
 	a := &Admin{
-		s: s,
+		s:         s,
+		languages: i18n.GetLanguagesList(),
 	}
+
 	return a
 }
 
@@ -74,22 +75,27 @@ func (a *Admin) Handle(u *api.Update, chat *api.Chat, user *api.User) (proceed b
 	switch m.Command() {
 	case "lang":
 		if !isAdmin {
+			entry.Trace("not admin")
 			break
 		}
 
 		argument := m.CommandArguments()
 		isAllowed := false
-		for _, allowedLanguage := range allowedLanguages {
+		for _, allowedLanguage := range a.languages {
+			log.Traceln(allowedLanguage, argument)
 			if allowedLanguage == argument {
 				isAllowed = true
 				break
 			}
 		}
 		if !isAllowed {
-			_, _ = b.Send(api.NewMessage(
+			msg := api.NewMessage(
 				chat.ID,
-				i18n.Get("You should use one of the following options", lang)+": "+strings.Join(allowedLanguages, ", "),
-			))
+				i18n.Get("You should use one of the following options", lang)+": `"+strings.Join(a.languages, "`, `")+"`",
+			)
+			msg.ParseMode = api.ModeMarkdown
+			msg.DisableNotification = true
+			_, _ = b.Send(msg)
 			return false, nil
 		}
 
@@ -104,7 +110,6 @@ func (a *Admin) Handle(u *api.Update, chat *api.Chat, user *api.User) (proceed b
 			i18n.Get("Language set successfully", lang),
 		))
 
-		entry.Trace("not admin")
 		return false, nil
 
 	case "start":
