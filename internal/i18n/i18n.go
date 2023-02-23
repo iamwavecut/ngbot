@@ -18,9 +18,10 @@ var state = struct {
 	defaultLanguage    string
 	availableLanguages []string
 }{
-	translations:    map[string]map[string]string{},
-	defaultLanguage: config.Get().DefaultLanguage,
-	resourcesPath:   infra.GetResourcesPath("i18n"),
+	translations:       map[string]map[string]string{},
+	defaultLanguage:    config.Get().DefaultLanguage,
+	resourcesPath:      infra.GetResourcesPath("i18n"),
+	availableLanguages: []string{"en"},
 }
 
 func Init() {
