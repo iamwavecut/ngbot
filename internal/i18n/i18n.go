@@ -1,6 +1,7 @@
 package i18n
 
 import (
+	"sort"
 	"strings"
 
 	"github.com/iamwavecut/ngbot/internal/config"
@@ -44,6 +45,7 @@ func Init() {
 	for lang := range languages {
 		state.availableLanguages = append(state.availableLanguages, lang)
 	}
+	sort.Strings(state.availableLanguages)
 	log.Traceln("languages count:", len(state.availableLanguages))
 }
 
