@@ -1,5 +1,6 @@
 "Hi there, %s! Please, pick %s to prove that you're human being (or be banned otherwise)":
-  BG: "Здравейте, %s! Моля, изберете %s, за да докажете, че сте човек (или ще бъдете забранени в противен случай)."
+  BE: "Прывітанне вам, %s! Калі ласка, абярыце %s, каб прайсці тэст на бота (інакш мы вас забанім, бо можам)"
+  BG: "Здравейте, %s! Моля, изберете %s, за да докажете, че сте човек (или ще бъдете забранени в противен случай)"
   CS: "Ahoj, %s! Prosím, vyber %s, abys dokázal, že jsi člověk (nebo budeš zabanován)."
   DA: "Hejsa, %s! Vælg venligst %s for at bevise, at du er et menneske (eller bliv ellers banned)"
   DE: "Hallo, %s! Bitte wähle %s, um zu beweisen, dass du ein Mensch bist (oder werde sonst gesperrt)"
@@ -28,6 +29,7 @@
   UK: "Привіт, %s! Будь ласка, виберіть %s, щоб довести, що ви людина (або заборонені інакше)"
   ZH: "嗨， %s！ 请选择 %s 来证明自己是人类（或被禁止）"
 "Hello, %s! We want to be sure you're not a bot, so please select %s. If not, we might have to say goodbye. Thanks for understanding!":
+  BE: "Прывітанне, %s! Мы хочам быць ўпэўненымі, што вы не бот, таму абярыце, калі ласка, %s. Калі не, мы будзем вымушаны расквітацца. Дзякуй за разуменне!"
   BG: "Здравейте, %s! Искаме да сме сигурни, че не сте бот, затова моля изберете %s. Ако не, може да се наложи да се сбогуваме. Благодаря за разбирането!"
   CS: "Ahoj, %s! Chceme mít jistotu, že nejste bot, proto prosím vyberte %s. Pokud ne, budeme se s vámi muset rozloučit. Děkujeme za pochopení!"
   DA: "Hej, %s! Vi vil gerne være sikre på, at du ikke er en bot, så vælg %s. Hvis ikke, bliver vi måske nødt til at sige farvel. Tak for din forståelse!"
@@ -57,6 +59,7 @@
   UK: "Привіт, %s! Ми хочемо бути впевненими, що ви не бот, тому, будь ласка, виберіть %s. Якщо ні, то, можливо, доведеться попрощатися. Спасибі за розуміння!"
   ZH: "您好， %s！ 我们想确保您不是机器人，所以请选择 %s。 如果没有，我们可能不得不说再见。 感谢您的理解！"
 "Hey %s! To keep this group human-only, could you please choose %s? If you don't, we'll have to say bye-bye. Thanks for your cooperation!":
+  BE: "Хай, %s! Каб захаваць гэтую групу толькі для людзей, калі ласка, абярыце %s. Калі не зможаце, то давядзецца развітацца. Дзякуй за супрацоўніцтва!"
   BG: "Здравей %s! За да запазим тази група само за хора, бихте ли избрали %s? Ако не го направите, ще трябва да се сбогуваме. Благодарим ви за съдействието!"
   CS: "Ahoj %s! Aby tato skupina zůstala pouze pro lidi, mohl bys prosím zvolit %s? Pokud ne, budeme se muset rozloučit. Děkujeme za spolupráci!"
   DA: "Hej %s! For at denne gruppe skal være forbeholdt mennesker, kan du venligst vælge %s? Hvis du ikke gør det, må vi sige farvel. Tak for dit samarbejde!"
@@ -86,6 +89,7 @@
   UK: "Гей %s! Щоб зберегти цю групу лише для людини, чи можете ви вибрати %s? Якщо ви цього не зробите, нам доведеться сказати до побачення. Дякуємо Вам за співпрацю!"
   ZH: "嘿 %s！ 为了让这个小组仅限于人类，您能选择 %s 吗？ 如果您不这样做，我们必须说再见。 谢谢你的合作！"
 "Greetings, %s! We're just checking to make sure you're not a robot. Can you please pick %s? If not, we'll have to let you go. Thanks for your cooperation!":
+  BE: "Вітаю %s! Мы проста правяраем, што вы не робат. Можаце абраць, калі ласка, %s? Калі не, то нам давядзецца вас выгнаць. Дзякуй за супрацоўніцтва!"
   BG: "Поздрави, %s! Просто проверяваме дали не сте робот. Можете ли да изберете %s? Ако не, ще трябва да ви пуснем. Благодарим ви за съдействието!"
   CS: "Zdravím vás, %s! Jen kontrolujeme, zda nejste robot. Můžete si prosím vybrat %s? Pokud ne, budeme vás muset propustit. Děkujeme za spolupráci!"
   DA: "Hilsen, %s! Vi tjekker bare, at du ikke er en robot. Kan du venligst vælge %s? Hvis ikke, må vi lade dig gå. Tak for dit samarbejde!"
@@ -115,6 +119,7 @@
   UK: "Привітання, %s! Ми просто перевіряємо, щоб переконатися, що ви не робот. Чи можете ви вибрати %s? Якщо ні, нам доведеться відпустити вас. Дякуємо Вам за співпрацю!"
   ZH: "问候， %s！ 我们只是在检查以确保您不是机器人。 你能选择 %s 吗？ 如果没有，我们必须让您走。 谢谢你的合作！"
 "Hi there, %s! We like having humans in this group, so please select %s to prove you're not a bot. If you can't, we might have to remove you. Thanks in advance!":
+  BE: "Прывітанне, %s! Нам падабаецца, калі ў групе толькі людзі, таму, калі ласка, абярыце %s, каб даказаць, што вы не бот. Калі не зможаце, то давядзецца выдаліць вас. Загадзя дзякуй!"
   BG: "Здравейте, %s! Обичаме в тази група да има хора, така че моля, изберете %s, за да докажете, че не сте бот. Ако не можете, може да се наложи да ви премахнем. Благодаря предварително!"
   CS: "Ahoj, %s! V této skupině máme rádi lidi, takže prosím vyberte %s, abyste dokázali, že nejste bot. Pokud to nedokážete, možná vás budeme muset odstranit. Předem děkujeme!"
   DA: "Hejsa, %s! Vi kan godt lide at have mennesker i denne gruppe, så vælg %s for at bevise, at du ikke er en bot. Hvis du ikke kan det, bliver vi måske nødt til at fjerne dig. Tak på forhånd!"
@@ -144,6 +149,7 @@
   UK: "Привіт, %s! Нам подобається мати людей у цій групі, тому, будь ласка, виберіть %s, щоб довести, що ви не бот. Якщо ви не можете, нам, можливо, доведеться зняти вас. Заздалегідь спасибі!"
   ZH: "嗨， %s！ 我们喜欢在这个小组中拥有人类，因此请选择 %s 以证明您不是机器人。 如果您不能，我们可能必须删除您。 提前致谢！"
 "Welcome, %s! We need your help to keep this group human-only. Could you please select %s? If you can't, we might have to remove you. Thanks for your understanding!":
+  BE: "Сардэчна запрашаем, %s! Мы маем патрэбу ў вашай дапамозе, каб захаваць у гэтай групе толькі людзей. Можаце абраць, калі ласка, %s? Калі не, то нам давядзецца выдаліць вас. Дзякую за разуменне!"
   BG: "Добре дошли, %s! Имаме нужда от вашата помощ, за да запазим тази група само за хора. Можете ли да изберете %s? Ако не можете, може да се наложи да ви премахнем. Благодаря за разбирането!"
   CS: "Vítejte, %s! Potřebujeme vaši pomoc, aby tato skupina zůstala jen pro lidi. Mohli byste prosím vybrat %s? Pokud to nedokážete, možná vás budeme muset odstranit. Děkujeme za pochopení!"
   DA: "Velkommen, %s! Vi har brug for din hjælp til at holde denne gruppe forbeholdt mennesker. Vil du venligst vælge %s? Hvis du ikke kan, bliver vi måske nødt til at fjerne dig. Tak for din forståelse!"
@@ -173,6 +179,7 @@
   UK: "Ласкаво просимо, %s! Нам потрібна ваша допомога, щоб зберегти цю групу лише для людини. Не могли б ви вибрати %s? Якщо ви не можете, нам, можливо, доведеться зняти вас. Спасибі за ваше розуміння!"
   ZH: "欢迎， %s！ 我们需要您的帮助才能使这个团体仅由人类保留。 您能选择 %s 吗？ 如果您不能，我们可能必须删除您。 感谢你的理解！"
 "Hey %s! Exciting to see you're interested in joining the group \"%s\"! We just need one more thing from you to confirm that you're human - pick %s. If you can't, we might have to say goodbye. Thanks for your cooperation!":
+  BE: "Прывітанне, %s! Стромка, што ты жадаеш далучыцца да групы \"%s\"! Нам трэба ўсяго адзін доказ, што ты чалавек - абяры %s. Калі не атрымаецца - давядзецца развітацца. Дзякуй за разуменне!"
   BG: "Здравей %s! Радващо е да видя, че се интересувате от присъединяване към групата \"%s\"! Имаме нужда само от още едно нещо от вас, за да потвърдим, че сте човек - изберете %s. Ако не можете, може да се наложи да се сбогуваме. Благодарим ви за съдействието!"
   CS: "Ahoj %s! Těší mě, že máš zájem připojit se ke skupině \"%s\"! Potřebujeme od tebe jen jednu věc, abychom potvrdili, že jsi člověk - vyber %s. Pokud to nedokážeš, možná se budeme muset rozloučit. Děkujeme za spolupráci!"
   DA: "Hej %s! Spændende at se, at du er interesseret i at blive medlem af gruppen \"%s\"! Vi skal bare bruge en ting mere fra dig for at bekræfte, at du er et menneske - vælg %s. Hvis du ikke kan det, må vi måske sige farvel. Tak for dit samarbejde!"
@@ -202,6 +209,7 @@
   UK: "Гей %s! Захоплююче бачити, що вам цікаво приєднатися до групи \"%s\"! Нам просто потрібна ще одна річ, щоб підтвердити, що ти людина - виберіть %s. Якщо ви не можете, нам, можливо, доведеться попрощатися. Дякуємо Вам за співпрацю!"
   ZH: "嘿 %s！ 令人兴奋的是，您有兴趣加入小组 \"%s\"！ 我们只需要您的另一件事即可确认您是人类-Pick %s。 如果您不能，我们可能不得不说再见。 谢谢你的合作！"
 "Hello there, %s! We're happy you want to join \"%s\"! We just need you to pick %s to prove that you're human. If you can't, we might have to remove you. Thanks for your understanding!":
+  BE: "Добры дзень, %s! Мы рады, што ты хочаш далучыцца да суполкі \"%s\"! Проста выберы %s, каб пацвердзіць, што ты чалавек. Калі памылішся, давядзецца выдаліць цябе. Дзякуй за разуменне!"
   BG: "Здравейте, %s! Радваме се, че искате да се присъедините към \"%s\"! Трябва само да изберете %s, за да докажете, че сте човек. Ако не успеете, може да се наложи да ви отстраним. Благодаря за разбирането!"
   CS: "Dobrý den, %s! Jsme rádi, že se chcete připojit k \"%s\"! Potřebujeme jen, abyste si vybrali %s a dokázali, že jste člověk. Pokud to nedokážete, možná vás budeme muset odstranit. Děkujeme za pochopení!"
   DA: "Hejsa, %s! Vi er glade for, at du ønsker at blive medlem af \"%s\"! Vi har bare brug for, at du vælger %s for at bevise, at du er et menneske. Hvis du ikke kan det, bliver vi måske nødt til at fjerne dig. Tak for din forståelse!"
@@ -231,6 +239,7 @@
   UK: "Привіт, %s! Ми раді, що хочете приєднатися до \"%s\"! Нам просто потрібно, щоб ви вибрали %s, щоб довести, що ви людина. Якщо ви не можете, нам, можливо, доведеться зняти вас. Спасибі за ваше розуміння!"
   ZH: "你好， %s！ 我们很高兴您想加入 \"%s\"！ 我们只需要您选择 %s 来证明自己是人类。 如果您不能，我们可能必须删除您。 感谢你的理解！"
 "Hi %s! We're thrilled you want to be part of \"%s\"! Just one more thing to make sure you're not a bot - please select %s. If you can't, we might have to say goodbye. Thanks for your cooperation!":
+  BE: "Прывітанне, %s! Мы ў захапленні ад таго, што ты хочаш далучыцца да групы \"%s\"! Нам трэба пераканацца, што ты не робат - выберы %s. Калі не атрымаецца, давядзецца развітацца. Дзякуй за супрацоўніцтва!"
   BG: "Здравейте %s! Радваме се, че искате да бъдете част от \"%s\"! Само още нещо, за да сме сигурни, че не сте бот - моля, изберете %s. Ако не можете, може да се наложи да се сбогуваме с вас. Благодарим ви за съдействието!"
   CS: "Ahoj %s! Jsme nadšeni, že chcete být součástí \"%s\"! Ještě jedna věc, abychom se ujistili, že nejste bot - vyberte prosím %s. Pokud to nedokážete, možná se s vámi budeme muset rozloučit. Děkujeme za spolupráci!"
   DA: "Hej %s! Vi er glade for, at du ønsker at være en del af \"%s\"! Lige en ting mere for at sikre, at du ikke er en bot - vælg venligst %s. Hvis du ikke kan det, må vi måske sige farvel. Tak for dit samarbejde!"
@@ -260,6 +269,7 @@
   UK: "Привіт %s! Ми в захваті від того, що ви хочете бути частиною \"%s\"! Ще одна річ, щоб переконатися, що ви не бот - будь ласка, виберіть %s. Якщо ви не можете, нам, можливо, доведеться попрощатися. Дякуємо Вам за співпрацю!"
   ZH: "嘿，%s。！ 我们很高兴您想成为 \"%s\" 的一部分！ 还有一件事可以确保您不是机器人 - 请选择 %s。 如果您不能，我们可能不得不说再见。 谢谢你的合作！"
 "Welcome, %s! We're glad you're interested in joining \"%s\"! Please pick %s to prove that you're a human being. If you can't, we might have to remove you. Thanks for understanding!":
+  BE: "Сардэчна запрашаем, %s! Мы рады, што ты зацікаўлены ў далучэнні да групы \"%s\"! Калі ласка, абяры %s, каб пацьвердзіць, што ты чалавек. Калі не атрымаецца, давядзецца выдаліць цябе. Дзякуй за разуменне!"
   BG: "Добре дошли, %s! Радваме се, че се интересувате от присъединяване към \"%s\"! Моля, изберете %s, за да докажете, че сте човешко същество. Ако не можете, може да се наложи да ви отстраним. Благодаря за разбирането!"
   CS: "Vítejte, %s! Jsme rádi, že máte zájem připojit se k \"%s\"! Vyberte si prosím %s, abyste dokázali, že jste lidská bytost. Pokud to nedokážete, možná vás budeme muset odstranit. Děkujeme za pochopení!"
   DA: "Velkommen, %s! Vi er glade for, at du er interesseret i at blive en del af \"%s\"! Vælg venligst %s for at bevise, at du er et menneske. Hvis du ikke kan det, bliver vi måske nødt til at fjerne dig. Tak for din forståelse!"
@@ -289,6 +299,7 @@
   UK: "Ласкаво просимо, %s! Ми раді, що вам цікаво приєднатися до \"%s\"! Будь ласка, виберіть %s, щоб довести, що ви людина. Якщо ви не можете, нам, можливо, доведеться зняти вас. Спасибі за розуміння!"
   ZH: "欢迎， %s！ 我们很高兴您有兴趣加入 \"%s\"！ 请选择 %s 以证明您是人类。 如果您不能，我们可能必须删除您。 感谢您的理解！"
 "Hey %s! We're excited you want to join the group \"%s\"! Just need a quick test to make sure you're not a robot - pick %s. If you can't, we might have to say bye-bye. Thanks for your cooperation!":
+  BE: "Прывітанне, %s! Мы рады, што вы хочаце далучыцца да групы \"%s\"! У нас ёсць хуткі тэст, каб пераканацца, што вы не робат - абярыце %s. Калі вы не можаце, мы будзем вымушаны развітацца. Дзякуй за ваша супрацоўніцтва!"
   BG: "Здравей %s! Радваме се, че искате да се присъедините към групата \"%s\"! Само трябва да направим бърз тест, за да се уверим, че не сте робот - изберете %s. Ако не можете, може да се наложи да кажем довиждане. Благодарим ви за съдействието!"
   CS: "Ahoj %s! Jsme rádi, že se chcete připojit ke skupině \"%s\"! Potřebujeme jen rychlý test, abychom se ujistili, že nejste robot - vyberte si %s. Pokud to nedokážeš, možná se budeme muset rozloučit. Děkujeme za spolupráci!"
   DA: "Hej %s! Vi er glade for, at du vil være med i gruppen \"%s\"! Vi har bare brug for en hurtig test for at sikre os, at du ikke er en robot - vælg %s. Hvis du ikke kan det, må vi måske sige farvel. Tak for dit samarbejde!"
@@ -318,6 +329,7 @@
   UK: "Гей %s! Ми раді, що ви хочете приєднатися до групи \"%s\"! Просто потрібен швидкий тест, щоб переконатися, що ви не робот - виберіть %s. Якщо ви не можете, нам, можливо, доведеться сказати до побачення. Дякуємо Вам за співпрацю!"
   ZH: "嘿 %s！ 我们很高兴您想加入 \"%s\"小组！ 只需快速测试即可确保您不是机器人-Pick %s。 如果您不能，我们可能不得不说再见。 谢谢你的合作！"
 "Hi there, %s! Joining \"%s\" is fantastic news! Please pick %s to prove you're human. If you can't, we might have to let you go. Thanks for your cooperation!":
+  BE: "Добры дзень, %s! Далучэнне да \"%s\" - гэта крута! Калі ласка, абярыце %s, каб даказаць, што вы чалавек. Калі вы не можаце, мы будзем вымушаны адмовіць вам. Дзякуй за ваша супрацоўніцтва!"
   BG: "Здравейте, %s! Присъединяването към \"%s\" е фантастична новина! Моля, изберете %s, за да докажете, че сте човек. Ако не можете, може да се наложи да ви освободим. Благодарим ви за сътрудничеството!"
   CS: "Ahoj, %s! Připojení k \"%s\" je fantastická zpráva! Vyberte si prosím %s, abyste dokázali, že jste člověk. Pokud to nedokážeš, budeme tě muset propustit. Děkujeme za spolupráci!"
   DA: "Hejsa, %s! Det er en fantastisk nyhed at blive medlem af \"%s\"! Vælg venligst %s for at bevise, at du er et menneske. Hvis du ikke kan det, bliver vi måske nødt til at lade dig gå. Tak for dit samarbejde!"
@@ -347,6 +359,7 @@
   UK: "Привіт, %s! Приєднання \"%s\" - це фантастична новина! Будь ласка, виберіть %s, щоб довести, що ви людина. Якщо ви не можете, нам, можливо, доведеться відпустити вас. Дякуємо Вам за співпрацю!"
   ZH: "嗨， %s！ 加入 \"%s\" 是一个很棒的消息！ 请选择 %s 以证明您是人类。 如果您不能，我们可能不得不放手。 谢谢你的合作！"
 "Hello, %s! We're glad you want to be part of \"%s\"! Just one more step - pick %s to confirm that you're not a bot. If you can't, we might have to say goodbye. Thanks for understanding!":
+  BE: "Добры дзень, %s! Мы рады, што вы хочаце стаць часткай \"%s\"! Яшчэ адзін крок - абярыце %s, каб пацвердзіць, што вы не бот. Калі вы не можаце, мы будзем вымушаны развітацца. Дзякуй за разуменне!"
   BG: "Здравейте, %s! Радваме се, че искате да сте част от \"%s\"! Само още една стъпка - изберете %s, за да потвърдите, че не сте бот. Ако не можете, може да се наложи да се сбогуваме с вас. Благодаря за разбирането!"
   CS: "Ahoj, %s! Jsme rádi, že chcete být součástí \"%s\"! Už jen jeden krok - vyberte %s a potvrďte, že nejste bot. Pokud to nedokážete, možná se s vámi budeme muset rozloučit. Děkujeme za pochopení!"
   DA: "Hej, %s! Vi er glade for, at du ønsker at være en del af \"%s\"! Kun et skridt mere - vælg %s for at bekræfte, at du ikke er en bot. Hvis du ikke kan det, må vi måske sige farvel. Tak for din forståelse!"
@@ -354,6 +367,7 @@
   EL: "Γεια σου, %s! Χαιρόμαστε που θέλεις να γίνεις μέλος του \"%s\"! Ένα ακόμη βήμα - επιλέξτε %s για να επιβεβαιώσετε ότι δεν είστε bot. Αν δεν μπορείς, ίσως χρειαστεί να σε αποχαιρετήσουμε. Ευχαριστούμε για την κατανόηση!"
   ES: "¡Hola, %s! Nos alegra que quieras formar parte de %s. Sólo un paso más: elige %s para confirmar que no eres un bot. Si no puedes, puede que tengamos que despedirnos. Gracias por tu comprensión."
 "Hey %s! We're excited to see you want to join \"%s\"! To make sure you're not a robot, please select %s. If you can't, we might have to say farewell. Thanks for your cooperation!":
+  BE: "Прывітанне, %s! Мы рады бачыць, што вы хочаце далучыцца да \"%s\"! Каб пераканацца, што вы не робат, калі ласка, абярыце %s. Калі вы не можаце, мы будзем вымушаны развітацца. Дзякуй за ваша супрацоўніцтва!"
   BG: "Здравей %s! Радваме се да видим, че искате да се присъедините към \"%s\"! За да сме сигурни, че не сте робот, моля, изберете %s. Ако не успеете, може да се наложи да се сбогуваме с вас. Благодарим ви за съдействието!"
   CS: "Ahoj %s! Jsme rádi, že se chceš připojit k \"%s\"! Abychom se ujistili, že nejste robot, vyberte prosím %s. Pokud to nedokážete, možná se s vámi budeme muset rozloučit. Děkujeme za spolupráci!"
   DA: "Hej %s! Vi er glade for at se, at du ønsker at blive medlem af \"%s\"! For at sikre dig, at du ikke er en robot, skal du vælge %s. Hvis du ikke kan det, må vi måske sige farvel. Tak for dit samarbejde!"
@@ -361,6 +375,7 @@
   EL: "Γεια σου %s! Είμαστε ενθουσιασμένοι που βλέπουμε ότι θέλεις να γίνεις μέλος της \"%s\"! Για να βεβαιωθείτε ότι δεν είστε ρομπότ, παρακαλούμε επιλέξτε %s. Αν δεν μπορείς, ίσως χρειαστεί να σε αποχαιρετήσουμε. Ευχαριστούμε για τη συνεργασία σας!"
   ES: "¡Hola %s! ¡Estamos encantados de ver que quieres unirte a \"%s\"! Para asegurarnos de que no eres un robot, por favor selecciona %s. Si no puedes, tendremos que despedirnos. ¡Gracias por tu colaboración!"
 "Greetings, %s! It's great you want to join \"%s\"! Please pick %s to show that you're human. If you can't, we might have to remove you. Thanks for your understanding!":
+  BE: "Прывітанне, %s! Стромка, што вы жадаеце далучыцца да \"%s\"! Калі ласка, абярыце %s, каб паказаць, што вы чалавек. Калі вы не можаце, мы будзем вымушаны выдаліць вас. Дзякуй за разуменне!"
   BG: "Поздрави, %s! Чудесно е, че искате да се присъедините към \"%s\"! Моля, изберете %s, за да покажете, че сте човек. Ако не можете, може да се наложи да ви премахнем. Благодарим ви за разбирането!"
   CS: "Zdravím vás, %s! Je skvělé, že se chcete připojit k \"%s\"! Vyberte si prosím %s, abyste ukázali, že jste člověk. Pokud to nedokážete, možná vás budeme muset odstranit. Děkujeme za pochopení!"
   DA: "Hilsen, %s! Det er dejligt, at du ønsker at blive medlem af \"%s\"! Vælg venligst %s for at vise, at du er et menneske. Hvis du ikke kan det, bliver vi måske nødt til at fjerne dig. Tak for din forståelse!"
@@ -368,6 +383,7 @@
   EL: "Χαιρετισμούς, %s! Χαίρομαι που θέλετε να γίνετε μέλος της \"%s\"! Παρακαλώ επιλέξτε %s για να δείξετε ότι είστε άνθρωπος. Αν δεν μπορείτε, ίσως χρειαστεί να σας αφαιρέσουμε. Ευχαριστούμε για την κατανόησή σας!"
   ES: "¡Saludos, %s! Es estupendo que quieras unirte a %s. Por favor, elige %s para demostrar que eres humano. Si no puedes, puede que tengamos que eliminarte. Gracias por tu comprensión."
 "Hi there, %s! Welcome to the group \"%s\"! We need one more thing from you to confirm that you're human - pick %s. If you can't, we might have to let you go. Thanks for your cooperation!":
+  BE: "Прывітанне, %s! Сардэчна запрашаем у групу \"%s\"! Нам трэба толькі доказ таго, што вы чалавек - абярыце %s. Калі не атрымаецца, нам давядзецца адмовіць вам. Дзякуй за ваша супрацоўніцтва!"
   BG: "Здравейте, %s! Добре дошли в групата \"%s\"! Имаме нужда от още едно нещо от вас, за да потвърдим, че сте човек - изберете %s. Ако не можете, може да се наложи да ви освободим. Благодарим ви за съдействието!"
   CS: "Ahoj, %s! Vítejte ve skupině \"%s\"! Potřebujeme od tebe ještě jednu věc, která potvrdí, že jsi člověk - vyber %s. Pokud to nedokážete, možná vás budeme muset propustit. Děkujeme za spolupráci!"
   DA: "Hejsa, %s! Velkommen til gruppen \"%s\"! Vi har brug for en ting mere fra dig for at bekræfte, at du er et menneske - vælg %s. Hvis du ikke kan det, bliver vi måske nødt til at lade dig gå. Tak for dit samarbejde!"
@@ -397,6 +413,7 @@
   UK: "Привіт, %s! Ми раді, що ви хочете бути частиною \"%s\"! Ще один крок - виберіть %s, щоб підтвердити, що ви не бот. Якщо ви не можете, нам, можливо, доведеться попрощатися. Спасибі за розуміння!"
   ZH: "您好， %s！ 我们很高兴您想成为 \"%s\" 的一部分！ 再过一步 - 选择 %s 可以确认您不是机器人。 如果您不能，我们可能不得不说再见。 感谢您的理解！"
 "Welcome, friend!":
+  BE: "Сардэчна запрашаем, сябар!"
   BG: "Добре дошъл, приятелю!"
   CS: "Vítej, příteli!"
   DA: "Velkommen, min ven!"
@@ -426,6 +443,7 @@
   UK: "Ласкаво просимо, друже!"
   ZH: "欢迎朋友！"
 "Your answer is WRONG. Try again in 10 minutes":
+  BE: "І гэта... ПАМЫЛКОВЫ адказ! Вяртайся праз 10 хвілін"
   BG: "Отговорът ви е погрешен. Опитайте отново след 10 минути"
   CS: "Vaše odpověď je ŠPATNÁ. Zkuste to znovu za 10 minut"
   DA: "Dit svar er FORKERT. Prøv igen om 10 minutter"
@@ -455,6 +473,7 @@
   UK: "Ваша відповідь неправильна. Спробуйте ще раз через 10 хвилин"
   ZH: "您的答案是错误的。 在10分钟内重试"
 "Stop it! You're too real":
+  BE: "Ну спыніся! Ты ж сапраўдны"
   BG: "Спрете! Твърде реален си"
   CS: "Přestaňte! Jsi příliš skutečný"
   DA: "Stop det! Du er for ægte"
@@ -484,6 +503,7 @@
   UK: "Зупини це! Ти занадто реальний"
   ZH: "停下来！ 你太真实了"
 "I have no idea what is going on":
+  BE: "Я ўвогуле не разумею, што адбываецца"
   BG: "Нямам представа какво се случва"
   CS: "Nemám tušení, co se děje"
   DA: "Jeg har ingen anelse om, hvad der foregår"
@@ -513,6 +533,7 @@
   UK: "Я поняття не маю, що відбувається"
   ZH: "我不知道发生了什么"
 "You should use one of the following options":
+  BE: "Вы павінны выкарыстоўваць адзін з наступнага спісу"
   BG: "Трябва да използвате една от следните опции"
   CS: "Měli byste použít jednu z následujících možností"
   DA: "Du skal bruge en af følgende muligheder"
@@ -542,6 +563,7 @@
   UK: "Ви повинні використовувати один із наступних варіантів"
   ZH: "您应该使用以下选项之一"
 "Language set successfully":
+  BE: "Мова паспяхова ўстаноўлена"
   BG: "Езикът е зададен успешно"
   CS: "Úspěšně nastavený jazyk"
   DA: "Sprog indstillet med succes"
@@ -571,6 +593,7 @@
   UK: "Мова, встановлена успішно"
   ZH: "语言设置成功"
 "Hi %s! Your first message should be text-only and without any links or media. Just a heads up - if you don't follow this rule, you'll get banned from the group. Cheers!":
+  BE: "Прывітанне, %s! Ваша першае паведамленне павінна змяшчаць толькі тэкст і не павінна ўключаць спасылкі або медыяфайлы. Звярніце ўвагу, што калі вы парушыце гэтае правіла яшчэ раз, вы будзеце выключаны з групы. Удачы!"
   BG: "Здравейте %s! Първото ви съобщение трябва да бъде само текстово и без връзки или мултимедия. Само предупреждавам - ако не спазвате това правило, ще бъдете изключени от групата. Наздраве!"
   CS: "Ahoj %s! Vaše první zpráva by měla být pouze textová a bez odkazů nebo médií. Jen upozornění - pokud toto pravidlo nedodržíte, budete ze skupiny vykázáni. Na zdraví!"
   DA: "Hej %s! Din første besked skal være ren tekst og uden links eller medier. Bare en advarsel - hvis du ikke overholder denne regel, bliver du udelukket fra gruppen. Tak!"
@@ -600,6 +623,7 @@
   UK: "Привіт %s! Ваше перше повідомлення має бути лише текстовим та без будь-яких посилань чи медіа. Просто голова - якщо ви не дотримуєтесь цього правила, вам заборонено від групи. Вітаємо!"
   ZH: "嘿，%s。！ 您的第一条消息应仅文本，而没有任何链接或媒体。 只是抬头 - 如果您不遵守此规则，您将被禁止。 干杯!"
 "Awesome, you're good to go! Feel free to start chatting in the group \"%s\".":
+  BE: "Выдатна, зараз вы можаце пачаць гаворку ў групе \"%s\"."
   BG: "Страхотно, можете да започнете! Не се колебайте да започнете да общувате в групата \"%s\"."
   CS: "Úžasné, můžete vyrazit! Neváhejte a začněte chatovat ve skupině \"%s\"."
   DA: "Fantastisk, du er klar til at gå! Du er velkommen til at begynde at chatte i gruppen \"%s\"."
@@ -629,6 +653,7 @@
   UK: "Дивовижно, ти готовий піти! Не соромтеся почати спілкуватися в групі \"%s\"."
   ZH: "太棒了，你很好！ 随时开始在 \"%s\" 小组中聊天。"
 "This challenge isn't your concern":
+  BE: "Гэта не ваша заданне"
   BG: "Това предизвикателство не е ваша грижа"
   CS: "Tato výzva se vás netýká"
   DA: "Denne udfordring er ikke dit problem"
@@ -658,6 +683,7 @@
   UK: "Цей виклик - це не ваша турбота"
   ZH: "这个挑战不是您关心的"
 "Oops, it looks like you missed the deadline to join \"%s\", but don't worry! You can try again in %s minutes. Keep trying, I believe in you!":
+  BE: "Ой, здаецца, вы прапусцілі тэрмін далучэння да \"%s\", але не хвалюйцеся! Вы можаце паспрабаваць яшчэ раз праз %s хвілін. Працягвайце спрабаваць, я веру ў вас!"
   BG: "Упс, изглежда сте пропуснали крайния срок за присъединяване към \"%s\", но не се притеснявайте! Можете да опитате отново след %s минути. Продължавайте да опитвате, вярвам във вас!"
   CS: "Ups, vypadá to, že jste promeškali termín pro přihlášení do \"%s\", ale nebojte se! Za %s minut to můžete zkusit znovu. Zkoušejte to dál, věřím ve vás!"
   DA: "Ups, det ser ud til, at du ikke nåede fristen for at tilmelde dig \"%s\", men bare rolig! Du kan prøve igen om %s minutter. Bliv ved med at prøve, jeg tror på dig!"

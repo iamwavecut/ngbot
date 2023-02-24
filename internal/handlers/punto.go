@@ -25,6 +25,11 @@ type Punto struct {
 	exclusions map[string][]string
 }
 
+const (
+	ru = `!"№;%:?*()йцукенгшщзхъфывапролджэячсмитьбю.ЙЦУКЕНГШЩЗХЪФЫВАПРОЛДЖЭЯЧСМИТЬБЮ,Ёё`
+	en = `!@#$%^&*()qwertyuiop[]asdfghjkl;'zxcvbnm,./QWERTYUIOP{}ASDFGHJKL:"ZXCVBNM<>?~` + "`"
+)
+
 var errNoFile = errors.New("no ngrams file for language")
 
 func NewPunto(s bot.Service, path string) *Punto {
@@ -105,8 +110,6 @@ func (p *Punto) Handle(u *api.Update, chat *api.Chat, user *api.User) (proceed b
 }
 
 func (p *Punto) puntonize(m *api.Message, lang string) (string, error) {
-	ru := `!"№;%:?*()йцукенгшщзхъфывапролджэячсмитьбю.ЙЦУКЕНГШЩЗХЪФЫВАПРОЛДЖЭЯЧСМИТЬБЮ,Ёё`
-	en := `!@#$%^&*()qwertyuiop[]asdfghjkl;'zxcvbnm,./QWERTYUIOP{}ASDFGHJKL:"ZXCVBNM<>?~` + "`"
 	mappings := map[string][2][]rune{
 		"ru": {
 			[]rune(ru),

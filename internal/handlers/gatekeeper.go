@@ -183,7 +183,7 @@ func (g *Gatekeeper) handleChallenge(u *api.Update, chat *api.Chat, user *api.Us
 	cu := g.extractChallengedUser(joinerID, chat.ID)
 	if cu == nil {
 		entry.Debug("no user matched for challenge")
-		if _, err := b.Request(api.NewCallback(cq.ID, i18n.Get("That challenge isn't yours", lang))); err != nil {
+		if _, err := b.Request(api.NewCallback(cq.ID, i18n.Get("This challenge isn't your concern", lang))); err != nil {
 			entry.WithError(err).Errorln("cant answer callback query")
 		}
 		return nil
