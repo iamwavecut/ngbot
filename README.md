@@ -89,12 +89,12 @@ CGO_ENABLE=1 go run .
 
 > All configuration is meant to be passed as build time arguments, however, you are free to modify env vars at runtime at your own risk.
 
-| Required | Variable name | Description | Default | Options |
-|---|---|---|---|---|
-| :heavy_check_mark: | `NG_TOKEN` | Telegram BOT API token |  |  |
-| :x: | `NG_LANG` | Default language to use in new chats. | `en` | `bg`, `cs`, `da`, `de`, `el`, `en`, `es`, `et`, `fi`, `fr`, `hu`, `id`, `it`, `ja`, `ko`, `lt`, `lv`, `nb`, `nl`, `pl`, `pt`, `ro`, `ru`, `sk`, `sl`, `sv`, `tr`, `uk`, `zh` |
-| :x: | `NG_HANDLERS` | If for some silly reason you want to get rid of admin or gateway function. Or if you are awesome and want to add yours. Or to change an invocation order. Go for it! | `admin,gatekeeper` | any combination of comma-separated default items. |
-| :x: | `NG_LOG_LEVEL` | Limits the logs spam, maximum verbosity by default. | `6` | `0`=Panic, `1`=Fatal, `2`=Error, `3`=Warn, `4`=Info, `5`=Debug, `6`=Trace |
+| Required | Variable name | Description | Default | Options                                                                                                                                                                            |
+|---|---|---|---|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| :heavy_check_mark: | `NG_TOKEN` | Telegram BOT API token |  |                                                                                                                                                                                    |
+| :x: | `NG_LANG` | Default language to use in new chats. | `en` | `be,` `bg`, `cs`, `da`, `de`, `el`, `en`, `es`, `et`, `fi`, `fr`, `hu`, `id`, `it`, `ja`, `ko`, `lt`, `lv`, `nb`, `nl`, `pl`, `pt`, `ro`, `ru`, `sk`, `sl`, `sv`, `tr`, `uk`, `zh` |
+| :x: | `NG_HANDLERS` | If for some silly reason you want to get rid of admin or gateway function. Or if you are awesome and want to add yours. Or to change an invocation order. Go for it! | `admin,gatekeeper` | any combination of comma-separated default items.                                                                                                                                  |
+| :x: | `NG_LOG_LEVEL` | Limits the logs spam, maximum verbosity by default. | `6` | `0`=Panic, `1`=Fatal, `2`=Error, `3`=Warn, `4`=Info, `5`=Debug, `6`=Trace                                                                                                          |
 
 ## TODO
 
