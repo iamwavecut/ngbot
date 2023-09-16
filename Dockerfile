@@ -7,11 +7,11 @@ WORKDIR /build
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=1 \
+RUN CGO_ENABLED=0 \
     GOOS=linux \
     GOARCH=amd64 \
-    CGO_CFLAGS="-g -O2 -Wno-return-local-addr" \
-    go build -ldflags='-linkmode external -w -s -extldflags "-static"' -o ngbot && chmod +x ngbot
+    #CGO_CFLAGS="-g -O2 -Wno-return-local-addr" \
+    go build -ldflags='-w -s -extldflags "-static"' -o ngbot && chmod +x ngbot
 
 FROM gcr.io/distroless/static
 

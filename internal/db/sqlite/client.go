@@ -14,9 +14,9 @@ import (
 	"github.com/iamwavecut/ngbot/resources"
 
 	"github.com/jmoiron/sqlx"
-	_ "github.com/mattn/go-sqlite3"
 	migrate "github.com/rubenv/sql-migrate"
 	log "github.com/sirupsen/logrus"
+	_ "modernc.org/sqlite"
 )
 
 type sqliteClient struct {
@@ -24,7 +24,7 @@ type sqliteClient struct {
 }
 
 func NewSQLiteClient(dbPath string) *sqliteClient {
-	dbx, err := sqlx.Open("sqlite3", filepath.Join(infra.GetWorkDir(), dbPath))
+	dbx, err := sqlx.Open("sqlite", filepath.Join(infra.GetWorkDir(), dbPath))
 	if err != nil {
 		log.WithError(err).Fatalln("cant open db")
 	}

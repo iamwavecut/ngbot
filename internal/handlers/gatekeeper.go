@@ -317,6 +317,32 @@ func (g *Gatekeeper) handleJoin(u *api.Update, jus []api.User, target *api.Chat,
 			continue
 		}
 
+		if _, err := b.Request(api.RestrictChatMemberConfig{
+			ChatMemberConfig: api.ChatMemberConfig{
+				ChatID: target.ID,
+				UserID: ju.ID,
+			},
+			UntilDate: time.Now().Add(3 * time.Minute).Unix(),
+			Permissions: &api.ChatPermissions{
+				CanSendMessages:       false,
+				CanSendAudios:         false,
+				CanSendDocuments:      false,
+				CanSendPhotos:         false,
+				CanSendVideos:         false,
+				CanSendVideoNotes:     false,
+				CanSendVoiceNotes:     false,
+				CanSendPolls:          false,
+				CanSendOtherMessages:  false,
+				CanAddWebPagePreviews: false,
+				CanChangeInfo:         false,
+				CanInviteUsers:        false,
+				CanPinMessages:        false,
+				CanManageTopics:       false,
+			},
+		}); err != nil {
+			entry.WithError(err).Error("cant restrict")
+		}
+
 		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 
 		cu := &challengedUser{
@@ -588,7 +614,7 @@ func (g *Gatekeeper) removeChallengedUser(userID int64, chatID int64) {
 
 func (g *Gatekeeper) createCaptchaIndex(lang string) [][2]string {
 	vars := g.Variants[lang]
-	captchaIndex := make([][2]string, len(vars), len(vars))
+	captchaIndex := make([][2]string, len(vars))
 	idx := 0
 	for k, v := range vars {
 		captchaIndex[idx] = [2]string{k, v}
@@ -629,7 +655,7 @@ func (g *Gatekeeper) getLanguage(chat *api.Chat, user *api.User) string {
 	if lang, err := g.s.GetDB().GetChatLanguage(chat.ID); !tool.Try(err) {
 		return lang
 	}
-	if user != nil && tool.In(user.LanguageCode, i18n.GetLanguagesList()) {
+	if user != nil && tool.In(user.LanguageCode, i18n.GetLanguagesList()...) {
 		return user.LanguageCode
 	}
 	return config.Get().DefaultLanguage

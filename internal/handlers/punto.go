@@ -157,7 +157,7 @@ func (p *Punto) getLanguage(chat *api.Chat, user *api.User) string {
 	if lang, err := p.s.GetDB().GetChatLanguage(chat.ID); !tool.Try(err) {
 		return lang
 	}
-	if user != nil && tool.In(user.LanguageCode, i18n.GetLanguagesList()) {
+	if user != nil && tool.In(user.LanguageCode, i18n.GetLanguagesList()...) {
 		return user.LanguageCode
 	}
 	return config.Get().DefaultLanguage
