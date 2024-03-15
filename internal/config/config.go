@@ -22,8 +22,11 @@ var globalConfig = &Config{}
 func Get() Config {
 	once.Do(func() {
 		cfg := &Config{}
-		pl := envconfig.PrefixLookuper("NG_", envconfig.OsLookuper())
-		if err := envconfig.ProcessWith(context.Background(), cfg, pl); err != nil {
+		envcfg := envconfig.Config{
+			Lookuper: envconfig.PrefixLookuper("NG_", envconfig.OsLookuper()),
+			Target:   cfg,
+		}
+		if err := envconfig.ProcessWith(context.Background(), &envcfg); err != nil {
 			log.WithError(err).Fatalln("cant load config")
 
 		}

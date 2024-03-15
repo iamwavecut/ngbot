@@ -19,10 +19,9 @@ import (
 )
 
 type Punto struct {
-	s          bot.Service
-	path       string
-	data       map[string][]string
-	exclusions map[string][]string
+	s    bot.Service
+	path string
+	data map[string][]string
 }
 
 const (
@@ -96,7 +95,11 @@ func (p *Punto) Handle(u *api.Update, chat *api.Chat, user *api.User) (proceed b
 		}
 
 		nm := api.NewMessage(chat.ID, `^: `+pMessage)
-		nm.ReplyToMessageID = m.MessageID
+		nm.ReplyParameters = api.ReplyParameters{
+			MessageID:                m.MessageID,
+			ChatID:                   chat.ID,
+			AllowSendingWithoutReply: true,
+		}
 		nm.ParseMode = "markdown"
 
 		_, err = p.s.GetBot().Send(nm)

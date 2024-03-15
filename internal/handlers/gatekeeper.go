@@ -164,7 +164,9 @@ func (g *Gatekeeper) handleChallenge(u *api.Update, chat *api.Chat, user *api.Us
 
 	if chatMember, err := b.GetChatMember(api.GetChatMemberConfig{
 		ChatConfigWithUser: api.ChatConfigWithUser{
-			ChatID: chat.ID,
+			ChatConfig: api.ChatConfig{
+				ChatID: chat.ID,
+			},
 			UserID: user.ID,
 		},
 	}); err == nil {
@@ -319,7 +321,9 @@ func (g *Gatekeeper) handleJoin(u *api.Update, jus []api.User, target *api.Chat,
 
 		if _, err := b.Request(api.RestrictChatMemberConfig{
 			ChatMemberConfig: api.ChatMemberConfig{
-				ChatID: target.ID,
+				ChatConfig: api.ChatConfig{
+					ChatID: target.ID,
+				},
 				UserID: ju.ID,
 			},
 			UntilDate: time.Now().Add(3 * time.Minute).Unix(),
@@ -520,7 +524,9 @@ func (g *Gatekeeper) handleFirstMessage(u *api.Update, chat *api.Chat, user *api
 	}
 	if _, err := b.Request(api.RestrictChatMemberConfig{
 		ChatMemberConfig: api.ChatMemberConfig{
-			ChatID: chat.ID,
+			ChatConfig: api.ChatConfig{
+				ChatID: chat.ID,
+			},
 			UserID: user.ID,
 		},
 		UntilDate: time.Now().Add(1 * time.Minute).Unix(),

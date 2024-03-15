@@ -99,7 +99,9 @@ func DeleteChatMessage(bot *api.BotAPI, chatID int64, messageID int) error {
 func BanUserFromChat(bot *api.BotAPI, userID int64, chatID int64) error {
 	if _, err := bot.Request(api.BanChatMemberConfig{
 		ChatMemberConfig: api.ChatMemberConfig{
-			ChatID: chatID,
+			ChatConfig: api.ChatConfig{
+				ChatID: chatID,
+			},
 			UserID: userID,
 		},
 		UntilDate:      time.Now().Add(10 * time.Minute).Unix(),
@@ -113,7 +115,9 @@ func BanUserFromChat(bot *api.BotAPI, userID int64, chatID int64) error {
 func RestrictChatting(bot *api.BotAPI, userID int64, chatID int64) error {
 	if _, err := bot.Request(api.RestrictChatMemberConfig{
 		ChatMemberConfig: api.ChatMemberConfig{
-			ChatID: chatID,
+			ChatConfig: api.ChatConfig{
+				ChatID: chatID,
+			},
 			UserID: userID,
 		},
 		UntilDate: time.Now().Add(10 * time.Minute).Unix(),
@@ -142,7 +146,9 @@ func RestrictChatting(bot *api.BotAPI, userID int64, chatID int64) error {
 func UnrestrictChatting(bot *api.BotAPI, userID int64, chatID int64) error {
 	if _, err := bot.Request(api.RestrictChatMemberConfig{
 		ChatMemberConfig: api.ChatMemberConfig{
-			ChatID: chatID,
+			ChatConfig: api.ChatConfig{
+				ChatID: chatID,
+			},
 			UserID: userID,
 		},
 		UntilDate: time.Now().Add(10 * time.Minute).Unix(),

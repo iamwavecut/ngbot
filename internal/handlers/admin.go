@@ -47,7 +47,9 @@ func (a *Admin) Handle(u *api.Update, chat *api.Chat, user *api.User) (proceed b
 	chatMember, err := b.GetChatMember(api.GetChatMemberConfig{
 		ChatConfigWithUser: api.ChatConfigWithUser{
 			UserID: user.ID,
-			ChatID: chat.ID,
+			ChatConfig: api.ChatConfig{
+				ChatID: chat.ID,
+			},
 		},
 	})
 	if err != nil {
