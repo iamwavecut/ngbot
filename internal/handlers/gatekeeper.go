@@ -97,10 +97,11 @@ func NewGatekeeper(s bot.Service) *Gatekeeper {
 }
 
 func (g *Gatekeeper) Handle(u *api.Update, chat *api.Chat, user *api.User) (bool, error) {
+	entry := g.getLogEntry()
 	if chat == nil || user == nil {
+		entry.Debug("no chat or user", u)
 		return true, nil
 	}
-	entry := g.getLogEntry()
 	b := g.s.GetBot()
 	m := u.Message
 

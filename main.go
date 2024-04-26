@@ -53,6 +53,24 @@ func main() {
 
 			updateConfig := api.NewUpdate(0)
 			updateConfig.Timeout = 60
+			updateConfig.AllowedUpdates = []string{
+				"message",
+				"edited_message",
+				"channel_post",
+				"edited_channel_post",
+				"message_reaction",
+				"message_reaction_count",
+				"inline_query",
+				"chosen_inline_result",
+				"callback_query",
+				"shipping_query",
+				"pre_checkout_query",
+				"poll",
+				"poll_answer",
+				"my_chat_member",
+				"chat_member",
+				"chat_join_request",
+			}
 			updateProcessor := bot.NewUpdateProcessor(service)
 
 			updateChan, errorChan := bot.GetUpdatesChans(botAPI, updateConfig)
@@ -73,7 +91,7 @@ func main() {
 			}
 			time.Sleep(time.Second)
 		})
-		log.WithError(err).Errorln("recoverer exited")
+		log.WithError(err).Errorln("recoverer exits")
 		os.Exit(1)
 	}()
 
