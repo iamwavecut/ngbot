@@ -39,11 +39,10 @@ type challengedUser struct {
 }
 
 type Gatekeeper struct {
-	s                bot.Service
-	joiners          map[int64]map[int64]*challengedUser
-	welcomeMessageID int
-	newcomers        map[int64]map[int64]struct{}
-	restricted       map[int64]map[int64]struct{}
+	s          bot.Service
+	joiners    map[int64]map[int64]*challengedUser
+	newcomers  map[int64]map[int64]struct{}
+	restricted map[int64]map[int64]struct{}
 
 	Variants map[string]map[string]string `yaml:"variants"`
 }
@@ -99,7 +98,8 @@ func NewGatekeeper(s bot.Service) *Gatekeeper {
 func (g *Gatekeeper) Handle(u *api.Update, chat *api.Chat, user *api.User) (bool, error) {
 	entry := g.getLogEntry()
 	if chat == nil || user == nil {
-		entry.Debug("no chat or user", u)
+		entry.Debug("no chat or user ", fmt.Sprintf("%+v", u)) // print u as structured log
+
 		return true, nil
 	}
 	b := g.s.GetBot()
