@@ -1,14 +1,10 @@
 package sqlite
 
 import (
-	"context"
-	"os"
 	"path/filepath"
 
 	"github.com/iamwavecut/tool"
-	"github.com/pkg/errors"
 
-	"github.com/iamwavecut/ngbot/internal/config"
 	"github.com/iamwavecut/ngbot/internal/db"
 	"github.com/iamwavecut/ngbot/internal/infra"
 	"github.com/iamwavecut/ngbot/resources"
@@ -30,61 +26,11 @@ func NewSQLiteClient(dbPath string) *sqliteClient {
 	}
 	dbx.SetMaxOpenConns(42)
 
-	postProcessMigrations := map[string]func(){
-		"1637265145-add-chats-settings.sql": func() {
-			var chats []db.ChatMeta
-			err := dbx.Select(&chats, `select * from chats;`)
-			if err != nil {
-				log.WithError(err).Fatalln("cant select chats, postprocess aborted (CRITICAL)")
-			}
-			for i, chat := range chats {
-				lang, err := chat.GetLanguage()
-				if err != nil {
-					lang = chat.Language
-				}
-				if lang == "" {
-					lang = config.Get().DefaultLanguage
-				}
-				chats[i].Settings["language"] = lang
-			}
-			tx, err := dbx.BeginTxx(context.Background(), nil)
-			if err != nil {
-				log.WithError(err).Fatalln("cant create tx, postprocess aborted (CRITICAL)")
-			}
-			stmt, err := tx.PrepareNamed("update chats set language=null, settings=:settings where id = :id")
-			if err != nil {
-				log.WithError(err).Errorln("cant create named statement, postprocess aborted (CRITICAL)")
-				if err := tx.Rollback(); err != nil {
-					log.WithError(err).Fatalln("cant rollback")
-				}
-				os.Exit(1)
-			}
-			for _, chat := range chats {
-				res, err := stmt.Exec(chat)
-				if err != nil {
-					log.WithError(err).Errorln("cant exec named statement, postprocess aborted (CRITICAL)")
-					if err := tx.Rollback(); err != nil {
-						log.WithError(err).Fatalln("cant rollback")
-					}
-					os.Exit(1)
-				}
-				if _, err = res.RowsAffected(); err != nil {
-					log.WithError(err).Errorln("cant get affected rows, postprocess aborted (CRITICAL)")
-					if err := tx.Rollback(); err != nil {
-						log.WithError(err).Fatalln("cant rollback")
-					}
-					os.Exit(1)
-				}
-			}
-			log.Infof("chats updated: %d", len(chats))
-		},
-	}
-
 	migrationsSource := &migrate.EmbedFileSystemMigrationSource{
 		FileSystem: resources.FS,
 		Root:       "migrations",
 	}
-	plan, _, err := migrate.PlanMigration(dbx.DB, "sqlite3", migrationsSource, migrate.Up, 0)
+	_, _, err = migrate.PlanMigration(dbx.DB, "sqlite3", migrationsSource, migrate.Up, 0)
 	if err != nil {
 		log.WithError(err).Fatalln("migrate plan failed")
 	}
@@ -96,87 +42,79 @@ func NewSQLiteClient(dbPath string) *sqliteClient {
 	if n > 0 {
 		log.Infof("applied %d migrations!", n)
 	}
-	if n == len(plan) {
-		for _, step := range plan {
-			if callback, ok := postProcessMigrations[step.Id]; ok {
-				log.Infof("postprocessing migration: %s", step.Id)
-				callback()
-			}
-		}
-	}
 
 	return &sqliteClient{db: dbx}
 }
 
-func (c *sqliteClient) GetUserMeta(userID int64) (*db.UserMeta, error) {
-	res := &db.UserMeta{}
-	return res, c.db.Get(res, "select * from users where id=?", userID)
-}
-
-func (c *sqliteClient) UpsertUserMeta(chat *db.UserMeta) error {
-	query := `
-		insert into users (id, first_name, last_name, username, language_code, is_bot) values(:id, :first_name, :last_name, :username, :language_code,:is_bot)
-		on conflict(id) do update set first_name=excluded.first_name, last_name=excluded.last_name, username=excluded.username, language_code=excluded.language_code, is_bot=excluded.is_bot;
-	`
-	if _, err := c.db.NamedExec(query, chat); err != nil {
-		return errors.WithMessage(err, "cant insert user meta")
-	}
-	return nil
-}
-
-func (c *sqliteClient) GetChatMeta(chatID int64) (*db.ChatMeta, error) {
-	res := &db.ChatMeta{}
+func (c *sqliteClient) GetSettings(chatID int64) (*db.Settings, error) {
+	res := &db.Settings{}
 	return res, c.db.Get(res, "select * from chats where id=?", chatID)
 }
 
-func (c *sqliteClient) GetChatLanguage(chatID int64) (string, error) {
-	var res string
-	return res, c.db.Get(&res, "select lang from meta where id=?", chatID)
-}
-
-func (c *sqliteClient) SetChatLanguage(chatID int64, lang string) error {
+func (c *sqliteClient) SetSettings(settings *db.Settings) error {
 	query := `
-		insert into "meta" (id, lang) values(:id, :lang)
-		on conflict(id) do update set lang=excluded.lang;
+		insert into chats (id, language, enabled, challenge_timeout, reject_timeout) values(:id, :language, :enabled, :challenge_timeout, :reject_timeout)
+		on conflict(id) do update set language=excluded.language, enabled=excluded.enabled, challenge_timeout=excluded.challenge_timeout, reject_timeout=excluded.reject_timeout;
 	`
-	return tool.Err(c.db.NamedExec(query, map[string]any{
-		"id":   chatID,
-		"lang": lang,
-	}))
+	return tool.Err(c.db.NamedExec(query, settings))
 }
 
-func (c *sqliteClient) UpsertChatMeta(chat *db.ChatMeta) error {
-	query := `
-		insert into chats (id, title, language, type, settings) values(:id, :title, :language, :type, :settings)
-		on conflict(id) do update set title=excluded.title, language=excluded.language, type=excluded.type, settings=excluded.settings;
-	`
-	return tool.Err(c.db.NamedExec(query, chat))
+func (c *sqliteClient) IsMigrated(chatID int64) (bool, error) {
+    var migrated bool
+    err := c.db.Get(&migrated, "SELECT migrated FROM chats WHERE id = ?", chatID)
+    return migrated, err
 }
 
-func (c *sqliteClient) GetCharadeScore(chatID int64, userID int64) (*db.CharadeScore, error) {
-	var res db.CharadeScore
-	query := `
-		select user_id, chat_id, score 
-		from charade_scores 
-		where user_id = cast(? as int) and chat_id=cast(? as bigint)`
-	return &res, c.db.Get(&res, query, userID, chatID)
+func (c *sqliteClient) SetMigrated(chatID int64, migrated bool) error {
+    _, err := c.db.Exec("UPDATE chats SET migrated = ? WHERE id = ?", migrated, chatID)
+    return err
 }
 
-func (c *sqliteClient) GetCharadeStats(chatID int64) ([]*db.CharadeScore, error) {
-	res := make([]*db.CharadeScore, 0)
-	query := `
-		select user_id, chat_id, score
-		from charade_scores
-		where chat_id=cast(? as bigint)`
-	return res, c.db.Select(&res, query, chatID)
+func (c *sqliteClient) InsertMember(chatID int64, userID int64) error {
+    _, err := c.db.Exec("INSERT OR IGNORE INTO chat_members (chat_id, user_id) VALUES (?, ?)", chatID, userID)
+    return err
 }
 
-func (c *sqliteClient) AddCharadeScore(chatID int64, userID int64) (*db.CharadeScore, error) {
-	if _, err := c.db.Exec(`
-		insert into charade_scores (user_id, chat_id, score) values(?, ?, 1)
-		on conflict(user_id, chat_id) do update set score=score+1;
-	`, userID, chatID); err != nil {
-		return nil, errors.WithMessage(err, "cant add charade score")
-	}
-	return c.GetCharadeScore(chatID, userID)
+func (c *sqliteClient) InsertMembers(chatID int64, userIDs []int64) error {
+    tx, err := c.db.Beginx()
+    if err != nil {
+        return err
+    }
+    defer tx.Rollback()
+
+    stmt, err := tx.Preparex("INSERT OR IGNORE INTO chat_members (chat_id, user_id) VALUES (?, ?)")
+    if err != nil {
+        return err
+    }
+    defer stmt.Close()
+
+    for _, userID := range userIDs {
+        _, err = stmt.Exec(chatID, userID)
+        if err != nil {
+            return err
+        }
+    }
+
+    return tx.Commit()
+}
+
+func (c *sqliteClient) DeleteMember(chatID int64, userID int64) error {
+    _, err := c.db.Exec("DELETE FROM chat_members WHERE chat_id = ? AND user_id = ?", chatID, userID)
+    return err
+}
+
+func (c *sqliteClient) DeleteMembers(chatID int64, userIDs []int64) error {
+    query, args, err := sqlx.In("DELETE FROM chat_members WHERE chat_id = ? AND user_id IN (?)", chatID, userIDs)
+    if err != nil {
+        return err
+    }
+    query = c.db.Rebind(query)
+    _, err = c.db.Exec(query, args...)
+    return err
+}
+
+func (c *sqliteClient) GetMembers(chatID int64) ([]int64, error) {
+    var userIDs []int64
+    err := c.db.Select(&userIDs, "SELECT user_id FROM chat_members WHERE chat_id = ?", chatID)
+    return userIDs, err
 }

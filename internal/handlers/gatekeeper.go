@@ -98,10 +98,26 @@ func NewGatekeeper(s bot.Service) *Gatekeeper {
 func (g *Gatekeeper) Handle(u *api.Update, chat *api.Chat, user *api.User) (bool, error) {
 	entry := g.getLogEntry()
 	if chat == nil || user == nil {
-		entry.Debug("no chat or user ", fmt.Sprintf("%+v", u)) // print u as structured log
-
+		entry.Debug("no chat or user ", fmt.Sprintf("%+v", u))
 		return true, nil
 	}
+
+	settings, err := g.s.GetDB().GetSettings(chat.ID)
+	if err != nil {
+		entry.WithError(err).Error("failed to get chat settings")
+		return true, err
+	}
+	if !settings.Enabled {
+		entry.Debug("Gatekeeper is disabled for this chat")
+		return true, nil
+	}
+	if !settings.Migrated {
+		err = g.s.GetDB().InsertMember(chat.ID, user.ID)
+		if err != nil {
+			entry.WithError(err).Error("Failed to insert chat member")
+		}
+	}
+
 	b := g.s.GetBot()
 	m := u.Message
 
@@ -659,8 +675,8 @@ func (g *Gatekeeper) getLogEntry() *log.Entry {
 }
 
 func (g *Gatekeeper) getLanguage(chat *api.Chat, user *api.User) string {
-	if lang, err := g.s.GetDB().GetChatLanguage(chat.ID); !tool.Try(err) {
-		return lang
+	if settings, err := g.s.GetDB().GetSettings(chat.ID); !tool.Try(err) {
+		return settings.Language
 	}
 	if user != nil && tool.In(user.LanguageCode, i18n.GetLanguagesList()...) {
 		return user.LanguageCode

@@ -1,13 +1,15 @@
 package db
 
 type Client interface {
-	GetUserMeta(userID int64) (*UserMeta, error)
-	UpsertUserMeta(chat *UserMeta) error
-	GetChatMeta(chatID int64) (*ChatMeta, error)
-	UpsertChatMeta(chat *ChatMeta) error
-	GetCharadeScore(chatID int64, userID int64) (*CharadeScore, error)
-	GetCharadeStats(chatID int64) ([]*CharadeScore, error)
-	AddCharadeScore(chatID int64, userID int64) (*CharadeScore, error)
-	GetChatLanguage(chatID int64) (string, error)
-	SetChatLanguage(chatID int64, lang string) error
+	SetSettings(settings *Settings) error
+	GetSettings(chatID int64) (*Settings, error)
+	
+	IsMigrated(chatID int64) (bool, error)
+	SetMigrated(chatID int64, migrated bool) error
+
+	InsertMember(chatID int64, userID int64) error
+	InsertMembers(chatID int64, userIDs []int64) error
+	DeleteMember(chatID int64, userID int64) error
+	DeleteMembers(chatID int64, userIDs []int64) error
+	GetMembers(chatID int64) ([]int64, error)
 }

@@ -65,14 +65,14 @@ func (a *Admin) Handle(u *api.Update, chat *api.Chat, user *api.User) (proceed b
 	entry := a.getLogEntry()
 
 	entry.Trace("command:", m.Command())
-	lang, err := a.s.GetDB().GetChatLanguage(chat.ID)
+	settings, err := a.s.GetDB().GetSettings(chat.ID)
 	if tool.Try(err) {
 		if errors.Cause(err) != sql.ErrNoRows {
-			return true, errors.WithMessage(err, "cant get chat language")
+			return true, errors.WithMessage(err, "cant get chat settings")
 		}
 	}
-	if lang == "" {
-		lang = config.Get().DefaultLanguage
+	if settings.Language == "" {
+		settings.Language = config.Get().DefaultLanguage
 	}
 	switch m.Command() {
 	case "lang":
@@ -93,7 +93,7 @@ func (a *Admin) Handle(u *api.Update, chat *api.Chat, user *api.User) (proceed b
 		if !isAllowed {
 			msg := api.NewMessage(
 				chat.ID,
-				i18n.Get("You should use one of the following options", lang)+": `"+strings.Join(a.languages, "`, `")+"`",
+				i18n.Get("You should use one of the following options", settings.Language)+": `"+strings.Join(a.languages, "`, `")+"`",
 			)
 			msg.ParseMode = api.ModeMarkdown
 			msg.DisableNotification = true
@@ -101,15 +101,15 @@ func (a *Admin) Handle(u *api.Update, chat *api.Chat, user *api.User) (proceed b
 			return false, nil
 		}
 
-		lang = argument
-		err = a.s.GetDB().SetChatLanguage(chat.ID, lang)
+		settings.Language = argument
+		err = a.s.GetDB().SetSettings(settings)
 		if tool.Try(err) {
 			return false, errors.WithMessage(err, "cant update chat language")
 		}
 
 		_, _ = b.Send(api.NewMessage(
 			chat.ID,
-			i18n.Get("Language set successfully", lang),
+			i18n.Get("Language set successfully", settings.Language),
 		))
 
 		return false, nil

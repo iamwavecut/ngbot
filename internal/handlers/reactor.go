@@ -163,8 +163,8 @@ func (r *Reactor) getLogEntry() *log.Entry {
 }
 
 func (r *Reactor) getLanguage(chat *api.Chat, user *api.User) string {
-	if lang, err := r.s.GetDB().GetChatLanguage(chat.ID); !tool.Try(err) {
-		return lang
+	if settings, err := r.s.GetDB().GetSettings(chat.ID); !tool.Try(err) {
+		return settings.Language
 	}
 	if user != nil && tool.In(user.LanguageCode, i18n.GetLanguagesList()...) {
 		return user.LanguageCode
