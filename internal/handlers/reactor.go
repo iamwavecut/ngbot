@@ -17,7 +17,6 @@ import (
 
 var flaggedEmojis = []string{"💩"}
 
-// var customEmojiCache map[string]string
 
 type Reactor struct {
 	s bot.Service

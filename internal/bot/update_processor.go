@@ -9,7 +9,6 @@ import (
 	log "github.com/sirupsen/logrus"
 
 	"github.com/iamwavecut/ngbot/internal/config"
-	"github.com/iamwavecut/ngbot/internal/event"
 )
 
 type (
@@ -21,20 +20,7 @@ type (
 		s              Service
 		updateHandlers []Handler
 	}
-
-	UpdateEvent struct {
-		*event.Base
-		payload *api.Update
-	}
-
-	Handleable interface {
-		Get() *api.Update
-	}
 )
-
-func (u *UpdateEvent) Get() *api.Update {
-	return u.payload
-}
 
 var registeredHandlers = make(map[string]Handler)
 
@@ -68,13 +54,6 @@ func (up *UpdateProcessor) Process(u *api.Update) error {
 	if user == nil && u.ChatJoinRequest != nil {
 		user = &u.ChatJoinRequest.From
 	}
-
-	// Commented out because of the lack of consumers, memory leak
-	// TODO: implement event bus based message processing
-	// event.Bus.NQ(&UpdateEvent{
-	// 	Base:    event.CreateBase("api_update", time.Now().Add(time.Minute)),
-	// 	payload: u,
-	// })
 
 	for _, handler := range up.updateHandlers {
 		proceed, err := handler.Handle(u, chat, user)

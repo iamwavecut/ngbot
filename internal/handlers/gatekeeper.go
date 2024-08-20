@@ -85,7 +85,6 @@ func NewGatekeeper(s bot.Service) *Gatekeeper {
 			entry.WithError(err).Errorln("cant load challenges file", lang)
 		}
 
-		// entry.Traceln("unmarshal localized challenges", lang)
 		localVariants := map[string]string{}
 		if err := yaml.Unmarshal(challengesData, &localVariants); err != nil {
 			entry.WithError(err).Errorln("cant unmarshal challenges yaml", lang)
@@ -495,10 +494,6 @@ func (g *Gatekeeper) handleFirstMessage(u *api.Update, chat *api.Chat, user *api
 
 	toRestrict := true
 	switch {
-	// case m.ForwardFrom != nil:
-	// 	entry = entry.WithField("message_type", "forward")
-	// case m.ForwardFromChat != nil:
-	// 	entry = entry.WithField("message_type", "forward_chat")
 	case m.ViaBot != nil:
 		entry = entry.WithField("message_type", "via_bot")
 	case m.Audio != nil:
@@ -516,18 +511,6 @@ func (g *Gatekeeper) handleFirstMessage(u *api.Update, chat *api.Chat, user *api
 	default:
 		toRestrict = false
 
-		// if len(m.Entities) == 0 {
-		// 	toRestrict = false
-		// 	break
-		// }
-		// for _, e := range m.Entities {
-		// 	switch e.Type {
-		// 	case "url", "text_link":
-		// 		entry = entry.WithField("message_type", "with link")
-		// 	case "email", "phone_number", "mention", "text_mention":
-		// 		entry = entry.WithField("message_type", "with mention")
-		// 	}
-		// }
 	}
 
 	if !toRestrict {
