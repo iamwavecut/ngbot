@@ -61,13 +61,14 @@ git clone git@github.com:iamwavecut/ngbot.git ${NG_DIR}
 cd ${NG_DIR}
 
 NG_TOKEN=<REPLACE_THIS>
-docker build . --build-arg NG_TOKEN=$NG_TOKEN -t ngbot
+OPENAI_API_KEY=<REPLACE_THIS>
+docker build . --build-arg NG_TOKEN=$NG_TOKEN --build-arg OPENAI_API_KEY=$OPENAI_API_KEY -t ngbot
 // token gets baked into container, so you just simply
 docker run ngbot
 ```
 Override baked variables by providing them as runtime flags
 ```shell
-docker run -e NG_TOKEN=<ANOTHER_TOKEN> ngbot
+docker run -e NG_TOKEN=<ANOTHER_TOKEN> -e OPENAI_API_KEY=<ANOTHER_OPENAI_API_KEY> ngbot
 ```
 
 
