@@ -81,6 +81,9 @@ NG_TOKEN=<REPLACE_THIS>
 NG_LANG=en
 NG_HANDLERS=admin,gatekeeper
 NG_LOG_LEVEL=6
+OPENAI_API_KEY=<REPLACE_THIS>
+OPENAI_BASE_URL=https://api.openai.com/v1
+OPENAI_MODEL=gpt-4o-mini
 CGO_ENABLE=1 go run .
 ```
 
@@ -95,8 +98,8 @@ CGO_ENABLE=1 go run .
 | :x:                | `NG_LANG`         | Default language to use in new chats.                                                                                                                                | `en`                        | `be,` `bg`, `cs`, `da`, `de`, `el`, `en`, `es`, `et`, `fi`, `fr`, `hu`, `id`, `it`, `ja`, `ko`, `lt`, `lv`, `nb`, `nl`, `pl`, `pt`, `ro`, `ru`, `sk`, `sl`, `sv`, `tr`, `uk`, `zh` |
 | :x:                | `NG_HANDLERS`     | If for some silly reason you want to get rid of admin or gateway function. Or if you are awesome and want to add yours. Or to change an invocation order. Go for it! | `admin,gatekeeper,reactor`  | any combination of comma-separated default items.                                                                                                                                  |
 | :x:                | `NG_LOG_LEVEL`    | Limits the logs spam, maximum verbosity by default.                                                                                                                  | `6`                         | `0`=Panic, `1`=Fatal, `2`=Error, `3`=Warn, `4`=Info, `5`=Debug, `6`=Trace                                                                                                          |
+| :heavy_check_mark: | `OPENAI_API_KEY`  | OpenAI API key to use for the reactor.                                                                                                                               |                             |                                                                                                                                                                                    |
 | :x:                | `OPENAI_MODEL`    | OpenAI model to use for the reactor.                                                                                                                                 | `gpt-4o-mini`               | `gpt-4o`, `gpt-4o-mini`, `...`                                                                                                                                                     |
-| :x:                | `OPENAI_API_KEY`  | OpenAI API key to use for the reactor.                                                                                                                               |                             |                                                                                                                                                                                    |
 | :x:                | `OPENAI_BASE_URL` | OpenAI API base URL to use for the reactor.                                                                                                                          | `https://api.openai.com/v1` | Any valid OpenAI API compliantbase URL                                                                                                                                             |
 
 ## TODO
