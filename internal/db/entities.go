@@ -13,7 +13,6 @@ type (
 		ID               int64         `db:"id"`
 		Language         string        `db:"language"`
 		Enabled          bool          `db:"enabled"`
-		Migrated         bool          `db:"migrated"`
 		ChallengeTimeout time.Duration `db:"challenge_timeout"`
 		RejectTimeout    time.Duration `db:"reject_timeout"`
 	}

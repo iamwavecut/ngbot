@@ -107,7 +107,6 @@ func (g *Gatekeeper) Handle(u *api.Update, chat *api.Chat, user *api.User) (bool
 		entry.WithError(err).Error("failed to get chat settings")
 		settings = &db.Settings{
 			Enabled:          true,
-			Migrated:         false,
 			ChallengeTimeout: 180,
 			RejectTimeout:    600,
 			Language:         "en",
@@ -117,12 +116,6 @@ func (g *Gatekeeper) Handle(u *api.Update, chat *api.Chat, user *api.User) (bool
 	if !settings.Enabled {
 		entry.Debug("Gatekeeper is disabled for this chat")
 		return true, nil
-	}
-	if !settings.Migrated {
-		err = g.s.GetDB().InsertMember(chat.ID, user.ID)
-		if err != nil {
-			entry.WithError(err).Error("Failed to insert chat member")
-		}
 	}
 
 	b := g.s.GetBot()

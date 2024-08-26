@@ -63,17 +63,6 @@ func (c *sqliteClient) SetSettings(settings *db.Settings) error {
 	return tool.Err(c.db.NamedExec(query, settings))
 }
 
-func (c *sqliteClient) IsMigrated(chatID int64) (bool, error) {
-	var migrated bool
-	err := c.db.Get(&migrated, "SELECT migrated FROM chats WHERE id = ?", chatID)
-	return migrated, err
-}
-
-func (c *sqliteClient) SetMigrated(chatID int64, migrated bool) error {
-	_, err := c.db.Exec("UPDATE chats SET migrated = ? WHERE id = ?", migrated, chatID)
-	return err
-}
-
 func (c *sqliteClient) InsertMember(chatID int64, userID int64) error {
 	_, err := c.db.Exec("INSERT OR IGNORE INTO chat_members (chat_id, user_id) VALUES (?, ?)", chatID, userID)
 	return err
