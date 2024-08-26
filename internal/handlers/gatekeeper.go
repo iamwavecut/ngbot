@@ -11,6 +11,7 @@ import (
 	"github.com/iamwavecut/tool"
 
 	"github.com/iamwavecut/ngbot/internal/config"
+	"github.com/iamwavecut/ngbot/internal/db"
 	"github.com/iamwavecut/ngbot/resources"
 
 	api "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -104,7 +105,14 @@ func (g *Gatekeeper) Handle(u *api.Update, chat *api.Chat, user *api.User) (bool
 	settings, err := g.s.GetDB().GetSettings(chat.ID)
 	if err != nil {
 		entry.WithError(err).Error("failed to get chat settings")
-		return true, err
+		settings = &db.Settings{
+			Enabled:          true,
+			Migrated:         false,
+			ChallengeTimeout: 180,
+			RejectTimeout:    600,
+			Language:         "en",
+			ID:               chat.ID,
+		}
 	}
 	if !settings.Enabled {
 		entry.Debug("Gatekeeper is disabled for this chat")
