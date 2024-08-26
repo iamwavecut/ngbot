@@ -1,22 +1,56 @@
 -- +migrate Up
-drop table if exists "charade_scores";
-drop table if exists "meta";
-drop table if exists "users";
+DROP TABLE IF EXISTS "charade_scores";
+DROP TABLE IF EXISTS "meta";
 
-alter table "chats"
-drop column "title"
-drop column "type"
-add column "enabled" boolean not null default true
-add column "migrated" boolean not null default false
-add column "challenge_timeout" interval not null default '3 minutes'
-add column "reject_timeout" interval not null default '10 minutes'
-;
+-- Check if columns exist before dropping
+PRAGMA foreign_keys=off;
+BEGIN TRANSACTION;
 
-create table chat_members (
-    chat_id bigint not null references chats(id) on delete cascade,
-    user_id bigint not null references users(id) on delete cascade,
-    primary key (chat_id, user_id)
+ALTER TABLE "chats" RENAME TO "chats_old";
+
+CREATE TABLE "chats" (
+    "id" INTEGER PRIMARY KEY,
+    "enabled" BOOLEAN NOT NULL DEFAULT 1,
+    "migrated" BOOLEAN NOT NULL DEFAULT 0,
+    "challenge_timeout" INTEGER NOT NULL DEFAULT 180,  -- 3 minutes in seconds
+    "reject_timeout" INTEGER NOT NULL DEFAULT 600  -- 10 minutes in seconds
+);
+
+INSERT INTO "chats" (id, enabled, migrated, challenge_timeout, reject_timeout)
+SELECT id, 1, 0, 180, 600
+FROM "chats_old";
+
+DROP TABLE "chats_old";
+
+PRAGMA foreign_keys=on;
+COMMIT;
+
+CREATE TABLE IF NOT EXISTS "chat_members" (
+    "chat_id" INTEGER NOT NULL,
+    "user_id" INTEGER NOT NULL,
+    PRIMARY KEY ("chat_id", "user_id"),
+    FOREIGN KEY ("chat_id") REFERENCES "chats" ("id") ON DELETE CASCADE
 );
 
 -- +migrate Down
--- nothing to do
+DROP TABLE IF EXISTS "chat_members";
+
+PRAGMA foreign_keys=off;
+BEGIN TRANSACTION;
+
+ALTER TABLE "chats" RENAME TO "chats_old";
+
+CREATE TABLE "chats" (
+    "id" INTEGER PRIMARY KEY,
+    "title" TEXT,
+    "type" TEXT
+);
+
+INSERT INTO "chats" (id, title, type)
+SELECT id, NULL, NULL
+FROM "chats_old";
+
+DROP TABLE "chats_old";
+
+PRAGMA foreign_keys=on;
+COMMIT;
