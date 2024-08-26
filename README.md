@@ -43,7 +43,7 @@ Ok, I've got something for ya.
 6. Open terminal app of your choice and navigate into the code folder.
 7. Run this command, replacing the **T** with the actual token string
     ```
-    docker compose build --build-arg NG_TOKEN=<REPLACE_THIS>
+    docker compose build --build-arg NG_TOKEN=<REPLACE_THIS> --build-arg OPENAI_API_KEY=<REPLACE_THIS>
     docker compose up -d --no-recreate
     ```
 8. Add your bot to chat, give him permissions to **Ban**, **Delete**, and **Invite**.
