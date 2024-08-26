@@ -27,6 +27,9 @@ import (
 
 const (
 	captchaSize = 5
+
+	defaultChallengeTimeout = 3 * time.Minute
+	defaultRejectTimeout    = 10 * time.Minute
 )
 
 type challengedUser struct {
@@ -107,11 +110,12 @@ func (g *Gatekeeper) Handle(u *api.Update, chat *api.Chat, user *api.User) (bool
 		entry.WithError(err).Error("failed to get chat settings")
 		settings = &db.Settings{
 			Enabled:          true,
-			ChallengeTimeout: 180,
-			RejectTimeout:    600,
+			ChallengeTimeout: defaultChallengeTimeout,
+			RejectTimeout:    defaultRejectTimeout,
 			Language:         "en",
 			ID:               chat.ID,
 		}
+		g.s.GetDB().SetSettings(settings)
 	}
 	if !settings.Enabled {
 		entry.Debug("Gatekeeper is disabled for this chat")
