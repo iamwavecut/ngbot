@@ -37,7 +37,7 @@ func NewSQLiteClient(dbPath string) *sqliteClient {
 
 	n, err := migrate.Exec(dbx.DB, "sqlite3", migrationsSource, migrate.Up)
 	if err != nil {
-		log.WithError(err).Fatalln("migrate up failed")
+		log.WithError(err).WithField("migration", migrationsSource).Fatalln("migrate up failed")
 	}
 	if n > 0 {
 		log.Infof("applied %d migrations!", n)
@@ -48,13 +48,17 @@ func NewSQLiteClient(dbPath string) *sqliteClient {
 
 func (c *sqliteClient) GetSettings(chatID int64) (*db.Settings, error) {
 	res := &db.Settings{}
-	return res, c.db.Get(res, "select * from chats where id=?", chatID)
+	return res, c.db.Get(res, "SELECT id, enabled, challenge_timeout, reject_timeout FROM chats WHERE id=?", chatID)
 }
 
 func (c *sqliteClient) SetSettings(settings *db.Settings) error {
 	query := `
-		insert into chats (id, language, enabled, challenge_timeout, reject_timeout) values(:id, :language, :enabled, :challenge_timeout, :reject_timeout)
-		on conflict(id) do update set language=excluded.language, enabled=excluded.enabled, challenge_timeout=excluded.challenge_timeout, reject_timeout=excluded.reject_timeout;
+		INSERT INTO chats (id, enabled, challenge_timeout, reject_timeout) 
+		VALUES (:id, :enabled, :challenge_timeout, :reject_timeout)
+		ON CONFLICT(id) DO UPDATE SET 
+		enabled=excluded.enabled, 
+		challenge_timeout=excluded.challenge_timeout, 
+		reject_timeout=excluded.reject_timeout;
 	`
 	return tool.Err(c.db.NamedExec(query, settings))
 }
