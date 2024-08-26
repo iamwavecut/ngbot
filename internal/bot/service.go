@@ -3,7 +3,6 @@ package bot
 import (
 	api "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
-	"github.com/iamwavecut/ngbot/internal/config"
 	"github.com/iamwavecut/ngbot/internal/db"
 )
 
@@ -23,7 +22,6 @@ type Service interface {
 type service struct {
 	bot *api.BotAPI
 	db  db.Client
-	cfg *config.Config
 }
 
 func NewService(bot *api.BotAPI, db db.Client) *service {

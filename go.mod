@@ -47,6 +47,7 @@ require (
 	github.com/go-gorp/gorp/v3 v3.1.0 // indirect
 	github.com/iamwavecut/tool v1.2.3
 	github.com/rs/zerolog v1.33.0
+	github.com/sashabaranov/go-openai v1.28.2
 	github.com/sethvargo/go-envconfig v1.0.3
 	golang.org/x/exp v0.0.0-20240613232115-7f521ea00fb8 // indirect
 	golang.org/x/sys v0.21.0 // indirect

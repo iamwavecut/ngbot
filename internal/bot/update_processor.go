@@ -208,7 +208,7 @@ func GetUN(user *api.User) string {
 		return ""
 	}
 	userName := user.UserName
-	if 0 == len(userName) {
+	if len(userName) == 0 {
 		userName = user.FirstName + " " + user.LastName
 		userName = strings.TrimSpace(userName)
 	}
@@ -221,7 +221,7 @@ func GetFullName(user *api.User) string {
 	}
 	fullName := user.FirstName + " " + user.LastName
 	fullName = strings.TrimSpace(fullName)
-	if 0 == len(fullName) {
+	if len(fullName) == 0 {
 		fullName = user.UserName
 	}
 	return fullName

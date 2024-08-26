@@ -60,61 +60,67 @@ func (c *sqliteClient) SetSettings(settings *db.Settings) error {
 }
 
 func (c *sqliteClient) IsMigrated(chatID int64) (bool, error) {
-    var migrated bool
-    err := c.db.Get(&migrated, "SELECT migrated FROM chats WHERE id = ?", chatID)
-    return migrated, err
+	var migrated bool
+	err := c.db.Get(&migrated, "SELECT migrated FROM chats WHERE id = ?", chatID)
+	return migrated, err
 }
 
 func (c *sqliteClient) SetMigrated(chatID int64, migrated bool) error {
-    _, err := c.db.Exec("UPDATE chats SET migrated = ? WHERE id = ?", migrated, chatID)
-    return err
+	_, err := c.db.Exec("UPDATE chats SET migrated = ? WHERE id = ?", migrated, chatID)
+	return err
 }
 
 func (c *sqliteClient) InsertMember(chatID int64, userID int64) error {
-    _, err := c.db.Exec("INSERT OR IGNORE INTO chat_members (chat_id, user_id) VALUES (?, ?)", chatID, userID)
-    return err
+	_, err := c.db.Exec("INSERT OR IGNORE INTO chat_members (chat_id, user_id) VALUES (?, ?)", chatID, userID)
+	return err
 }
 
 func (c *sqliteClient) InsertMembers(chatID int64, userIDs []int64) error {
-    tx, err := c.db.Beginx()
-    if err != nil {
-        return err
-    }
-    defer tx.Rollback()
+	tx, err := c.db.Beginx()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
 
-    stmt, err := tx.Preparex("INSERT OR IGNORE INTO chat_members (chat_id, user_id) VALUES (?, ?)")
-    if err != nil {
-        return err
-    }
-    defer stmt.Close()
+	stmt, err := tx.Preparex("INSERT OR IGNORE INTO chat_members (chat_id, user_id) VALUES (?, ?)")
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
 
-    for _, userID := range userIDs {
-        _, err = stmt.Exec(chatID, userID)
-        if err != nil {
-            return err
-        }
-    }
+	for _, userID := range userIDs {
+		_, err = stmt.Exec(chatID, userID)
+		if err != nil {
+			return err
+		}
+	}
 
-    return tx.Commit()
+	return tx.Commit()
 }
 
 func (c *sqliteClient) DeleteMember(chatID int64, userID int64) error {
-    _, err := c.db.Exec("DELETE FROM chat_members WHERE chat_id = ? AND user_id = ?", chatID, userID)
-    return err
+	_, err := c.db.Exec("DELETE FROM chat_members WHERE chat_id = ? AND user_id = ?", chatID, userID)
+	return err
 }
 
 func (c *sqliteClient) DeleteMembers(chatID int64, userIDs []int64) error {
-    query, args, err := sqlx.In("DELETE FROM chat_members WHERE chat_id = ? AND user_id IN (?)", chatID, userIDs)
-    if err != nil {
-        return err
-    }
-    query = c.db.Rebind(query)
-    _, err = c.db.Exec(query, args...)
-    return err
+	query, args, err := sqlx.In("DELETE FROM chat_members WHERE chat_id = ? AND user_id IN (?)", chatID, userIDs)
+	if err != nil {
+		return err
+	}
+	query = c.db.Rebind(query)
+	_, err = c.db.Exec(query, args...)
+	return err
 }
 
 func (c *sqliteClient) GetMembers(chatID int64) ([]int64, error) {
-    var userIDs []int64
-    err := c.db.Select(&userIDs, "SELECT user_id FROM chat_members WHERE chat_id = ?", chatID)
-    return userIDs, err
+	var userIDs []int64
+	err := c.db.Select(&userIDs, "SELECT user_id FROM chat_members WHERE chat_id = ?", chatID)
+	return userIDs, err
+}
+
+func (c *sqliteClient) IsMember(chatID int64, userID int64) (bool, error) {
+	var count int
+	err := c.db.Get(&count, "SELECT COUNT(*) FROM chat_members WHERE chat_id = ? AND user_id = ?", chatID, userID)
+	return count > 0, err
 }

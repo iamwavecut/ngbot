@@ -1,12 +1,14 @@
 package handlers
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"time"
 
 	api "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/pkg/errors"
+	"github.com/sashabaranov/go-openai"
 	log "github.com/sirupsen/logrus"
 
 	"github.com/iamwavecut/ngbot/internal/bot"
@@ -17,14 +19,15 @@ import (
 
 var flaggedEmojis = []string{"💩"}
 
-
 type Reactor struct {
-	s bot.Service
+	s      bot.Service
+	llmAPI *openai.Client
 }
 
-func NewReactor(s bot.Service) *Reactor {
+func NewReactor(s bot.Service, llmAPI *openai.Client, model string) *Reactor {
 	r := &Reactor{
-		s: s,
+		s:      s,
+		llmAPI: llmAPI,
 	}
 	return r
 }
@@ -76,8 +79,6 @@ func (r *Reactor) Handle(u *api.Update, chat *api.Chat, user *api.User) (bool, e
 }
 
 func (r *Reactor) handleFirstMessage(u *api.Update, chat *api.Chat, user *api.User) error {
-	b := r.s.GetBot()
-	entry := r.getLogEntry()
 	if u.FromChat() == nil {
 		return nil
 	}
@@ -88,6 +89,134 @@ func (r *Reactor) handleFirstMessage(u *api.Update, chat *api.Chat, user *api.Us
 	if m == nil {
 		return nil
 	}
+
+	if isMember, err := r.s.GetDB().IsMember(chat.ID, user.ID); err != nil {
+		return errors.WithMessage(err, "cant check if member")
+	} else if isMember {
+		return nil
+	}
+	if err := r.checkMedia(chat, user, m); err != nil {
+		return errors.WithMessage(err, "cant check media")
+	}
+	if err := r.checkFirstMessage(chat, user, m); err != nil {
+		return errors.WithMessage(err, "cant check first message")
+	}
+
+	return nil
+}
+
+func (r *Reactor) checkFirstMessage(chat *api.Chat, user *api.User, m *api.Message) error {
+	entry := r.getLogEntry()
+	b := r.s.GetBot()
+
+	messageContent := m.Text
+	if messageContent == "" && m.Caption != "" {
+		messageContent = m.Caption
+	}
+
+	if messageContent == "" {
+		entry.Warn("Empty message content, skipping spam check")
+		return nil
+	}
+
+	ctx := context.Background()
+	resp, err := r.llmAPI.CreateChatCompletion(
+		ctx,
+		openai.ChatCompletionRequest{
+			Model: "openai/gpt-4o-mini",
+			Messages: []openai.ChatCompletionMessage{
+				{
+					Role: openai.ChatMessageRoleSystem,
+					Content: `You are a spam detection system.
+					Respond with 'SPAM' if the message is spam, or 'NOT_SPAM' if it's not.
+					Provide no other output.
+					
+					<example>
+					Input: Hello, how are you?
+					Response: NOT_SPAM
+
+					Input: Хочешь зарабатывать на удалёнке но не знаешь как? Напиши мне и я тебе всё расскажу, от 18 лет. жду всех желающих в лс.
+					Response: SPAM
+
+					Input: Нужны люди! Стабильнный доход, каждую неделю, на удалёнке, от 18 лет, пишите в лс.
+					Response: SPAM
+
+					Input: Ищу людeй, заинтeрeсованных в хoрoшем доп.доходе на удаленке. Не полная занятость, от 21. По вопросам пишите в ЛС
+					Response: SPAM
+
+					Input: 10000х Орууу в других играл и такого не разу не было, просто капец  а такое возможно???? 
+
+🥇Первая игровая платформа в Telegram
+
+https://t.me/jetton?start=cdyrsJsbvYy
+					Response: SPAM
+
+					Input: Набираю команду нужно 2-3 человека на удалённую работу з телефона пк от  десят тысяч в день  пишите + в лс
+					Response: SPAM
+
+					Input: Набираю команду нужно 2-3 человека на удалённую работу з телефона пк от  десят тысяч в день  пишите + в лс
+					Response: SPAM
+
+					Input: 💎 Пᴩᴏᴇᴋᴛ TONCOIN, ʙыᴨуᴄᴛиᴧ ᴄʙᴏᴇᴦᴏ ᴋᴀɜинᴏ бᴏᴛᴀ ʙ ᴛᴇᴧᴇᴦᴩᴀʍʍᴇ
+
+👑 Сᴀʍыᴇ ʙыᴄᴏᴋиᴇ ɯᴀнᴄы ʙыиᴦᴩыɯᴀ 
+⏳ Мᴏʍᴇнᴛᴀᴧьный ʙʙᴏд и ʙыʙᴏд
+🎲 Нᴇ ᴛᴩᴇбуᴇᴛ ᴩᴇᴦиᴄᴛᴩᴀции
+🏆 Вᴄᴇ ᴧучɯиᴇ ᴨᴩᴏʙᴀйдᴇᴩы и иᴦᴩы 
+
+🍋 Зᴀбᴩᴀᴛь 1000 USDT 👇
+
+t.me/slotsTON_BOT?start=cdyoNKvXn75
+					Response: SPAM
+					</example>
+					`,
+				},
+				{
+					Role:    openai.ChatMessageRoleUser,
+					Content: messageContent,
+				},
+			},
+		},
+	)
+
+	if err != nil {
+		return errors.Wrap(err, "failed to create chat completion")
+	}
+
+	if len(resp.Choices) > 0 && resp.Choices[0].Message.Content == "SPAM" {
+		entry.Info("Spam detected, banning user")
+		if err := bot.BanUserFromChat(b, user.ID, chat.ID); err != nil {
+			return errors.Wrap(err, "failed to ban user")
+		}
+		return nil
+	}
+
+	if err := r.s.GetDB().InsertMember(chat.ID, user.ID); err != nil {
+		return errors.Wrap(err, "failed to insert member")
+	}
+
+	entry.Info("Message passed spam check, user added to members")
+	return nil
+
+}
+
+func (r *Reactor) getLogEntry() *log.Entry {
+	return log.WithField("context", "admin")
+}
+
+func (r *Reactor) getLanguage(chat *api.Chat, user *api.User) string {
+	if settings, err := r.s.GetDB().GetSettings(chat.ID); !tool.Try(err) {
+		return settings.Language
+	}
+	if user != nil && tool.In(user.LanguageCode, i18n.GetLanguagesList()...) {
+		return user.LanguageCode
+	}
+	return config.Get().DefaultLanguage
+}
+
+func (r *Reactor) checkMedia(chat *api.Chat, user *api.User, m *api.Message) error {
+	entry := r.getLogEntry()
+	b := r.s.GetBot()
 
 	switch {
 	case m.ViaBot != nil:
@@ -106,9 +235,6 @@ func (r *Reactor) handleFirstMessage(u *api.Update, chat *api.Chat, user *api.Us
 		entry = entry.WithField("message_type", "voice")
 	}
 
-	if err := bot.DeleteChatMessage(b, chat.ID, m.MessageID); err != nil {
-		entry.WithError(err).Error("cant delete first message")
-	}
 	if _, err := b.Request(api.RestrictChatMemberConfig{
 		ChatMemberConfig: api.ChatMemberConfig{
 			ChatConfig: api.ChatConfig{
@@ -153,20 +279,5 @@ func (r *Reactor) handleFirstMessage(u *api.Update, chat *api.Chat, user *api.Us
 			entry.WithError(err).Error("cant delete message")
 		}
 	}()
-
 	return nil
-}
-
-func (r *Reactor) getLogEntry() *log.Entry {
-	return log.WithField("context", "admin")
-}
-
-func (r *Reactor) getLanguage(chat *api.Chat, user *api.User) string {
-	if settings, err := r.s.GetDB().GetSettings(chat.ID); !tool.Try(err) {
-		return settings.Language
-	}
-	if user != nil && tool.In(user.LanguageCode, i18n.GetLanguagesList()...) {
-		return user.LanguageCode
-	}
-	return config.Get().DefaultLanguage
 }

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/iamwavecut/tool"
+	"github.com/sashabaranov/go-openai"
 
 	"github.com/iamwavecut/ngbot/internal/db/sqlite"
 	"github.com/iamwavecut/ngbot/internal/event"
@@ -49,6 +50,10 @@ func main() {
 
 			bot.RegisterUpdateHandler("admin", handlers.NewAdmin(service))
 			bot.RegisterUpdateHandler("gatekeeper", handlers.NewGatekeeper(service))
+			llmAPIConfig := openai.DefaultConfig(cfg.OpenAI.APIKey)
+			llmAPIConfig.BaseURL = cfg.OpenAI.BaseURL
+			llmAPI := openai.NewClientWithConfig(llmAPIConfig)
+			bot.RegisterUpdateHandler("reactor", handlers.NewReactor(service, llmAPI, cfg.OpenAI.Model))
 
 			updateConfig := api.NewUpdate(0)
 			updateConfig.Timeout = 60
