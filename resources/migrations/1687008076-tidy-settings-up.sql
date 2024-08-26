@@ -9,7 +9,7 @@ CREATE TABLE "chats" (
     "enabled" BOOLEAN NOT NULL DEFAULT 1,
     "migrated" BOOLEAN NOT NULL DEFAULT 0,
     "challenge_timeout" INTEGER NOT NULL DEFAULT 180,  -- 3 minutes in seconds
-    "reject_timeout" INTEGER NOT NULL DEFAULT 600  -- 10 minutes in seconds
+    "reject_timeout" INTEGER NOT NULL DEFAULT 600,  -- 10 minutes in seconds
     "language" TEXT NOT NULL DEFAULT 'en'
 );
 
@@ -21,5 +21,5 @@ CREATE TABLE IF NOT EXISTS "chat_members" (
 );
 
 -- +migrate Down
--- no-op
-SELECT 1;
+DROP TABLE IF EXISTS "chat_members";
+DROP TABLE IF EXISTS "chats";
