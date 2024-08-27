@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	log "github.com/sirupsen/logrus"
@@ -12,10 +13,13 @@ type NbFormatter struct{}
 
 func (f *NbFormatter) Format(entry *log.Entry) ([]byte, error) {
 	const (
-		red    = 31
-		yellow = 33
-		blue   = 36
-		gray   = 37
+		red         = 31
+		yellow      = 33
+		blue        = 36
+		gray        = 37
+		green       = 32
+		cyan        = 96
+		lightYellow = 93
 	)
 	levelColor := blue
 	switch entry.Level {
@@ -34,8 +38,8 @@ func (f *NbFormatter) Format(entry *log.Entry) ([]byte, error) {
 		strings.ToUpper(entry.Level.String())[:4],
 	)
 
-	output := "level=" + level
-	output += " ts=" + entry.Time.Format("2006-01-02 15:04:05.000")
+	output := fmt.Sprintf("\x1b[%dm%s\x1b[0m=%s", cyan, "level", level)
+	output += fmt.Sprintf(" \x1b[%dm%s\x1b[0m=\x1b[%dm%s\x1b[0m", cyan, "ts", lightYellow, entry.Time.Format("2006-01-02 15:04:05.000"))
 	for k, val := range entry.Data {
 		var s string
 		if m, err := json.Marshal(val); err == nil {
@@ -44,9 +48,15 @@ func (f *NbFormatter) Format(entry *log.Entry) ([]byte, error) {
 		if s == "" {
 			continue
 		}
-		output += fmt.Sprintf(" %s=%s", k, s)
+		valueColor := cyan
+		if _, err := strconv.ParseFloat(s, 64); err == nil {
+			valueColor = green
+		} else if strings.HasPrefix(s, "\"") && strings.HasSuffix(s, "\"") {
+			valueColor = lightYellow
+		}
+		output += fmt.Sprintf(" \x1b[%dm%s\x1b[0m=\x1b[%dm%s\x1b[0m", cyan, k, valueColor, s)
 	}
-	output += ` msg="` + entry.Message + `"`
+	output += fmt.Sprintf(" \x1b[%dm%s\x1b[0m=\x1b[%dm\"%s\"\x1b[0m", cyan, "msg", lightYellow, entry.Message)
 	output = strings.Replace(output, "\r", "\\r", -1)
 	output = strings.Replace(output, "\n", "\\n", -1) + "\n"
 	return []byte(output), nil
