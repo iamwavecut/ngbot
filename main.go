@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/iamwavecut/tool"
@@ -27,6 +29,26 @@ func main() {
 	log.SetOutput(os.Stdout)
 	log.SetLevel(log.Level(cfg.LogLevel))
 	tool.SetLogger(log.StandardLogger())
+
+	maskSecret := func(s string) string {
+		if len(s) == 0 {
+			return s
+		}
+		visiblePart := len(s) / 5
+		return s[:visiblePart] + strings.Repeat("*", len(s)-2*visiblePart) + s[len(s)-visiblePart:]
+	}
+
+	maskedConfig := cfg
+	maskedConfig.TelegramAPIToken = maskSecret(cfg.TelegramAPIToken)
+	maskedConfig.OpenAI.APIKey = maskSecret(cfg.OpenAI.APIKey)
+
+	configJSON, err := json.MarshalIndent(maskedConfig, "", "  ")
+	if err != nil {
+		log.WithError(err).Error("Failed to marshal config to JSON")
+	} else {
+		log.WithField("config", string(configJSON)).Debug("Application configuration")
+	}
+
 	tool.Try(api.SetLogger(log.WithField("context", "bot_api")), true)
 	i18n.Init()
 
