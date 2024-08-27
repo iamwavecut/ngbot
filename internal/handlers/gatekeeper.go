@@ -107,7 +107,7 @@ func (g *Gatekeeper) Handle(u *api.Update, chat *api.Chat, user *api.User) (bool
 	entry := g.getLogEntry().WithField("method", "Handle")
 	entry.Debug("handling update")
 
-	nonNilFields := make(map[string]interface{})
+	nonNilFields := []string{}
 	isNonNilPtr := func(v reflect.Value) bool {
 		return v.Kind() == reflect.Ptr && !v.IsNil()
 	}
@@ -118,20 +118,19 @@ func (g *Gatekeeper) Handle(u *api.Update, chat *api.Chat, user *api.User) (bool
 		fieldName := typ.Field(i).Name
 
 		if isNonNilPtr(field) {
-			nonNilFields[fieldName] = field.Interface()
-			entry.Debugf("Non-nil pointer found: %s", fieldName)
+			nonNilFields = append(nonNilFields, fieldName)
 		}
 	}
 
 	if chat == nil {
 		entry.Debug("no chat")
-		entry.Debugf("Non-nil fields: %+v", nonNilFields)
+		entry.Debugf("Non-nil fields: %s", strings.Join(nonNilFields, ", "))
 
 		return true, nil
 	}
 	if user == nil {
 		entry.Debug("no user")
-		entry.Debugf("Non-nil fields: %+v", nonNilFields)
+		entry.Debugf("Non-nil fields: %s", strings.Join(nonNilFields, ", "))
 		return true, nil
 	}
 
