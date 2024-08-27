@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"runtime"
 	"strconv"
 	"strings"
 
@@ -20,6 +21,7 @@ func (f *NbFormatter) Format(entry *log.Entry) ([]byte, error) {
 		green       = 32
 		cyan        = 96
 		lightYellow = 93
+		lightGreen  = 92
 	)
 	levelColor := blue
 	switch entry.Level {
@@ -40,6 +42,12 @@ func (f *NbFormatter) Format(entry *log.Entry) ([]byte, error) {
 
 	output := fmt.Sprintf("\x1b[%dm%s\x1b[0m=%s", cyan, "level", level)
 	output += fmt.Sprintf(" \x1b[%dm%s\x1b[0m=\x1b[%dm%s\x1b[0m", cyan, "ts", lightYellow, entry.Time.Format("2006-01-02 15:04:05.000"))
+
+	_, file, line, ok := runtime.Caller(6)
+	if ok {
+		output += fmt.Sprintf(" \x1b[%dm%s\x1b[0m=\x1b[%dm%s:%d\x1b[0m", cyan, "source", lightYellow, file, line)
+	}
+
 	for k, val := range entry.Data {
 		var s string
 		if m, err := json.Marshal(val); err == nil {
@@ -56,7 +64,7 @@ func (f *NbFormatter) Format(entry *log.Entry) ([]byte, error) {
 		}
 		output += fmt.Sprintf(" \x1b[%dm%s\x1b[0m=\x1b[%dm%s\x1b[0m", cyan, k, valueColor, s)
 	}
-	output += fmt.Sprintf(" \x1b[%dm%s\x1b[0m=\x1b[%dm\"%s\"\x1b[0m", cyan, "msg", lightYellow, entry.Message)
+	output += fmt.Sprintf(" \x1b[%dm%s\x1b[0m=\x1b[%dm\"%s\"\x1b[0m", cyan, "msg", lightGreen, entry.Message)
 	output = strings.Replace(output, "\r", "\\r", -1)
 	output = strings.Replace(output, "\n", "\\n", -1) + "\n"
 	return []byte(output), nil
