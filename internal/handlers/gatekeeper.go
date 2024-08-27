@@ -106,11 +106,11 @@ func (g *Gatekeeper) Handle(u *api.Update, chat *api.Chat, user *api.User) (bool
 	entry := g.getLogEntry().WithField("method", "Handle")
 	entry.Debug("handling update")
 	if chat == nil {
-		entry.Debug("no chat", fmt.Sprintf("%+v", u))
+		entry.Debug("no chat", "update", fmt.Sprintf("%+v", u))
 		return true, nil
 	}
 	if user == nil {
-		entry.Debug("no user", fmt.Sprintf("%+v", u))
+		entry.Debug("no user", "update", fmt.Sprintf("%+v", u))
 		return true, nil
 	}
 
