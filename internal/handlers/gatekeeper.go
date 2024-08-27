@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -105,12 +106,32 @@ func NewGatekeeper(s bot.Service) *Gatekeeper {
 func (g *Gatekeeper) Handle(u *api.Update, chat *api.Chat, user *api.User) (bool, error) {
 	entry := g.getLogEntry().WithField("method", "Handle")
 	entry.Debug("handling update")
+
+	nonNilFields := make(map[string]interface{})
+	isNonNilPtr := func(v reflect.Value) bool {
+		return v.Kind() == reflect.Ptr && !v.IsNil()
+	}
+	val := reflect.ValueOf(u).Elem()
+	typ := val.Type()
+	for i := 0; i < val.NumField(); i++ {
+		field := val.Field(i)
+		fieldName := typ.Field(i).Name
+
+		if isNonNilPtr(field) {
+			nonNilFields[fieldName] = field.Interface()
+			entry.Debugf("Non-nil pointer found: %s", fieldName)
+		}
+	}
+
 	if chat == nil {
-		entry.Debug("no chat", "update", fmt.Sprintf("%+v", u))
+		entry.Debug("no chat")
+		entry.Debugf("Non-nil fields: %+v", nonNilFields)
+
 		return true, nil
 	}
 	if user == nil {
-		entry.Debug("no user", "update", fmt.Sprintf("%+v", u))
+		entry.Debug("no user")
+		entry.Debugf("Non-nil fields: %+v", nonNilFields)
 		return true, nil
 	}
 
