@@ -73,6 +73,9 @@ var privateChallengeKeys = []string{
 }
 
 func NewGatekeeper(s bot.Service) *Gatekeeper {
+	entry := log.WithField("object", "Gatekeeper").WithField("method", "NewGatekeeper")
+	entry.Debug("creating new gatekeeper")
+
 	g := &Gatekeeper{
 		s: s,
 
@@ -82,16 +85,16 @@ func NewGatekeeper(s bot.Service) *Gatekeeper {
 		restricted: map[int64]map[int64]struct{}{},
 	}
 
-	entry := g.getLogEntry()
 	for _, lang := range i18n.GetLanguagesList() {
+		entry.Debugf("loading challenges for language: %s", lang)
 		challengesData, err := resources.FS.ReadFile(infra.GetResourcesPath("gatekeeper", "challenges", lang+".yml"))
 		if err != nil {
-			entry.WithError(err).Errorln("cant load challenges file", lang)
+			entry.WithError(err).Errorf("cant load challenges file for language: %s", lang)
 		}
 
 		localVariants := map[string]string{}
 		if err := yaml.Unmarshal(challengesData, &localVariants); err != nil {
-			entry.WithError(err).Errorln("cant unmarshal challenges yaml", lang)
+			entry.WithError(err).Errorf("cant unmarshal challenges yaml for language: %s", lang)
 		}
 		g.Variants[lang] = localVariants
 	}
@@ -99,9 +102,10 @@ func NewGatekeeper(s bot.Service) *Gatekeeper {
 }
 
 func (g *Gatekeeper) Handle(u *api.Update, chat *api.Chat, user *api.User) (bool, error) {
-	entry := g.getLogEntry()
+	entry := g.getLogEntry().WithField("method", "Handle")
+	entry.Debug("handling update")
 	if chat == nil || user == nil {
-		entry.Debug("no chat or user ", fmt.Sprintf("%+v", u))
+		entry.Debug("no chat or user", fmt.Sprintf("%+v", u))
 		return true, nil
 	}
 
@@ -118,7 +122,7 @@ func (g *Gatekeeper) Handle(u *api.Update, chat *api.Chat, user *api.User) (bool
 		g.s.GetDB().SetSettings(settings)
 	}
 	if !settings.Enabled {
-		entry.Debug("Gatekeeper is disabled for this chat")
+		entry.Debug("gatekeeper is disabled for this chat")
 		return true, nil
 	}
 
@@ -132,13 +136,13 @@ func (g *Gatekeeper) Handle(u *api.Update, chat *api.Chat, user *api.User) (bool
 
 	switch {
 	case u.CallbackQuery != nil:
-		entry.Traceln("handle challenge")
+		entry.Debug("handling challenge")
 		return false, g.handleChallenge(u, chat, user)
 	case u.ChatJoinRequest != nil:
-		entry.Traceln("handle chat join request")
+		entry.Debug("handling chat join request")
 		return true, g.handleChatJoinRequest(u)
 	case m != nil && m.NewChatMembers != nil:
-		entry.Traceln("handle new chat members")
+		entry.Debug("handling new chat members")
 		chatInfo, err := g.s.GetBot().GetChat(api.ChatInfoConfig{
 			ChatConfig: api.ChatConfig{
 				ChatID: m.Chat.ID,
@@ -150,21 +154,24 @@ func (g *Gatekeeper) Handle(u *api.Update, chat *api.Chat, user *api.User) (bool
 		if !chatInfo.JoinByRequest {
 			return true, g.handleNewChatMembers(u, chat)
 		}
-		entry.Traceln("ignoring invited and approved joins")
+		entry.Debug("ignoring invited and approved joins")
 	case m != nil && m.From.ID == b.Self.ID && m.LeftChatMember != nil:
+		entry.Debug("handling left chat member")
 		return true, bot.DeleteChatMessage(b, chat.ID, m.MessageID)
 	case isFirstMessage:
+		entry.Debug("handling first message")
 		return true, g.handleFirstMessage(u, chat, user)
 	}
 	return true, nil
 }
 
 func (g *Gatekeeper) handleChallenge(u *api.Update, chat *api.Chat, user *api.User) (err error) {
-	entry := g.getLogEntry()
+	entry := g.getLogEntry().WithField("method", "handleChallenge")
+	entry.Debug("handling challenge")
 	b := g.s.GetBot()
 
 	cq := u.CallbackQuery
-	entry.Traceln(cq.Data, bot.GetUN(user))
+	entry.Debugf("callback query data: %s, user: %s", cq.Data, bot.GetUN(user))
 
 	joinerID, challengeUUID, err := func(s string) (int64, string, error) {
 		parts := strings.Split(s, ";")
@@ -179,6 +186,7 @@ func (g *Gatekeeper) handleChallenge(u *api.Update, chat *api.Chat, user *api.Us
 		return ID, parts[1], nil
 	}(cq.Data)
 	if err != nil {
+		entry.WithError(err).Error("failed to parse callback query data")
 		return err
 	}
 	var isAdmin bool
@@ -199,6 +207,7 @@ func (g *Gatekeeper) handleChallenge(u *api.Update, chat *api.Chat, user *api.Us
 			isAdmin = true
 		}
 	} else {
+		entry.WithError(err).Error("cant get chat member")
 		return errors.New("cant get chat member")
 	}
 
@@ -207,7 +216,7 @@ func (g *Gatekeeper) handleChallenge(u *api.Update, chat *api.Chat, user *api.Us
 	if cu == nil {
 		entry.Debug("no user matched for challenge")
 		if _, err := b.Request(api.NewCallback(cq.ID, i18n.Get("This challenge isn't your concern", lang))); err != nil {
-			entry.WithError(err).Errorln("cant answer callback query")
+			entry.WithError(err).Error("cant answer callback query")
 		}
 		return nil
 	}
@@ -217,6 +226,7 @@ func (g *Gatekeeper) handleChallenge(u *api.Update, chat *api.Chat, user *api.Us
 		},
 	})
 	if err != nil {
+		entry.WithError(err).Error("cant get target chat info")
 		return errors.WithMessage(err, "cant get target chat info")
 	}
 	lang = g.getLanguage(&targetChat, user)
@@ -225,21 +235,23 @@ func (g *Gatekeeper) handleChallenge(u *api.Update, chat *api.Chat, user *api.Us
 	if !isPublic {
 		isAdmin = false
 	} else {
+		entry.Debug("restricting chatting for user")
 		_ = bot.RestrictChatting(b, user.ID, cu.targetChat.ID)
 	}
 
 	if !isAdmin && joinerID != user.ID {
+		entry.Debug("user is not admin and not the joiner")
 		if _, err := b.Request(api.NewCallback(cq.ID, i18n.Get("Stop it! You're too real", lang))); err != nil {
-			entry.WithError(err).Errorln("cant answer callback query")
+			entry.WithError(err).Error("cant answer callback query")
 		}
 		return nil
 	}
 
 	switch {
 	case isAdmin, cu.successUUID == challengeUUID:
-		entry.Debug("successful challenge for ", bot.GetUN(cu.user))
+		entry.Debugf("successful challenge for %s", bot.GetUN(cu.user))
 		if _, err := b.Request(api.NewCallback(cq.ID, i18n.Get("Welcome, friend!", lang))); err != nil {
-			entry.WithError(err).Errorln("cant answer callback query")
+			entry.WithError(err).Error("cant answer callback query")
 		}
 
 		if _, err = b.Request(api.NewDeleteMessage(cu.commChat.ID, cu.challengeMessageID)); err != nil {
@@ -247,11 +259,13 @@ func (g *Gatekeeper) handleChallenge(u *api.Update, chat *api.Chat, user *api.Us
 		}
 
 		if !isPublic {
+			entry.Debug("approving join request")
 			_ = bot.ApproveJoinRequest(b, cu.user.ID, cu.targetChat.ID)
 			msg := api.NewMessage(cu.commChat.ID, fmt.Sprintf(i18n.Get("Awesome, you're good to go! Feel free to start chatting in the group \"%s\".", lang), api.EscapeText(api.ModeMarkdown, cu.targetChat.Title)))
 			msg.ParseMode = api.ModeMarkdown
 			_ = tool.Err(b.Send(msg))
 		} else {
+			entry.Debug("unrestricting chatting for user")
 			_ = bot.UnrestrictChatting(b, user.ID, cu.targetChat.ID)
 		}
 
@@ -270,13 +284,14 @@ func (g *Gatekeeper) handleChallenge(u *api.Update, chat *api.Chat, user *api.Us
 		g.removeChallengedUser(cu.user.ID, cu.commChat.ID)
 
 	case cu.successUUID != challengeUUID:
-		entry.Debug("failed challenge for ", bot.GetUN(cu.user))
+		entry.Debugf("failed challenge for %s", bot.GetUN(cu.user))
 
 		if _, err := b.Request(api.NewCallbackWithAlert(cq.ID, fmt.Sprintf(i18n.Get("Oops, it looks like you missed the deadline to join \"%s\", but don't worry! You can try again in %s minutes. Keep trying, I believe in you!", lang), cu.targetChat.Title, 10))); err != nil {
-			entry.WithError(err).Errorln("cant answer callback query")
+			entry.WithError(err).Error("cant answer callback query")
 		}
 
 		if !isPublic {
+			entry.Debug("declining join request")
 			_ = bot.DeclineJoinRequest(b, cu.user.ID, cu.targetChat.ID)
 			msg := api.NewMessage(cu.commChat.ID, fmt.Sprintf(i18n.Get("Oops, it looks like you missed the deadline to join \"%s\", but don't worry! You can try again in %s minutes. Keep trying, I believe in you!", lang), cu.targetChat.Title, 10))
 			msg.ParseMode = api.ModeMarkdown
