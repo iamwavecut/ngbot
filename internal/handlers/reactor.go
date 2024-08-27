@@ -3,7 +3,9 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"slices"
+	"strings"
 	"time"
 
 	api "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -13,6 +15,7 @@ import (
 
 	"github.com/iamwavecut/ngbot/internal/bot"
 	"github.com/iamwavecut/ngbot/internal/config"
+	"github.com/iamwavecut/ngbot/internal/db"
 	"github.com/iamwavecut/ngbot/internal/i18n"
 	"github.com/iamwavecut/tool"
 )
@@ -36,50 +39,100 @@ func NewReactor(s bot.Service, llmAPI *openai.Client, model string) *Reactor {
 func (r *Reactor) Handle(u *api.Update, chat *api.Chat, user *api.User) (bool, error) {
 	entry := r.getLogEntry().WithField("method", "Handle")
 	entry.Debug("handling update")
-	if chat == nil || user == nil {
-		entry.Debug("no chat or user", u)
+
+	nonNilFields := []string{}
+	isNonNilPtr := func(v reflect.Value) bool {
+		return v.Kind() == reflect.Ptr && !v.IsNil()
+	}
+	val := reflect.ValueOf(u).Elem()
+	typ := val.Type()
+	for i := 0; i < val.NumField(); i++ {
+		field := val.Field(i)
+		fieldName := typ.Field(i).Name
+
+		if isNonNilPtr(field) {
+			nonNilFields = append(nonNilFields, fieldName)
+		}
+	}
+	entry.Debug("Checking update type")
+	if u.Message == nil && u.MessageReaction == nil {
+		entry.Debug("Update is not about message or reaction, not proceeding")
+		return false, nil
+	}
+	entry.Debug("Update is about message or reaction, proceeding")
+
+	if chat == nil {
+		entry.Debug("no chat")
+		entry.Debugf("Non-nil fields: %s", strings.Join(nonNilFields, ", "))
+		return true, nil
+	}
+	if user == nil {
+		entry.Debug("no user")
+		entry.Debugf("Non-nil fields: %s", strings.Join(nonNilFields, ", "))
 		return true, nil
 	}
 
-	reaction := u.MessageReaction
-	if reaction == nil {
-		entry.Debug("no reaction in update")
+	entry.Debug("Fetching chat settings")
+	settings, err := r.s.GetDB().GetSettings(chat.ID)
+	if err != nil {
+		entry.WithError(err).Error("failed to get chat settings")
+		entry.Debug("Creating default settings")
+		settings = &db.Settings{
+			Enabled:          true,
+			ChallengeTimeout: defaultChallengeTimeout,
+			RejectTimeout:    defaultRejectTimeout,
+			Language:         "en",
+			ID:               chat.ID,
+		}
+		err = r.s.GetDB().SetSettings(settings)
+		if err != nil {
+			entry.WithError(err).Error("failed to set chat settings")
+		}
+	}
+	if !settings.Enabled {
+		entry.Debug("reactor is disabled for this chat")
 		return true, nil
 	}
+
 	b := r.s.GetBot()
-	for _, react := range reaction.NewReaction {
-		flags := map[string]int{}
-		emoji := react.Emoji
-		if react.Type == api.StickerTypeCustomEmoji {
-			entry.Debug("processing custom emoji")
-			emojiStickers, err := b.GetCustomEmojiStickers(api.GetCustomEmojiStickersConfig{
-				CustomEmojiIDs: []string{react.CustomEmoji},
-			})
-			if err != nil {
-				entry.Warn("custom emogi get error", err)
-				continue
+
+	if u.MessageReaction != nil {
+		entry.Debug("Processing message reaction")
+		for _, react := range u.MessageReaction.NewReaction {
+			flags := map[string]int{}
+			emoji := react.Emoji
+			if react.Type == api.StickerTypeCustomEmoji {
+				entry.Debug("processing custom emoji")
+				emojiStickers, err := b.GetCustomEmojiStickers(api.GetCustomEmojiStickersConfig{
+					CustomEmojiIDs: []string{react.CustomEmoji},
+				})
+				if err != nil {
+					entry.Warn("custom emoji get error", err)
+					continue
+				}
+				emoji = emojiStickers[0].Emoji
 			}
-			emoji = emojiStickers[0].Emoji
+			if slices.Contains(flaggedEmojis, emoji) {
+				entry.Debug("flagged emoji detected:", emoji)
+				flags[emoji]++
+			}
 
-		}
-		if slices.Contains(flaggedEmojis, react.Emoji) {
-			entry.Debug("flagged emoji detected:", react.Emoji)
-			flags[emoji]++
-		}
-
-		for _, flagged := range flags {
-			if flagged >= 5 {
-				entry.Debug("user reached flag threshold, attempting to ban")
-				if err := bot.BanUserFromChat(b, user.ID, chat.ID); err != nil {
-					entry.Error("cant ban user in chat", bot.GetFullName(user), chat.Title)
+			for _, flagged := range flags {
+				if flagged >= 5 {
+					entry.Debug("user reached flag threshold, attempting to ban")
+					if err := bot.BanUserFromChat(b, user.ID, chat.ID); err != nil {
+						entry.Error("cant ban user in chat", bot.GetFullName(user), chat.Title)
+					}
 				}
 			}
 		}
 	}
 
-	entry.Debug("handling first message")
-	if err := r.handleFirstMessage(u, chat, user); err != nil {
-		entry.WithError(err).Error("error handling new message")
+	if u.Message != nil {
+		entry.Debug("handling first message")
+		if err := r.handleFirstMessage(u, chat, user); err != nil {
+			entry.WithError(err).Error("error handling new message")
+		}
 	}
 
 	return true, nil

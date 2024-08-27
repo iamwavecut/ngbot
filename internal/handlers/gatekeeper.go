@@ -121,6 +121,12 @@ func (g *Gatekeeper) Handle(u *api.Update, chat *api.Chat, user *api.User) (bool
 			nonNilFields = append(nonNilFields, fieldName)
 		}
 	}
+	entry.Debug("Checking update type")
+	if u.Message == nil && u.ChatJoinRequest == nil {
+		entry.Debug("Update is not about join or message, not proceeding")
+		return false, nil
+	}
+	entry.Debug("Update is about join or message, proceeding")
 
 	if chat == nil {
 		entry.Debug("no chat")
