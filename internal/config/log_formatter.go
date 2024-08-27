@@ -42,10 +42,10 @@ func (f *NbFormatter) Format(entry *log.Entry) ([]byte, error) {
 
 	output := fmt.Sprintf("\x1b[%dm%s\x1b[0m=%s", cyan, "level", level)
 	output += fmt.Sprintf(" \x1b[%dm%s\x1b[0m=\x1b[%dm%s\x1b[0m", cyan, "ts", lightYellow, entry.Time.Format("2006-01-02 15:04:05.000"))
-
 	_, file, line, ok := runtime.Caller(6)
 	if ok {
-		output += fmt.Sprintf(" \x1b[%dm%s\x1b[0m=\x1b[%dm%s:%d\x1b[0m", cyan, "source", lightYellow, file, line)
+		shortFile := file[strings.LastIndex(file, "/")+1:]
+		output += fmt.Sprintf(" \x1b[%dm%s\x1b[0m=\x1b[%dm%s:%d\x1b[0m", cyan, "source", lightYellow, shortFile, line)
 	}
 
 	for k, val := range entry.Data {
