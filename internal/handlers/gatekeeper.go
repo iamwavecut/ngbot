@@ -119,7 +119,10 @@ func (g *Gatekeeper) Handle(u *api.Update, chat *api.Chat, user *api.User) (bool
 			Language:         "en",
 			ID:               chat.ID,
 		}
-		g.s.GetDB().SetSettings(settings)
+		err = g.s.GetDB().SetSettings(settings)
+		if err != nil {
+			entry.WithError(err).Error("failed to set chat settings")
+		}
 	}
 	if !settings.Enabled {
 		entry.Debug("gatekeeper is disabled for this chat")
@@ -130,8 +133,12 @@ func (g *Gatekeeper) Handle(u *api.Update, chat *api.Chat, user *api.User) (bool
 	m := u.Message
 
 	var isFirstMessage bool
-	if m != nil && g.newcomers[chat.ID] != nil && m.NewChatMembers != nil {
-		_, isFirstMessage = g.newcomers[chat.ID][user.ID]
+	if m != nil && m.NewChatMembers != nil {
+		isMember, err := g.s.GetDB().IsMember(chat.ID, user.ID)
+		if err != nil {
+			entry.WithError(err).Error("failed to check if user is a member")
+		}
+		isFirstMessage = !isMember
 	}
 
 	switch {
