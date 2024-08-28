@@ -258,6 +258,13 @@ t.me/slotsTON_BOT?start=cdyoNKvXn75
 	if len(resp.Choices) > 0 && resp.Choices[0].Message.Content == "SPAM" {
 		entry.Info("spam detected, banning user")
 		if err := bot.BanUserFromChat(b, user.ID, chat.ID); err != nil {
+
+			entry.Info("failed to ban user due to lack of permissions")
+			msg := api.NewMessage(chat.ID, fmt.Sprintf("I can't ban spammer \"%s\". I should have the permissions to ban and delete messages here.", bot.GetUN(user)))
+			msg.ParseMode = api.ModeMarkdown
+			if _, err := b.Send(msg); err != nil {
+				entry.WithError(err).Error("failed to send message about lack of permissions")
+			}
 			entry.WithError(err).Error("failed to ban user")
 			return errors.Wrap(err, "failed to ban user")
 		}
