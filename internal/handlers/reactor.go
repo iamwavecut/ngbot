@@ -162,10 +162,10 @@ func (r *Reactor) handleFirstMessage(u *api.Update, chat *api.Chat, user *api.Us
 		entry.Debug("user is already a member")
 		return nil
 	}
-	entry.Debug("checking media in message")
-	if err := r.checkMedia(chat, user, m); err != nil {
-		return errors.WithMessage(err, "cant check media")
-	}
+	// entry.Debug("checking media in message")
+	// if err := r.checkMedia(chat, user, m); err != nil {
+	// 	return errors.WithMessage(err, "cant check media")
+	// }
 	entry.Debug("checking first message content")
 	if err := r.checkFirstMessage(chat, user, m); err != nil {
 		return errors.WithMessage(err, "cant check first message")
