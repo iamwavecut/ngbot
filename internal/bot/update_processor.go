@@ -45,6 +45,24 @@ func NewUpdateProcessor(s Service) *UpdateProcessor {
 }
 
 func (up *UpdateProcessor) Process(u *api.Update) error {
+	if u == nil {
+		return errors.New("update is nil")
+	}
+
+	var updateTime time.Time
+	switch {
+	case u.Message != nil:
+		updateTime = time.Unix(int64(u.Message.Date), 0)
+	case u.ChannelPost != nil:
+		updateTime = time.Unix(int64(u.ChannelPost.Date), 0)
+	default:
+		return nil
+	}
+
+	if time.Since(updateTime) > time.Minute {
+		return nil
+	}
+
 	chat := u.FromChat()
 	if chat == nil && u.ChatJoinRequest != nil {
 		chat = &u.ChatJoinRequest.Chat
@@ -56,6 +74,9 @@ func (up *UpdateProcessor) Process(u *api.Update) error {
 	}
 
 	for _, handler := range up.updateHandlers {
+		if handler == nil {
+			continue
+		}
 		proceed, err := handler.Handle(u, chat, user)
 		if err != nil {
 			return errors.WithMessage(err, "handling error")

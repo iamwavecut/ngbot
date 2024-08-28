@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
-	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -31,7 +30,16 @@ const (
 
 	defaultChallengeTimeout = 3 * time.Minute
 	defaultRejectTimeout    = 10 * time.Minute
+
+	updateTypeCallbackQuery   updateType = "callback_query"
+	updateTypeChatJoinRequest updateType = "chat_join_request"
+	updateTypeNewChatMembers  updateType = "new_chat_members"
+	updateTypeLeftChatMember  updateType = "left_chat_member"
+	updateTypeFirstMessage    updateType = "first_message"
+	updateTypeIgnore          updateType = "ignore"
 )
+
+type updateType string
 
 type challengedUser struct {
 	user               *api.User
@@ -107,108 +115,88 @@ func (g *Gatekeeper) Handle(u *api.Update, chat *api.Chat, user *api.User) (bool
 	entry := g.getLogEntry().WithField("method", "Handle")
 	entry.Debug("handling update")
 
-	nonNilFields := []string{}
-	isNonNilPtr := func(v reflect.Value) bool {
-		return v.Kind() == reflect.Ptr && !v.IsNil()
+	updateType := g.determineUpdateType(u)
+	switch updateType {
+	case updateTypeIgnore:
+		return true, nil
 	}
-	val := reflect.ValueOf(u).Elem()
-	typ := val.Type()
-	for i := 0; i < val.NumField(); i++ {
-		field := val.Field(i)
-		fieldName := typ.Field(i).Name
-
-		if isNonNilPtr(field) {
-			nonNilFields = append(nonNilFields, fieldName)
-		}
-	}
-	entry.Debug("Checking update type")
-	if u.Message == nil && u.ChatJoinRequest == nil {
-		entry.Debug("Update is not about join or message, not proceeding")
-		return false, nil
-	}
-	entry.Debug("Update is about join or message, proceeding")
 
 	if chat == nil {
-		entry.Debug("no chat")
-		entry.Debugf("Non-nil fields: %s", strings.Join(nonNilFields, ", "))
-
+		entry.Debug("Missing chat information")
 		return true, nil
 	}
 	if user == nil {
-		entry.Debug("no user")
-		entry.Debugf("Non-nil fields: %s", strings.Join(nonNilFields, ", "))
+		entry.Debug("Missing user information")
 		return true, nil
 	}
 
-	entry.Debug("Fetching chat settings")
-	settings, err := g.s.GetDB().GetSettings(chat.ID)
+	settings, err := g.fetchAndValidateSettings(chat.ID)
 	if err != nil {
-		entry.WithError(err).Error("failed to get chat settings")
-		entry.Debug("Creating default settings")
-		settings = &db.Settings{
-			Enabled:          true,
-			ChallengeTimeout: defaultChallengeTimeout,
-			RejectTimeout:    defaultRejectTimeout,
-			Language:         "en",
-			ID:               chat.ID,
-		}
-		err = g.s.GetDB().SetSettings(settings)
-		if err != nil {
-			entry.WithError(err).Error("failed to set chat settings")
-		}
+		return true, err
 	}
 	if !settings.Enabled {
 		entry.Debug("gatekeeper is disabled for this chat")
 		return true, nil
 	}
 
-	b := g.s.GetBot()
-	m := u.Message
-
-	entry.Debug("Checking if it's the first message")
-	var isFirstMessage bool
-	if m != nil && m.NewChatMembers != nil {
-		isMember, err := g.s.GetDB().IsMember(chat.ID, user.ID)
-		if err != nil {
-			entry.WithError(err).Error("failed to check if user is a member")
-		}
-		isFirstMessage = !isMember
-	}
-	entry.Debugf("isFirstMessage: %v", isFirstMessage)
-
-	entry.Debug("Determining update type")
-	switch {
-	case u.CallbackQuery != nil:
-		entry.Debugf("callback query data: %s, user: %s", u.CallbackQuery.Data, bot.GetUN(user))
+	// Handle update based on its type
+	switch updateType {
+	case updateTypeCallbackQuery:
 		return false, g.handleChallenge(u, chat, user)
-	case u.ChatJoinRequest != nil:
-		entry.Debug("handling chat join request")
+	case updateTypeChatJoinRequest:
 		return true, g.handleChatJoinRequest(u)
-	case m != nil && m.NewChatMembers != nil:
-		entry.Debug("handling new chat members")
-		chatInfo, err := g.s.GetBot().GetChat(api.ChatInfoConfig{
-			ChatConfig: api.ChatConfig{
-				ChatID: m.Chat.ID,
-			},
-		})
-		if err != nil {
-			entry.WithError(err).Error("failed to get chat info")
-			return true, err
-		}
-		if !chatInfo.JoinByRequest {
-			entry.Debug("processing new chat members")
-			return true, g.handleNewChatMembers(u, chat)
-		}
-		entry.Debug("ignoring invited and approved joins")
-	case m != nil && m.From.ID == b.Self.ID && m.LeftChatMember != nil:
-		entry.Debug("handling left chat member")
-		return true, bot.DeleteChatMessage(b, chat.ID, m.MessageID)
-	case isFirstMessage:
-		entry.Debug("handling first message")
+	case updateTypeNewChatMembers:
+		return true, g.handleNewChatMembers(u, chat)
+	case updateTypeFirstMessage:
 		return true, g.handleFirstMessage(u, chat, user)
+	default:
+		entry.Debug("No specific handler matched, proceeding with default behavior")
+		return true, nil
 	}
-	entry.Debug("No specific handler matched, proceeding with default behavior")
-	return true, nil
+}
+
+func (g *Gatekeeper) determineUpdateType(u *api.Update) updateType {
+	if u.CallbackQuery != nil {
+		return updateTypeCallbackQuery
+	}
+	if u.ChatJoinRequest != nil {
+		return updateTypeChatJoinRequest
+	}
+	if u.Message != nil {
+		if u.Message.NewChatMembers != nil {
+			return updateTypeNewChatMembers
+		}
+		if g.isFirstMessage(u.Message) {
+			return updateTypeFirstMessage
+		}
+	}
+	return updateTypeIgnore
+}
+
+func (g *Gatekeeper) fetchAndValidateSettings(chatID int64) (*db.Settings, error) {
+	settings, err := g.s.GetDB().GetSettings(chatID)
+	if err != nil {
+		settings = &db.Settings{
+			Enabled:          true,
+			ChallengeTimeout: defaultChallengeTimeout,
+			RejectTimeout:    defaultRejectTimeout,
+			Language:         "en",
+			ID:               chatID,
+		}
+		if err := g.s.GetDB().SetSettings(settings); err != nil {
+			return nil, fmt.Errorf("failed to set default chat settings: %w", err)
+		}
+	}
+	return settings, nil
+}
+
+func (g *Gatekeeper) isFirstMessage(m *api.Message) bool {
+	isMember, err := g.s.GetDB().IsMember(m.Chat.ID, m.From.ID)
+	if err != nil {
+		g.getLogEntry().WithError(err).Error("failed to check if user is a member")
+		return false
+	}
+	return !isMember
 }
 
 func (g *Gatekeeper) handleChallenge(u *api.Update, chat *api.Chat, user *api.User) (err error) {
@@ -607,6 +595,7 @@ func (g *Gatekeeper) handleFirstMessage(u *api.Update, chat *api.Chat, user *api
 			}
 		}
 	}
+	return nil
 
 	entry.Debug("Determining message type")
 	toRestrict := true
