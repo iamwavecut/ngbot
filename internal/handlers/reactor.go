@@ -87,11 +87,9 @@ func (r *Reactor) Handle(ctx context.Context, u *api.Update, chat *api.Chat, use
 			err = r.s.SetSettings(settings)
 			if err != nil {
 				entry.WithError(err).Error("Failed to set default chat settings")
-				return false, fmt.Errorf("failed to set default chat settings: %w", err)
 			}
 		} else {
 			entry.WithError(err).Error("Failed to get chat settings")
-			return false, fmt.Errorf("failed to get chat settings: %w", err)
 		}
 	}
 	if !settings.Enabled {
