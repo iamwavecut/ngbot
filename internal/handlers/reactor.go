@@ -318,7 +318,10 @@ t.me/slotsTON_BOT?start=cdyoNKvXn75
 		lang := r.getLanguage(chat, user)
 
 		if len(errs) > 0 {
-			entry.WithField("errors", errs).Error("failed to handle spam")
+			entry = entry.WithField("errors", errs).
+				WithField("chat_id", chat.ID).
+				WithField("chat_title", chat.Title)
+			entry.Error("failed to handle spam")
 			var msgContent string
 			if len(errs) == 2 {
 				msgContent = fmt.Sprintf(i18n.Get("I can't delete messages or ban spammer \"%s\".", lang), bot.GetUN(user))
