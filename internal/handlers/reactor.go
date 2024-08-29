@@ -156,9 +156,11 @@ func (r *Reactor) handleFirstMessage(u *api.Update, chat *api.Chat, user *api.Us
 	}
 
 	entry.Debug("checking if user is a member")
-	if isMember, err := r.s.GetDB().IsMember(chat.ID, user.ID); err != nil {
+	isMember, err := r.s.IsMember(chat.ID, user.ID)
+	if err != nil {
 		return errors.WithMessage(err, "cant check if member")
-	} else if isMember {
+	}
+	if isMember {
 		entry.Debug("user is already a member")
 		return nil
 	}
@@ -321,7 +323,7 @@ t.me/slotsTON_BOT?start=cdyoNKvXn75
 	}
 
 	entry.Debug("message passed spam check, inserting member")
-	if err := r.s.GetDB().InsertMember(chat.ID, user.ID); err != nil {
+	if err := r.s.InsertMember(chat.ID, user.ID); err != nil {
 		entry.WithError(err).Error("failed to insert member")
 		return errors.Wrap(err, "failed to insert member")
 	}

@@ -191,7 +191,7 @@ func (g *Gatekeeper) fetchAndValidateSettings(chatID int64) (*db.Settings, error
 }
 
 func (g *Gatekeeper) isFirstMessage(m *api.Message) bool {
-	isMember, err := g.s.GetDB().IsMember(m.Chat.ID, m.From.ID)
+	isMember, err := g.s.IsMember(m.Chat.ID, m.From.ID)
 	if err != nil {
 		g.getLogEntry().WithError(err).Error("failed to check if user is a member")
 		return false
@@ -582,122 +582,39 @@ func (g *Gatekeeper) handleFirstMessage(u *api.Update, chat *api.Chat, user *api
 	if m.Text != "" {
 		for _, v := range []string{"Нужны сотрудников", "Без опыта роботы", "@dasha234di", "@marinetthr", "На момент стажировке", "5 р\\час"} {
 			if strings.Contains(m.Text, v) {
-				entry.Debugf("Found banned phrase: %s", v)
+				entry.Info("spam detected, banning user")
+				var errs []error
 				if err := bot.DeleteChatMessage(b, m.Chat.ID, m.MessageID); err != nil {
-					entry.WithError(err).Error("Can't delete message")
+					errs = append(errs, errors.Wrap(err, "failed to delete message"))
 				}
 				if err := bot.BanUserFromChat(b, m.From.ID, m.Chat.ID); err != nil {
-					entry.WithField("user", bot.GetUN(user)).Info("Banned by static list")
-					return errors.WithMessage(err, "Can't kick")
+					errs = append(errs, errors.Wrap(err, "failed to ban user"))
+				}
+				lang := g.getLanguage(chat, user)
+
+				if len(errs) > 0 {
+					entry.WithField("errors", errs).Error("failed to handle spam")
+					var msgContent string
+					if len(errs) == 2 {
+						msgContent = fmt.Sprintf(i18n.Get("I can't delete messages or ban spammer \"%s\".", lang), bot.GetUN(user))
+					} else if errors.Is(errs[0], errors.New("failed to delete message")) {
+						msgContent = fmt.Sprintf(i18n.Get("I can't delete messages from spammer \"%s\".", lang), bot.GetUN(user))
+					} else {
+						msgContent = fmt.Sprintf(i18n.Get("I can't ban spammer \"%s\".", lang), bot.GetUN(user))
+					}
+					msgContent += " " + i18n.Get("I should have the permissions to ban and delete messages here.", lang)
+					msg := api.NewMessage(chat.ID, msgContent)
+					msg.ParseMode = api.ModeHTML
+					if _, err := b.Send(msg); err != nil {
+						entry.WithError(err).Error("failed to send message about lack of permissions")
+					}
+					return errors.New("failed to handle spam")
 				}
 				entry.Debug("User banned, returning")
 				return nil
 			}
 		}
 	}
-	return nil
-
-	entry.Debug("Determining message type")
-	toRestrict := true
-	switch {
-	case m.ViaBot != nil:
-		entry = entry.WithField("message_type", "via_bot")
-	case m.Audio != nil:
-		entry = entry.WithField("message_type", "audio")
-	case m.Document != nil:
-		entry = entry.WithField("message_type", "document")
-	case m.Photo != nil:
-		entry = entry.WithField("message_type", "photo")
-	case m.Video != nil:
-		entry = entry.WithField("message_type", "video")
-	case m.VideoNote != nil:
-		entry = entry.WithField("message_type", "video_note")
-	case m.Voice != nil:
-		entry = entry.WithField("message_type", "voice")
-	default:
-		toRestrict = false
-	}
-
-	if !toRestrict {
-		entry.Debug("Message doesn't need restriction, removing user from restricted and newcomers lists")
-		delete(g.restricted[chat.ID], user.ID)
-		delete(g.newcomers[chat.ID], user.ID)
-		return nil
-	}
-	entry.Debug("Restricting user")
-	if err := bot.DeleteChatMessage(b, chat.ID, m.MessageID); err != nil {
-		entry.WithError(err).Error("Can't delete first message")
-	}
-	entry.Debug("Applying chat restrictions")
-	if _, err := b.Request(api.RestrictChatMemberConfig{
-		ChatMemberConfig: api.ChatMemberConfig{
-			ChatConfig: api.ChatConfig{
-				ChatID: chat.ID,
-			},
-			UserID: user.ID,
-		},
-		UntilDate: time.Now().Add(1 * time.Minute).Unix(),
-		Permissions: &api.ChatPermissions{
-			CanSendMessages:       true,
-			CanSendAudios:         false,
-			CanSendDocuments:      false,
-			CanSendPhotos:         false,
-			CanSendVideos:         false,
-			CanSendVideoNotes:     false,
-			CanSendVoiceNotes:     false,
-			CanSendPolls:          false,
-			CanSendOtherMessages:  false,
-			CanAddWebPagePreviews: false,
-			CanChangeInfo:         false,
-			CanInviteUsers:        false,
-			CanPinMessages:        false,
-			CanManageTopics:       false,
-		},
-	}); err != nil {
-		entry.WithError(err).Error("Can't restrict user")
-		return errors.WithMessage(err, "Can't restrict")
-	}
-
-	entry.Debug("Checking for second violation")
-	_, secondViolation := g.restricted[chat.ID][user.ID]
-	if secondViolation {
-		entry.Debug("Second violation detected, kicking user")
-		err := bot.BanUserFromChat(b, user.ID, chat.ID)
-		if err != nil {
-			entry.WithError(err).Error("Can't kick user")
-			return errors.WithMessage(err, "Can't kick")
-		}
-		entry.Debug("Removing user from restricted and newcomers lists")
-		delete(g.restricted[chat.ID], user.ID)
-		delete(g.newcomers[chat.ID], user.ID)
-		return nil
-	}
-	entry.Debug("First violation")
-
-	entry.Debug("Adding user to restricted list")
-	g.restricted[chat.ID][user.ID] = struct{}{}
-	lang := g.getLanguage(chat, user)
-	entry.Debugf("Using language: %s", lang)
-	nameString := fmt.Sprintf("[%s](tg://user?id=%d) ", api.EscapeText(api.ModeMarkdown, bot.GetFullName(user)), user.ID)
-	msgText := fmt.Sprintf(i18n.Get("Hi %s! Your first message should be text-only and without any links or media. Just a heads up - if you don't follow this rule, you'll get banned from the group. Cheers!", lang), nameString)
-	msg := api.NewMessage(chat.ID, msgText)
-	msg.ParseMode = api.ModeMarkdown
-	msg.DisableNotification = true
-	entry.Debug("Sending warning message")
-	reply, err := b.Send(msg)
-	if err != nil {
-		entry.WithError(err).Error("Can't send warning message")
-		return errors.WithMessage(err, "Can't send")
-	}
-	entry.Debug("Starting goroutine to delete warning message after 30 seconds")
-	go func() {
-		time.Sleep(30 * time.Second)
-		if err := bot.DeleteChatMessage(b, chat.ID, reply.MessageID); err != nil {
-			entry.WithError(err).Error("Can't delete warning message")
-		}
-	}()
-
-	entry.Debug("Exiting handleFirstMessage method")
 	return nil
 }
 

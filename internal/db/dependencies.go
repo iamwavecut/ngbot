@@ -8,5 +8,6 @@ type Client interface {
 	DeleteMember(chatID int64, userID int64) error
 	DeleteMembers(chatID int64, userIDs []int64) error
 	GetMembers(chatID int64) ([]int64, error)
+	GetAllMembers() (map[int64][]int64, error)
 	IsMember(chatID int64, userID int64) (bool, error)
 }
