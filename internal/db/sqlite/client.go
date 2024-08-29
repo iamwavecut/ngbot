@@ -52,7 +52,7 @@ func (c *sqliteClient) GetSettings(chatID int64) (*db.Settings, error) {
 	res := &db.Settings{}
 	err := c.db.Get(res, "SELECT id, language, enabled, challenge_timeout, reject_timeout FROM chats WHERE id=?", chatID)
 	if err == sql.ErrNoRows {
-		return nil, err
+		return nil, nil
 	}
 	return res, err
 }
@@ -62,7 +62,8 @@ func (c *sqliteClient) GetAllSettings() (map[int64]*db.Settings, error) {
 	defer c.mutex.RUnlock()
 
 	var settings []db.Settings
-	if err := c.db.Select(&settings, "SELECT id, language, enabled, challenge_timeout, reject_timeout FROM chats"); err != nil {
+	err := c.db.Select(&settings, "SELECT id, language, enabled, challenge_timeout, reject_timeout FROM chats")
+	if err != nil {
 		return nil, err
 	}
 
