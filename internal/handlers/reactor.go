@@ -27,7 +27,10 @@ type Reactor struct {
 }
 
 func NewReactor(s bot.Service, llmAPI *openai.Client, model string) *Reactor {
-	log.WithField("scope", "Reactor").WithField("method", "NewReactor").Debug("creating new Reactor")
+	log.WithFields(log.Fields{
+		"scope":  "Reactor",
+		"method": "NewReactor",
+	}).Debug("creating new Reactor")
 	r := &Reactor{
 		s:      s,
 		llmAPI: llmAPI,
@@ -37,9 +40,11 @@ func NewReactor(s bot.Service, llmAPI *openai.Client, model string) *Reactor {
 
 func (r *Reactor) Handle(ctx context.Context, u *api.Update, chat *api.Chat, user *api.User) (bool, error) {
 	entry := r.getLogEntry().
-		WithField("method", "Handle").
-		WithField("chat_id", chat.ID).
-		WithField("chat_title", chat.Title)
+		WithFields(log.Fields{
+			"method":     "Handle",
+			"chat_id":    chat.ID,
+			"chat_title": chat.Title,
+		})
 	entry.Debug("handling update")
 
 	if u == nil {
@@ -69,13 +74,13 @@ func (r *Reactor) Handle(ctx context.Context, u *api.Update, chat *api.Chat, use
 	entry.Debug("Update is about message or reaction, proceeding")
 
 	if chat == nil {
-		entry.Debug("no chat")
-		entry.Debugf("Non-nil fields: %s", strings.Join(nonNilFields, ", "))
+		entry.Warn("No chat")
+		entry.WithField("non_nil_fields", strings.Join(nonNilFields, ", ")).Warn("Non-nil fields")
 		return true, nil
 	}
 	if user == nil {
-		entry.Debug("no user")
-		entry.Debugf("Non-nil fields: %s", strings.Join(nonNilFields, ", "))
+		entry.Warn("No user")
+		entry.WithField("non_nil_fields", strings.Join(nonNilFields, ", ")).Warn("Non-nil fields")
 		return true, nil
 	}
 
@@ -101,13 +106,13 @@ func (r *Reactor) Handle(ctx context.Context, u *api.Update, chat *api.Chat, use
 	}
 
 	if !settings.Enabled {
-		entry.Debug("reactor is disabled for this chat")
+		entry.Warn("reactor is disabled for this chat")
 		return true, nil
 	}
 
 	b := r.s.GetBot()
 	if b == nil {
-		entry.Error("Bot is nil")
+		entry.Warn("Bot is nil")
 		return false, errors.New("nil bot")
 	}
 
@@ -122,7 +127,7 @@ func (r *Reactor) Handle(ctx context.Context, u *api.Update, chat *api.Chat, use
 					CustomEmojiIDs: []string{react.CustomEmoji},
 				})
 				if err != nil {
-					entry.Warn("custom emoji get error", err)
+					entry.WithError(err).Warn("custom emoji get error")
 					continue
 				}
 				if len(emojiStickers) > 0 {
@@ -130,23 +135,27 @@ func (r *Reactor) Handle(ctx context.Context, u *api.Update, chat *api.Chat, use
 				}
 			}
 			if slices.Contains(flaggedEmojis, emoji) {
-				entry.Debug("flagged emoji detected:", emoji)
+				entry.WithField("emoji", emoji).Debug("flagged emoji detected")
 				flags[emoji]++
 			}
 
 			for _, flagged := range flags {
 				if flagged >= 5 {
-					entry.Debug("user reached flag threshold, attempting to ban")
+					entry.Warn("user reached flag threshold, attempting to ban")
 					if err := bot.BanUserFromChat(b, user.ID, chat.ID); err != nil {
-						entry.Error("cant ban user in chat", bot.GetFullName(user), chat.Title)
+						entry.WithFields(log.Fields{
+							"user": bot.GetFullName(user),
+							"chat": chat.Title,
+						}).Error("cant ban user in chat")
 					}
+					return true, nil
 				}
 			}
 		}
 	}
 
 	if u.Message != nil {
-		entry.Debug("handling first message")
+		entry.Debug("handling new message")
 		if err := r.handleFirstMessage(ctx, u, chat, user); err != nil {
 			entry.WithError(err).Error("error handling new message")
 		}
@@ -158,19 +167,7 @@ func (r *Reactor) Handle(ctx context.Context, u *api.Update, chat *api.Chat, use
 func (r *Reactor) handleFirstMessage(ctx context.Context, u *api.Update, chat *api.Chat, user *api.User) error {
 	entry := r.getLogEntry().WithField("method", "handleFirstMessage")
 	entry.Debug("handling first message")
-	if u.FromChat() == nil {
-		entry.Debug("no chat in update")
-		return nil
-	}
-	if u.SentFrom() == nil {
-		entry.Debug("no sender in update")
-		return nil
-	}
 	m := u.Message
-	if m == nil {
-		entry.Debug("no message in update")
-		return nil
-	}
 
 	entry.Debug("checking if user is a member")
 	isMember, err := r.s.IsMember(ctx, chat.ID, user.ID)
@@ -181,10 +178,7 @@ func (r *Reactor) handleFirstMessage(ctx context.Context, u *api.Update, chat *a
 		entry.Debug("user is already a member")
 		return nil
 	}
-	// entry.Debug("checking media in message")
-	// if err := r.checkMedia(chat, user, m); err != nil {
-	// 	return errors.WithMessage(err, "cant check media")
-	// }
+
 	entry.Debug("checking first message content")
 	if err := r.checkFirstMessage(ctx, chat, user, m); err != nil {
 		return errors.WithMessage(err, "cant check first message")
@@ -208,7 +202,7 @@ func (r *Reactor) checkFirstMessage(ctx context.Context, chat *api.Chat, user *a
 		return nil
 	}
 
-	entry.Debug("sending message to OpenAI for spam check")
+	entry.Info("sending first message to OpenAI for spam check")
 	resp, err := r.llmAPI.CreateChatCompletion(
 		ctx,
 		openai.ChatCompletionRequest{
@@ -273,7 +267,7 @@ t.me/slotsTON_BOT?start=cdyoNKvXn75
 					Input: Это не так
 					Response: NOT_SPAM
 
-					Input: Не сочтите за спам, хочу порек��амировать свой канал
+					Input: Не сочтите за спам, хочу порекламировать свой канал
 					Response: NOT_SPAM
 
 					Input: Нет
@@ -318,16 +312,19 @@ t.me/slotsTON_BOT?start=cdyoNKvXn75
 		if err := bot.BanUserFromChat(b, user.ID, chat.ID); err != nil {
 			errs = append(errs, errors.Wrap(err, "failed to ban user"))
 		}
-		lang := r.getLanguage(chat, user)
-
 		if len(errs) > 0 {
+			lang := r.getLanguage(chat, user)
+
 			entry.WithField("errors", errs).Error("failed to handle spam")
 			var msgContent string
 			if len(errs) == 2 {
+				entry.Warn("failed to ban and delete message")
 				msgContent = fmt.Sprintf(i18n.Get("I can't delete messages or ban spammer \"%s\".", lang), bot.GetUN(user))
 			} else if errors.Is(errs[0], errors.New("failed to delete message")) {
+				entry.Warn("failed to delete message")
 				msgContent = fmt.Sprintf(i18n.Get("I can't delete messages from spammer \"%s\".", lang), bot.GetUN(user))
 			} else {
+				entry.Warn("failed to ban spammer")
 				msgContent = fmt.Sprintf(i18n.Get("I can't ban spammer \"%s\".", lang), bot.GetUN(user))
 			}
 			msgContent += " " + i18n.Get("I should have the permissions to ban and delete messages here.", lang)
@@ -360,10 +357,11 @@ func (r *Reactor) getLanguage(chat *api.Chat, user *api.User) string {
 	entry := r.getLogEntry().WithField("method", "getLanguage")
 	entry.Debug("getting language for chat and user")
 	if settings, err := r.s.GetDB().GetSettings(chat.ID); !tool.Try(err) {
-		entry.Debug("using language from chat settings:", settings.Language)
+		entry.WithField("language", settings.Language).Debug("using language from chat settings")
 		return settings.Language
 	}
 	if user != nil && tool.In(user.LanguageCode, i18n.GetLanguagesList()...) {
+		entry.WithField("language", user.LanguageCode).Debug("using user's language")
 		entry.Debug("using user's language:", user.LanguageCode)
 		return user.LanguageCode
 	}
