@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"reflect"
 	"slices"
@@ -80,22 +79,7 @@ func (r *Reactor) Handle(ctx context.Context, u *api.Update, chat *api.Chat, use
 	entry.Debug("Fetching chat settings")
 	settings, err := r.s.GetSettings(chat.ID)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			entry.Info("No settings found for chat, creating default settings")
-			settings = &db.Settings{
-				Enabled:          true,
-				ChallengeTimeout: defaultChallengeTimeout,
-				RejectTimeout:    defaultRejectTimeout,
-				Language:         "en",
-				ID:               chat.ID,
-			}
-			err = r.s.SetSettings(settings)
-			if err != nil {
-				entry.WithError(err).Error("Failed to set default chat settings")
-			}
-		} else {
-			entry.WithError(err).Error("Failed to get chat settings")
-		}
+		entry.WithError(err).Error("Failed to get chat settings")
 	}
 	if settings == nil {
 		entry.Debug("settings are nil, using default settings")
@@ -105,6 +89,11 @@ func (r *Reactor) Handle(ctx context.Context, u *api.Update, chat *api.Chat, use
 			RejectTimeout:    defaultRejectTimeout,
 			Language:         "en",
 			ID:               chat.ID,
+		}
+
+		err = r.s.SetSettings(settings)
+		if err != nil {
+			entry.WithError(err).Error("Failed to set default chat settings")
 		}
 	}
 
