@@ -2,12 +2,15 @@ package bot
 
 import (
 	"context"
+	"database/sql"
+	"fmt"
 	"sync"
 	"time"
 
 	api "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
 	"github.com/iamwavecut/ngbot/internal/db"
+	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 )
 
@@ -122,7 +125,10 @@ func (s *service) GetSettings(chatID int64) (*db.Settings, error) {
 
 	settings, err := s.dbClient.GetSettings(chatID)
 	if err != nil {
-		return nil, err
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, err
+		}
+		return nil, fmt.Errorf("error fetching settings from database: %w", err)
 	}
 
 	s.cacheMutex.Lock()

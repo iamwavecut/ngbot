@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"reflect"
 	"slices"
@@ -74,18 +75,23 @@ func (r *Reactor) Handle(ctx context.Context, u *api.Update, chat *api.Chat, use
 	entry.Debug("Fetching chat settings")
 	settings, err := r.s.GetSettings(chat.ID)
 	if err != nil {
-		entry.WithError(err).Error("failed to get chat settings")
-		entry.Debug("Creating default settings")
-		settings = &db.Settings{
-			Enabled:          true,
-			ChallengeTimeout: defaultChallengeTimeout,
-			RejectTimeout:    defaultRejectTimeout,
-			Language:         "en",
-			ID:               chat.ID,
-		}
-		err = r.s.SetSettings(settings)
-		if err != nil {
-			entry.WithError(err).Error("failed to set chat settings")
+		if errors.Is(err, sql.ErrNoRows) {
+			entry.Info("No settings found for chat, creating default settings")
+			settings = &db.Settings{
+				Enabled:          true,
+				ChallengeTimeout: defaultChallengeTimeout,
+				RejectTimeout:    defaultRejectTimeout,
+				Language:         "en",
+				ID:               chat.ID,
+			}
+			err = r.s.SetSettings(settings)
+			if err != nil {
+				entry.WithError(err).Error("Failed to set default chat settings")
+				return false, fmt.Errorf("failed to set default chat settings: %w", err)
+			}
+		} else {
+			entry.WithError(err).Error("Failed to get chat settings")
+			return false, fmt.Errorf("failed to get chat settings: %w", err)
 		}
 	}
 	if !settings.Enabled {
@@ -255,7 +261,7 @@ t.me/slotsTON_BOT?start=cdyoNKvXn75
 					Input: Это не так
 					Response: NOT_SPAM
 
-					Input: Не сочтите за спам, хочу порекламировать свой канал
+					Input: Не сочтите за спам, хочу порек��амировать свой канал
 					Response: NOT_SPAM
 
 					Input: Нет
