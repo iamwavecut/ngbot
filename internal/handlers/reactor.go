@@ -6,7 +6,6 @@ import (
 	"reflect"
 	"slices"
 	"strings"
-	"time"
 
 	api "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/pkg/errors"
@@ -36,7 +35,7 @@ func NewReactor(s bot.Service, llmAPI *openai.Client, model string) *Reactor {
 	return r
 }
 
-func (r *Reactor) Handle(u *api.Update, chat *api.Chat, user *api.User) (bool, error) {
+func (r *Reactor) Handle(ctx context.Context, u *api.Update, chat *api.Chat, user *api.User) (bool, error) {
 	entry := r.getLogEntry().WithField("method", "Handle")
 	entry.Debug("handling update")
 
@@ -130,7 +129,7 @@ func (r *Reactor) Handle(u *api.Update, chat *api.Chat, user *api.User) (bool, e
 
 	if u.Message != nil {
 		entry.Debug("handling first message")
-		if err := r.handleFirstMessage(u, chat, user); err != nil {
+		if err := r.handleFirstMessage(ctx, u, chat, user); err != nil {
 			entry.WithError(err).Error("error handling new message")
 		}
 	}
@@ -138,7 +137,7 @@ func (r *Reactor) Handle(u *api.Update, chat *api.Chat, user *api.User) (bool, e
 	return true, nil
 }
 
-func (r *Reactor) handleFirstMessage(u *api.Update, chat *api.Chat, user *api.User) error {
+func (r *Reactor) handleFirstMessage(ctx context.Context, u *api.Update, chat *api.Chat, user *api.User) error {
 	entry := r.getLogEntry().WithField("method", "handleFirstMessage")
 	entry.Debug("handling first message")
 	if u.FromChat() == nil {
@@ -156,7 +155,7 @@ func (r *Reactor) handleFirstMessage(u *api.Update, chat *api.Chat, user *api.Us
 	}
 
 	entry.Debug("checking if user is a member")
-	isMember, err := r.s.IsMember(chat.ID, user.ID)
+	isMember, err := r.s.IsMember(ctx, chat.ID, user.ID)
 	if err != nil {
 		return errors.WithMessage(err, "cant check if member")
 	}
@@ -169,14 +168,14 @@ func (r *Reactor) handleFirstMessage(u *api.Update, chat *api.Chat, user *api.Us
 	// 	return errors.WithMessage(err, "cant check media")
 	// }
 	entry.Debug("checking first message content")
-	if err := r.checkFirstMessage(chat, user, m); err != nil {
+	if err := r.checkFirstMessage(ctx, chat, user, m); err != nil {
 		return errors.WithMessage(err, "cant check first message")
 	}
 
 	return nil
 }
 
-func (r *Reactor) checkFirstMessage(chat *api.Chat, user *api.User, m *api.Message) error {
+func (r *Reactor) checkFirstMessage(ctx context.Context, chat *api.Chat, user *api.User, m *api.Message) error {
 	entry := r.getLogEntry().WithField("method", "checkFirstMessage")
 	entry.Debug("checking first message")
 	b := r.s.GetBot()
@@ -191,7 +190,6 @@ func (r *Reactor) checkFirstMessage(chat *api.Chat, user *api.User, m *api.Messa
 		return nil
 	}
 
-	ctx := context.Background()
 	entry.Debug("sending message to OpenAI for spam check")
 	resp, err := r.llmAPI.CreateChatCompletion(
 		ctx,
@@ -274,6 +272,9 @@ t.me/slotsTON_BOT?start=cdyoNKvXn75
 
 					Input: Да
 					Response: NOT_SPAM
+
+					Input: Ищу людей, возьму 2-3 человека 18+ Удаленная деятельность.От 250$  в  день.Кому интересно: Пишите + в лс
+					Response: SPAM
 					</example>
 					`,
 				},
@@ -323,7 +324,7 @@ t.me/slotsTON_BOT?start=cdyoNKvXn75
 	}
 
 	entry.Debug("message passed spam check, inserting member")
-	if err := r.s.InsertMember(chat.ID, user.ID); err != nil {
+	if err := r.s.InsertMember(ctx, chat.ID, user.ID); err != nil {
 		entry.WithError(err).Error("failed to insert member")
 		return errors.Wrap(err, "failed to insert member")
 	}
@@ -350,78 +351,4 @@ func (r *Reactor) getLanguage(chat *api.Chat, user *api.User) string {
 	}
 	entry.Debug("using default language:", config.Get().DefaultLanguage)
 	return config.Get().DefaultLanguage
-}
-
-func (r *Reactor) checkMedia(chat *api.Chat, user *api.User, m *api.Message) error {
-	entry := r.getLogEntry().WithField("method", "checkMedia")
-	entry.Debug("checking media in message")
-	b := r.s.GetBot()
-
-	switch {
-	case m.ViaBot != nil:
-		entry = entry.WithField("message_type", "via_bot")
-	case m.Audio != nil:
-		entry = entry.WithField("message_type", "audio")
-	case m.Document != nil:
-		entry = entry.WithField("message_type", "document")
-	case m.Photo != nil:
-		entry = entry.WithField("message_type", "photo")
-	case m.Video != nil:
-		entry = entry.WithField("message_type", "video")
-	case m.VideoNote != nil:
-		entry = entry.WithField("message_type", "video_note")
-	case m.Voice != nil:
-		entry = entry.WithField("message_type", "voice")
-	}
-
-	entry.Debug("restricting user's permissions")
-	if _, err := b.Request(api.RestrictChatMemberConfig{
-		ChatMemberConfig: api.ChatMemberConfig{
-			ChatConfig: api.ChatConfig{
-				ChatID: chat.ID,
-			},
-			UserID: user.ID,
-		},
-		UntilDate: time.Now().Add(1 * time.Minute).Unix(),
-		Permissions: &api.ChatPermissions{
-			CanSendMessages:       true,
-			CanSendAudios:         false,
-			CanSendDocuments:      false,
-			CanSendPhotos:         false,
-			CanSendVideos:         false,
-			CanSendVideoNotes:     false,
-			CanSendVoiceNotes:     false,
-			CanSendPolls:          false,
-			CanSendOtherMessages:  false,
-			CanAddWebPagePreviews: false,
-			CanChangeInfo:         false,
-			CanInviteUsers:        false,
-			CanPinMessages:        false,
-			CanManageTopics:       false,
-		},
-	}); err != nil {
-		entry.WithError(err).Error("failed to restrict user")
-		return errors.WithMessage(err, "cant restrict")
-	}
-
-	lang := r.getLanguage(chat, user)
-	nameString := fmt.Sprintf("[%s](tg://user?id=%d) ", api.EscapeText(api.ModeMarkdown, bot.GetFullName(user)), user.ID)
-	msgText := fmt.Sprintf(i18n.Get("Hi %s! Your first message should be text-only and without any links or media. Just a heads up - if you don't follow this rule, you'll get banned from the group. Cheers!", lang), nameString)
-	msg := api.NewMessage(chat.ID, msgText)
-	msg.ParseMode = api.ModeMarkdown
-	msg.DisableNotification = true
-	entry.Debug("sending warning message to user")
-	reply, err := b.Send(msg)
-	if err != nil {
-		entry.WithError(err).Error("failed to send warning message")
-		return errors.WithMessage(err, "cant send")
-	}
-	go func() {
-		entry.Debug("starting timer to delete warning message")
-		time.Sleep(30 * time.Second)
-		if err := bot.DeleteChatMessage(b, chat.ID, reply.MessageID); err != nil {
-			entry.WithError(err).Error("cant delete message")
-		}
-	}()
-	return nil
 }

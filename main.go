@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/iamwavecut/tool"
@@ -52,14 +54,18 @@ func main() {
 	tool.Try(api.SetLogger(log.WithField("context", "bot_api")), true)
 	i18n.Init()
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Set up signal handling
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
 	go func() {
 		err := tool.Recoverer(-1, func() {
-			ctx, cancelFunc := context.WithCancel(context.Background())
-			defer cancelFunc()
 			defer event.RunWorker()()
 			botAPI, err := api.NewBotAPI(cfg.TelegramAPIToken)
 			if err != nil {
-
 				log.WithError(err).Errorln("cant initialize bot api")
 				log.Panicln("exiting")
 			}
@@ -68,7 +74,7 @@ func main() {
 			}
 			defer botAPI.StopReceivingUpdates()
 
-			service := bot.NewService(botAPI, sqlite.NewSQLiteClient("bot.db"), log.WithField("context", "service"))
+			service := bot.NewService(ctx, botAPI, sqlite.NewSQLiteClient("bot.db"), log.WithField("context", "service"))
 
 			bot.RegisterUpdateHandler("admin", handlers.NewAdmin(service))
 			bot.RegisterUpdateHandler("gatekeeper", handlers.NewGatekeeper(service))
@@ -97,33 +103,49 @@ func main() {
 				"chat_member",
 				"chat_join_request",
 			}
-			updateProcessor := bot.NewUpdateProcessor(service)
+			updateProcessor := bot.NewUpdateProcessor(ctx, service)
 
-			updateChan, errorChan := bot.GetUpdatesChans(botAPI, updateConfig)
+			updateChan, errorChan := bot.GetUpdatesChans(ctx, botAPI, updateConfig)
 
 		loop:
 			for {
 				select {
 				case err := <-errorChan:
-					log.WithError(err).Fatalln("bot api get updates error")
+					log.WithError(err).Errorln("bot api get updates error")
+					return
 				case update := <-updateChan:
 					if err := updateProcessor.Process(&update); err != nil {
 						log.WithError(err).Errorln("cant process update")
 					}
 				case <-ctx.Done():
-					log.WithError(ctx.Err()).Errorln("no more updates")
+					log.Info("Shutting down gracefully...")
 					break loop
 				}
 			}
-			time.Sleep(time.Second)
 		})
-		log.WithError(err).Errorln("recoverer exits")
-		os.Exit(1)
+		if err != nil {
+			log.WithError(err).Errorln("recoverer exits")
+		}
+		cancel() // Signal main goroutine to exit
 	}()
 
 	select {
 	case <-infra.MonitorExecutable():
-		log.Errorln("executable file was modified")
+		log.Info("Executable file was modified, initiating shutdown...")
+		cancel()
+	case sig := <-sigChan:
+		log.Infof("Received signal %v, initiating shutdown...", sig)
+		cancel()
+	case <-ctx.Done():
+		log.Info("Shutdown initiated")
 	}
-	os.Exit(0)
+
+	shutdownTimer := time.NewTimer(10 * time.Second)
+	select {
+	case <-shutdownTimer.C:
+		log.Warn("Graceful shutdown timed out, forcing exit")
+		os.Exit(1)
+	case <-ctx.Done():
+		log.Info("Graceful shutdown completed")
+	}
 }

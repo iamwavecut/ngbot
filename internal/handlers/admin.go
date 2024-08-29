@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"database/sql"
 	"strings"
 
@@ -31,7 +32,7 @@ func NewAdmin(s bot.Service) *Admin {
 	return a
 }
 
-func (a *Admin) Handle(u *api.Update, chat *api.Chat, user *api.User) (proceed bool, err error) {
+func (a *Admin) Handle(ctx context.Context, u *api.Update, chat *api.Chat, user *api.User) (proceed bool, err error) {
 	entry := a.getLogEntry().WithField("method", "Handle")
 	entry.Debug("handling update")
 

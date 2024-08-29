@@ -34,8 +34,6 @@ const (
 	updateTypeCallbackQuery   updateType = "callback_query"
 	updateTypeChatJoinRequest updateType = "chat_join_request"
 	updateTypeNewChatMembers  updateType = "new_chat_members"
-	updateTypeLeftChatMember  updateType = "left_chat_member"
-	updateTypeFirstMessage    updateType = "first_message"
 	updateTypeIgnore          updateType = "ignore"
 )
 
@@ -111,7 +109,7 @@ func NewGatekeeper(s bot.Service) *Gatekeeper {
 	return g
 }
 
-func (g *Gatekeeper) Handle(u *api.Update, chat *api.Chat, user *api.User) (bool, error) {
+func (g *Gatekeeper) Handle(ctx context.Context, u *api.Update, chat *api.Chat, user *api.User) (bool, error) {
 	entry := g.getLogEntry().WithField("method", "Handle")
 	entry.Debug("handling update")
 
@@ -142,13 +140,11 @@ func (g *Gatekeeper) Handle(u *api.Update, chat *api.Chat, user *api.User) (bool
 	// Handle update based on its type
 	switch updateType {
 	case updateTypeCallbackQuery:
-		return false, g.handleChallenge(u, chat, user)
+		return false, g.handleChallenge(ctx, u, chat, user)
 	case updateTypeChatJoinRequest:
-		return true, g.handleChatJoinRequest(u)
+		return true, g.handleChatJoinRequest(ctx, u)
 	case updateTypeNewChatMembers:
-		return true, g.handleNewChatMembers(u, chat)
-	case updateTypeFirstMessage:
-		return true, g.handleFirstMessage(u, chat, user)
+		return true, g.handleNewChatMembers(ctx, u, chat)
 	default:
 		entry.Debug("No specific handler matched, proceeding with default behavior")
 		return true, nil
@@ -165,9 +161,6 @@ func (g *Gatekeeper) determineUpdateType(u *api.Update) updateType {
 	if u.Message != nil {
 		if u.Message.NewChatMembers != nil {
 			return updateTypeNewChatMembers
-		}
-		if g.isFirstMessage(u.Message) {
-			return updateTypeFirstMessage
 		}
 	}
 	return updateTypeIgnore
@@ -190,16 +183,7 @@ func (g *Gatekeeper) fetchAndValidateSettings(chatID int64) (*db.Settings, error
 	return settings, nil
 }
 
-func (g *Gatekeeper) isFirstMessage(m *api.Message) bool {
-	isMember, err := g.s.IsMember(m.Chat.ID, m.From.ID)
-	if err != nil {
-		g.getLogEntry().WithError(err).Error("failed to check if user is a member")
-		return false
-	}
-	return !isMember
-}
-
-func (g *Gatekeeper) handleChallenge(u *api.Update, chat *api.Chat, user *api.User) (err error) {
+func (g *Gatekeeper) handleChallenge(ctx context.Context, u *api.Update, chat *api.Chat, user *api.User) (err error) {
 	entry := g.getLogEntry().WithField("method", "handleChallenge")
 	entry.Debug("handling challenge")
 	b := g.s.GetBot()
@@ -379,13 +363,13 @@ func (g *Gatekeeper) handleChallenge(u *api.Update, chat *api.Chat, user *api.Us
 	return err
 }
 
-func (g *Gatekeeper) handleNewChatMembers(u *api.Update, chat *api.Chat) error {
+func (g *Gatekeeper) handleNewChatMembers(ctx context.Context, u *api.Update, chat *api.Chat) error {
 	entry := g.getLogEntry().WithField("method", "handleNewChatMembers")
 	entry.Debug("Handling new chat members")
-	return g.handleJoin(u, u.Message.NewChatMembers, chat, chat)
+	return g.handleJoin(ctx, u, u.Message.NewChatMembers, chat, chat)
 }
 
-func (g *Gatekeeper) handleChatJoinRequest(u *api.Update) error {
+func (g *Gatekeeper) handleChatJoinRequest(ctx context.Context, u *api.Update) error {
 	entry := g.getLogEntry().WithField("method", "handleChatJoinRequest")
 	entry.Debug("Handling chat join request")
 	target := &u.ChatJoinRequest.Chat
@@ -401,10 +385,10 @@ func (g *Gatekeeper) handleChatJoinRequest(u *api.Update) error {
 		return err
 	}
 
-	return g.handleJoin(u, []api.User{u.ChatJoinRequest.From}, target, &comm)
+	return g.handleJoin(ctx, u, []api.User{u.ChatJoinRequest.From}, target, &comm)
 }
 
-func (g *Gatekeeper) handleJoin(u *api.Update, jus []api.User, target *api.Chat, comm *api.Chat) (err error) {
+func (g *Gatekeeper) handleJoin(ctx context.Context, u *api.Update, jus []api.User, target *api.Chat, comm *api.Chat) (err error) {
 	entry := g.getLogEntry().WithField("method", "handleJoin")
 	entry.Debug("Handling join")
 	if target == nil || comm == nil {
@@ -448,7 +432,7 @@ func (g *Gatekeeper) handleJoin(u *api.Update, jus []api.User, target *api.Chat,
 			entry.WithError(err).Error("Failed to restrict user")
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+		challengeCtx, cancel := context.WithTimeout(ctx, 4*time.Minute)
 
 		cu := &challengedUser{
 			user:        &ju,
@@ -473,7 +457,7 @@ func (g *Gatekeeper) handleJoin(u *api.Update, jus []api.User, target *api.Chat,
 			defer delete(g.joiners[cu.commChat.ID], cu.user.ID)
 
 			select {
-			case <-ctx.Done():
+			case <-challengeCtx.Done():
 				entry.Infof("Removing challenge timer for %s", bot.GetUN(cu.user))
 				timeout.Stop()
 				return
@@ -554,67 +538,6 @@ func (g *Gatekeeper) handleJoin(u *api.Update, jus []api.User, target *api.Chat,
 		cu.challengeMessageID = sentMsg.MessageID
 	}
 	entry.Debug("Exiting handleChallenge method")
-	return nil
-}
-
-func (g *Gatekeeper) handleFirstMessage(u *api.Update, chat *api.Chat, user *api.User) error {
-	entry := g.getLogEntry().WithField("method", "handleFirstMessage")
-	entry.Debug("Entering handleFirstMessage method")
-
-	b := g.s.GetBot()
-	entry.Debug("Got bot instance")
-
-	if u.FromChat() == nil {
-		entry.Debug("FromChat is nil, returning")
-		return nil
-	}
-	if u.SentFrom() == nil {
-		entry.Debug("SentFrom is nil, returning")
-		return nil
-	}
-	m := u.Message
-	if m == nil {
-		entry.Debug("Message is nil, returning")
-		return nil
-	}
-
-	entry.Debug("Checking message text against static ban list")
-	if m.Text != "" {
-		for _, v := range []string{"Нужны сотрудников", "Без опыта роботы", "@dasha234di", "@marinetthr", "На момент стажировке", "5 р\\час"} {
-			if strings.Contains(m.Text, v) {
-				entry.Info("spam detected, banning user")
-				var errs []error
-				if err := bot.DeleteChatMessage(b, m.Chat.ID, m.MessageID); err != nil {
-					errs = append(errs, errors.Wrap(err, "failed to delete message"))
-				}
-				if err := bot.BanUserFromChat(b, m.From.ID, m.Chat.ID); err != nil {
-					errs = append(errs, errors.Wrap(err, "failed to ban user"))
-				}
-				lang := g.getLanguage(chat, user)
-
-				if len(errs) > 0 {
-					entry.WithField("errors", errs).Error("failed to handle spam")
-					var msgContent string
-					if len(errs) == 2 {
-						msgContent = fmt.Sprintf(i18n.Get("I can't delete messages or ban spammer \"%s\".", lang), bot.GetUN(user))
-					} else if errors.Is(errs[0], errors.New("failed to delete message")) {
-						msgContent = fmt.Sprintf(i18n.Get("I can't delete messages from spammer \"%s\".", lang), bot.GetUN(user))
-					} else {
-						msgContent = fmt.Sprintf(i18n.Get("I can't ban spammer \"%s\".", lang), bot.GetUN(user))
-					}
-					msgContent += " " + i18n.Get("I should have the permissions to ban and delete messages here.", lang)
-					msg := api.NewMessage(chat.ID, msgContent)
-					msg.ParseMode = api.ModeHTML
-					if _, err := b.Send(msg); err != nil {
-						entry.WithError(err).Error("failed to send message about lack of permissions")
-					}
-					return errors.New("failed to handle spam")
-				}
-				entry.Debug("User banned, returning")
-				return nil
-			}
-		}
-	}
 	return nil
 }
 

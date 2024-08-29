@@ -158,3 +158,7 @@ func (c *sqliteClient) IsMember(chatID int64, userID int64) (bool, error) {
 	err := c.db.Get(&count, "SELECT COUNT(*) FROM chat_members WHERE chat_id = ? AND user_id = ?", chatID, userID)
 	return count > 0, err
 }
+
+func (c *sqliteClient) Close() error {
+	return c.db.Close()
+}

@@ -1,6 +1,7 @@
 package bot
 
 import (
+	"context"
 	"sync"
 	"time"
 
@@ -21,8 +22,9 @@ type ServiceDB interface {
 type Service interface {
 	ServiceBot
 	ServiceDB
-	IsMember(chatID, userID int64) (bool, error)
-	InsertMember(chatID, userID int64) error
+	IsMember(ctx context.Context, chatID, userID int64) (bool, error)
+	InsertMember(ctx context.Context, chatID, userID int64) error
+	Shutdown(ctx context.Context) error
 }
 
 type service struct {
@@ -32,15 +34,20 @@ type service struct {
 	cacheMutex      sync.RWMutex
 	cacheExpiration time.Duration
 	log             *logrus.Entry
+	ctx             context.Context
+	cancel          context.CancelFunc
 }
 
-func NewService(bot *api.BotAPI, db db.Client, log *logrus.Entry) *service {
+func NewService(ctx context.Context, bot *api.BotAPI, db db.Client, log *logrus.Entry) *service {
+	ctx, cancel := context.WithCancel(ctx)
 	s := &service{
 		bot:             bot,
 		db:              db,
 		memberCache:     make(map[int64][]int64),
 		cacheExpiration: 5 * time.Minute,
 		log:             log,
+		ctx:             ctx,
+		cancel:          cancel,
 	}
 	go s.warmupCache()
 	return s
@@ -54,38 +61,51 @@ func (s *service) GetDB() db.Client {
 	return s.db
 }
 
-func (s *service) IsMember(chatID, userID int64) (bool, error) {
-	if chatMembers, ok := s.memberCache[chatID]; ok {
-		for _, member := range chatMembers {
-			if member == userID {
-				return true, nil
+func (s *service) IsMember(ctx context.Context, chatID, userID int64) (bool, error) {
+	select {
+	case <-ctx.Done():
+		return false, ctx.Err()
+	default:
+		s.cacheMutex.RLock()
+		if chatMembers, ok := s.memberCache[chatID]; ok {
+			for _, member := range chatMembers {
+				if member == userID {
+					s.cacheMutex.RUnlock()
+					return true, nil
+				}
 			}
 		}
+		s.cacheMutex.RUnlock()
+
+		isMember, err := s.db.IsMember(chatID, userID)
+		if err != nil {
+			return false, err
+		}
+
+		s.cacheMutex.Lock()
+		defer s.cacheMutex.Unlock()
+		s.memberCache[chatID] = append(s.memberCache[chatID], userID)
+
+		return isMember, nil
 	}
-
-	isMember, err := s.db.IsMember(chatID, userID)
-	if err != nil {
-		return false, err
-	}
-
-	s.cacheMutex.Lock()
-	defer s.cacheMutex.Unlock()
-	s.memberCache[chatID] = append(s.memberCache[chatID], userID)
-
-	return isMember, nil
 }
 
-func (s *service) InsertMember(chatID, userID int64) error {
-	err := s.db.InsertMember(chatID, userID)
-	if err != nil {
-		return err
+func (s *service) InsertMember(ctx context.Context, chatID, userID int64) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+		err := s.db.InsertMember(chatID, userID)
+		if err != nil {
+			return err
+		}
+
+		s.cacheMutex.Lock()
+		defer s.cacheMutex.Unlock()
+		s.memberCache[chatID] = append(s.memberCache[chatID], userID)
+
+		return nil
 	}
-
-	s.cacheMutex.Lock()
-	defer s.cacheMutex.Unlock()
-	s.memberCache[chatID] = append(s.memberCache[chatID], userID)
-
-	return nil
 }
 
 func (s *service) warmupCache() {
@@ -105,4 +125,11 @@ func (s *service) warmupCache() {
 
 func (s *service) getLogEntry() *logrus.Entry {
 	return s.log.WithField("object", "Service")
+}
+
+func (s *service) Shutdown(ctx context.Context) error {
+	s.cancel()
+	s.db.Close()
+	s.memberCache = nil
+	return nil
 }

@@ -1,6 +1,7 @@
 package db
 
 type Client interface {
+	Close() error
 	SetSettings(settings *Settings) error
 	GetSettings(chatID int64) (*Settings, error)
 	InsertMember(chatID int64, userID int64) error

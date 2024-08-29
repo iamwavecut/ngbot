@@ -1,6 +1,7 @@
 package bot
 
 import (
+	"context"
 	"strings"
 	"time"
 
@@ -13,12 +14,14 @@ import (
 
 type (
 	Handler interface {
-		Handle(u *api.Update, chat *api.Chat, user *api.User) (proceed bool, err error)
+		Handle(ctx context.Context, u *api.Update, chat *api.Chat, user *api.User) (proceed bool, err error)
 	}
 
 	UpdateProcessor struct {
 		s              Service
 		updateHandlers []Handler
+		ctx            context.Context
+		cancel         context.CancelFunc
 	}
 )
 
@@ -28,7 +31,7 @@ func RegisterUpdateHandler(title string, handler Handler) {
 	registeredHandlers[title] = handler
 }
 
-func NewUpdateProcessor(s Service) *UpdateProcessor {
+func NewUpdateProcessor(ctx context.Context, s Service) *UpdateProcessor {
 	enabledHandlers := make([]Handler, 0)
 	for _, handlerName := range config.Get().EnabledHandlers {
 		if _, ok := registeredHandlers[handlerName]; !ok || registeredHandlers[handlerName] == nil {
@@ -38,9 +41,12 @@ func NewUpdateProcessor(s Service) *UpdateProcessor {
 		enabledHandlers = append(enabledHandlers, registeredHandlers[handlerName])
 	}
 
+	ctx, cancel := context.WithCancel(ctx)
 	return &UpdateProcessor{
 		s:              s,
 		updateHandlers: enabledHandlers,
+		ctx:            ctx,
+		cancel:         cancel,
 	}
 }
 
@@ -49,44 +55,58 @@ func (up *UpdateProcessor) Process(u *api.Update) error {
 		return errors.New("update is nil")
 	}
 
-	var updateTime time.Time
-	switch {
-	case u.Message != nil:
-		updateTime = time.Unix(int64(u.Message.Date), 0)
-	case u.ChannelPost != nil:
-		updateTime = time.Unix(int64(u.ChannelPost.Date), 0)
+	select {
+	case <-up.ctx.Done():
+		return up.ctx.Err()
 	default:
+		var updateTime time.Time
+		switch {
+		case u.Message != nil:
+			updateTime = time.Unix(int64(u.Message.Date), 0)
+		case u.ChannelPost != nil:
+			updateTime = time.Unix(int64(u.ChannelPost.Date), 0)
+		default:
+			return nil
+		}
+
+		if time.Since(updateTime) > time.Minute {
+			return nil
+		}
+
+		chat := u.FromChat()
+		if chat == nil && u.ChatJoinRequest != nil {
+			chat = &u.ChatJoinRequest.Chat
+		}
+
+		user := u.SentFrom()
+		if user == nil && u.ChatJoinRequest != nil {
+			user = &u.ChatJoinRequest.From
+		}
+
+		for _, handler := range up.updateHandlers {
+			if handler == nil {
+				continue
+			}
+			select {
+			case <-up.ctx.Done():
+				return up.ctx.Err()
+			default:
+				proceed, err := handler.Handle(up.ctx, u, chat, user)
+				if err != nil {
+					return errors.WithMessage(err, "handling error")
+				}
+				if !proceed {
+					log.Trace("not proceeding")
+					return nil
+				}
+			}
+		}
 		return nil
 	}
+}
 
-	if time.Since(updateTime) > time.Minute {
-		return nil
-	}
-
-	chat := u.FromChat()
-	if chat == nil && u.ChatJoinRequest != nil {
-		chat = &u.ChatJoinRequest.Chat
-	}
-
-	user := u.SentFrom()
-	if user == nil && u.ChatJoinRequest != nil {
-		user = &u.ChatJoinRequest.From
-	}
-
-	for _, handler := range up.updateHandlers {
-		if handler == nil {
-			continue
-		}
-		proceed, err := handler.Handle(u, chat, user)
-		if err != nil {
-			return errors.WithMessage(err, "handling error")
-		}
-		if !proceed {
-			log.Trace("not proceeding")
-			break
-		}
-	}
-	return nil
+func (up *UpdateProcessor) Shutdown() {
+	up.cancel()
 }
 
 func DeleteChatMessage(bot *api.BotAPI, chatID int64, messageID int) error {
@@ -193,12 +213,12 @@ func DeclineJoinRequest(bot *api.BotAPI, userID int64, chatID int64) error {
 		},
 		UserID: userID,
 	}); err != nil {
-		return errors.WithMessage(err, "cant accept join request")
+		return errors.WithMessage(err, "cant decline join request")
 	}
 	return nil
 }
 
-func GetUpdatesChans(bot *api.BotAPI, config api.UpdateConfig) (api.UpdatesChannel, chan error) {
+func GetUpdatesChans(ctx context.Context, bot *api.BotAPI, config api.UpdateConfig) (api.UpdatesChannel, chan error) {
 	ch := make(chan api.Update, bot.Buffer)
 	chErr := make(chan error)
 
@@ -206,16 +226,27 @@ func GetUpdatesChans(bot *api.BotAPI, config api.UpdateConfig) (api.UpdatesChann
 		defer close(ch)
 		defer close(chErr)
 		for {
-			updates, err := bot.GetUpdates(config)
-			if err != nil {
-				chErr <- err
+			select {
+			case <-ctx.Done():
+				chErr <- ctx.Err()
 				return
-			}
+			default:
+				updates, err := bot.GetUpdates(config)
+				if err != nil {
+					chErr <- err
+					return
+				}
 
-			for _, update := range updates {
-				if update.UpdateID >= config.Offset {
-					config.Offset = update.UpdateID + 1
-					ch <- update
+				for _, update := range updates {
+					if update.UpdateID >= config.Offset {
+						config.Offset = update.UpdateID + 1
+						select {
+						case ch <- update:
+						case <-ctx.Done():
+							chErr <- ctx.Err()
+							return
+						}
+					}
 				}
 			}
 		}
