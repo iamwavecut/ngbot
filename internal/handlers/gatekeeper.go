@@ -1,5 +1,29 @@
 package handlers
 
+/*
+mermaid:
+graph BusinessFlow
+    A[Start] --> B[Check if Gatekeeper is enabled]
+    B --> C{Is Enabled?}
+    C -->|Yes| D[Fetch and validate settings]
+    C -->|No| E[Return]
+    D --> F{Is chat public?}
+    F -->|Yes| G[Restrict new member]
+    F -->|No| H[Allow new member]
+    G --> I[Send challenge message]
+    I --> J[Wait for response]
+    J -->|Correct| K[Unrestrict member]
+    J -->|Incorrect or Timeout| L[Ban member]
+    K --> M[Delete challenge message]
+    M --> N[Send welcome message]
+    N --> O[Remove from challenged users]
+    L --> P[Delete challenge message]
+    L -->|Ban unsuccessful| Q[Send insufficient permissions message]
+    O --> R[End]
+    P --> R[End]
+    Q --> R[End]
+    H --> R[End]
+*/
 import (
 	"context"
 	"fmt"
@@ -490,6 +514,7 @@ func (g *Gatekeeper) handleJoin(ctx context.Context, u *api.Update, jus []api.Us
 						entry.WithError(err).Error("Failed to delete challenge message")
 					}
 				}
+				var errs []error
 				if cu.joinMessageID != 0 {
 					entry.WithFields(log.Fields{
 						"messageID": cu.joinMessageID,
@@ -497,6 +522,7 @@ func (g *Gatekeeper) handleJoin(ctx context.Context, u *api.Update, jus []api.Us
 					}).Info("Deleting join message from chat")
 					if err := bot.DeleteChatMessage(b, cu.commChat.ID, cu.joinMessageID); err != nil {
 						entry.WithError(err).Error("Failed to delete join message")
+						errs = append(errs, errors.Wrap(err, "failed to delete message"))
 					}
 				}
 				entry.WithFields(log.Fields{
@@ -505,6 +531,28 @@ func (g *Gatekeeper) handleJoin(ctx context.Context, u *api.Update, jus []api.Us
 				}).Info("Banning user from chat")
 				if err := bot.BanUserFromChat(b, cu.user.ID, cu.targetChat.ID); err != nil {
 					entry.WithError(err).Error("Failed to ban user")
+					errs = append(errs, errors.Wrap(err, "failed to ban user"))
+				}
+
+				if len(errs) > 0 {
+					lang := g.getLanguage(cu.commChat, cu.user)
+					var msgContent string
+					if len(errs) == 2 {
+						entry.Warn("failed to ban and delete message")
+						msgContent = fmt.Sprintf(i18n.Get("I can't delete messages or ban spammer \"%s\".", lang), bot.GetUN(cu.user))
+					} else if errors.Is(errs[0], errors.New("failed to delete message")) {
+						entry.Warn("failed to delete message")
+						msgContent = fmt.Sprintf(i18n.Get("I can't delete messages from spammer \"%s\".", lang), bot.GetUN(cu.user))
+					} else {
+						entry.Warn("failed to ban joiner")
+						msgContent = fmt.Sprintf(i18n.Get("I can't ban new chat member \"%s\".", lang), bot.GetUN(cu.user))
+					}
+					msgContent += " " + i18n.Get("I should have the permissions to ban and delete messages here.", lang)
+					msg := api.NewMessage(cu.commChat.ID, msgContent)
+					msg.ParseMode = api.ModeHTML
+					if _, err := b.Send(msg); err != nil {
+						entry.WithError(err).Error("failed to send message about lack of permissions")
+					}
 				}
 				if cu.commChat.ID != cu.targetChat.ID {
 					entry.WithField("user", bot.GetUN(cu.user)).Info("Declining join request")
