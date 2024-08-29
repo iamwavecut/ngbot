@@ -36,7 +36,10 @@ func NewReactor(s bot.Service, llmAPI *openai.Client, model string) *Reactor {
 }
 
 func (r *Reactor) Handle(ctx context.Context, u *api.Update, chat *api.Chat, user *api.User) (bool, error) {
-	entry := r.getLogEntry().WithField("method", "Handle")
+	entry := r.getLogEntry().
+		WithField("method", "Handle").
+		WithField("chat_id", chat.ID).
+		WithField("chat_title", chat.Title)
 	entry.Debug("handling update")
 
 	if u == nil {
@@ -318,10 +321,7 @@ t.me/slotsTON_BOT?start=cdyoNKvXn75
 		lang := r.getLanguage(chat, user)
 
 		if len(errs) > 0 {
-			entry = entry.WithField("errors", errs).
-				WithField("chat_id", chat.ID).
-				WithField("chat_title", chat.Title)
-			entry.Error("failed to handle spam")
+			entry.WithField("errors", errs).Error("failed to handle spam")
 			var msgContent string
 			if len(errs) == 2 {
 				msgContent = fmt.Sprintf(i18n.Get("I can't delete messages or ban spammer \"%s\".", lang), bot.GetUN(user))
