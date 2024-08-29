@@ -68,7 +68,7 @@ func main() {
 			}
 			defer botAPI.StopReceivingUpdates()
 
-			service := bot.NewService(botAPI, sqlite.NewSQLiteClient("bot.db"))
+			service := bot.NewService(botAPI, sqlite.NewSQLiteClient("bot.db"), log.WithField("context", "service"))
 
 			bot.RegisterUpdateHandler("admin", handlers.NewAdmin(service))
 			bot.RegisterUpdateHandler("gatekeeper", handlers.NewGatekeeper(service))
