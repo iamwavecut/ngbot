@@ -290,19 +290,32 @@ t.me/slotsTON_BOT?start=cdyoNKvXn75
 
 	if len(resp.Choices) > 0 && resp.Choices[0].Message.Content == "SPAM" {
 		entry.Info("spam detected, banning user")
+		var errs []error
 		if err := bot.DeleteChatMessage(b, chat.ID, m.MessageID); err != nil {
-			entry.WithError(err).Error("failed to delete message")
+			errs = append(errs, errors.Wrap(err, "failed to delete message"))
 		}
 		if err := bot.BanUserFromChat(b, user.ID, chat.ID); err != nil {
+			errs = append(errs, errors.Wrap(err, "failed to ban user"))
+		}
+		lang := r.getLanguage(chat, user)
 
-			entry.Info("failed to ban user due to lack of permissions")
-			msg := api.NewMessage(chat.ID, fmt.Sprintf("I can't ban spammer \"%s\". I should have the permissions to ban and delete messages here.", bot.GetUN(user)))
-			msg.ParseMode = api.ModeMarkdown
+		if len(errs) > 0 {
+			entry.WithField("errors", errs).Error("failed to handle spam")
+			var msgContent string
+			if len(errs) == 2 {
+				msgContent = fmt.Sprintf(i18n.Get("I can't delete messages or ban spammer \"%s\".", lang), bot.GetUN(user))
+			} else if errors.Is(errs[0], errors.New("failed to delete message")) {
+				msgContent = fmt.Sprintf(i18n.Get("I can't delete messages from spammer \"%s\".", lang), bot.GetUN(user))
+			} else {
+				msgContent = fmt.Sprintf(i18n.Get("I can't ban spammer \"%s\".", lang), bot.GetUN(user))
+			}
+			msgContent += " " + i18n.Get("I should have the permissions to ban and delete messages here.", lang)
+			msg := api.NewMessage(chat.ID, msgContent)
+			msg.ParseMode = api.ModeHTML
 			if _, err := b.Send(msg); err != nil {
 				entry.WithError(err).Error("failed to send message about lack of permissions")
 			}
-			entry.WithError(err).Error("failed to ban user")
-			return errors.Wrap(err, "failed to ban user")
+			return errors.New("failed to handle spam")
 		}
 		return nil
 	}
