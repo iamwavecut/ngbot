@@ -97,8 +97,19 @@ func (r *Reactor) Handle(ctx context.Context, u *api.Update, chat *api.Chat, use
 			entry.WithError(err).Error("Failed to get chat settings")
 		}
 	}
-	if settings == nil || !settings.Enabled {
-		entry.Debug("reactor is disabled for this chat or settings are nil")
+	if settings == nil {
+		entry.Debug("settings are nil, using default settings")
+		settings = &db.Settings{
+			Enabled:          true,
+			ChallengeTimeout: defaultChallengeTimeout,
+			RejectTimeout:    defaultRejectTimeout,
+			Language:         "en",
+			ID:               chat.ID,
+		}
+	}
+
+	if !settings.Enabled {
+		entry.Debug("reactor is disabled for this chat")
 		return true, nil
 	}
 
