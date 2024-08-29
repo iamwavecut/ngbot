@@ -40,6 +40,11 @@ func (r *Reactor) Handle(ctx context.Context, u *api.Update, chat *api.Chat, use
 	entry := r.getLogEntry().WithField("method", "Handle")
 	entry.Debug("handling update")
 
+	if u == nil {
+		entry.Error("Update is nil")
+		return false, errors.New("nil update")
+	}
+
 	nonNilFields := []string{}
 	isNonNilPtr := func(v reflect.Value) bool {
 		return v.Kind() == reflect.Ptr && !v.IsNil()
@@ -92,12 +97,16 @@ func (r *Reactor) Handle(ctx context.Context, u *api.Update, chat *api.Chat, use
 			entry.WithError(err).Error("Failed to get chat settings")
 		}
 	}
-	if !settings.Enabled {
-		entry.Debug("reactor is disabled for this chat")
+	if settings == nil || !settings.Enabled {
+		entry.Debug("reactor is disabled for this chat or settings are nil")
 		return true, nil
 	}
 
 	b := r.s.GetBot()
+	if b == nil {
+		entry.Error("Bot is nil")
+		return false, errors.New("nil bot")
+	}
 
 	if u.MessageReaction != nil {
 		entry.Debug("Processing message reaction")
@@ -113,7 +122,9 @@ func (r *Reactor) Handle(ctx context.Context, u *api.Update, chat *api.Chat, use
 					entry.Warn("custom emoji get error", err)
 					continue
 				}
-				emoji = emojiStickers[0].Emoji
+				if len(emojiStickers) > 0 {
+					emoji = emojiStickers[0].Emoji
+				}
 			}
 			if slices.Contains(flaggedEmojis, emoji) {
 				entry.Debug("flagged emoji detected:", emoji)
