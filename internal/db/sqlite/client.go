@@ -1,10 +1,9 @@
 package sqlite
 
 import (
+	"database/sql"
 	"path/filepath"
 	"sync"
-
-	"github.com/iamwavecut/tool"
 
 	"github.com/iamwavecut/ngbot/internal/db"
 	"github.com/iamwavecut/ngbot/internal/infra"
@@ -24,7 +23,7 @@ type sqliteClient struct {
 func NewSQLiteClient(dbPath string) *sqliteClient {
 	dbx, err := sqlx.Open("sqlite", filepath.Join(infra.GetWorkDir(), dbPath))
 	if err != nil {
-		log.WithError(err).Fatalln("cant open db")
+		log.WithError(err).Fatal("Failed to open database")
 	}
 	dbx.SetMaxOpenConns(42)
 
@@ -32,17 +31,15 @@ func NewSQLiteClient(dbPath string) *sqliteClient {
 		FileSystem: resources.FS,
 		Root:       "migrations",
 	}
-	_, _, err = migrate.PlanMigration(dbx.DB, "sqlite3", migrationsSource, migrate.Up, 0)
-	if err != nil {
-		log.WithError(err).Fatalln("migrate plan failed")
+
+	if _, _, err := migrate.PlanMigration(dbx.DB, "sqlite3", migrationsSource, migrate.Up, 0); err != nil {
+		log.WithError(err).Fatal("Failed to plan migration")
 	}
 
-	n, err := migrate.Exec(dbx.DB, "sqlite3", migrationsSource, migrate.Up)
-	if err != nil {
-		log.WithError(err).WithField("migration", migrationsSource).Fatalln("migrate up failed")
-	}
-	if n > 0 {
-		log.Infof("applied %d migrations!", n)
+	if n, err := migrate.Exec(dbx.DB, "sqlite3", migrationsSource, migrate.Up); err != nil {
+		log.WithError(err).WithField("migration", migrationsSource).Fatal("Failed to execute migration")
+	} else if n > 0 {
+		log.Infof("Applied %d migrations", n)
 	}
 
 	return &sqliteClient{db: dbx}
@@ -51,27 +48,52 @@ func NewSQLiteClient(dbPath string) *sqliteClient {
 func (c *sqliteClient) GetSettings(chatID int64) (*db.Settings, error) {
 	c.mutex.RLock()
 	defer c.mutex.RUnlock()
+
 	res := &db.Settings{}
-	return res, c.db.Get(res, "SELECT id, enabled, challenge_timeout, reject_timeout FROM chats WHERE id=?", chatID)
+	err := c.db.Get(res, "SELECT id, language, enabled, challenge_timeout, reject_timeout FROM chats WHERE id=?", chatID)
+	if err == sql.ErrNoRows {
+		return nil, err
+	}
+	return res, err
+}
+
+func (c *sqliteClient) GetAllSettings() (map[int64]*db.Settings, error) {
+	c.mutex.RLock()
+	defer c.mutex.RUnlock()
+
+	var settings []db.Settings
+	if err := c.db.Select(&settings, "SELECT id, language, enabled, challenge_timeout, reject_timeout FROM chats"); err != nil {
+		return nil, err
+	}
+
+	res := make(map[int64]*db.Settings, len(settings))
+	for i := range settings {
+		res[settings[i].ID] = &settings[i]
+	}
+	return res, nil
 }
 
 func (c *sqliteClient) SetSettings(settings *db.Settings) error {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
+
 	query := `
-		INSERT INTO chats (id, enabled, challenge_timeout, reject_timeout) 
-		VALUES (:id, :enabled, :challenge_timeout, :reject_timeout)
+		INSERT INTO chats (id, language, enabled, challenge_timeout, reject_timeout) 
+		VALUES (:id, :language, :enabled, :challenge_timeout, :reject_timeout)
 		ON CONFLICT(id) DO UPDATE SET 
+		language=excluded.language,
 		enabled=excluded.enabled, 
 		challenge_timeout=excluded.challenge_timeout, 
 		reject_timeout=excluded.reject_timeout;
 	`
-	return tool.Err(c.db.NamedExec(query, settings))
+	_, err := c.db.NamedExec(query, settings)
+	return err
 }
 
-func (c *sqliteClient) InsertMember(chatID int64, userID int64) error {
+func (c *sqliteClient) InsertMember(chatID, userID int64) error {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
+
 	_, err := c.db.Exec("INSERT OR IGNORE INTO chat_members (chat_id, user_id) VALUES (?, ?)", chatID, userID)
 	return err
 }
@@ -79,6 +101,7 @@ func (c *sqliteClient) InsertMember(chatID int64, userID int64) error {
 func (c *sqliteClient) InsertMembers(chatID int64, userIDs []int64) error {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
+
 	tx, err := c.db.Beginx()
 	if err != nil {
 		return err
@@ -92,8 +115,7 @@ func (c *sqliteClient) InsertMembers(chatID int64, userIDs []int64) error {
 	defer stmt.Close()
 
 	for _, userID := range userIDs {
-		_, err = stmt.Exec(chatID, userID)
-		if err != nil {
+		if _, err = stmt.Exec(chatID, userID); err != nil {
 			return err
 		}
 	}
@@ -101,9 +123,10 @@ func (c *sqliteClient) InsertMembers(chatID int64, userIDs []int64) error {
 	return tx.Commit()
 }
 
-func (c *sqliteClient) DeleteMember(chatID int64, userID int64) error {
+func (c *sqliteClient) DeleteMember(chatID, userID int64) error {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
+
 	_, err := c.db.Exec("DELETE FROM chat_members WHERE chat_id = ? AND user_id = ?", chatID, userID)
 	return err
 }
@@ -111,6 +134,7 @@ func (c *sqliteClient) DeleteMember(chatID int64, userID int64) error {
 func (c *sqliteClient) DeleteMembers(chatID int64, userIDs []int64) error {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
+
 	query, args, err := sqlx.In("DELETE FROM chat_members WHERE chat_id = ? AND user_id IN (?)", chatID, userIDs)
 	if err != nil {
 		return err
@@ -123,6 +147,7 @@ func (c *sqliteClient) DeleteMembers(chatID int64, userIDs []int64) error {
 func (c *sqliteClient) GetMembers(chatID int64) ([]int64, error) {
 	c.mutex.RLock()
 	defer c.mutex.RUnlock()
+
 	var userIDs []int64
 	err := c.db.Select(&userIDs, "SELECT user_id FROM chat_members WHERE chat_id = ?", chatID)
 	return userIDs, err
@@ -131,6 +156,7 @@ func (c *sqliteClient) GetMembers(chatID int64) ([]int64, error) {
 func (c *sqliteClient) GetAllMembers() (map[int64][]int64, error) {
 	c.mutex.RLock()
 	defer c.mutex.RUnlock()
+
 	rows, err := c.db.Queryx("SELECT chat_id, user_id FROM chat_members")
 	if err != nil {
 		return nil, err
@@ -139,21 +165,20 @@ func (c *sqliteClient) GetAllMembers() (map[int64][]int64, error) {
 
 	members := make(map[int64][]int64)
 	for rows.Next() {
-		var chatID int64
-		var userID int64
-		err = rows.Scan(&chatID, &userID)
-		if err != nil {
+		var chatID, userID int64
+		if err := rows.Scan(&chatID, &userID); err != nil {
 			return nil, err
 		}
 		members[chatID] = append(members[chatID], userID)
 	}
 
-	return members, nil
+	return members, rows.Err()
 }
 
-func (c *sqliteClient) IsMember(chatID int64, userID int64) (bool, error) {
+func (c *sqliteClient) IsMember(chatID, userID int64) (bool, error) {
 	c.mutex.RLock()
 	defer c.mutex.RUnlock()
+
 	var count int
 	err := c.db.Get(&count, "SELECT COUNT(*) FROM chat_members WHERE chat_id = ? AND user_id = ?", chatID, userID)
 	return count > 0, err

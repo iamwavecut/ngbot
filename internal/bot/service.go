@@ -24,13 +24,16 @@ type Service interface {
 	ServiceDB
 	IsMember(ctx context.Context, chatID, userID int64) (bool, error)
 	InsertMember(ctx context.Context, chatID, userID int64) error
+	GetSettings(chatID int64) (*db.Settings, error)
+	SetSettings(settings *db.Settings) error
 	Shutdown(ctx context.Context) error
 }
 
 type service struct {
 	bot             *api.BotAPI
-	db              db.Client
+	dbClient        db.Client
 	memberCache     map[int64][]int64
+	settingsCache   map[int64]*db.Settings
 	cacheMutex      sync.RWMutex
 	cacheExpiration time.Duration
 	log             *logrus.Entry
@@ -38,12 +41,13 @@ type service struct {
 	cancel          context.CancelFunc
 }
 
-func NewService(ctx context.Context, bot *api.BotAPI, db db.Client, log *logrus.Entry) *service {
+func NewService(ctx context.Context, bot *api.BotAPI, dbClient db.Client, log *logrus.Entry) *service {
 	ctx, cancel := context.WithCancel(ctx)
 	s := &service{
 		bot:             bot,
-		db:              db,
+		dbClient:        dbClient,
 		memberCache:     make(map[int64][]int64),
+		settingsCache:   make(map[int64]*db.Settings),
 		cacheExpiration: 5 * time.Minute,
 		log:             log,
 		ctx:             ctx,
@@ -58,7 +62,7 @@ func (s *service) GetBot() *api.BotAPI {
 }
 
 func (s *service) GetDB() db.Client {
-	return s.db
+	return s.dbClient
 }
 
 func (s *service) IsMember(ctx context.Context, chatID, userID int64) (bool, error) {
@@ -77,7 +81,7 @@ func (s *service) IsMember(ctx context.Context, chatID, userID int64) (bool, err
 		}
 		s.cacheMutex.RUnlock()
 
-		isMember, err := s.db.IsMember(chatID, userID)
+		isMember, err := s.dbClient.IsMember(chatID, userID)
 		if err != nil {
 			return false, err
 		}
@@ -95,7 +99,7 @@ func (s *service) InsertMember(ctx context.Context, chatID, userID int64) error 
 	case <-ctx.Done():
 		return ctx.Err()
 	default:
-		err := s.db.InsertMember(chatID, userID)
+		err := s.dbClient.InsertMember(chatID, userID)
 		if err != nil {
 			return err
 		}
@@ -108,19 +112,66 @@ func (s *service) InsertMember(ctx context.Context, chatID, userID int64) error 
 	}
 }
 
-func (s *service) warmupCache() {
-	members, err := s.db.GetAllMembers()
+func (s *service) GetSettings(chatID int64) (*db.Settings, error) {
+	s.cacheMutex.RLock()
+	if settings, ok := s.settingsCache[chatID]; ok {
+		s.cacheMutex.RUnlock()
+		return settings, nil
+	}
+	s.cacheMutex.RUnlock()
+
+	settings, err := s.dbClient.GetSettings(chatID)
 	if err != nil {
-		s.getLogEntry().WithError(err).Error("Failed to warmup cache")
+		return nil, err
+	}
+
+	s.cacheMutex.Lock()
+	defer s.cacheMutex.Unlock()
+	s.settingsCache[chatID] = settings
+
+	return settings, nil
+}
+
+func (s *service) SetSettings(settings *db.Settings) error {
+	err := s.dbClient.SetSettings(settings)
+	if err != nil {
+		return err
+	}
+
+	s.cacheMutex.Lock()
+	defer s.cacheMutex.Unlock()
+	s.settingsCache[settings.ID] = settings
+
+	return nil
+}
+
+func (s *service) warmupCache() {
+	members, err := s.dbClient.GetAllMembers()
+	if err != nil {
+		s.getLogEntry().WithError(err).Error("Failed to warmup member cache")
 		return
 	}
 	s.cacheMutex.Lock()
-	defer s.cacheMutex.Unlock()
-
 	for chatID, userIDs := range members {
 		s.memberCache[chatID] = append(s.memberCache[chatID], userIDs...)
 	}
-	s.getLogEntry().WithField("memberCount", len(members)).Info("Cache warmed up successfully")
+	s.cacheMutex.Unlock()
+
+	settings, err := s.dbClient.GetAllSettings()
+	if err != nil {
+		s.getLogEntry().WithError(err).Error("Failed to warmup settings cache")
+		return
+	}
+	s.cacheMutex.Lock()
+	for chatID, setting := range settings {
+		s.settingsCache[chatID] = setting
+	}
+	s.cacheMutex.Unlock()
+
+	s.getLogEntry().WithFields(logrus.Fields{
+		"memberCount":   len(members),
+		"settingsCount": len(settings),
+	}).Info("Cache warmed up successfully")
 }
 
 func (s *service) getLogEntry() *logrus.Entry {
@@ -129,7 +180,8 @@ func (s *service) getLogEntry() *logrus.Entry {
 
 func (s *service) Shutdown(ctx context.Context) error {
 	s.cancel()
-	s.db.Close()
+	s.dbClient.Close()
 	s.memberCache = nil
+	s.settingsCache = nil
 	return nil
 }

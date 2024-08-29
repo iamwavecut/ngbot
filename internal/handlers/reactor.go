@@ -72,7 +72,7 @@ func (r *Reactor) Handle(ctx context.Context, u *api.Update, chat *api.Chat, use
 	}
 
 	entry.Debug("Fetching chat settings")
-	settings, err := r.s.GetDB().GetSettings(chat.ID)
+	settings, err := r.s.GetSettings(chat.ID)
 	if err != nil {
 		entry.WithError(err).Error("failed to get chat settings")
 		entry.Debug("Creating default settings")
@@ -83,7 +83,7 @@ func (r *Reactor) Handle(ctx context.Context, u *api.Update, chat *api.Chat, use
 			Language:         "en",
 			ID:               chat.ID,
 		}
-		err = r.s.GetDB().SetSettings(settings)
+		err = r.s.SetSettings(settings)
 		if err != nil {
 			entry.WithError(err).Error("failed to set chat settings")
 		}
