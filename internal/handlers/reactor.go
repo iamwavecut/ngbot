@@ -239,6 +239,39 @@ https://t.me/jetton?start=cdyrsJsbvYy
 
 t.me/slotsTON_BOT?start=cdyoNKvXn75
 					Response: SPAM
+
+					Input: Эротика
+					Response: NOT_SPAM
+
+					Input: Олегик)))
+					Response: NOT_SPAM
+
+					Input: Авантюра!
+					Response: NOT_SPAM
+
+					Input: Я всё понял, спасибо!
+					Response: NOT_SPAM
+
+					Input: Это не так
+					Response: NOT_SPAM
+
+					Input: Не сочтите за спам, хочу порекламировать свой канал
+					Response: NOT_SPAM
+
+					Input: Нет
+					Response: NOT_SPAM
+
+					Input: Я всё понял, спасибо!
+					Response: NOT_SPAM
+
+					Input: ???
+					Response: NOT_SPAM
+
+					Input: ...
+					Response: NOT_SPAM
+
+					Input: Да
+					Response: NOT_SPAM
 					</example>
 					`,
 				},
@@ -257,6 +290,9 @@ t.me/slotsTON_BOT?start=cdyoNKvXn75
 
 	if len(resp.Choices) > 0 && resp.Choices[0].Message.Content == "SPAM" {
 		entry.Info("spam detected, banning user")
+		if err := bot.DeleteChatMessage(b, chat.ID, m.MessageID); err != nil {
+			entry.WithError(err).Error("failed to delete message")
+		}
 		if err := bot.BanUserFromChat(b, user.ID, chat.ID); err != nil {
 
 			entry.Info("failed to ban user due to lack of permissions")
