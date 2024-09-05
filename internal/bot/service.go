@@ -56,7 +56,12 @@ func NewService(ctx context.Context, bot *api.BotAPI, dbClient db.Client, log *l
 		ctx:             ctx,
 		cancel:          cancel,
 	}
-	go s.warmupCache()
+
+	go func() {
+		if err := s.warmupCache(); err != nil {
+			s.log.WithError(err).Error("Failed to warm up cache")
+		}
+	}()
 	return s
 }
 
@@ -126,14 +131,24 @@ func (s *service) GetSettings(chatID int64) (*db.Settings, error) {
 	settings, err := s.dbClient.GetSettings(chatID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, err
+			settings = &db.Settings{
+				ID:               chatID,
+				Enabled:          true,
+				ChallengeTimeout: 3 * time.Minute,
+				RejectTimeout:    10 * time.Minute,
+				Language:         "en",
+			}
+			if err := s.SetSettings(settings); err != nil {
+				return nil, fmt.Errorf("error setting default settings: %w", err)
+			}
+		} else {
+			return nil, fmt.Errorf("error fetching settings from database: %w", err)
 		}
-		return nil, fmt.Errorf("error fetching settings from database: %w", err)
 	}
 
 	s.cacheMutex.Lock()
-	defer s.cacheMutex.Unlock()
 	s.settingsCache[chatID] = settings
+	s.cacheMutex.Unlock()
 
 	return settings, nil
 }
@@ -151,11 +166,10 @@ func (s *service) SetSettings(settings *db.Settings) error {
 	return nil
 }
 
-func (s *service) warmupCache() {
+func (s *service) warmupCache() error {
 	members, err := s.dbClient.GetAllMembers()
 	if err != nil {
-		s.getLogEntry().WithError(err).Error("Failed to warmup member cache")
-		return
+		return fmt.Errorf("failed to warmup member cache: %w", err)
 	}
 	s.cacheMutex.Lock()
 	for chatID, userIDs := range members {
@@ -165,8 +179,7 @@ func (s *service) warmupCache() {
 
 	settings, err := s.dbClient.GetAllSettings()
 	if err != nil {
-		s.getLogEntry().WithError(err).Error("Failed to warmup settings cache")
-		return
+		return fmt.Errorf("failed to warmup settings cache: %w", err)
 	}
 	s.cacheMutex.Lock()
 	for chatID, setting := range settings {
@@ -178,6 +191,7 @@ func (s *service) warmupCache() {
 		"memberCount":   len(members),
 		"settingsCount": len(settings),
 	}).Info("Cache warmed up successfully")
+	return nil
 }
 
 func (s *service) getLogEntry() *logrus.Entry {

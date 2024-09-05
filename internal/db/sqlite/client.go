@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"database/sql"
+	"fmt"
 	"path/filepath"
 	"sync"
 
@@ -50,11 +51,16 @@ func (c *sqliteClient) GetSettings(chatID int64) (*db.Settings, error) {
 	defer c.mutex.RUnlock()
 
 	res := &db.Settings{}
-	err := c.db.Get(res, "SELECT id, language, enabled, challenge_timeout, reject_timeout FROM chats WHERE id=?", chatID)
-	if err == sql.ErrNoRows {
-		return nil, nil
+	err := c.db.Get(res, "SELECT id, language, enabled, challenge_timeout, reject_timeout FROM chats WHERE id = ?", chatID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			log.WithField("chatID", chatID).Debug("No settings found for chat")
+			return nil, nil
+		}
+		log.WithError(err).WithField("chatID", chatID).Error("Failed to get settings")
+		return nil, fmt.Errorf("failed to get settings: %w", err)
 	}
-	return res, err
+	return res, nil
 }
 
 func (c *sqliteClient) GetAllSettings() (map[int64]*db.Settings, error) {
