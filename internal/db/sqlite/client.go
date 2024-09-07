@@ -77,17 +77,26 @@ func (c *sqliteClient) GetAllSettings() (map[int64]*db.Settings, error) {
 	c.mutex.RLock()
 	defer c.mutex.RUnlock()
 
-	var settings []db.Settings
 	query := "SELECT id, language, enabled, challenge_timeout, reject_timeout FROM chats"
-	err := c.db.Select(&settings, query)
+	rows, err := c.db.Queryx(query)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get all settings: %w", err)
+		return nil, fmt.Errorf("failed to query all settings: %w", err)
+	}
+	defer rows.Close()
+
+	res := make(map[int64]*db.Settings)
+	for rows.Next() {
+		var s db.Settings
+		if err := rows.StructScan(&s); err != nil {
+			return nil, fmt.Errorf("failed to scan settings: %w", err)
+		}
+		res[s.ID] = &s
 	}
 
-	res := make(map[int64]*db.Settings, len(settings))
-	for i := range settings {
-		res[settings[i].ID] = &settings[i]
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating over settings rows: %w", err)
 	}
+
 	return res, nil
 }
 
