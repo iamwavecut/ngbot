@@ -78,9 +78,10 @@ func (c *sqliteClient) GetAllSettings() (map[int64]*db.Settings, error) {
 	defer c.mutex.RUnlock()
 
 	var settings []db.Settings
-	err := c.db.Select(&settings, "SELECT id, language, enabled, challenge_timeout, reject_timeout FROM chats")
+	query := "SELECT id, language, enabled, challenge_timeout, reject_timeout FROM chats"
+	err := c.db.Select(&settings, query)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to get all settings: %w", err)
 	}
 
 	res := make(map[int64]*db.Settings, len(settings))
