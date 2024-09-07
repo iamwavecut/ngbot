@@ -59,7 +59,7 @@ func NewService(ctx context.Context, bot *api.BotAPI, dbClient db.Client, log *l
 
 	go func() {
 		if err := s.warmupCache(); err != nil {
-			s.log.WithError(err).Error("Failed to warm up cache")
+			s.log.WithField("errorv", fmt.Sprintf("%+v", err)).Error("Failed to warm up cache")
 		}
 	}()
 	return s
