@@ -52,7 +52,7 @@ func (c *sqliteClient) GetSettings(chatID int64) (*db.Settings, error) {
 
 	res := &db.Settings{}
 	query := "SELECT id, language, enabled, challenge_timeout, reject_timeout FROM chats WHERE id = ?"
-	err := c.db.Get(res, query, chatID)
+	err := c.db.QueryRowx(query, chatID).StructScan(res)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			log.WithField("chatID", chatID).Debug("No settings found for chat")
