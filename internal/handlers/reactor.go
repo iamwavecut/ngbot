@@ -90,7 +90,7 @@ func (r *Reactor) Handle(ctx context.Context, u *api.Update, chat *api.Chat, use
 		entry.WithError(err).Error("Failed to get chat settings")
 	}
 	if settings == nil {
-		entry.Debug("settings are nil, using default settings")
+		entry.Debug("Settings are nil, using default settings")
 		settings = &db.Settings{
 			Enabled:          true,
 			ChallengeTimeout: defaultChallengeTimeout,

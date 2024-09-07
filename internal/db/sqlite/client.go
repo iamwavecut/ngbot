@@ -51,15 +51,25 @@ func (c *sqliteClient) GetSettings(chatID int64) (*db.Settings, error) {
 	defer c.mutex.RUnlock()
 
 	res := &db.Settings{}
-	err := c.db.Get(res, "SELECT id, language, enabled, challenge_timeout, reject_timeout FROM chats WHERE id = ?", chatID)
+	query := "SELECT id, language, enabled, challenge_timeout, reject_timeout FROM chats WHERE id = ?"
+	err := c.db.Get(res, query, chatID)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			log.WithField("chatID", chatID).Debug("No settings found for chat")
 			return nil, nil
 		}
-		log.WithError(err).WithField("chatID", chatID).Error("Failed to get settings")
-		return nil, fmt.Errorf("failed to get settings: %w", err)
+		log.WithError(err).WithFields(log.Fields{
+			"chatID": chatID,
+			"query":  query,
+			"result": res,
+			"errorv": fmt.Sprintf("%+v", err),
+		}).Error("Failed to get settings")
+		return nil, fmt.Errorf("failed to get settings for chat %d: %w", chatID, err)
 	}
+	log.WithFields(log.Fields{
+		"chatID":   chatID,
+		"settings": res,
+	}).Debug("Successfully retrieved settings")
 	return res, nil
 }
 
