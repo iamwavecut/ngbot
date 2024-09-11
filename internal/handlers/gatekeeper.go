@@ -167,8 +167,8 @@ func (g *Gatekeeper) Handle(ctx context.Context, u *api.Update, chat *api.Chat, 
 		return false, g.handleChallenge(ctx, u, chat, user)
 	case updateTypeChatJoinRequest:
 		return true, g.handleChatJoinRequest(ctx, u)
-	case updateTypeNewChatMembers:
-		return true, g.handleNewChatMembers(ctx, u, chat)
+	// case updateTypeNewChatMembers:
+	// return true, g.handleNewChatMembers(ctx, u, chat)
 	default:
 		entry.Debug("No specific handler matched, proceeding with default behavior")
 		return true, nil
