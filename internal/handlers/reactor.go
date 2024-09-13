@@ -281,6 +281,7 @@ func (r *Reactor) checkFirstMessage(ctx context.Context, chat *api.Chat, user *a
 			entry.Error("failed to ban spammer")
 			return errors.New("failed to ban spammer")
 		}
+		return nil
 	}
 
 	entry.Info("sending first message to OpenAI for spam check")
