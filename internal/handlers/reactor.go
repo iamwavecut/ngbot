@@ -2,7 +2,9 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"reflect"
 	"slices"
 	"strings"
@@ -20,6 +22,15 @@ import (
 )
 
 var flaggedEmojis = []string{"💩", "👎", "🖕", "🤮", "🤬", "😡", "💀", "☠️", "🤢", "👿"}
+
+type banInfo struct {
+	OK         bool    `json:"ok"`
+	UserID     int64   `json:"user_id"`
+	Banned     bool    `json:"banned"`
+	When       string  `json:"when"`
+	Offenses   int     `json:"offenses"`
+	SpamFactor float64 `json:"spam_factor"`
+}
 
 type Reactor struct {
 	s      bot.Service
@@ -202,8 +213,78 @@ func (r *Reactor) checkFirstMessage(ctx context.Context, chat *api.Chat, user *a
 		return nil
 	}
 
+	banSpammer := func(chatID, userID int64, messageID int) (bool, error) {
+		entry.Info("spam detected, banning user")
+		var errs []error
+		if err := bot.DeleteChatMessage(b, chatID, messageID); err != nil {
+			errs = append(errs, errors.Wrap(err, "failed to delete message"))
+		}
+		if err := bot.BanUserFromChat(b, userID, chatID); err != nil {
+			errs = append(errs, errors.Wrap(err, "failed to ban user"))
+		}
+		if len(errs) > 0 {
+			lang := r.getLanguage(chat, user)
+
+			entry.WithField("errors", errs).Error("failed to handle spam")
+			var msgContent string
+			if len(errs) == 2 {
+				entry.Warn("failed to ban and delete message")
+				msgContent = fmt.Sprintf(i18n.Get("I can't delete messages or ban spammer \"%s\".", lang), bot.GetUN(user))
+			} else if errors.Is(errs[0], errors.New("failed to delete message")) {
+				entry.Warn("failed to delete message")
+				msgContent = fmt.Sprintf(i18n.Get("I can't delete messages from spammer \"%s\".", lang), bot.GetUN(user))
+			} else {
+				entry.Warn("failed to ban spammer")
+				msgContent = fmt.Sprintf(i18n.Get("I can't ban spammer \"%s\".", lang), bot.GetUN(user))
+			}
+			msgContent += " " + i18n.Get("I should have the permissions to ban and delete messages here.", lang)
+			msg := api.NewMessage(chat.ID, msgContent)
+			msg.ParseMode = api.ModeHTML
+			if _, err := b.Send(msg); err != nil {
+				entry.WithError(err).Error("failed to send message about lack of permissions")
+			}
+			return false, errors.New("failed to handle spam")
+		}
+		return true, nil
+	}
+
+	entry.Debug("checking if user is banned")
+	url := fmt.Sprintf("https://api.lols.bot/account?id=%d", user.ID)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		entry.WithError(err).Error("failed to create request")
+		return errors.WithMessage(err, "failed to create request")
+	}
+	req.Header.Set("accept", "application/json")
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		entry.WithError(err).Error("failed to send request")
+		return errors.WithMessage(err, "failed to send request")
+	}
+	defer resp.Body.Close()
+
+	banCheck := banInfo{}
+	if err := json.NewDecoder(resp.Body).Decode(&banCheck); err != nil {
+		entry.WithError(err).Error("failed to decode response")
+		return errors.WithMessage(err, "failed to decode response")
+	}
+
+	if banCheck.Banned {
+		success, err := banSpammer(chat.ID, user.ID, m.MessageID)
+		if err != nil {
+			entry.WithError(err).Error("failed to ban spammer")
+			return errors.Wrap(err, "failed to ban spammer")
+		}
+		if !success {
+			entry.Error("failed to ban spammer")
+			return errors.New("failed to ban spammer")
+		}
+	}
+
 	entry.Info("sending first message to OpenAI for spam check")
-	resp, err := r.llmAPI.CreateChatCompletion(
+	llmResp, err := r.llmAPI.CreateChatCompletion(
 		ctx,
 		openai.ChatCompletionRequest{
 			Model: "openai/gpt-4o-mini",
@@ -326,39 +407,16 @@ Ecли зaинтepecoвaлo пишитe нa мoй aкк >>> @Alex51826.
 		return errors.Wrap(err, "failed to create chat completion")
 	}
 
-	if len(resp.Choices) > 0 && resp.Choices[0].Message.Content == "SPAM" {
-		entry.Info("spam detected, banning user")
-		var errs []error
-		if err := bot.DeleteChatMessage(b, chat.ID, m.MessageID); err != nil {
-			errs = append(errs, errors.Wrap(err, "failed to delete message"))
+	if len(llmResp.Choices) > 0 && llmResp.Choices[0].Message.Content == "SPAM" {
+		success, err := banSpammer(chat.ID, user.ID, m.MessageID)
+		if err != nil {
+			entry.WithError(err).Error("failed to ban spammer")
+			return errors.Wrap(err, "failed to ban spammer")
 		}
-		if err := bot.BanUserFromChat(b, user.ID, chat.ID); err != nil {
-			errs = append(errs, errors.Wrap(err, "failed to ban user"))
+		if !success {
+			entry.Error("failed to ban spammer")
+			return errors.New("failed to ban spammer")
 		}
-		if len(errs) > 0 {
-			lang := r.getLanguage(chat, user)
-
-			entry.WithField("errors", errs).Error("failed to handle spam")
-			var msgContent string
-			if len(errs) == 2 {
-				entry.Warn("failed to ban and delete message")
-				msgContent = fmt.Sprintf(i18n.Get("I can't delete messages or ban spammer \"%s\".", lang), bot.GetUN(user))
-			} else if errors.Is(errs[0], errors.New("failed to delete message")) {
-				entry.Warn("failed to delete message")
-				msgContent = fmt.Sprintf(i18n.Get("I can't delete messages from spammer \"%s\".", lang), bot.GetUN(user))
-			} else {
-				entry.Warn("failed to ban spammer")
-				msgContent = fmt.Sprintf(i18n.Get("I can't ban spammer \"%s\".", lang), bot.GetUN(user))
-			}
-			msgContent += " " + i18n.Get("I should have the permissions to ban and delete messages here.", lang)
-			msg := api.NewMessage(chat.ID, msgContent)
-			msg.ParseMode = api.ModeHTML
-			if _, err := b.Send(msg); err != nil {
-				entry.WithError(err).Error("failed to send message about lack of permissions")
-			}
-			return errors.New("failed to handle spam")
-		}
-		return nil
 	}
 
 	entry.Debug("message passed spam check, inserting member")
@@ -369,7 +427,6 @@ Ecли зaинтepecoвaлo пишитe нa мoй aкк >>> @Alex51826.
 
 	entry.Info("message passed spam check, user added to members")
 	return nil
-
 }
 
 func (r *Reactor) getLogEntry() *log.Entry {
