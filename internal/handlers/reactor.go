@@ -199,7 +199,13 @@ func (r *Reactor) handleFirstMessage(ctx context.Context, u *api.Update, chat *a
 }
 
 func (r *Reactor) checkFirstMessage(ctx context.Context, chat *api.Chat, user *api.User, m *api.Message) error {
-	entry := r.getLogEntry().WithField("method", "checkFirstMessage")
+	entry := r.getLogEntry().
+		WithFields(log.Fields{
+			"method":    "checkFirstMessage",
+			"user_name": bot.GetUN(user),
+			"user_id":   user.ID,
+		})
+
 	entry.Debug("checking first message")
 	b := r.s.GetBot()
 
