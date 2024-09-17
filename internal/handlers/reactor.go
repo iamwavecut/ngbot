@@ -272,15 +272,21 @@ func (r *Reactor) checkFirstMessage(ctx context.Context, chat *api.Chat, user *a
 	}
 
 	if banCheck.Banned {
+		entry = entry.WithFields(log.Fields{
+			"chat_id":    chat.ID,
+			"user_id":    user.ID,
+			"message_id": m.MessageID,
+		})
 		success, err := banSpammer(chat.ID, user.ID, m.MessageID)
 		if err != nil {
-			entry.WithError(err).Error("failed to ban spammer")
+			entry.WithError(err).Error("Failed to execute ban action on spammer")
 			return errors.Wrap(err, "failed to ban spammer")
 		}
 		if !success {
-			entry.Error("failed to ban spammer")
+			entry.Error("Ban action on spammer was unsuccessful")
 			return errors.New("failed to ban spammer")
 		}
+		entry.Info("Spammer successfully banned and removed from chat")
 		return nil
 	}
 
@@ -392,6 +398,9 @@ Ecли зaинтepecoвaлo пишитe нa мoй aкк >>> @Alex51826.
 					Response: SPAM
 
 					Input: Удалённая занятость, с хорошей прибылью 350 долларов в день.1-2 часа в день. Ставь плюс мне в личные смс.
+					Response: SPAM
+
+					Input: Прибыльное предложение для каждого, подработка на постоянной основе(удаленно) , опыт не важен.Пишите в личные смс  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 					Response: SPAM
 					`,
 				},
