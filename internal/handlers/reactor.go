@@ -35,6 +35,7 @@ type banInfo struct {
 type Reactor struct {
 	s      bot.Service
 	llmAPI *openai.Client
+	model  string
 }
 
 func NewReactor(s bot.Service, llmAPI *openai.Client, model string) *Reactor {
@@ -45,6 +46,7 @@ func NewReactor(s bot.Service, llmAPI *openai.Client, model string) *Reactor {
 	r := &Reactor{
 		s:      s,
 		llmAPI: llmAPI,
+		model:  model,
 	}
 	return r
 }
@@ -300,7 +302,7 @@ func (r *Reactor) checkFirstMessage(ctx context.Context, chat *api.Chat, user *a
 	llmResp, err := r.llmAPI.CreateChatCompletion(
 		ctx,
 		openai.ChatCompletionRequest{
-			Model: "openai/gpt-4o-mini",
+			Model: r.model,
 			Messages: []openai.ChatCompletionMessage{
 				{
 					Role: openai.ChatMessageRoleSystem,
