@@ -3,14 +3,22 @@
 
 ![Demo](https://user-images.githubusercontent.com/239034/142725561-5fd80514-dae9-4d29-aa19-a7d2ad41e362.png)
 
-Basically, that what happens, if the bot is set up in your chat:
-1. Triggered on the events, which introduces new chat members (invite, join, etc). Also works with join requests.
-2. Restrict newcomer to be read-only.
-3. Set up a challenge for the newcomer, which is a simple task as shown on the image above, but yet, unsolvable for the vast majority of automated spam robots.
+## Join protection
+0. Join-time challenge is disabled as for now, dur to being buggy, but will be back soon.
+1. Triggered on the ~~events, which introduces new chat members (invite, join, etc)~~. Also works with **join requests**.
+2. ~~Restrict newcomer to be read-only.~~
+3. Set up a challenge for the newcomer (join request), which is a simple task as shown on the image above, but yet, unsolvable for the vast majority of automated spam robots.
 4. If the newcomer succeeds in choosing the right answer - restrictions gets fully lifted, challenge ends.
 5. Otherwise - newcomer gets banned for 10 minutes (There is a "false-positive" chance, rememeber? Most robots aint coming back, anyway).
 6. If the newcomer struggles to answer in a set period of time (defaults to 3 minutes) - challenge automatically fails the same way, as in p.5.
 7. After the challenge bot cleans up all related messages, only leaving join notification for the newcomers, that made it. There are no traces of unsuccesful joins left, and that is awesome.
+
+## Spam protection
+1. Every chat member first message is being checked for spam using two approaches:
+    - **Known spammers DB lookup** - checks if the message author is in the known spammers DB.
+    - **GPT-powered content analysis** - asks GPT to analyze the message for harmful content.
+2. If the message is considered as spam - newcomer gets kick-banned.
+3. If the message is not considered as spam - user becomes a normal trusted chat member.
 
 ## Troubleshooting
 Don't hesitate to contact me
@@ -80,7 +88,7 @@ cd ${NG_DIR}
 
 NG_TOKEN=<REPLACE_THIS>
 NG_LANG=en
-NG_HANDLERS=admin,gatekeeper
+NG_HANDLERS=admin,gatekeeper,reactor
 NG_LOG_LEVEL=6
 OPENAI_API_KEY=<REPLACE_THIS>
 OPENAI_BASE_URL=https://api.openai.com/v1
