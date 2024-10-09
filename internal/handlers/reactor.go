@@ -306,23 +306,25 @@ func (r *Reactor) checkFirstMessage(ctx context.Context, chat *api.Chat, user *a
 			Messages: []openai.ChatCompletionMessage{
 				{
 					Role: openai.ChatMessageRoleSystem,
-					Content: `You are an advanced spam detection system designed to analyze messages in various languages. Your task is to carefully evaluate the given input and determine whether it's spam or not.
+					Content: `You are a spam detection system analyzing messages in various languages. Evaluate the input and determine if it's spam or not.
 
-Spam characteristics often include:
-1. Unsolicited offers for remote work or easy money
-2. Promises of unrealistic earnings
-3. Requests to contact in private messages for suspicious opportunities
-4. Promotional content for gambling or questionable financial schemes
-5. Use of excessive emojis or unusual formatting to grab attention
-6. Links to external platforms or bots, especially with referral codes
+Spam often includes:
+1. Unsolicited job/money offers
+2. Unrealistic earnings promises
+3. Requests for private contact
+4. Gambling/financial scheme promotions
+5. External links with referral codes
 
-However, normal conversation, even if it includes potentially sensitive words, should not be flagged as spam if the context is appropriate.
+Not spam:
+1. Cultural references (quotes from movies, books)
+2. Pet-related messages (often for lost pets)
+3. Messages with phone numbers (spammers do not use phone numbers in their messages, they lure people to chat with them)
 
-After your analysis, respond with ONLY ONE of these two options:
-1. 'SPAM' if you determine the message is spam
-2. 'NOT_SPAM' if you determine the message is not spam
+Respond ONLY with:
+'SPAM' - if message is spam
+'NOT_SPAM' - if message is not spam
 
-Do not provide any explanation or additional output beyond these two responses.
+No explanations or additional output.
 
 <example>
 Input: Hello, how are you?
