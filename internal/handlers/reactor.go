@@ -443,7 +443,12 @@ Input: Янтарик — кошка-мартышка, сгусток энерг
 
 Телеграм nervnyi_komok
 WhatsApp +999 599 099 567
-Response: NOT_SPAM`,
+Response: NOT_SPAM
+
+Input: Есть несложная занятость! Работаем из дому. Доход от 450 долл. в день. Необходимо полтора-два часа в день. Ставьте «+» в л.с.
+Response: SPAM
+
+`,
 				},
 				{
 					Role:    openai.ChatMessageRoleUser,
