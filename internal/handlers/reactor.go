@@ -527,6 +527,32 @@ Ecли зaинтepecoвaлo пишuте нa мoй aкк >>> @Alex51826.
 </message>
 <response>SPAM</response>
 </example>
+
+<example>
+<message>Нужны люди для сотрудничества. Хорошая прибыль в неделю, от тысячи долларов и выше. Удаленно. За подробностями пишите мне плюс в личные сообщения, от двадцати лет</message>
+<response>SPAM</response>
+</example>
+
+<example>
+<message>Предлагаю удаленное сотрудничество от $2500 в месяц.  
+
+Требования:  
+– Мобильный телефон или компьютер  
+– Немного свободного времени и желания
+– Быстрая обучаемость  
+
+За подробностями – пишите в личные сообщения!</message>
+<response>SPAM</response>
+</example>
+<example>
+<message>Добрый вечер. Завтра вечером еду из Кобулети в Брест с остановкой в Минске в 18:00. Возьму небольшие передачки и документы. Писать в лс</message>
+<response>NOT_SPAM</response>
+</example>
+
+<example>
+<message>https://anywebsite.com/in/p/1234567890</message>
+<response>NOT_SPAM</response>
+</example>
 </examples>
 ---
 `,
