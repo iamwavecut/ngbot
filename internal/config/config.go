@@ -28,7 +28,7 @@ type (
 	}
 
 	Reactor struct {
-		FlaggedEmojis []string `env:"FLAGGED_EMOJIS,default=👎🏻,💩"`
+		FlaggedEmojis []string `env:"FLAGGED_EMOJIS,default=👎,💩"`
 	}
 )
 
