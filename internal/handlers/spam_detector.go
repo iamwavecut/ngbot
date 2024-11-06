@@ -17,7 +17,7 @@ func (d *openAISpamDetector) IsSpam(ctx context.Context, message string) (bool, 
 		ctx,
 		openai.ChatCompletionRequest{
 			Model:       d.model,
-			Temperature: 0.02,
+			Temperature: 0.01,
 			Messages: []openai.ChatCompletionMessage{
 				{
 					Role:    openai.ChatMessageRoleSystem,
@@ -323,6 +323,44 @@ Cтuмyлupoвaнным пucaть "+" в cмc</message>
 
 <example>
 <message>Нужны заинтересованные люди в команду. Возможен доход от 900 долларов за неделю,полностью дистанционный формат.Пишите мне + в личные сообщения</message>
+<response>SPAM</response>
+</example>
+
+<example>
+<message>🍓 СЛИТЫЕ ИНТИМ ФОТО ЛЮБОЙ ДЕВУШКИ В ЭТОМ БОТЕ
+
+🍑 ПЕРЕХОДИ И УБЕДИСЬ ⬇️
+
+https://t.me/shop_6o11rU_bot?start=2521</message>
+<response>SPAM</response>
+</example>
+
+<example>
+<message>Есть несколько мест на УДАЛЕНКУ с хорошим доходом .
+
+Занятость 1-2 часа в день, от 18 лет
+
+
+ Пишите в ЛС за деталями!</message>
+<response>SPAM</response>
+</example>
+
+<example>
+<message>Oткpыт нaбop в кoмaндy, в нoвoм oнлaйн пpoeктe. Eжeднeвный дoxoд бoлee З4O ЕUR. Жeлaющux ждy в лuчнoм чaтe.</message>
+<response>SPAM</response>
+</example>
+
+<example>
+<message>Пpuветствyю, ecть 4 cвoбoдныx мecта в paзвuвающeecя кoмьюнuтu.
+Пpeдocтaвuм вoзмoжнocть пoлyчaть cвышe 2ООО USd в нeдeлю.
+Пucaть тoлькo зauнтepecoвaнным.</message>
+<response>SPAM</response>
+</example>
+
+<example>
+<message>Привет, нужны люди, оплата достойная, берем без опыта, за подробностями в лс
+*Для работы нужен телефон
+*2-3 часа времени</message>
 <response>SPAM</response>
 </example>
 
