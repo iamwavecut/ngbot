@@ -1,8 +1,6 @@
 package db
 
 import (
-	"encoding/json"
-	"fmt"
 	"time"
 
 	"github.com/iamwavecut/ngbot/internal/config"
@@ -10,11 +8,11 @@ import (
 
 type (
 	Settings struct {
-		ID               int64         `db:"id"`
-		Language         string        `db:"language"`
-		Enabled          bool          `db:"enabled"`
-		ChallengeTimeout time.Duration `db:"challenge_timeout"`
-		RejectTimeout    time.Duration `db:"reject_timeout"`
+		ID               int64  `db:"id"`
+		Language         string `db:"language"`
+		Enabled          bool   `db:"enabled"`
+		ChallengeTimeout int64  `db:"challenge_timeout"`
+		RejectTimeout    int64  `db:"reject_timeout"`
 	}
 )
 
@@ -22,20 +20,6 @@ const (
 	defaultChallengeTimeout = 3 * time.Minute
 	defaultRejectTimeout    = 10 * time.Minute
 )
-
-func (s *Settings) Scan(v interface{}) error {
-	if v == nil {
-		return nil
-	}
-	switch data := v.(type) {
-	case string:
-		return json.Unmarshal([]byte(data), &s)
-	case []byte:
-		return json.Unmarshal(data, &s)
-	default:
-		return fmt.Errorf("cannot scan type %t into Dict", v)
-	}
-}
 
 // GetLanguage Returns chat's set language
 func (cm *Settings) GetLanguage() (string, error) {
@@ -54,9 +38,9 @@ func (cm *Settings) GetChallengeTimeout() time.Duration {
 		return defaultChallengeTimeout
 	}
 	if cm.ChallengeTimeout == 0 {
-		cm.ChallengeTimeout = defaultChallengeTimeout
+		cm.ChallengeTimeout = defaultChallengeTimeout.Nanoseconds()
 	}
-	return cm.ChallengeTimeout
+	return time.Duration(cm.ChallengeTimeout)
 }
 
 // GetRejectTimeout Returns chat entry reject timeout duration
@@ -65,8 +49,7 @@ func (cm *Settings) GetRejectTimeout() time.Duration {
 		return defaultRejectTimeout
 	}
 	if cm.RejectTimeout == 0 {
-		cm.RejectTimeout = defaultRejectTimeout
+		cm.RejectTimeout = defaultRejectTimeout.Nanoseconds()
 	}
-
-	return cm.RejectTimeout
+	return time.Duration(cm.RejectTimeout)
 }

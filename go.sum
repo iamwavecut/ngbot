@@ -1,7 +1,7 @@
 filippo.io/edwards25519 v1.1.0 h1:FNf4tywRC1HmFuKW5xopWpigGjJKiJSV0Cqo0cJWDaA=
 filippo.io/edwards25519 v1.1.0/go.mod h1:BxyFTGdWcka3PhytdK4V28tE5sGfRvvvRV7EaN4VDT4=
-github.com/OvyFlash/telegram-bot-api/v5 v5.0.0-20240316083515-def9b6b5dc12 h1:4noJY9JgxQkx8VJykUULJ8LeYRAPocCsvTrvL4k8JCs=
-github.com/OvyFlash/telegram-bot-api/v5 v5.0.0-20240316083515-def9b6b5dc12/go.mod h1:A2S0CWkNylc2phvKXWBBdD3K0iGnDBGbzRpISP2zBl8=
+github.com/OvyFlash/telegram-bot-api/v6 v6.0.0-20241030124621-1376e01c644a h1:qd9GXTWjgVMBT6y6ZQYyDlClxmCu+Y3t97CjcVwoi5s=
+github.com/OvyFlash/telegram-bot-api/v6 v6.0.0-20241030124621-1376e01c644a/go.mod h1:50qGCPZYnfXyIPY2Cs8jyHFHc4aelAAygXInR3O2Owc=
 github.com/coreos/go-systemd/v22 v22.5.0/go.mod h1:Y58oyj3AT4RCenI/lSvhwexgC+NSVTIJ3seZv2GcEnc=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=

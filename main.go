@@ -17,7 +17,7 @@ import (
 	"github.com/iamwavecut/ngbot/internal/handlers"
 	"github.com/iamwavecut/ngbot/internal/i18n"
 
-	api "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	api "github.com/OvyFlash/telegram-bot-api/v6"
 	log "github.com/sirupsen/logrus"
 
 	"github.com/iamwavecut/ngbot/internal/bot"
@@ -81,7 +81,11 @@ func main() {
 			llmAPIConfig := openai.DefaultConfig(cfg.OpenAI.APIKey)
 			llmAPIConfig.BaseURL = cfg.OpenAI.BaseURL
 			llmAPI := openai.NewClientWithConfig(llmAPIConfig)
-			bot.RegisterUpdateHandler("reactor", handlers.NewReactor(service, llmAPI, cfg.OpenAI.Model))
+			bot.RegisterUpdateHandler("reactor", handlers.NewReactor(service, llmAPI, handlers.Config{
+				FlaggedEmojis:   cfg.Reactor.FlaggedEmojis,
+				CheckUserAPIURL: "https://api.lols.bot/account",
+				OpenAIModel:     cfg.OpenAI.Model,
+			}))
 
 			updateConfig := api.NewUpdate(0)
 			updateConfig.Timeout = 60

@@ -2,117 +2,74 @@ package handlers
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
-	"net/http"
-	"reflect"
 	"slices"
-	"strings"
 
-	api "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	api "github.com/OvyFlash/telegram-bot-api/v6"
 	"github.com/pkg/errors"
 	"github.com/sashabaranov/go-openai"
 	log "github.com/sirupsen/logrus"
 
 	"github.com/iamwavecut/ngbot/internal/bot"
-	"github.com/iamwavecut/ngbot/internal/config"
 	"github.com/iamwavecut/ngbot/internal/db"
-	"github.com/iamwavecut/ngbot/internal/i18n"
-	"github.com/iamwavecut/tool"
 )
 
-var flaggedEmojis = []string{"💩", "👎", "🖕", "🤮", "🤬", "😡", "💀", "☠️", "🤢", "👿"}
-
-type banInfo struct {
-	OK         bool    `json:"ok"`
-	UserID     int64   `json:"user_id"`
-	Banned     bool    `json:"banned"`
-	When       string  `json:"when"`
-	Offenses   int     `json:"offenses"`
-	SpamFactor float64 `json:"spam_factor"`
+// SpamDetector handles spam detection logic
+type SpamDetector interface {
+	IsSpam(ctx context.Context, message string) (bool, error)
 }
 
+// BanService handles user banning operations
+type BanService interface {
+	CheckBan(ctx context.Context, userID int64) (bool, error)
+	BanUser(ctx context.Context, chatID, userID int64, messageID int) error
+}
+
+// Config holds reactor configuration
+type Config struct {
+	FlaggedEmojis   []string
+	CheckUserAPIURL string
+	OpenAIModel     string
+}
+
+// Reactor handles message processing and spam detection
 type Reactor struct {
-	s      bot.Service
-	llmAPI *openai.Client
-	model  string
+	s            bot.Service
+	llmAPI       *openai.Client
+	config       Config
+	spamDetector SpamDetector
+	banService   BanService
 }
 
-func NewReactor(s bot.Service, llmAPI *openai.Client, model string) *Reactor {
-	log.WithFields(log.Fields{
-		"scope":  "Reactor",
-		"method": "NewReactor",
-	}).Debug("creating new Reactor")
+// NewReactor creates a new Reactor instance with the given configuration
+func NewReactor(s bot.Service, llmAPI *openai.Client, config Config) *Reactor {
 	r := &Reactor{
 		s:      s,
 		llmAPI: llmAPI,
-		model:  model,
+		config: config,
 	}
+
+	r.spamDetector = &openAISpamDetector{
+		client: llmAPI,
+		model:  config.OpenAIModel,
+	}
+	r.banService = &defaultBanService{
+		apiURL: config.CheckUserAPIURL,
+		bot:    s.GetBot(),
+	}
+
 	return r
 }
 
 func (r *Reactor) Handle(ctx context.Context, u *api.Update, chat *api.Chat, user *api.User) (bool, error) {
-	entry := r.getLogEntry().
-		WithFields(log.Fields{
-			"method": "Handle",
-		})
-	entry.Debug("handling update")
+	entry := r.getLogEntry().WithFields(log.Fields{"method": "Handle"})
 
-	if u == nil {
-		entry.Error("Update is nil")
-		return false, errors.New("nil update")
+	if err := r.validateUpdate(u, chat, user); err != nil {
+		return false, err
 	}
 
-	nonNilFields := []string{}
-	isNonNilPtr := func(v reflect.Value) bool {
-		return v.Kind() == reflect.Ptr && !v.IsNil()
-	}
-	val := reflect.ValueOf(u).Elem()
-	typ := val.Type()
-	for i := 0; i < val.NumField(); i++ {
-		field := val.Field(i)
-		fieldName := typ.Field(i).Name
-
-		if isNonNilPtr(field) {
-			nonNilFields = append(nonNilFields, fieldName)
-		}
-	}
-	nonNilFields = slices.Compact(nonNilFields)
-	entry.Debug("Checking update type")
-	if u.Message == nil && u.MessageReaction == nil {
-		entry.Debug("Update is not about message or reaction, not proceeding")
-		return false, nil
-	}
-	entry.Debug("Update is about message or reaction, proceeding")
-
-	if chat == nil {
-		entry.WithField("non_nil_fields", strings.Join(nonNilFields, ", ")).Warn("No chat")
-		return true, nil
-	}
-	if user == nil {
-		entry.WithField("non_nil_fields", strings.Join(nonNilFields, ", ")).Warn("No user")
-		return true, nil
-	}
-
-	entry.Debug("Fetching chat settings")
-	settings, err := r.s.GetSettings(chat.ID)
+	settings, err := r.getOrCreateSettings(chat)
 	if err != nil {
-		entry.WithError(err).Error("Failed to get chat settings")
-	}
-	if settings == nil {
-		entry.Debug("Settings are nil, using default settings")
-		settings = &db.Settings{
-			Enabled:          true,
-			ChallengeTimeout: defaultChallengeTimeout,
-			RejectTimeout:    defaultRejectTimeout,
-			Language:         "en",
-			ID:               chat.ID,
-		}
-
-		err = r.s.SetSettings(settings)
-		if err != nil {
-			entry.WithError(err).Error("Failed to set default chat settings")
-		}
+		return false, err
 	}
 
 	if !settings.Enabled {
@@ -120,521 +77,157 @@ func (r *Reactor) Handle(ctx context.Context, u *api.Update, chat *api.Chat, use
 		return true, nil
 	}
 
-	b := r.s.GetBot()
-	if b == nil {
-		entry.Warn("Bot is nil")
-		return false, errors.New("nil bot")
-	}
-
-	if u.MessageReaction != nil {
-		entry.Debug("Processing message reaction")
-		for _, react := range u.MessageReaction.NewReaction {
-			flags := map[string]int{}
-			emoji := react.Emoji
-			if react.Type == api.StickerTypeCustomEmoji {
-				entry.Debug("processing custom emoji")
-				emojiStickers, err := b.GetCustomEmojiStickers(api.GetCustomEmojiStickersConfig{
-					CustomEmojiIDs: []string{react.CustomEmoji},
-				})
-				if err != nil {
-					entry.WithError(err).Warn("custom emoji get error")
-					continue
-				}
-				if len(emojiStickers) > 0 {
-					emoji = emojiStickers[0].Emoji
-				}
-			}
-			if slices.Contains(flaggedEmojis, emoji) {
-				entry.WithField("emoji", emoji).Debug("flagged emoji detected")
-				flags[emoji]++
-			}
-
-			for _, flagged := range flags {
-				if flagged >= 5 {
-					entry.Warn("user reached flag threshold, attempting to ban")
-					if err := bot.BanUserFromChat(b, user.ID, chat.ID); err != nil {
-						entry.Error("cant ban user in chat")
-					}
-					return true, nil
-				}
-			}
-		}
+	if u.MessageReactionCount != nil {
+		return r.handleReaction(ctx, u.MessageReactionCount, chat, user)
 	}
 
 	if u.Message != nil {
-		entry.Debug("handling new message")
-		if err := r.handleFirstMessage(ctx, u, chat, user); err != nil {
-			entry.WithError(err).Error("error handling new message")
+		if err := r.handleMessage(ctx, u.Message, chat, user); err != nil {
+			entry.WithError(err).Error("error handling message")
+			return true, err
 		}
 	}
 
 	return true, nil
 }
 
-func (r *Reactor) handleFirstMessage(ctx context.Context, u *api.Update, chat *api.Chat, user *api.User) error {
-	entry := r.getLogEntry().WithField("method", "handleFirstMessage")
-	entry.Debug("handling first message")
-	m := u.Message
+func (r *Reactor) validateUpdate(u *api.Update, chat *api.Chat, user *api.User) error {
+	if u == nil {
+		return errors.New("nil update")
+	}
+	if u.Message == nil && u.MessageReaction == nil {
+		return nil
+	}
+	if chat == nil || user == nil {
+		return errors.New("nil chat or user")
+	}
+	return nil
+}
 
-	entry.Debug("checking if user is a member")
+func (r *Reactor) getOrCreateSettings(chat *api.Chat) (*db.Settings, error) {
+	settings, err := r.s.GetSettings(chat.ID)
+	if err != nil {
+		return nil, err
+	}
+	if settings == nil {
+		settings = &db.Settings{
+			Enabled:          true,
+			ChallengeTimeout: defaultChallengeTimeout.Nanoseconds(),
+			RejectTimeout:    defaultRejectTimeout.Nanoseconds(),
+			Language:         "en",
+			ID:               chat.ID,
+		}
+		if err := r.s.SetSettings(settings); err != nil {
+			return nil, err
+		}
+	}
+	return settings, nil
+}
+
+func (r *Reactor) handleReaction(_ context.Context, reactions *api.MessageReactionCountUpdated, chat *api.Chat, user *api.User) (bool, error) {
+	entry := r.getLogEntry().WithField("method", "handleReaction")
+
+	for _, react := range reactions.Reactions {
+		if react.TotalCount < 5 {
+			continue
+		}
+		emoji := r.getEmojiFromReaction(react.Type)
+		if slices.Contains(r.config.FlaggedEmojis, emoji) {
+			entry.Warn("user reached flag threshold, attempting to ban")
+			if err := bot.BanUserFromChat(r.s.GetBot(), user.ID, chat.ID); err != nil {
+				entry.WithError(err).Error("failed to ban user")
+				return true, err
+			}
+			return true, nil
+		}
+	}
+	return true, nil
+}
+
+func (r *Reactor) getEmojiFromReaction(react api.ReactionType) string {
+	if react.Type != api.StickerTypeCustomEmoji {
+		return react.Emoji
+	}
+
+	emojiStickers, err := r.s.GetBot().GetCustomEmojiStickers(api.GetCustomEmojiStickersConfig{
+		CustomEmojiIDs: []string{react.CustomEmoji},
+	})
+	if err != nil || len(emojiStickers) == 0 {
+		return react.Emoji
+	}
+	return emojiStickers[0].Emoji
+}
+
+func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api.Chat, user *api.User) error {
+	entry := r.getLogEntry().WithField("method", "handleMessage")
+
 	isMember, err := r.s.IsMember(ctx, chat.ID, user.ID)
 	if err != nil {
-		return errors.WithMessage(err, "cant check if member")
+		return errors.Wrap(err, "failed to check membership")
 	}
 	if isMember {
 		entry.Debug("user is already a member")
 		return nil
 	}
 
-	entry.Debug("checking first message content")
-	isSpam, err := r.checkFirstMessage(ctx, chat, user, m)
+	isSpam, err := r.checkMessageForSpam(ctx, msg, chat, user)
 	if err != nil {
-		return errors.WithMessage(err, "cant check first message")
+		return errors.Wrap(err, "failed to check message for spam")
 	}
-
 	if isSpam {
-		entry.Info("message detected as spam, not adding user as member")
+		entry.Info("message detected as spam")
 		return nil
 	}
 
-	entry.Debug("message passed checks, adding user as member")
 	if err := r.s.InsertMember(ctx, chat.ID, user.ID); err != nil {
-		return errors.WithMessage(err, "failed to insert member")
+		return errors.Wrap(err, "failed to insert member")
 	}
 
 	entry.Debug("successfully added user as member")
 	return nil
 }
 
-func (r *Reactor) checkFirstMessage(ctx context.Context, chat *api.Chat, user *api.User, m *api.Message) (bool, error) {
-	entry := r.getLogEntry().
-		WithFields(log.Fields{
-			"method":    "checkFirstMessage",
-			"user_name": bot.GetUN(user),
-			"user_id":   user.ID,
-		})
+func (r *Reactor) checkMessageForSpam(ctx context.Context, msg *api.Message, chat *api.Chat, user *api.User) (bool, error) {
+	entry := r.getLogEntry().WithFields(log.Fields{
+		"method":    "checkMessageForSpam",
+		"user_name": bot.GetUN(user),
+		"user_id":   user.ID,
+	})
 
-	entry.Debug("checking first message")
-	b := r.s.GetBot()
-
-	messageContent := m.Text
-	if messageContent == "" && m.Caption != "" {
-		messageContent = m.Caption
+	content := msg.Text
+	if content == "" {
+		content = msg.Caption
 	}
-
-	if messageContent == "" {
-		entry.Warn("empty message content, skipping spam check")
+	if content == "" {
+		entry.Debug("empty message content")
 		return false, nil
 	}
 
-	banSpammer := func(chatID, userID int64, messageID int) (bool, error) {
-		entry.Info("spam detected, banning user")
-		var errs []error
-		if err := bot.DeleteChatMessage(b, chatID, messageID); err != nil {
-			errs = append(errs, errors.Wrap(err, "failed to delete message"))
-		}
-		if err := bot.BanUserFromChat(b, userID, chatID); err != nil {
-			errs = append(errs, errors.Wrap(err, "failed to ban user"))
-		}
-		if len(errs) > 0 {
-			lang := r.getLanguage(chat, user)
-
-			entry.WithField("errors", errs).Error("failed to handle spam")
-			var msgContent string
-			if len(errs) == 2 {
-				entry.Warn("failed to ban and delete message")
-				msgContent = fmt.Sprintf(i18n.Get("I can't delete messages or ban spammer \"%s\".", lang), bot.GetUN(user))
-			} else if errors.Is(errs[0], errors.New("failed to delete message")) {
-				entry.Warn("failed to delete message")
-				msgContent = fmt.Sprintf(i18n.Get("I can't delete messages from spammer \"%s\".", lang), bot.GetUN(user))
-			} else {
-				entry.Warn("failed to ban spammer")
-				msgContent = fmt.Sprintf(i18n.Get("I can't ban spammer \"%s\".", lang), bot.GetUN(user))
-			}
-			msgContent += " " + i18n.Get("I should have the permissions to ban and delete messages here.", lang)
-			msg := api.NewMessage(chat.ID, msgContent)
-			msg.ParseMode = api.ModeHTML
-			if _, err := b.Send(msg); err != nil {
-				entry.WithError(err).Error("failed to send message about lack of permissions")
-			}
-			return true, errors.New("failed to handle spam")
+	isBanned, err := r.banService.CheckBan(ctx, user.ID)
+	if err != nil {
+		return false, err
+	}
+	if isBanned {
+		if err := r.banService.BanUser(ctx, chat.ID, user.ID, msg.MessageID); err != nil {
+			entry.WithError(err).Error("failed to ban user")
 		}
 		return true, nil
 	}
 
-	entry.Debug("checking if user is banned")
-	url := fmt.Sprintf("https://api.lols.bot/account?id=%d", user.ID)
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	isSpam, err := r.spamDetector.IsSpam(ctx, content)
 	if err != nil {
-		entry.WithError(err).Error("failed to create request")
-		return false, errors.WithMessage(err, "failed to create request")
+		return false, err
 	}
-	req.Header.Set("accept", "application/json")
-
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		entry.WithError(err).Error("failed to send request")
-	}
-	defer resp.Body.Close()
-
-	banCheck := banInfo{}
-	if err := json.NewDecoder(resp.Body).Decode(&banCheck); err != nil {
-		entry.WithError(err).Error("failed to decode response")
-	}
-
-	if banCheck.Banned {
-		_, err := banSpammer(chat.ID, user.ID, m.MessageID)
-		if err != nil {
-			entry.WithError(err).Error("Failed to execute ban action on spammer")
+	if isSpam {
+		if err := r.banService.BanUser(ctx, chat.ID, user.ID, msg.MessageID); err != nil {
+			entry.WithError(err).Error("failed to ban user")
 		}
 		return true, nil
 	}
 
-	entry.Info("sending first message to OpenAI for spam check")
-	llmResp, err := r.llmAPI.CreateChatCompletion(
-		ctx,
-		openai.ChatCompletionRequest{
-			Model:       r.model,
-			Temperature: 0.02,
-			Messages: []openai.ChatCompletionMessage{
-				{
-					Role: openai.ChatMessageRoleSystem,
-					Content: `Ты ассистент для обнаружения спама, анализирующий сообщения на различных языках. Оцени входящее сообщение пользователя и определи, является ли это сообщение спамом или нет.
-
-Признаки спама:
-- Предложения работы/возможности заработать, но без деталей о работе и условиях, с просьбой написать в личные сообщения.
-- Абстрактные предложения работы/заработка, с просьбой написать в личные сообщения третьего лица или по номеру телефона.
-- Продвижение азартных игр/финансовых схем.
-- Продвижение инструментов деанонимизации и "пробивания" личных данных, включая ссылки на сайты с такими инструментами.
-- Внешние ссылки с явными реферальными кодами и GET параметрами вроде "?ref=", "/ref", "invite" и т.п.
-- Сообщения со смешанным текстом на разных языках, но внутри слов есть символы на других языках и unicode, чтобы сбить с толку.
-
-Исключения:
-- Сообщения, связанные с домашними животными (часто о потерянных питомцах)
-- Сообщения с просьбами о помощи без выгоды (часто связанные с поиском пропавших людей или вещей)
-- Ссылки на обычные вебсайты, не являющиеся реферальными ссылками.
-
-Отвечай ТОЛЬКО:
-"SPAM" - если сообщение скорее всего является спамом
-"NOT_SPAM" - если сообщение скорее всего не является спамом
-
-Без объяснений или дополнительного вывода.
-
-<examples>
-<example>
-<message>Hello, how are you?</message>
-<response>NOT_SPAM</response>
-</example>
-
-<example>
-<message>Хочешь зарабатывать на удалёнке но не знаешь как? Напиши мне и я тебе всё расскажу, от 18 лет. жду всех желающих в лс.</message>
-<response>SPAM</response>
-</example>
-
-<example>
-<message>Нужны люди! Стабильнный доход, каждую неделю, на удалёнке, от 18 лет, пишите в лс.</message>
-<response>SPAM</response>
-</example>
-
-<example>
-<message>Ищу людeй, заинтeрeсованных в хoрoшем доп.доходе на удаленке. Не полная занятость, от 21. По вопросам пишите в ЛС</message>
-<response>SPAM</response>
-</example>
-
-<example>
-<message>10000х Орууу в других играл и такого не разу не было, просто капец  а такое возможно???? </message>
-<response>SPAM</response>
-</example>
-
-<example>
-<message>🥇Первая игровая платформа в Telegram
-
-https://t.me/jetton?start=cdyrsJsbvYy</message>
-<response>SPAM</response>
-</example>
-
-<example>
-<message>Набираю команду нужно 2-3 человека на удалённую работу з телефона пк от  десят тысяч в день  пишите + в лс</message>
-<response>SPAM</response>
-</example>
-
-<example>
-<message>💎 Пᴩᴏᴇᴋᴛ TONCOIN, ʙыᴨуᴄᴛиᴧ ᴄʙᴏᴇᴦᴏ ᴋᴀɜинᴏ бᴏᴛᴀ ʙ ᴛᴇᴧᴇᴦᴩᴀʍʍᴇ
-
-👑 Сᴀʍыᴇ ʙыᴄᴏᴋиᴇ ɯᴀнᴄы ʙыиᴦᴩыɯᴀ 
-⏳ Мᴏʍᴇнᴛᴀᴧьный ʙʙᴏд и ʙыʙᴏд
-🎲 Нᴇ ᴛᴩᴇбуᴇᴛ ᴩᴇᴦиᴄᴛᴩᴀции
-🏆 Вᴄᴇ ᴧучɯиᴇ ᴨᴩᴏʙᴀйдᴇᴩы и иᴦᴩы 
-
-🍋 Зᴀбᴩᴀᴛь 1000 USDT 👇
-
-t.me/slotsTON_BOT?start=cdyoNKvXn75</message>
-<response>SPAM</response>
-</example>
-
-<example>
-<message>Эротика</message>
-<response>NOT_SPAM</response>
-</example>
-
-<example>
-<message>Олегик)))</message>
-<response>NOT_SPAM</response>
-</example>
-
-<example>
-<message>Авантюра!</message>
-<response>NOT_SPAM</response>
-</example>
-
-<example>
-<message>Я всё понял, спасибо!</message>
-<response>NOT_SPAM</response>
-</example>
-
-<example>
-<message>Это не так</message>
-<response>NOT_SPAM</response>
-</example>
-
-<example>
-<message>Не сочтите за спам, хочу порекламировать свой канал</message>
-<response>NOT_SPAM</response>
-</example>
-
-<example>
-<message>Нет</message>
-<response>NOT_SPAM</response>
-</example>
-
-<example>
-<message>???</message>
-<response>NOT_SPAM</response>
-</example>
-
-<example>
-<message>...</message>
-<response>NOT_SPAM</response>
-</example>
-
-<example>
-<message>Да</message>
-<response>NOT_SPAM</response>
-</example>
-
-<example>
-<message>Ищу людей, возьму 2-3 человека 18+ Удаленная деятельность.От 250$  в  день.Кому интересно: Пишите + в лс</message>
-<response>SPAM</response>
-</example>
-
-<example>
-<message>Нужны люди, занятость на удалёнке</message>
-<response>SPAM</response>
-<response>SPAM</response>
-</example>
-
-<example>
-<message>3дpaвcтвyйтe,Веду поиск пaртнёров для сoтруднuчества ,свoбoдный гpaфик ,пpuятный зapaбoтok eженeдельно. Ecли интepecуeт пoдpoбнaя инфopмaция пишuте.</message>
-<response>SPAM</response>
-</example>
-
-<example>
-<message>💚💚💚💚💚💚💚💚
-Ищy нa oбyчeниe людeй c цeлью зapaбoткa. 💼
-*⃣Haпpaвлeниe: Crypto, Тecтнeты, Aиpдpoпы.
-*⃣Пo вpeмeни в cyтки 1-2 чaca, мoжнo paбoтaть co cмapтфoнa. 🤝
-*⃣Дoxoднocть чиcтaя в дeнь paвняeтcя oт 7-9 пpoцeнтoв.
-*⃣БECПЛAТHOE OБУЧEHИE, мoй интepec пpoцeнт oт зapaбoткa. 💶
-Ecли зaинтepecoвaлo пишитe нa мoй aкк >>> @Alex51826.
-</message>
-<response>SPAM</response>
-</example>
-
-<example>
-<message>Ищу партнеров для заработка пассивной прибыли, много времени не занимает + хороший еженедельный доп.доход. Пишите + в личные</message>
-<response>SPAM</response>
-</example>
-
-<example>
-<message>Удалённая занятость, с хорошей прибылью 350 долларов в день.1-2 часа в день. Ставь плюс мне в личные смс.</message>
-<response>SPAM</response>
-</example>
-
-<example>
-<message>Прибыльное предложение для каждого, подработка на постоянной основе(удаленно) , опыт не важен.Пишите в личные смс  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!</message>
-<response>SPAM</response>
-</example>
-
-<example>
-<message>Здрaвствуйте! Хочу вам прeдложить вaриант пaссивного заработка.Удaленка.Обучение бeсплатное, от вас трeбуeтся только пaрa чaсов свoбoднoгo времeни и тeлeфон или компьютер. Если интересно напиши мне.</message>
-<response>SPAM</response>
-</example>
-
-<example>
-<message>Ищу людей, возьму 3 человека от 20 лет. Удаленная деятельность. От 250 дoлларов в день. Кому интересно пишите плюс в личку</message>
-<response>SPAM</response>
-</example>
-
-<example>
-<message>Добрый вечер! Интересный вопрос) я бы тоже с удовольствием узнала информацию</message>
-<response>NOT_SPAM</response>
-</example>
-
-<example>
-<message>Янтарик — кошка-мартышка, сгусток энергии с отличным урчателем ❤️‍🔥
-
-🧡 Ищет человека, которому мурчать
-🧡 Около 11 месяцев
-🧡 Стерилизована. Обработана от паразитов. Впереди вакцинация, чип и паспорт
-🧡 C ненавязчивым отслеживанием судьбы 🙏
-🇬🇪 Готова отправиться в любой уголок Грузии, рассмотрим варианты и дальше
-
-Телеграм nervnyi_komok
-WhatsApp +999 599 099 567
-</message>
-<response>NOT_SPAM</response>
-</example>
-
-<example>
-<message>Есть несложная занятость! Работаем из дому. Доход от 450 долл. в день. Необходимо полтора-два часа в день. Ставьте «+» в л.с.</message>
-<response>SPAM</response>
-</example>
-
-<example>
-<message>Здравствуйте. Есть вoзможность дистанционного зaработка.Стaбильность в виде 45 000 рyблей в неделю. Опыт не требуется. Все подробности у меня в личке</message>
-<response>SPAM</response>
-</example>
-
-<example>
-<message>Удалённая зaнятость, с хорoшей прибылью 550 долларов в день. два часа в день. Ставь плюс мне в личные</message>
-<response>SPAM</response>
-</example>
-
-<example>
-<message>💚💚💚💚💚💚💚💚
-Ищy нa oбyчeниe людeй c цeлью зapaбoткa. 💼
-*⃣Haпpaвлeниe: Crypto, Тecтнeты, Aиpдpoпы.
-*⃣Пo вpeмeни в cyтки 1-2 чaca, мoжнo paбoтaть co cмapтфoнa. 🤝
-*⃣Дoxoднocть чиcтaя в дeнь paвняeтcя oт 7-9 пpoцeнтoв.
-*⃣БECПЛAТHOE OБУЧEHИE, мoй интepec пpoцeнт oт зapaбoткa. 💶
-Ecли зaинтepecoвaлo пишuте нa мoй aкк >>> @Alex51826.
-</message>
-<response>SPAM</response>
-</example>
-
-<example>
-<message>Нужны люди для сотрудничества. Хорошая прибыль в неделю, от тысячи долларов и выше. Удаленно. За подробностями пишите мне плюс в личные сообщения, от двадцати лет</message>
-<response>SPAM</response>
-</example>
-
-<example>
-<message>Предлагаю удаленное сотрудничество от $2500 в месяц.  
-
-Требования:  
-– Мобильный телефон или компьютер  
-– Немного свободного времени и желания
-– Быстрая обучаемость  
-
-За подробностями – пишите в личные сообщения!</message>
-<response>SPAM</response>
-</example>
-<example>
-<message>Добрый вечер. Завтра вечером еду из Кобулети в Брест с остановкой в Минске в 18:00. Возьму небольшие передачки и документы. Писать в лс</message>
-<response>NOT_SPAM</response>
-</example>
-
-<example>
-<message>https://anywebsite.com/in/p/1234567890</message>
-<response>NOT_SPAM</response>
-</example>
-
-<example>
-<message>Heвepoятный дeнeжный пoтoк кaждый дeнь.
- - пpoфuт oт 3OO USD в дeнь
- - нoвaя cтopoнa yчacтuя
-Cтuмyлupoвaнным пucaть "+" в cмc</message>
-<response>SPAM</response>
-</example>
-
-<example>
-<message>ᴨᴩиʙᴇᴛ!ищу ᴧюдᴇй дᴧя ᴨᴀccиʙноᴦo зᴀᴩᴀбoᴛᴋᴀ. ᴨᴧюcы:xoᴩoɯий дoxoд, удᴀᴧённый ɸoᴩʍᴀᴛ, ᴨᴩoᴄᴛоᴛᴀ. ᴇᴄᴧи инᴛᴇᴩᴇᴄно, нᴀᴨиɯиᴛᴇ + ʙ ᴧ.c.</message>
-<response>SPAM</response>
-</example>
-
-<example>
-<message>Для тех, у кого цель получать от 1000 доллаpов, есть нaправление не требующее наличие знаний и oпыта. Нужно два часа в день и наличие амбиций. От 21 до 65 лет.</message>
-<response>SPAM</response>
-</example>
-
-<example>
-<message>Зpaвcтвyйтe.Нyжны два три чeлoвeкa.Удаленная Работа Oт 200 долл в дeнь.Зa пoдpoбнocтями пиши плюс в лс</message>
-<response>SPAM</response>
-</example>
-
-<example>
-<message>Добрый день!
-Рекомендую "открывашку" контактов, да и с подбором "под ключ" справится оперативно 89111447979</message>
-<response>SPAM</response>
-</example>
-
-<example>
-<message>Веду пoиск людей для хорoшего доxода нa диcтанционном формaте, от тысячи доллров в неделю, детали в личных сoобщениях</message>
-<response>SPAM</response>
-</example>
-
-<example>
-<message>Нужны заинтересованные люди в команду. Возможен доход от 900 долларов за неделю,полностью дистанционный формат.Пишите мне + в личные сообщения</message>
-<response>SPAM</response>
-</example>
-
-<example>
-<message>Здpaвcтвyйтe.Нyжны двa три чeлoвeкa (Удaлeннaя cфеpa) Oт 570 $/неделю.Зa пoдpoбнocтями пиши плюc в лc</message>
-<response>SPAM</response>
-</example>
-</examples>
----
-`,
-				},
-				{
-					Role:    openai.ChatMessageRoleUser,
-					Content: messageContent,
-				},
-			},
-		},
-	)
-
-	if err != nil {
-		entry.WithError(err).Error("failed to create chat completion")
-	}
-
-	if len(llmResp.Choices) > 0 && llmResp.Choices[0].Message.Content == "SPAM" {
-		_, err := banSpammer(chat.ID, user.ID, m.MessageID)
-		if err != nil {
-			entry.WithError(err).Error("failed to ban spammer")
-		}
-		return true, nil
-	}
-
-	entry.Debug("message passed spam check")
 	return false, nil
 }
 
 func (r *Reactor) getLogEntry() *log.Entry {
 	return log.WithField("object", "Reactor")
-}
-
-func (r *Reactor) getLanguage(chat *api.Chat, user *api.User) string {
-	entry := r.getLogEntry().WithField("method", "getLanguage")
-	entry.Debug("getting language for chat and user")
-	if settings, err := r.s.GetDB().GetSettings(chat.ID); !tool.Try(err) {
-		entry.WithField("language", settings.Language).Debug("using language from chat settings")
-		return settings.Language
-	}
-	if user != nil && tool.In(user.LanguageCode, i18n.GetLanguagesList()...) {
-		entry.WithField("language", user.LanguageCode).Debug("using user's language")
-		return user.LanguageCode
-	}
-	entry.Debug("using default language:", config.Get().DefaultLanguage)
-	return config.Get().DefaultLanguage
 }

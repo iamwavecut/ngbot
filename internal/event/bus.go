@@ -50,7 +50,7 @@ func (b *Base) IsDropped() bool {
 }
 
 func (b *Base) Expired() bool {
-	return b.expireAt.Sub(time.Now()) < 0
+	return time.Until(b.expireAt) < 0
 }
 
 func (b *Base) Type() string {

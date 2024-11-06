@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	api "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	api "github.com/OvyFlash/telegram-bot-api/v6"
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 

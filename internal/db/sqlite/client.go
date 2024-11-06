@@ -133,7 +133,7 @@ func (c *sqliteClient) InsertMembers(chatID int64, userIDs []int64) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	stmt, err := tx.Preparex("INSERT OR IGNORE INTO chat_members (chat_id, user_id) VALUES (?, ?)")
 	if err != nil {

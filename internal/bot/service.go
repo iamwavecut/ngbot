@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	api "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	api "github.com/OvyFlash/telegram-bot-api/v6"
 
 	"github.com/iamwavecut/ngbot/internal/db"
 	"github.com/pkg/errors"
@@ -134,8 +134,8 @@ func (s *service) GetSettings(chatID int64) (*db.Settings, error) {
 			settings = &db.Settings{
 				ID:               chatID,
 				Enabled:          true,
-				ChallengeTimeout: 3 * time.Minute,
-				RejectTimeout:    10 * time.Minute,
+				ChallengeTimeout: (3 * time.Minute).Nanoseconds(),
+				RejectTimeout:    (10 * time.Minute).Nanoseconds(),
 				Language:         "en",
 			}
 			if err := s.SetSettings(settings); err != nil {

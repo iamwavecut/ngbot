@@ -1,11 +1,11 @@
 module github.com/iamwavecut/ngbot
 
-go 1.22.0
+go 1.23
 
 toolchain go1.23.2
 
 require (
-	github.com/go-telegram-bot-api/telegram-bot-api/v5 v5.5.1
+	github.com/OvyFlash/telegram-bot-api/v6 v6.0.0-20241030124621-1376e01c644a
 	github.com/jmoiron/sqlx v1.4.0
 	github.com/mitchellh/go-homedir v1.1.0
 	github.com/nlpodyssey/cybertron v0.2.1
@@ -51,5 +51,3 @@ require (
 	golang.org/x/exp v0.0.0-20241009180824-f66d83c29e7c // indirect
 	golang.org/x/sys v0.26.0 // indirect
 )
-
-replace github.com/go-telegram-bot-api/telegram-bot-api/v5 => github.com/OvyFlash/telegram-bot-api/v5 v5.0.0-20240316083515-def9b6b5dc12

@@ -38,7 +38,7 @@ import (
 	"github.com/iamwavecut/ngbot/internal/db"
 	"github.com/iamwavecut/ngbot/resources"
 
-	api "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	api "github.com/OvyFlash/telegram-bot-api/v6"
 	"github.com/pborman/uuid"
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
@@ -198,8 +198,8 @@ func (g *Gatekeeper) fetchAndValidateSettings(chatID int64) (*db.Settings, error
 	if err != nil {
 		settings = &db.Settings{
 			Enabled:          true,
-			ChallengeTimeout: defaultChallengeTimeout,
-			RejectTimeout:    defaultRejectTimeout,
+			ChallengeTimeout: defaultChallengeTimeout.Nanoseconds(),
+			RejectTimeout:    defaultRejectTimeout.Nanoseconds(),
 			Language:         "en",
 			ID:               chatID,
 		}
@@ -282,7 +282,7 @@ func (g *Gatekeeper) handleChallenge(_ context.Context, u *api.Update, chat *api
 		entry.WithError(err).Error("cant get target chat info")
 		return errors.WithMessage(err, "cant get target chat info")
 	}
-	lang = g.getLanguage(&targetChat, user)
+	lang = g.getLanguage(&targetChat.Chat, user)
 	entry.WithField("language", lang).Debug("updated language")
 
 	isPublic := cu.commChat.ID == cu.targetChat.ID
@@ -398,7 +398,17 @@ func (g *Gatekeeper) handleNewChatMembers(ctx context.Context, u *api.Update, ch
 		"chat":   chat.Title,
 	})
 	entry.Info("Handling new chat members")
-	return g.handleJoin(ctx, u, u.Message.NewChatMembers, chat, chat)
+
+	comm, err := g.s.GetBot().GetChat(api.ChatInfoConfig{
+		ChatConfig: api.ChatConfig{
+			ChatID: chat.ID,
+		},
+	})
+	if err != nil {
+		entry.WithError(err).Error("Failed to get chat info")
+		return err
+	}
+	return g.handleJoin(ctx, u, u.Message.NewChatMembers, chat, &comm)
 }
 
 func (g *Gatekeeper) handleChatJoinRequest(ctx context.Context, u *api.Update) error {
@@ -423,7 +433,7 @@ func (g *Gatekeeper) handleChatJoinRequest(ctx context.Context, u *api.Update) e
 	return g.handleJoin(ctx, u, []api.User{u.ChatJoinRequest.From}, target, &comm)
 }
 
-func (g *Gatekeeper) handleJoin(ctx context.Context, u *api.Update, jus []api.User, target *api.Chat, comm *api.Chat) (err error) {
+func (g *Gatekeeper) handleJoin(ctx context.Context, u *api.Update, jus []api.User, target *api.Chat, comm *api.ChatFullInfo) (err error) {
 	entry := g.getLogEntry().WithField("method", "handleJoin")
 	entry.Debug("Handling join")
 	if target == nil || comm == nil {
@@ -477,7 +487,7 @@ func (g *Gatekeeper) handleJoin(ctx context.Context, u *api.Update, jus []api.Us
 			successFunc: cancel,
 			successUUID: uuid.New(),
 			targetChat:  target,
-			commChat:    comm,
+			commChat:    &comm.Chat,
 		}
 		if u.Message != nil {
 			cu.joinMessageID = u.Message.MessageID

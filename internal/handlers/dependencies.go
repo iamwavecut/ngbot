@@ -1,7 +1,7 @@
 package handlers
 
 import (
-	api "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	api "github.com/OvyFlash/telegram-bot-api/v6"
 )
 
 type Handler interface {
