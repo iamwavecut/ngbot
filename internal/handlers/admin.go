@@ -73,8 +73,8 @@ func (a *Admin) Handle(ctx context.Context, u *api.Update, chat *api.Chat, user 
 	case "start":
 		return a.handleStartCommand(m, language)
 
-	case "ban":
-		return a.handleBanCommand(ctx, m, isAdmin, language)
+	// case "ban":
+	// 	return a.handleBanCommand(ctx, m, isAdmin, language)
 
 	default:
 		entry.Debug("unknown command")
@@ -167,28 +167,30 @@ func (a *Admin) handleBanCommand(ctx context.Context, msg *api.Message, isAdmin 
 	}
 
 	if isAdmin {
-		return false, a.handleAdminBan(ctx, msg)
+		return false, a.handleAdminBan(ctx, msg, language)
 	} else {
-		return false, a.handleUserBanVote(ctx, msg)
+		return false, a.handleUserBanVote(ctx, msg, language)
 	}
 }
 
-func (a *Admin) handleAdminBan(ctx context.Context, msg *api.Message) error {
+func (a *Admin) handleAdminBan(ctx context.Context, msg *api.Message, language string) error {
 	targetMsg := msg.ReplyToMessage
 
-	// Ban the user
 	err := a.banService.BanUser(ctx, msg.Chat.ID, targetMsg.From.ID, msg.MessageID)
 	if err != nil {
+		if errors.Is(err, ErrNoPrivileges) {
+			msg := api.NewMessage(msg.Chat.ID, i18n.Get("I don't have enough rights to ban this user", language))
+			msg.DisableNotification = true
+			_, _ = a.s.GetBot().Send(msg)
+		}
 		return fmt.Errorf("failed to ban user: %w", err)
 	}
 
-	// Delete spam message
 	err = bot.DeleteChatMessage(ctx, a.s.GetBot(), msg.Chat.ID, targetMsg.MessageID)
 	if err != nil {
 		return fmt.Errorf("failed to delete message: %w", err)
 	}
 
-	// Delete command message
 	err = bot.DeleteChatMessage(ctx, a.s.GetBot(), msg.Chat.ID, msg.MessageID)
 	if err != nil {
 		return fmt.Errorf("failed to delete command message: %w", err)
@@ -197,9 +199,15 @@ func (a *Admin) handleAdminBan(ctx context.Context, msg *api.Message) error {
 	return nil
 }
 
-func (a *Admin) handleUserBanVote(ctx context.Context, msg *api.Message) error {
+func (a *Admin) handleUserBanVote(ctx context.Context, msg *api.Message, language string) error {
 	targetMsg := msg.ReplyToMessage
-	return a.spamControl.ProcessSuspectMessage(ctx, targetMsg, a.getLanguage(ctx, &msg.Chat, msg.From))
+	if targetMsg == nil {
+		err := bot.DeleteChatMessage(ctx, a.s.GetBot(), msg.Chat.ID, msg.MessageID)
+		if err != nil {
+			return fmt.Errorf("failed to delete command message: %w", err)
+		}
+	}
+	return a.spamControl.ProcessSuspectMessage(ctx, targetMsg, language)
 }
 
 func (a *Admin) isAdmin(chatID, userID int64) (bool, error) {
