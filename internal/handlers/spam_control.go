@@ -17,13 +17,15 @@ type SpamControl struct {
 	s          bot.Service
 	config     config.SpamControl
 	banService BanService
+	verbose    bool
 }
 
-func NewSpamControl(s bot.Service, config config.SpamControl, banService BanService) *SpamControl {
+func NewSpamControl(s bot.Service, config config.SpamControl, banService BanService, verbose bool) *SpamControl {
 	return &SpamControl{
 		s:          s,
 		config:     config,
 		banService: banService,
+		verbose:    verbose,
 	}
 }
 
@@ -64,7 +66,7 @@ func (sc *SpamControl) ProcessSuspectMessage(ctx context.Context, msg *api.Messa
 		log.WithError(err).Error("failed to update spam case")
 	}
 
-	time.AfterFunc(time.Duration(sc.config.VotingTimeoutMinutes)*time.Minute, func() {
+	time.AfterFunc(sc.config.VotingTimeoutMinutes, func() {
 		if err := sc.resolveCase(context.Background(), spamCase.ID); err != nil {
 			log.WithError(err).Error("failed to resolve spam case")
 		}
@@ -102,6 +104,7 @@ func (sc *SpamControl) ProcessSpamMessage(ctx context.Context, msg *api.Message,
 		if err != nil {
 			return fmt.Errorf("failed to send channel post: %w", err)
 		}
+		spamCase.ChannelID = sc.config.LogChannelID
 		spamCase.ChannelPostID = sent.MessageID
 
 		channelPostLink := ""
@@ -112,28 +115,32 @@ func (sc *SpamControl) ProcessSpamMessage(ctx context.Context, msg *api.Message,
 				channelPostLink = fmt.Sprintf("https://t.me/c/%d/%d", sent.Chat.ID, sent.MessageID)
 			}
 		}
-		notifMsg = sc.createChannelNotification(msg, channelPostLink, lang)
+		if sc.verbose {
+			notifMsg = sc.createChannelNotification(msg, channelPostLink, lang)
+		}
 	} else {
 		notifMsg = sc.createInChatVoting(msg, spamCase.ID, lang)
 	}
-	notification, err := sc.s.GetBot().Send(notifMsg)
-	if err != nil {
-		log.WithError(err).Error("failed to send notification")
-	} else {
-		spamCase.NotificationMessageID = notification.MessageID
+	if notifMsg != nil {
+		notification, err := sc.s.GetBot().Send(notifMsg)
+		if err != nil {
+			log.WithError(err).Error("failed to send notification")
+		} else {
+			spamCase.NotificationMessageID = notification.MessageID
 
-		time.AfterFunc(sc.config.SuspectNotificationTimeout, func() {
-			if _, err := sc.s.GetBot().Request(api.NewDeleteMessage(msg.Chat.ID, notification.MessageID)); err != nil {
-				log.WithError(err).Error("failed to delete notification")
-			}
-		})
+			time.AfterFunc(sc.config.SuspectNotificationTimeout, func() {
+				if _, err := sc.s.GetBot().Request(api.NewDeleteMessage(msg.Chat.ID, notification.MessageID)); err != nil {
+					log.WithError(err).Error("failed to delete notification")
+				}
+			})
+		}
 	}
 
 	if err := sc.s.GetDB().UpdateSpamCase(ctx, spamCase); err != nil {
 		log.WithError(err).Error("failed to update spam case")
 	}
 
-	time.AfterFunc(time.Duration(sc.config.VotingTimeoutMinutes)*time.Minute, func() {
+	time.AfterFunc(sc.config.VotingTimeoutMinutes, func() {
 		if err := sc.resolveCase(context.Background(), spamCase.ID); err != nil {
 			log.WithError(err).Error("failed to resolve spam case")
 		}

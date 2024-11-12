@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS "spam_cases" (
     "user_id" BIGINT NOT NULL,
     "message_text" TEXT NOT NULL,
     "created_at" DATETIME NOT NULL,
+    "channel_id" BIGINT,
     "channel_post_id" INTEGER,
     "notification_message_id" INTEGER,
     "status" TEXT NOT NULL DEFAULT 'pending',

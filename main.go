@@ -168,7 +168,7 @@ func initializeHandlers(service bot.Service, cfg *config.Config) {
 		service.GetBot(),
 		service.GetDB(),
 	)
-	spamControl := handlers.NewSpamControl(service, cfg.SpamControl, banService)
+	spamControl := handlers.NewSpamControl(service, cfg.SpamControl, banService, cfg.SpamControl.Verbose)
 
 	bot.RegisterUpdateHandler("admin", handlers.NewAdmin(service, banService, spamControl))
 

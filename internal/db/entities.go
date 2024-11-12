@@ -16,22 +16,23 @@ type (
 	}
 
 	SpamCase struct {
-		ID                    int64     `db:"id"`
-		ChatID               int64     `db:"chat_id"`
-		UserID               int64     `db:"user_id"`
-		MessageText          string    `db:"message_text"`
-		CreatedAt            time.Time `db:"created_at"`
-		ChannelPostID        int       `db:"channel_post_id"`
-		NotificationMessageID int       `db:"notification_message_id"`
-		Status               string    `db:"status"` // pending, spam, false_positive
-		ResolvedAt           *time.Time `db:"resolved_at"`
+		ID                    int64      `db:"id"`
+		ChatID                int64      `db:"chat_id"`
+		UserID                int64      `db:"user_id"`
+		MessageText           string     `db:"message_text"`
+		CreatedAt             time.Time  `db:"created_at"`
+		ChannelID             int64      `db:"channel_id"`
+		ChannelPostID         int        `db:"channel_post_id"`
+		NotificationMessageID int        `db:"notification_message_id"`
+		Status                string     `db:"status"` // pending, spam, false_positive
+		ResolvedAt            *time.Time `db:"resolved_at"`
 	}
 
 	SpamVote struct {
-		CaseID   int64     `db:"case_id"`
-		VoterID  int64     `db:"voter_id"`
-		Vote     bool      `db:"vote"` // true = not spam, false = spam
-		VotedAt  time.Time `db:"voted_at"`
+		CaseID  int64     `db:"case_id"`
+		VoterID int64     `db:"voter_id"`
+		Vote    bool      `db:"vote"` // true = not spam, false = spam
+		VotedAt time.Time `db:"voted_at"`
 	}
 )
 

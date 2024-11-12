@@ -34,12 +34,13 @@ type (
 	}
 
 	SpamControl struct {
-		LogChannelID         int64   `env:"SPAM_LOG_CHANNEL_ID"`
-		VotingTimeoutMinutes int     `env:"SPAM_VOTING_TIMEOUT,default=5"`
-		MinVoters            int     `env:"SPAM_MIN_VOTERS,default=2"`
-		MaxVoters            int     `env:"SPAM_MAX_VOTERS,default=10"`
-		MinVotersPercentage  float64 `env:"SPAM_MIN_VOTERS_PERCENTAGE,default=5"`
+		LogChannelID        int64   `env:"SPAM_LOG_CHANNEL_ID"`
+		MinVoters           int     `env:"SPAM_MIN_VOTERS,default=2"`
+		MaxVoters           int     `env:"SPAM_MAX_VOTERS,default=10"`
+		MinVotersPercentage float64 `env:"SPAM_MIN_VOTERS_PERCENTAGE,default=5"`
+		Verbose             bool    `env:"SPAM_VERBOSE,default=false"`
 
+		VotingTimeoutMinutes       time.Duration `env:"SPAM_VOTING_TIMEOUT,default=5m"`
 		SuspectNotificationTimeout time.Duration `env:"SPAM_SUSPECT_NOTIFICATION_TIMEOUT,default=2m"`
 	}
 )

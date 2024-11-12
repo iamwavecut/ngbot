@@ -249,7 +249,7 @@ func (s *sqliteClient) CreateSpamCase(ctx context.Context, sc *db.SpamCase) (*db
 	defer s.mutex.Unlock()
 
 	query := `
-		INSERT INTO spam_cases (chat_id, user_id, message_text, created_at, channel_post_id, 
+		INSERT INTO spam_cases (chat_id, user_id, message_text, created_at, channel_id, channel_post_id, 
 			notification_message_id, status, resolved_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 	`
@@ -258,6 +258,7 @@ func (s *sqliteClient) CreateSpamCase(ctx context.Context, sc *db.SpamCase) (*db
 		sc.UserID,
 		sc.MessageText,
 		sc.CreatedAt,
+		sc.ChannelID,
 		sc.ChannelPostID,
 		sc.NotificationMessageID,
 		sc.Status,
@@ -281,13 +282,15 @@ func (s *sqliteClient) UpdateSpamCase(ctx context.Context, sc *db.SpamCase) erro
 
 	query := `
 		UPDATE spam_cases 
-		SET channel_post_id = ?,
+		SET channel_id = ?,
+			channel_post_id = ?,
 			notification_message_id = ?,
 			status = ?,
 			resolved_at = ?
 		WHERE id = ?
 	`
 	_, err := s.db.ExecContext(ctx, query,
+		sc.ChannelID,
 		sc.ChannelPostID,
 		sc.NotificationMessageID,
 		sc.Status,
@@ -323,7 +326,7 @@ func (s *sqliteClient) GetActiveSpamCase(ctx context.Context, chatID, userID int
 		ORDER BY created_at DESC 
 		LIMIT 1
 	`, chatID, userID)
-	
+
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
