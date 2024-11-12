@@ -11,9 +11,9 @@ type SpamReport struct {
 }
 
 type UserRestriction struct {
-	UserID      int64     `db:"user_id"`
-	ChatID      int64     `db:"chat_id"`
+	UserID       int64     `db:"user_id"`
+	ChatID       int64     `db:"chat_id"`
 	RestrictedAt time.Time `db:"restricted_at"`
-	ExpiresAt   time.Time `db:"expires_at"`
-	Reason      string    `db:"reason"`
+	ExpiresAt    time.Time `db:"expires_at"`
+	Reason       string    `db:"reason"`
 }

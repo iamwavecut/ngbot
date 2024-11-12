@@ -98,13 +98,13 @@ func (sc *SpamControl) ProcessSpamMessage(ctx context.Context, msg *api.Message,
 	}
 
 	var notifMsg api.Chattable
-	if sc.config.LogChannelID != 0 {
+	if sc.config.LogChannelUsername != "" {
 		channelMsg := sc.createChannelPost(msg, spamCase.ID, lang)
 		sent, err := sc.s.GetBot().Send(channelMsg)
 		if err != nil {
 			return fmt.Errorf("failed to send channel post: %w", err)
 		}
-		spamCase.ChannelID = sc.config.LogChannelID
+		spamCase.ChannelUsername = sc.config.LogChannelUsername
 		spamCase.ChannelPostID = sent.MessageID
 
 		channelPostLink := ""
@@ -184,7 +184,7 @@ func (sc *SpamControl) createChannelPost(msg *api.Message, caseID int64, lang st
 		),
 	)
 
-	replyMsg := api.NewMessage(sc.config.LogChannelID, text)
+	replyMsg := api.NewMessageToChannel(sc.config.LogChannelUsername, text)
 	replyMsg.ReplyMarkup = &markup
 	return replyMsg
 }

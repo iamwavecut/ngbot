@@ -34,7 +34,7 @@ type (
 	}
 
 	SpamControl struct {
-		LogChannelID        int64   `env:"SPAM_LOG_CHANNEL_ID"`
+		LogChannelUsername  string  `env:"SPAM_LOG_CHANNEL_USERNAME"`
 		MinVoters           int     `env:"SPAM_MIN_VOTERS,default=2"`
 		MaxVoters           int     `env:"SPAM_MAX_VOTERS,default=10"`
 		MinVotersPercentage float64 `env:"SPAM_MIN_VOTERS_PERCENTAGE,default=5"`

@@ -21,7 +21,7 @@ type (
 		UserID                int64      `db:"user_id"`
 		MessageText           string     `db:"message_text"`
 		CreatedAt             time.Time  `db:"created_at"`
-		ChannelID             int64      `db:"channel_id"`
+		ChannelUsername       string     `db:"channel_username"`
 		ChannelPostID         int        `db:"channel_post_id"`
 		NotificationMessageID int        `db:"notification_message_id"`
 		Status                string     `db:"status"` // pending, spam, false_positive
