@@ -7,12 +7,19 @@ import (
 	"github.com/sashabaranov/go-openai"
 )
 
-type openAISpamDetector struct {
+type spamDetector struct {
 	client *openai.Client
 	model  string
 }
 
-func (d *openAISpamDetector) IsSpam(ctx context.Context, message string) (bool, error) {
+func NewSpamDetector(client *openai.Client, model string) *spamDetector {
+	return &spamDetector{
+		client: client,
+		model:  model,
+	}
+}
+
+func (d *spamDetector) IsSpam(ctx context.Context, message string) (bool, error) {
 	resp, err := d.client.CreateChatCompletion(
 		ctx,
 		openai.ChatCompletionRequest{

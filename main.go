@@ -169,14 +169,14 @@ func initializeHandlers(service bot.Service, cfg *config.Config) {
 		service.GetDB(),
 	)
 	spamControl := handlers.NewSpamControl(service, cfg.SpamControl, banService, cfg.SpamControl.Verbose)
-
 	bot.RegisterUpdateHandler("admin", handlers.NewAdmin(service, banService, spamControl))
 
 	llmAPIConfig := openai.DefaultConfig(cfg.OpenAI.APIKey)
 	llmAPIConfig.BaseURL = cfg.OpenAI.BaseURL
 	llmAPI := openai.NewClientWithConfig(llmAPIConfig)
+	spamDetector := handlers.NewSpamDetector(llmAPI, cfg.OpenAI.Model)
 
-	bot.RegisterUpdateHandler("reactor", handlers.NewReactor(service, llmAPI, banService, spamControl, handlers.Config{
+	bot.RegisterUpdateHandler("reactor", handlers.NewReactor(service, llmAPI, banService, spamControl, spamDetector, handlers.Config{
 		FlaggedEmojis: cfg.Reactor.FlaggedEmojis,
 		OpenAIModel:   cfg.OpenAI.Model,
 		SpamControl:   cfg.SpamControl,

@@ -102,20 +102,13 @@ func (sc *SpamControl) ProcessSpamMessage(ctx context.Context, msg *api.Message,
 		channelMsg := sc.createChannelPost(msg, spamCase.ID, lang)
 		sent, err := sc.s.GetBot().Send(channelMsg)
 		if err != nil {
-			return fmt.Errorf("failed to send channel post: %w", err)
+			log.WithError(err).Error("failed to send channel post")
 		}
 		spamCase.ChannelUsername = sc.config.LogChannelUsername
 		spamCase.ChannelPostID = sent.MessageID
 
-		channelPostLink := ""
-		if sent.From != nil {
-			if sent.From.UserName != "" {
-				channelPostLink = fmt.Sprintf("https://t.me/%s/%d", sent.From.UserName, sent.MessageID)
-			} else {
-				channelPostLink = fmt.Sprintf("https://t.me/c/%d/%d", sent.Chat.ID, sent.MessageID)
-			}
-		}
-		if sc.verbose {
+		if sc.verbose && sent.MessageID != 0 {
+			channelPostLink := fmt.Sprintf("https://t.me/%s/%d", sc.config.LogChannelUsername, sent.MessageID)
 			notifMsg = sc.createChannelNotification(msg, channelPostLink, lang)
 		}
 	} else {

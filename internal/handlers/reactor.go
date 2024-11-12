@@ -21,7 +21,7 @@ import (
 )
 
 // SpamDetector handles spam detection logic
-type SpamDetector interface {
+type SpamDetectorInterface interface {
 	IsSpam(ctx context.Context, message string) (bool, error)
 }
 
@@ -38,19 +38,20 @@ type Reactor struct {
 	s            bot.Service
 	llmAPI       *openai.Client
 	config       Config
-	spamDetector SpamDetector
+	spamDetector SpamDetectorInterface
 	banService   BanService
 	spamControl  *SpamControl
 }
 
 // NewReactor creates a new Reactor instance with the given configuration
-func NewReactor(s bot.Service, llmAPI *openai.Client, banService BanService, spamControl *SpamControl, config Config) *Reactor {
+func NewReactor(s bot.Service, llmAPI *openai.Client, banService BanService, spamControl *SpamControl, spamDetector SpamDetectorInterface, config Config) *Reactor {
 	r := &Reactor{
-		s:           s,
-		llmAPI:      llmAPI,
-		config:      config,
-		banService:  banService,
-		spamControl: spamControl,
+		s:            s,
+		llmAPI:       llmAPI,
+		config:       config,
+		banService:   banService,
+		spamControl:  spamControl,
+		spamDetector: spamDetector,
 	}
 
 	return r
