@@ -1,5 +1,6 @@
 ngbot
 .*/
 !**/*.go
-models/
-.DS_Store
+/.*
+!.env
+dbconfig.yml
