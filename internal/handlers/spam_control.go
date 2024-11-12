@@ -150,8 +150,8 @@ func (sc *SpamControl) createInChatVoting(msg *api.Message, caseID int64, lang s
 
 	markup := api.NewInlineKeyboardMarkup(
 		api.NewInlineKeyboardRow(
-			api.NewInlineKeyboardButtonData(i18n.Get("✅ Not Spam", lang), fmt.Sprintf("spam_vote:%d:0", caseID)),
-			api.NewInlineKeyboardButtonData(i18n.Get("🚫 Spam", lang), fmt.Sprintf("spam_vote:%d:1", caseID)),
+			api.NewInlineKeyboardButtonData("✅ "+i18n.Get("Not Spam", lang), fmt.Sprintf("spam_vote:%d:0", caseID)),
+			api.NewInlineKeyboardButtonData("🚫 "+i18n.Get("Spam", lang), fmt.Sprintf("spam_vote:%d:1", caseID)),
 		),
 	)
 
@@ -172,8 +172,8 @@ func (sc *SpamControl) createChannelPost(msg *api.Message, caseID int64, lang st
 
 	markup := api.NewInlineKeyboardMarkup(
 		api.NewInlineKeyboardRow(
-			api.NewInlineKeyboardButtonData(i18n.Get("Not Spam", lang), fmt.Sprintf("spam_vote:%d:0", caseID)),
-			api.NewInlineKeyboardButtonData(i18n.Get("Spam", lang), fmt.Sprintf("spam_vote:%d:1", caseID)),
+			api.NewInlineKeyboardButtonData("✅ "+i18n.Get("Not Spam", lang), fmt.Sprintf("spam_vote:%d:0", caseID)),
+			api.NewInlineKeyboardButtonData("🚫 "+i18n.Get("Spam", lang), fmt.Sprintf("spam_vote:%d:1", caseID)),
 		),
 	)
 

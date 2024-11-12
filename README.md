@@ -110,6 +110,12 @@ CGO_ENABLE=1 go run .
 | :x: | `NG_OPENAI_MODEL` | OpenAI model to use | `gpt-4o-mini` | Any valid OpenAI model |
 | :x: | `NG_OPENAI_BASE_URL` | OpenAI API base URL | `https://api.openai.com/v1` | Any valid OpenAI API compliant base URL |
 | :x: | `NG_FLAGGED_EMOJIS` | Emojis used to flag content | `👎🏻,💩` | Comma-separated list of emojis |
+| :x: | `NG_SPAM_LOG_CHANNEL_ID` | Telegram channel ID for spam logging | | Any valid channel ID, that bot may post to |
+| :x: | `NG_SPAM_VOTING_TIMEOUT` | Time limit for spam voting in minutes | `5` | Any positive integer |
+| :x: | `NG_SPAM_MIN_VOTERS` | Minimum number of voters required | `2` | Any positive integer |
+| :x: | `NG_SPAM_MAX_VOTERS` | Maximum number of voters cap | `10` | Any positive integer |
+| :x: | `NG_SPAM_MIN_VOTERS_PERCENTAGE` | Minimum percentage of voters required if chat is populated | `5` | Any positive float |
+| :x: | `NG_SPAM_SUSPECT_NOTIFICATION_TIMEOUT` | Timeout for suspect notifications | `2m` | Any valid duration string |
 
 ## TODO
 
