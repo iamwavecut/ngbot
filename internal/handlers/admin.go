@@ -76,7 +76,7 @@ func (a *Admin) Handle(ctx context.Context, u *api.Update, chat *api.Chat, user 
 	}
 	entry.Debugf("user is admin: %v", isAdmin)
 
-	settings, err := a.s.GetDB().GetSettings(chat.ID)
+	settings, err := a.s.GetDB().GetSettings(ctx, chat.ID)
 	if tool.Try(err) {
 		if errors.Cause(err) != sql.ErrNoRows {
 			entry.WithError(err).Error("can't get chat settings")
@@ -119,7 +119,7 @@ func (a *Admin) Handle(ctx context.Context, u *api.Update, chat *api.Chat, user 
 		}
 
 		settings.Language = argument
-		err = a.s.GetDB().SetSettings(settings)
+		err = a.s.GetDB().SetSettings(ctx, settings)
 		if tool.Try(err) {
 			entry.WithError(err).Error("can't update chat language")
 			return false, errors.WithMessage(err, "cant update chat language")

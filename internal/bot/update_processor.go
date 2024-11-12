@@ -12,6 +12,10 @@ import (
 	"github.com/iamwavecut/ngbot/internal/config"
 )
 
+const (
+	UpdateTimeout = 5 * time.Minute
+)
+
 type (
 	Handler interface {
 		Handle(ctx context.Context, u *api.Update, chat *api.Chat, user *api.User) (proceed bool, err error)
@@ -20,8 +24,6 @@ type (
 	UpdateProcessor struct {
 		s              Service
 		updateHandlers []Handler
-		ctx            context.Context
-		cancel         context.CancelFunc
 	}
 )
 
@@ -31,7 +33,7 @@ func RegisterUpdateHandler(title string, handler Handler) {
 	registeredHandlers[title] = handler
 }
 
-func NewUpdateProcessor(ctx context.Context, s Service) *UpdateProcessor {
+func NewUpdateProcessor(s Service) *UpdateProcessor {
 	enabledHandlers := make([]Handler, 0)
 	for _, handlerName := range config.Get().EnabledHandlers {
 		if _, ok := registeredHandlers[handlerName]; !ok || registeredHandlers[handlerName] == nil {
@@ -41,23 +43,20 @@ func NewUpdateProcessor(ctx context.Context, s Service) *UpdateProcessor {
 		enabledHandlers = append(enabledHandlers, registeredHandlers[handlerName])
 	}
 
-	ctx, cancel := context.WithCancel(ctx)
 	return &UpdateProcessor{
 		s:              s,
 		updateHandlers: enabledHandlers,
-		ctx:            ctx,
-		cancel:         cancel,
 	}
 }
 
-func (up *UpdateProcessor) Process(u *api.Update) error {
+func (up *UpdateProcessor) Process(ctx context.Context, u *api.Update) error {
 	if u == nil {
 		return errors.New("update is nil")
 	}
 
 	select {
-	case <-up.ctx.Done():
-		return up.ctx.Err()
+	case <-ctx.Done():
+		return ctx.Err()
 	default:
 		var updateTime time.Time
 		switch {
@@ -69,7 +68,11 @@ func (up *UpdateProcessor) Process(u *api.Update) error {
 			return nil
 		}
 
-		if time.Since(updateTime) > time.Minute {
+		if time.Since(updateTime) > UpdateTimeout {
+			log.WithFields(log.Fields{
+				"update_time": updateTime,
+				"age":         time.Since(updateTime),
+			}).Debug("Skipping outdated update")
 			return nil
 		}
 
@@ -88,10 +91,10 @@ func (up *UpdateProcessor) Process(u *api.Update) error {
 				continue
 			}
 			select {
-			case <-up.ctx.Done():
-				return up.ctx.Err()
+			case <-ctx.Done():
+				return ctx.Err()
 			default:
-				proceed, err := handler.Handle(up.ctx, u, chat, user)
+				proceed, err := handler.Handle(ctx, u, chat, user)
 				if err != nil {
 					return errors.WithMessage(err, "handling error")
 				}
@@ -105,117 +108,143 @@ func (up *UpdateProcessor) Process(u *api.Update) error {
 	}
 }
 
-func (up *UpdateProcessor) Shutdown() {
-	up.cancel()
-}
-
-func DeleteChatMessage(bot *api.BotAPI, chatID int64, messageID int) error {
-	if _, err := bot.Request(api.NewDeleteMessage(chatID, messageID)); err != nil {
-		return err
+func DeleteChatMessage(ctx context.Context, bot *api.BotAPI, chatID int64, messageID int) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+		if _, err := bot.Request(api.NewDeleteMessage(chatID, messageID)); err != nil {
+			return err
+		}
+		return nil
 	}
-	return nil
 }
 
-func BanUserFromChat(bot *api.BotAPI, userID int64, chatID int64) error {
-	if _, err := bot.Request(api.BanChatMemberConfig{
-		ChatMemberConfig: api.ChatMemberConfig{
+func BanUserFromChat(ctx context.Context, bot *api.BotAPI, userID int64, chatID int64) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+		if _, err := bot.Request(api.BanChatMemberConfig{
+			ChatMemberConfig: api.ChatMemberConfig{
+				ChatConfig: api.ChatConfig{
+					ChatID: chatID,
+				},
+				UserID: userID,
+			},
+			UntilDate:      time.Now().Add(10 * time.Minute).Unix(),
+			RevokeMessages: true,
+		}); err != nil {
+			return errors.WithMessage(err, "cant kick")
+		}
+		return nil
+	}
+}
+
+func RestrictChatting(ctx context.Context, bot *api.BotAPI, userID int64, chatID int64) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+		if _, err := bot.Request(api.RestrictChatMemberConfig{
+			ChatMemberConfig: api.ChatMemberConfig{
+				ChatConfig: api.ChatConfig{
+					ChatID: chatID,
+				},
+				UserID: userID,
+			},
+			UntilDate: time.Now().Add(10 * time.Minute).Unix(),
+			Permissions: &api.ChatPermissions{
+				CanSendMessages:       false,
+				CanSendAudios:         false,
+				CanSendDocuments:      false,
+				CanSendPhotos:         false,
+				CanSendVideos:         false,
+				CanSendVideoNotes:     false,
+				CanSendVoiceNotes:     false,
+				CanSendPolls:          false,
+				CanSendOtherMessages:  false,
+				CanAddWebPagePreviews: false,
+				CanChangeInfo:         false,
+				CanInviteUsers:        false,
+				CanPinMessages:        false,
+				CanManageTopics:       false,
+			},
+		}); err != nil {
+			return errors.WithMessage(err, "cant restrict")
+		}
+		return nil
+	}
+}
+
+func UnrestrictChatting(ctx context.Context, bot *api.BotAPI, userID int64, chatID int64) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+		if _, err := bot.Request(api.RestrictChatMemberConfig{
+			ChatMemberConfig: api.ChatMemberConfig{
+				ChatConfig: api.ChatConfig{
+					ChatID: chatID,
+				},
+				UserID: userID,
+			},
+			UntilDate: time.Now().Add(10 * time.Minute).Unix(),
+			Permissions: &api.ChatPermissions{
+				CanSendMessages:       true,
+				CanSendAudios:         true,
+				CanSendDocuments:      true,
+				CanSendPhotos:         true,
+				CanSendVideos:         true,
+				CanSendVideoNotes:     true,
+				CanSendVoiceNotes:     true,
+				CanSendPolls:          true,
+				CanSendOtherMessages:  true,
+				CanAddWebPagePreviews: true,
+				CanChangeInfo:         true,
+				CanInviteUsers:        true,
+				CanPinMessages:        true,
+				CanManageTopics:       true,
+			},
+		}); err != nil {
+			return errors.WithMessage(err, "cant unrestrict")
+		}
+		return nil
+	}
+}
+
+func ApproveJoinRequest(ctx context.Context, bot *api.BotAPI, userID int64, chatID int64) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+		if _, err := bot.Request(api.ApproveChatJoinRequestConfig{
 			ChatConfig: api.ChatConfig{
 				ChatID: chatID,
 			},
 			UserID: userID,
-		},
-		UntilDate:      time.Now().Add(10 * time.Minute).Unix(),
-		RevokeMessages: true,
-	}); err != nil {
-		return errors.WithMessage(err, "cant kick")
+		}); err != nil {
+			return errors.WithMessage(err, "cant accept join request")
+		}
+		return nil
 	}
-	return nil
 }
 
-func RestrictChatting(bot *api.BotAPI, userID int64, chatID int64) error {
-	if _, err := bot.Request(api.RestrictChatMemberConfig{
-		ChatMemberConfig: api.ChatMemberConfig{
+func DeclineJoinRequest(ctx context.Context, bot *api.BotAPI, userID int64, chatID int64) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+		if _, err := bot.Request(api.DeclineChatJoinRequest{
 			ChatConfig: api.ChatConfig{
 				ChatID: chatID,
 			},
 			UserID: userID,
-		},
-		UntilDate: time.Now().Add(10 * time.Minute).Unix(),
-		Permissions: &api.ChatPermissions{
-			CanSendMessages:       false,
-			CanSendAudios:         false,
-			CanSendDocuments:      false,
-			CanSendPhotos:         false,
-			CanSendVideos:         false,
-			CanSendVideoNotes:     false,
-			CanSendVoiceNotes:     false,
-			CanSendPolls:          false,
-			CanSendOtherMessages:  false,
-			CanAddWebPagePreviews: false,
-			CanChangeInfo:         false,
-			CanInviteUsers:        false,
-			CanPinMessages:        false,
-			CanManageTopics:       false,
-		},
-	}); err != nil {
-		return errors.WithMessage(err, "cant restrict")
+		}); err != nil {
+			return errors.WithMessage(err, "cant decline join request")
+		}
+		return nil
 	}
-	return nil
-}
-
-func UnrestrictChatting(bot *api.BotAPI, userID int64, chatID int64) error {
-	if _, err := bot.Request(api.RestrictChatMemberConfig{
-		ChatMemberConfig: api.ChatMemberConfig{
-			ChatConfig: api.ChatConfig{
-				ChatID: chatID,
-			},
-			UserID: userID,
-		},
-		UntilDate: time.Now().Add(10 * time.Minute).Unix(),
-		Permissions: &api.ChatPermissions{
-			CanSendMessages:       true,
-			CanSendAudios:         true,
-			CanSendDocuments:      true,
-			CanSendPhotos:         true,
-			CanSendVideos:         true,
-			CanSendVideoNotes:     true,
-			CanSendVoiceNotes:     true,
-			CanSendPolls:          true,
-			CanSendOtherMessages:  true,
-			CanAddWebPagePreviews: true,
-			CanChangeInfo:         true,
-			CanInviteUsers:        true,
-			CanPinMessages:        true,
-			CanManageTopics:       true,
-		},
-	}); err != nil {
-		return errors.WithMessage(err, "cant unrestrict")
-	}
-	return nil
-}
-
-func ApproveJoinRequest(bot *api.BotAPI, userID int64, chatID int64) error {
-	if _, err := bot.Request(api.ApproveChatJoinRequestConfig{
-		ChatConfig: api.ChatConfig{
-			ChatID: chatID,
-		},
-		UserID: userID,
-	}); err != nil {
-		return errors.WithMessage(err, "cant accept join request")
-	}
-	return nil
-}
-
-func DeclineJoinRequest(bot *api.BotAPI, userID int64, chatID int64) error {
-	if _, err := bot.Request(api.DeclineChatJoinRequest{
-		ChatConfig: api.ChatConfig{
-			ChatID: chatID,
-		},
-		UserID: userID,
-	}); err != nil {
-		return errors.WithMessage(err, "cant decline join request")
-	}
-	return nil
 }
 
 func GetUpdatesChans(ctx context.Context, bot *api.BotAPI, config api.UpdateConfig) (api.UpdatesChannel, chan error) {

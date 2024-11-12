@@ -48,10 +48,10 @@ func (s *defaultBanService) CheckBan(ctx context.Context, userID int64) (bool, e
 }
 
 func (s *defaultBanService) BanUser(ctx context.Context, chatID, userID int64, messageID int) error {
-	if err := bot.DeleteChatMessage(s.bot, chatID, messageID); err != nil {
+	if err := bot.DeleteChatMessage(ctx, s.bot, chatID, messageID); err != nil {
 		return errors.Wrap(err, "failed to delete message")
 	}
-	if err := bot.BanUserFromChat(s.bot, userID, chatID); err != nil {
+	if err := bot.BanUserFromChat(ctx, s.bot, userID, chatID); err != nil {
 		return errors.Wrap(err, "failed to ban user")
 	}
 	return nil

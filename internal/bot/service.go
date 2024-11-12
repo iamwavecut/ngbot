@@ -8,6 +8,7 @@ import (
 	"time"
 
 	api "github.com/OvyFlash/telegram-bot-api/v6"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/iamwavecut/ngbot/internal/db"
 	"github.com/pkg/errors"
@@ -27,9 +28,8 @@ type Service interface {
 	ServiceDB
 	IsMember(ctx context.Context, chatID, userID int64) (bool, error)
 	InsertMember(ctx context.Context, chatID, userID int64) error
-	GetSettings(chatID int64) (*db.Settings, error)
-	SetSettings(settings *db.Settings) error
-	Shutdown(ctx context.Context) error
+	GetSettings(ctx context.Context, chatID int64) (*db.Settings, error)
+	SetSettings(ctx context.Context, settings *db.Settings) error
 }
 
 type service struct {
@@ -58,7 +58,10 @@ func NewService(ctx context.Context, bot *api.BotAPI, dbClient db.Client, log *l
 	}
 
 	go func() {
-		if err := s.warmupCache(); err != nil {
+		ctx, cancel := context.WithTimeout(s.ctx, 30*time.Second)
+		defer cancel()
+
+		if err := s.warmupCache(ctx); err != nil {
 			s.log.WithField("errorv", fmt.Sprintf("%+v", err)).Error("Failed to warm up cache")
 		}
 	}()
@@ -76,7 +79,7 @@ func (s *service) GetDB() db.Client {
 func (s *service) IsMember(ctx context.Context, chatID, userID int64) (bool, error) {
 	select {
 	case <-ctx.Done():
-		return false, ctx.Err()
+		return false, fmt.Errorf("context cancelled: %w", ctx.Err())
 	default:
 		s.cacheMutex.RLock()
 		if chatMembers, ok := s.memberCache[chatID]; ok {
@@ -89,9 +92,9 @@ func (s *service) IsMember(ctx context.Context, chatID, userID int64) (bool, err
 		}
 		s.cacheMutex.RUnlock()
 
-		isMember, err := s.dbClient.IsMember(chatID, userID)
+		isMember, err := s.dbClient.IsMember(ctx, chatID, userID)
 		if err != nil {
-			return false, err
+			return false, fmt.Errorf("failed to check membership: %w", err)
 		}
 
 		s.cacheMutex.Lock()
@@ -107,7 +110,7 @@ func (s *service) InsertMember(ctx context.Context, chatID, userID int64) error 
 	case <-ctx.Done():
 		return ctx.Err()
 	default:
-		err := s.dbClient.InsertMember(chatID, userID)
+		err := s.dbClient.InsertMember(ctx, chatID, userID)
 		if err != nil {
 			return err
 		}
@@ -120,7 +123,7 @@ func (s *service) InsertMember(ctx context.Context, chatID, userID int64) error 
 	}
 }
 
-func (s *service) GetSettings(chatID int64) (*db.Settings, error) {
+func (s *service) GetSettings(ctx context.Context, chatID int64) (*db.Settings, error) {
 	s.cacheMutex.RLock()
 	if settings, ok := s.settingsCache[chatID]; ok {
 		s.cacheMutex.RUnlock()
@@ -128,7 +131,7 @@ func (s *service) GetSettings(chatID int64) (*db.Settings, error) {
 	}
 	s.cacheMutex.RUnlock()
 
-	settings, err := s.dbClient.GetSettings(chatID)
+	settings, err := s.dbClient.GetSettings(ctx, chatID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			settings = &db.Settings{
@@ -138,7 +141,7 @@ func (s *service) GetSettings(chatID int64) (*db.Settings, error) {
 				RejectTimeout:    (10 * time.Minute).Nanoseconds(),
 				Language:         "en",
 			}
-			if err := s.SetSettings(settings); err != nil {
+			if err := s.SetSettings(ctx, settings); err != nil {
 				return nil, fmt.Errorf("error setting default settings: %w", err)
 			}
 		} else {
@@ -153,8 +156,8 @@ func (s *service) GetSettings(chatID int64) (*db.Settings, error) {
 	return settings, nil
 }
 
-func (s *service) SetSettings(settings *db.Settings) error {
-	err := s.dbClient.SetSettings(settings)
+func (s *service) SetSettings(ctx context.Context, settings *db.Settings) error {
+	err := s.dbClient.SetSettings(ctx, settings)
 	if err != nil {
 		return err
 	}
@@ -166,30 +169,42 @@ func (s *service) SetSettings(settings *db.Settings) error {
 	return nil
 }
 
-func (s *service) warmupCache() error {
-	members, err := s.dbClient.GetAllMembers()
-	if err != nil {
-		return fmt.Errorf("failed to warmup member cache: %w", err)
-	}
-	s.cacheMutex.Lock()
-	for chatID, userIDs := range members {
-		s.memberCache[chatID] = append(s.memberCache[chatID], userIDs...)
-	}
-	s.cacheMutex.Unlock()
+func (s *service) warmupCache(ctx context.Context) error {
+	g, ctx := errgroup.WithContext(ctx)
 
-	settings, err := s.dbClient.GetAllSettings()
-	if err != nil {
-		return fmt.Errorf("failed to warmup settings cache: %w", err)
+	g.Go(func() error {
+		members, err := s.dbClient.GetAllMembers(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to warmup member cache: %w", err)
+		}
+		s.cacheMutex.Lock()
+		for chatID, userIDs := range members {
+			s.memberCache[chatID] = append(s.memberCache[chatID], userIDs...)
+		}
+		s.cacheMutex.Unlock()
+		return nil
+	})
+
+	g.Go(func() error {
+		settings, err := s.dbClient.GetAllSettings(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to warmup settings cache: %w", err)
+		}
+		s.cacheMutex.Lock()
+		for chatID, setting := range settings {
+			s.settingsCache[chatID] = setting
+		}
+		s.cacheMutex.Unlock()
+		return nil
+	})
+
+	if err := g.Wait(); err != nil {
+		return err
 	}
-	s.cacheMutex.Lock()
-	for chatID, setting := range settings {
-		s.settingsCache[chatID] = setting
-	}
-	s.cacheMutex.Unlock()
 
 	s.getLogEntry().WithFields(logrus.Fields{
-		"memberCount":   len(members),
-		"settingsCount": len(settings),
+		"memberCount":   len(s.memberCache),
+		"settingsCount": len(s.settingsCache),
 	}).Info("Cache warmed up successfully")
 	return nil
 }
