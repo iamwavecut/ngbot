@@ -113,6 +113,19 @@ func runBot(ctx context.Context, cfg *config.Config, errChan chan<- error) {
 		}
 		defer botAPI.StopReceivingUpdates()
 
+		botAPI.GetMyCommands()
+
+		commandsScope := api.NewBotCommandScopeAllGroupChats()
+		setMyCommandsConfig := api.NewSetMyCommandsWithScope(commandsScope, api.BotCommand{
+			Command:     "ban",
+			Description: "Ban user (admin), or start a voting to ban user (all)",
+		})
+
+		_, err = botAPI.Request(setMyCommandsConfig)
+		if err != nil {
+			log.WithError(err).Error("Failed to set my commands")
+		}
+
 		// Initialize services and handlers
 		service := bot.NewService(ctx, botAPI, sqlite.NewSQLiteClient(ctx, "bot.db"), log.WithField("context", "service"))
 		initializeHandlers(service, cfg)
