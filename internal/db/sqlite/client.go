@@ -216,3 +216,190 @@ func (c *sqliteClient) IsMember(ctx context.Context, chatID, userID int64) (bool
 func (c *sqliteClient) Close() error {
 	return c.db.Close()
 }
+
+func (s *sqliteClient) AddRestriction(ctx context.Context, restriction *db.UserRestriction) error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	query := `
+		INSERT INTO user_restrictions (user_id, chat_id, restricted_at, expires_at, reason)
+		VALUES (?, ?, ?, ?, ?)
+	`
+	_, err := s.db.ExecContext(ctx, query,
+		restriction.UserID,
+		restriction.ChatID,
+		restriction.RestrictedAt,
+		restriction.ExpiresAt,
+		restriction.Reason,
+	)
+	return err
+}
+
+func (s *sqliteClient) RemoveRestriction(ctx context.Context, chatID int64, userID int64) error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	query := `DELETE FROM user_restrictions WHERE chat_id = ? AND user_id = ?`
+	_, err := s.db.ExecContext(ctx, query, chatID, userID)
+	return err
+}
+
+func (s *sqliteClient) CreateSpamCase(ctx context.Context, sc *db.SpamCase) (*db.SpamCase, error) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	query := `
+		INSERT INTO spam_cases (chat_id, user_id, message_text, created_at, channel_post_id, 
+			notification_message_id, status, resolved_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`
+	result, err := s.db.ExecContext(ctx, query,
+		sc.ChatID,
+		sc.UserID,
+		sc.MessageText,
+		sc.CreatedAt,
+		sc.ChannelPostID,
+		sc.NotificationMessageID,
+		sc.Status,
+		sc.ResolvedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	id, err := result.LastInsertId()
+	if err != nil {
+		return nil, err
+	}
+	sc.ID = id
+	return sc, nil
+}
+
+func (s *sqliteClient) UpdateSpamCase(ctx context.Context, sc *db.SpamCase) error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	query := `
+		UPDATE spam_cases 
+		SET channel_post_id = ?,
+			notification_message_id = ?,
+			status = ?,
+			resolved_at = ?
+		WHERE id = ?
+	`
+	_, err := s.db.ExecContext(ctx, query,
+		sc.ChannelPostID,
+		sc.NotificationMessageID,
+		sc.Status,
+		sc.ResolvedAt,
+		sc.ID,
+	)
+	return err
+}
+
+func (s *sqliteClient) GetSpamCase(ctx context.Context, id int64) (*db.SpamCase, error) {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+
+	var sc db.SpamCase
+	err := s.db.GetContext(ctx, &sc, `SELECT * FROM spam_cases WHERE id = ?`, id)
+	if err != nil {
+		return nil, err
+	}
+	return &sc, nil
+}
+
+func (s *sqliteClient) GetActiveSpamCase(ctx context.Context, chatID, userID int64) (*db.SpamCase, error) {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+
+	var sc db.SpamCase
+	err := s.db.GetContext(ctx, &sc, `
+		SELECT * FROM spam_cases 
+		WHERE chat_id = ? 
+		AND user_id = ? 
+		AND status = 'pending' 
+		AND resolved_at IS NULL
+		ORDER BY created_at DESC 
+		LIMIT 1
+	`, chatID, userID)
+	
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &sc, nil
+}
+
+func (s *sqliteClient) GetPendingSpamCases(ctx context.Context) ([]*db.SpamCase, error) {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+
+	var cases []*db.SpamCase
+	err := s.db.SelectContext(ctx, &cases, `
+		SELECT * FROM spam_cases 
+		WHERE status = 'pending' AND resolved_at IS NULL
+		ORDER BY created_at DESC
+	`)
+	return cases, err
+}
+
+func (s *sqliteClient) AddSpamVote(ctx context.Context, vote *db.SpamVote) error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	query := `
+		INSERT INTO spam_votes (case_id, voter_id, vote, voted_at)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(case_id, voter_id) DO UPDATE SET
+		vote = excluded.vote,
+		voted_at = excluded.voted_at
+	`
+	_, err := s.db.ExecContext(ctx, query,
+		vote.CaseID,
+		vote.VoterID,
+		vote.Vote,
+		vote.VotedAt,
+	)
+	return err
+}
+
+func (s *sqliteClient) GetSpamVotes(ctx context.Context, caseID int64) ([]*db.SpamVote, error) {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+
+	var votes []*db.SpamVote
+	err := s.db.SelectContext(ctx, &votes, `
+		SELECT * FROM spam_votes 
+		WHERE case_id = ?
+		ORDER BY voted_at ASC
+	`, caseID)
+	return votes, err
+}
+
+func (s *sqliteClient) GetActiveRestriction(ctx context.Context, chatID, userID int64) (*db.UserRestriction, error) {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+
+	var restriction db.UserRestriction
+	err := s.db.GetContext(ctx, &restriction, `
+		SELECT * FROM user_restrictions 
+		WHERE chat_id = ? AND user_id = ? AND expires_at > datetime('now')
+		ORDER BY restricted_at DESC LIMIT 1
+	`, chatID, userID)
+	if err != nil {
+		return nil, err
+	}
+	return &restriction, nil
+}
+
+func (s *sqliteClient) RemoveExpiredRestrictions(ctx context.Context) error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	query := `DELETE FROM user_restrictions WHERE expires_at <= datetime('now')`
+	_, err := s.db.ExecContext(ctx, query)
+	return err
+}

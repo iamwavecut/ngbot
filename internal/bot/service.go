@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	api "github.com/OvyFlash/telegram-bot-api/v6"
+	api "github.com/OvyFlash/telegram-bot-api"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/iamwavecut/ngbot/internal/db"

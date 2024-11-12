@@ -1,6 +1,8 @@
 package db
 
-import "context"
+import (
+	"context"
+)
 
 type Client interface {
 	Close() error
@@ -14,4 +16,19 @@ type Client interface {
 	GetMembers(ctx context.Context, chatID int64) ([]int64, error)
 	GetAllMembers(ctx context.Context) (map[int64][]int64, error)
 	IsMember(ctx context.Context, chatID int64, userID int64) (bool, error)
+
+	// Spam tracking methods
+	AddRestriction(ctx context.Context, restriction *UserRestriction) error
+	GetActiveRestriction(ctx context.Context, chatID, userID int64) (*UserRestriction, error)
+	RemoveRestriction(ctx context.Context, chatID, userID int64) error
+	RemoveExpiredRestrictions(ctx context.Context) error
+
+	// Spam control methods
+	CreateSpamCase(ctx context.Context, sc *SpamCase) (*SpamCase, error)
+	UpdateSpamCase(ctx context.Context, sc *SpamCase) error
+	GetSpamCase(ctx context.Context, id int64) (*SpamCase, error)
+	GetPendingSpamCases(ctx context.Context) ([]*SpamCase, error)
+	GetActiveSpamCase(ctx context.Context, chatID int64, userID int64) (*SpamCase, error)
+	AddSpamVote(ctx context.Context, vote *SpamVote) error
+	GetSpamVotes(ctx context.Context, caseID int64) ([]*SpamVote, error)
 }

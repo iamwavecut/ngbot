@@ -4,15 +4,20 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strconv"
+	"strings"
 	"time"
 
-	api "github.com/OvyFlash/telegram-bot-api/v6"
+	api "github.com/OvyFlash/telegram-bot-api"
 	"github.com/pkg/errors"
 	"github.com/sashabaranov/go-openai"
 	log "github.com/sirupsen/logrus"
 
 	"github.com/iamwavecut/ngbot/internal/bot"
+	"github.com/iamwavecut/ngbot/internal/config"
 	"github.com/iamwavecut/ngbot/internal/db"
+	"github.com/iamwavecut/ngbot/internal/i18n"
+	"github.com/iamwavecut/tool"
 )
 
 // SpamDetector handles spam detection logic
@@ -20,17 +25,12 @@ type SpamDetector interface {
 	IsSpam(ctx context.Context, message string) (bool, error)
 }
 
-// BanService handles user banning operations
-type BanService interface {
-	CheckBan(ctx context.Context, userID int64) (bool, error)
-	BanUser(ctx context.Context, chatID, userID int64, messageID int) error
-}
-
 // Config holds reactor configuration
 type Config struct {
 	FlaggedEmojis   []string
 	CheckUserAPIURL string
 	OpenAIModel     string
+	SpamControl     config.SpamControl
 }
 
 // Reactor handles message processing and spam detection
@@ -40,23 +40,17 @@ type Reactor struct {
 	config       Config
 	spamDetector SpamDetector
 	banService   BanService
+	spamControl  *SpamControl
 }
 
 // NewReactor creates a new Reactor instance with the given configuration
-func NewReactor(s bot.Service, llmAPI *openai.Client, config Config) *Reactor {
+func NewReactor(s bot.Service, llmAPI *openai.Client, banService BanService, spamControl *SpamControl, config Config) *Reactor {
 	r := &Reactor{
-		s:      s,
-		llmAPI: llmAPI,
-		config: config,
-	}
-
-	r.spamDetector = &openAISpamDetector{
-		client: llmAPI,
-		model:  config.OpenAIModel,
-	}
-	r.banService = &defaultBanService{
-		apiURL: config.CheckUserAPIURL,
-		bot:    s.GetBot(),
+		s:           s,
+		llmAPI:      llmAPI,
+		config:      config,
+		banService:  banService,
+		spamControl: spamControl,
 	}
 
 	return r
@@ -84,6 +78,10 @@ func (r *Reactor) Handle(ctx context.Context, u *api.Update, chat *api.Chat, use
 		return true, nil
 	}
 
+	if u.CallbackQuery != nil {
+		return r.handleCallbackQuery(ctx, u, chat, user)
+	}
+
 	if u.MessageReactionCount != nil {
 		return r.handleReaction(ctx, u.MessageReactionCount, chat, user)
 	}
@@ -92,6 +90,72 @@ func (r *Reactor) Handle(ctx context.Context, u *api.Update, chat *api.Chat, use
 		if err := r.handleMessage(ctx, u.Message, chat, user); err != nil {
 			entry.WithError(err).Error("error handling message")
 			return true, err
+		}
+	}
+
+	return true, nil
+}
+
+func (r *Reactor) handleCallbackQuery(ctx context.Context, u *api.Update, chat *api.Chat, user *api.User) (bool, error) {
+	entry := r.getLogEntry().WithFields(log.Fields{"method": "handleCallbackQuery"})
+	if !strings.HasPrefix(u.CallbackQuery.Data, "spam_vote:") {
+		return true, nil
+	}
+
+	parts := strings.Split(u.CallbackQuery.Data, ":")
+	if len(parts) != 3 {
+		return true, nil
+	}
+
+	caseID, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil {
+		return true, nil
+	}
+
+	vote := parts[2] == "0" // 0 = not spam, 1 = spam
+
+	err = r.s.GetDB().AddSpamVote(ctx, &db.SpamVote{
+		CaseID:  caseID,
+		VoterID: user.ID,
+		Vote:    vote,
+		VotedAt: time.Now(),
+	})
+	if err != nil {
+		entry.WithError(err).Error("failed to add spam vote")
+	}
+
+	votes, err := r.s.GetDB().GetSpamVotes(ctx, caseID)
+	if err != nil {
+		entry.WithError(err).Error("failed to get votes")
+		return true, nil
+	}
+
+	spamVotes := 0
+	notSpamVotes := 0
+	for _, v := range votes {
+		if v.Vote {
+			notSpamVotes++
+		} else {
+			spamVotes++
+		}
+	}
+
+	text := fmt.Sprintf(i18n.Get("Votes: ✅ %d | 🚫 %d", r.getLanguage(ctx, chat, user)), notSpamVotes, spamVotes)
+
+	edit := api.NewEditMessageText(chat.ID, u.CallbackQuery.Message.MessageID, text)
+	edit.ReplyMarkup = u.CallbackQuery.Message.ReplyMarkup
+	if _, err := r.s.GetBot().Send(edit); err != nil {
+		entry.WithError(err).Error("failed to update vote count")
+	}
+
+	_, err = r.s.GetBot().Request(api.NewCallback(u.CallbackQuery.ID, i18n.Get("✓ Vote recorded", r.getLanguage(ctx, chat, user))))
+	if err != nil {
+		entry.WithError(err).Error("failed to acknowledge callback")
+	}
+
+	if max(notSpamVotes, spamVotes) >= r.config.SpamControl.MaxVoters {
+		if err := r.spamControl.resolveCase(ctx, caseID); err != nil {
+			entry.WithError(err).Error("failed to resolve spam case after max votes reached")
 		}
 	}
 
@@ -132,7 +196,7 @@ func (r *Reactor) getOrCreateSettings(ctx context.Context, chat *api.Chat) (*db.
 }
 
 func (r *Reactor) handleReaction(ctx context.Context, reactions *api.MessageReactionCountUpdated, chat *api.Chat, user *api.User) (bool, error) {
-	entry := log.WithContext(ctx).WithFields(log.Fields{
+	entry := r.getLogEntry().WithFields(log.Fields{
 		"method":    "handleReaction",
 		"messageID": reactions.MessageID,
 	})
@@ -169,8 +233,9 @@ func (r *Reactor) handleReaction(ctx context.Context, reactions *api.MessageReac
 }
 
 func (r *Reactor) getEmojiFromReaction(react api.ReactionType) string {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	entry := r.getLogEntry().WithFields(log.Fields{
+		"method": "getEmojiFromReaction",
+	})
 
 	if react.Type != api.StickerTypeCustomEmoji {
 		return react.Emoji
@@ -180,7 +245,7 @@ func (r *Reactor) getEmojiFromReaction(react api.ReactionType) string {
 		CustomEmojiIDs: []string{react.CustomEmoji},
 	})
 	if err != nil || len(emojiStickers) == 0 {
-		log.WithContext(ctx).WithError(err).Error("Failed to get custom emoji sticker")
+		entry.WithError(err).Error("Failed to get custom emoji sticker")
 		return react.Emoji
 	}
 	return emojiStickers[0].Emoji
@@ -253,8 +318,12 @@ func (r *Reactor) checkMessageForSpam(ctx context.Context, msg *api.Message, cha
 		return false, err
 	}
 	if isSpam {
-		if err := r.banService.BanUser(ctx, chat.ID, user.ID, msg.MessageID); err != nil {
-			entry.WithError(err).Error("failed to ban user")
+		if err := r.spamControl.ProcessSpamMessage(ctx, msg, true, r.getLanguage(ctx, chat, user)); err != nil {
+			entry.WithError(err).Error("failed to process spam message")
+			// Fallback to direct ban if spam control fails
+			if err := r.banService.BanUser(ctx, chat.ID, user.ID, msg.MessageID); err != nil {
+				entry.WithError(err).Error("failed to ban user")
+			}
 		}
 		return true, nil
 	}
@@ -264,4 +333,25 @@ func (r *Reactor) checkMessageForSpam(ctx context.Context, msg *api.Message, cha
 
 func (r *Reactor) getLogEntry() *log.Entry {
 	return log.WithField("object", "Reactor")
+}
+
+func (r *Reactor) getLanguage(ctx context.Context, chat *api.Chat, user *api.User) string {
+	entry := r.getLogEntry().WithFields(log.Fields{
+		"method": "getLanguage",
+		"chatID": chat.ID,
+	})
+	entry.Debug("Entering method")
+
+	if settings, err := r.s.GetDB().GetSettings(ctx, chat.ID); !tool.Try(err) {
+		entry.Debug("Using language from chat settings")
+		return settings.Language
+	}
+	if user != nil && tool.In(user.LanguageCode, i18n.GetLanguagesList()...) {
+		entry.Debug("Using language from user settings")
+		return user.LanguageCode
+	}
+	entry.Debug("Using default language")
+
+	entry.Debug("Exiting method")
+	return config.Get().DefaultLanguage
 }

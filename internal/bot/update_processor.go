@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	api "github.com/OvyFlash/telegram-bot-api/v6"
+	api "github.com/OvyFlash/telegram-bot-api"
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 

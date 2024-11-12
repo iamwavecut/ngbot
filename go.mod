@@ -5,7 +5,7 @@ go 1.23
 toolchain go1.23.2
 
 require (
-	github.com/OvyFlash/telegram-bot-api/v6 v6.0.0-20241030124621-1376e01c644a
+	github.com/OvyFlash/telegram-bot-api v0.0.0-20241107191146-851f2334eccf
 	github.com/jmoiron/sqlx v1.4.0
 	github.com/mitchellh/go-homedir v1.1.0
 	github.com/nlpodyssey/cybertron v0.2.1

@@ -3,9 +3,10 @@ package handlers
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"strings"
 
-	api "github.com/OvyFlash/telegram-bot-api/v6"
+	api "github.com/OvyFlash/telegram-bot-api"
 	"github.com/iamwavecut/tool"
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
@@ -16,17 +17,21 @@ import (
 )
 
 type Admin struct {
-	s         bot.Service
-	languages []string
+	s           bot.Service
+	languages   []string
+	banService  BanService
+	spamControl *SpamControl
 }
 
-func NewAdmin(s bot.Service) *Admin {
+func NewAdmin(s bot.Service, banService BanService, spamControl *SpamControl) *Admin {
 	entry := log.WithField("object", "Admin").WithField("method", "NewAdmin")
 	entry.Debug("creating new admin handler")
 
 	a := &Admin{
-		s:         s,
-		languages: i18n.GetLanguagesList(),
+		s:           s,
+		banService:  banService,
+		spamControl: spamControl,
+		languages:   i18n.GetLanguagesList(),
 	}
 
 	return a
@@ -41,8 +46,6 @@ func (a *Admin) Handle(ctx context.Context, u *api.Update, chat *api.Chat, user 
 		return true, nil
 	}
 
-	b := a.s.GetBot()
-
 	switch {
 	case
 		u.Message == nil,
@@ -55,92 +58,186 @@ func (a *Admin) Handle(ctx context.Context, u *api.Update, chat *api.Chat, user 
 
 	entry.Debugf("processing command: %s", m.Command())
 
-	chatMember, err := b.GetChatMember(api.GetChatMemberConfig{
-		ChatConfigWithUser: api.ChatConfigWithUser{
-			UserID: user.ID,
-			ChatConfig: api.ChatConfig{
-				ChatID: chat.ID,
-			},
-		},
-	})
+	isAdmin, err := a.isAdmin(chat.ID, user.ID)
 	if err != nil {
-		entry.WithError(err).Error("can't get chat member")
-		return true, errors.New("cant get chat member")
-	}
-	var isAdmin bool
-	switch {
-	case
-		chatMember.IsCreator(),
-		chatMember.IsAdministrator() && chatMember.CanRestrictMembers:
-		isAdmin = true
+		entry.WithError(err).Error("can't check admin status")
+		return true, err
 	}
 	entry.Debugf("user is admin: %v", isAdmin)
 
-	settings, err := a.s.GetDB().GetSettings(ctx, chat.ID)
-	if tool.Try(err) {
-		if errors.Cause(err) != sql.ErrNoRows {
-			entry.WithError(err).Error("can't get chat settings")
-			return true, errors.WithMessage(err, "cant get chat settings")
-		}
-	}
-	if settings.Language == "" {
-		settings.Language = config.Get().DefaultLanguage
-	}
-	entry.Debugf("chat settings: %+v", settings)
+	language := a.getLanguage(ctx, chat, user)
 
 	switch m.Command() {
 	case "lang":
-		entry = entry.WithField("command", "lang")
-		if !isAdmin {
-			entry.Debug("user is not admin, ignoring command")
-			break
-		}
-
-		argument := m.CommandArguments()
-		entry.Debugf("language argument: %s", argument)
-
-		isAllowed := false
-		for _, allowedLanguage := range a.languages {
-			if allowedLanguage == argument {
-				isAllowed = true
-				break
-			}
-		}
-		if !isAllowed {
-			entry.Debug("invalid language argument")
-			msg := api.NewMessage(
-				chat.ID,
-				i18n.Get("You should use one of the following options", settings.Language)+": `"+strings.Join(a.languages, "`, `")+"`",
-			)
-			msg.ParseMode = api.ModeMarkdown
-			msg.DisableNotification = true
-			_, _ = b.Send(msg)
-			return false, nil
-		}
-
-		settings.Language = argument
-		err = a.s.GetDB().SetSettings(ctx, settings)
-		if tool.Try(err) {
-			entry.WithError(err).Error("can't update chat language")
-			return false, errors.WithMessage(err, "cant update chat language")
-		}
-
-		entry.Debug("language set successfully")
-		_, _ = b.Send(api.NewMessage(
-			chat.ID,
-			i18n.Get("Language set successfully", settings.Language),
-		))
-
-		return false, nil
-
+		return a.handleLangCommand(ctx, m, isAdmin, language)
 	case "start":
-		entry.Debug("start command received")
+		return a.handleStartCommand(m, language)
+
+	case "ban":
+		return a.handleBanCommand(ctx, m, isAdmin, language)
 
 	default:
 		entry.Debug("unknown command")
 	}
 
 	return true, nil
+}
+
+func (a *Admin) handleLangCommand(ctx context.Context, msg *api.Message, isAdmin bool, language string) (bool, error) {
+	entry := a.getLogEntry().WithField("command", "lang")
+	if !isAdmin {
+		entry.Debug("user is not admin, ignoring command")
+		return true, nil
+	}
+
+	argument := msg.CommandArguments()
+	entry.Debugf("language argument: %s", argument)
+
+	isAllowed := false
+	for _, allowedLanguage := range a.languages {
+		if allowedLanguage == argument {
+			isAllowed = true
+			break
+		}
+	}
+	if !isAllowed {
+		entry.Debug("invalid language argument")
+		msg := api.NewMessage(
+			msg.Chat.ID,
+			i18n.Get("You should use one of the following options", language)+": `"+strings.Join(a.languages, "`, `")+"`",
+		)
+		msg.ParseMode = api.ModeMarkdown
+		msg.DisableNotification = true
+		_, _ = a.s.GetBot().Send(msg)
+		return false, nil
+	}
+
+	settings, err := a.s.GetDB().GetSettings(ctx, msg.Chat.ID)
+	if tool.Try(err) {
+		if errors.Cause(err) != sql.ErrNoRows {
+			entry.WithError(err).Error("can't get chat settings")
+			return true, errors.WithMessage(err, "cant get chat settings")
+		}
+	}
+
+	settings.Language = argument
+	err = a.s.GetDB().SetSettings(ctx, settings)
+	if tool.Try(err) {
+		entry.WithError(err).Error("can't update chat language")
+		return false, errors.WithMessage(err, "cant update chat language")
+	}
+
+	entry.Debug("language set successfully")
+	_, _ = a.s.GetBot().Send(api.NewMessage(
+		msg.Chat.ID,
+		i18n.Get("Language set successfully", language),
+	))
+
+	return false, nil
+}
+
+func (a *Admin) handleStartCommand(msg *api.Message, language string) (bool, error) {
+	entry := a.getLogEntry().WithField("method", "handleStartCommand")
+	entry.Debug("start command received")
+	_, _ = a.s.GetBot().Send(api.NewMessage(
+		msg.Chat.ID,
+		i18n.Get("Bot started successfully", language),
+	))
+
+	return false, nil
+}
+
+func (a *Admin) handleBanCommand(ctx context.Context, msg *api.Message, isAdmin bool, language string) (bool, error) {
+	entry := log.WithField("method", "handleBanCommand")
+	entry.Debug("handling ban command")
+
+	if msg.Chat.Type == "private" {
+		entry.Debug("command used in private chat, ignoring")
+		msg := api.NewMessage(msg.Chat.ID, i18n.Get("This command can only be used in groups", language))
+		msg.DisableNotification = true
+		_, _ = a.s.GetBot().Send(msg)
+		return false, nil
+	}
+
+	if msg.ReplyToMessage == nil {
+		msg := api.NewMessage(msg.Chat.ID, i18n.Get("This command must be used as a reply to a message", language))
+		msg.DisableNotification = true
+		_, _ = a.s.GetBot().Send(msg)
+		return false, nil
+	}
+
+	if isAdmin {
+		return false, a.handleAdminBan(ctx, msg)
+	} else {
+		return false, a.handleUserBanVote(ctx, msg)
+	}
+}
+
+func (a *Admin) handleAdminBan(ctx context.Context, msg *api.Message) error {
+	targetMsg := msg.ReplyToMessage
+
+	// Ban the user
+	err := a.banService.BanUser(ctx, msg.Chat.ID, targetMsg.From.ID, msg.MessageID)
+	if err != nil {
+		return fmt.Errorf("failed to ban user: %w", err)
+	}
+
+	// Delete spam message
+	err = bot.DeleteChatMessage(ctx, a.s.GetBot(), msg.Chat.ID, targetMsg.MessageID)
+	if err != nil {
+		return fmt.Errorf("failed to delete message: %w", err)
+	}
+
+	// Delete command message
+	err = bot.DeleteChatMessage(ctx, a.s.GetBot(), msg.Chat.ID, msg.MessageID)
+	if err != nil {
+		return fmt.Errorf("failed to delete command message: %w", err)
+	}
+
+	return nil
+}
+
+func (a *Admin) handleUserBanVote(ctx context.Context, msg *api.Message) error {
+	targetMsg := msg.ReplyToMessage
+	return a.spamControl.ProcessSuspectMessage(ctx, targetMsg, a.getLanguage(ctx, &msg.Chat, msg.From))
+}
+
+func (a *Admin) isAdmin(chatID, userID int64) (bool, error) {
+	b := a.s.GetBot()
+	chatMember, err := b.GetChatMember(api.GetChatMemberConfig{
+		ChatConfigWithUser: api.ChatConfigWithUser{
+			UserID: userID,
+			ChatConfig: api.ChatConfig{
+				ChatID: chatID,
+			},
+		},
+	})
+	if err != nil {
+		return false, errors.New("cant get chat member")
+	}
+
+	return chatMember.IsCreator() || (chatMember.IsAdministrator() && chatMember.CanRestrictMembers), nil
+}
+
+func (a *Admin) getLanguage(ctx context.Context, chat *api.Chat, user *api.User) string {
+	entry := a.getLogEntry().WithFields(log.Fields{
+		"method": "getLanguage",
+		"chatID": chat.ID,
+	})
+	entry.Debug("Entering method")
+
+	if settings, err := a.s.GetDB().GetSettings(ctx, chat.ID); !tool.Try(err) {
+		entry.Debug("Using language from chat settings")
+		return settings.Language
+	}
+	if user != nil && tool.In(user.LanguageCode, i18n.GetLanguagesList()...) {
+		entry.Debug("Using language from user settings")
+		return user.LanguageCode
+	}
+	entry.Debug("Using default language")
+
+	entry.Debug("Exiting method")
+	return config.Get().DefaultLanguage
 }
 
 func (a *Admin) getLogEntry() *log.Entry {

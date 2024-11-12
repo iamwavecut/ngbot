@@ -14,6 +14,25 @@ type (
 		ChallengeTimeout int64  `db:"challenge_timeout"`
 		RejectTimeout    int64  `db:"reject_timeout"`
 	}
+
+	SpamCase struct {
+		ID                    int64     `db:"id"`
+		ChatID               int64     `db:"chat_id"`
+		UserID               int64     `db:"user_id"`
+		MessageText          string    `db:"message_text"`
+		CreatedAt            time.Time `db:"created_at"`
+		ChannelPostID        int       `db:"channel_post_id"`
+		NotificationMessageID int       `db:"notification_message_id"`
+		Status               string    `db:"status"` // pending, spam, false_positive
+		ResolvedAt           *time.Time `db:"resolved_at"`
+	}
+
+	SpamVote struct {
+		CaseID   int64     `db:"case_id"`
+		VoterID  int64     `db:"voter_id"`
+		Vote     bool      `db:"vote"` // true = not spam, false = spam
+		VotedAt  time.Time `db:"voted_at"`
+	}
 )
 
 const (

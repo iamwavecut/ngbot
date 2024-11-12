@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/sethvargo/go-envconfig"
 	log "github.com/sirupsen/logrus"
@@ -19,6 +20,7 @@ type (
 		DotPath          string   `env:"DOT_PATH,default=~/.ngbot"`
 		OpenAI           OpenAI
 		Reactor          Reactor
+		SpamControl      SpamControl
 	}
 
 	OpenAI struct {
@@ -29,6 +31,16 @@ type (
 
 	Reactor struct {
 		FlaggedEmojis []string `env:"FLAGGED_EMOJIS,default=👎,💩"`
+	}
+
+	SpamControl struct {
+		LogChannelID         int64   `env:"SPAM_LOG_CHANNEL_ID"`
+		VotingTimeoutMinutes int     `env:"SPAM_VOTING_TIMEOUT,default=5"`
+		MinVoters            int     `env:"SPAM_MIN_VOTERS,default=2"`
+		MaxVoters            int     `env:"SPAM_MAX_VOTERS,default=10"`
+		MinVotersPercentage  float64 `env:"SPAM_MIN_VOTERS_PERCENTAGE,default=5"`
+
+		SuspectNotificationTimeout time.Duration `env:"SPAM_SUSPECT_NOTIFICATION_TIMEOUT,default=2m"`
 	}
 )
 

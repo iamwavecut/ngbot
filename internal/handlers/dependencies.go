@@ -1,9 +1,11 @@
 package handlers
 
 import (
-	api "github.com/OvyFlash/telegram-bot-api/v6"
+	"context"
+
+	api "github.com/OvyFlash/telegram-bot-api"
 )
 
 type Handler interface {
-	Handle(u *api.Update, chat *api.Chat, user *api.User) (proceed bool, err error)
+	Handle(ctx context.Context, u *api.Update, chat *api.Chat, user *api.User) (proceed bool, err error)
 }

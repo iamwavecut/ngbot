@@ -38,7 +38,7 @@ import (
 	"github.com/iamwavecut/ngbot/internal/db"
 	"github.com/iamwavecut/ngbot/resources"
 
-	api "github.com/OvyFlash/telegram-bot-api/v6"
+	api "github.com/OvyFlash/telegram-bot-api"
 	"github.com/pborman/uuid"
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"

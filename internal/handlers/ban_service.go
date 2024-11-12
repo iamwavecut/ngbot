@@ -5,15 +5,34 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"time"
 
-	api "github.com/OvyFlash/telegram-bot-api/v6"
-	"github.com/iamwavecut/ngbot/internal/bot"
+	api "github.com/OvyFlash/telegram-bot-api"
+	"github.com/iamwavecut/ngbot/internal/db"
 	"github.com/pkg/errors"
 )
+
+type BanService interface {
+	CheckBan(ctx context.Context, userID int64) (bool, error)
+	MuteUser(ctx context.Context, chatID, userID int64) error
+	UnmuteUser(ctx context.Context, chatID, userID int64) error
+	BanUser(ctx context.Context, chatID, userID int64, messageID int) error
+	UnbanUser(ctx context.Context, chatID, userID int64) error
+	IsRestricted(ctx context.Context, chatID, userID int64) (bool, error)
+}
 
 type defaultBanService struct {
 	apiURL string
 	bot    *api.BotAPI
+	db     db.Client
+}
+
+func NewBanService(apiURL string, bot *api.BotAPI, db db.Client) BanService {
+	return &defaultBanService{
+		apiURL: apiURL,
+		bot:    bot,
+		db:     db,
+	}
 }
 
 type banInfo struct {
@@ -47,12 +66,114 @@ func (s *defaultBanService) CheckBan(ctx context.Context, userID int64) (bool, e
 	return banInfo.Banned, nil
 }
 
-func (s *defaultBanService) BanUser(ctx context.Context, chatID, userID int64, messageID int) error {
-	if err := bot.DeleteChatMessage(ctx, s.bot, chatID, messageID); err != nil {
-		return errors.Wrap(err, "failed to delete message")
+func (s *defaultBanService) MuteUser(ctx context.Context, chatID, userID int64) error {
+	restriction := &db.UserRestriction{
+		UserID:       userID,
+		ChatID:       chatID,
+		RestrictedAt: time.Now(),
+		ExpiresAt:    time.Now().Add(10 * time.Minute), // Default 10m ban
+		Reason:       "Spam suspect",
 	}
-	if err := bot.BanUserFromChat(ctx, s.bot, userID, chatID); err != nil {
-		return errors.Wrap(err, "failed to ban user")
+
+	if err := s.db.AddRestriction(ctx, restriction); err != nil {
+		return errors.Wrap(err, "failed to add restriction")
 	}
+
+	config := api.RestrictChatMemberConfig{
+		ChatMemberConfig: api.ChatMemberConfig{
+			ChatConfig: api.ChatConfig{ChatID: chatID},
+			UserID:     userID,
+		},
+		Permissions: &api.ChatPermissions{},
+		UntilDate:   restriction.ExpiresAt.Unix(),
+
+		UseIndependentChatPermissions: true,
+	}
+
+	if _, err := s.bot.Request(config); err != nil {
+		return errors.Wrap(err, "failed to restrict user")
+	}
+
 	return nil
+}
+
+func (s *defaultBanService) UnmuteUser(ctx context.Context, chatID, userID int64) error {
+	config := api.RestrictChatMemberConfig{
+		ChatMemberConfig: api.ChatMemberConfig{
+			ChatConfig: api.ChatConfig{ChatID: chatID},
+			UserID:     userID,
+		},
+		Permissions: &api.ChatPermissions{},
+		UntilDate:   0,
+
+		UseIndependentChatPermissions: false,
+	}
+
+	if _, err := s.bot.Request(config); err != nil {
+		return errors.Wrap(err, "failed to unrestrict user")
+	}
+
+	if err := s.db.RemoveRestriction(ctx, chatID, userID); err != nil {
+		return errors.Wrap(err, "failed to remove restriction")
+	}
+
+	return nil
+}
+
+func (s *defaultBanService) BanUser(ctx context.Context, chatID, userID int64, messageID int) error {
+	restriction := &db.UserRestriction{
+		UserID:       userID,
+		ChatID:       chatID,
+		RestrictedAt: time.Now(),
+		ExpiresAt:    time.Now().Add(10 * time.Minute), // Default 10m ban
+		Reason:       "Spam detection",
+	}
+
+	if err := s.db.AddRestriction(ctx, restriction); err != nil {
+		return errors.Wrap(err, "failed to add ban")
+	}
+
+	config := api.BanChatMemberConfig{
+		ChatMemberConfig: api.ChatMemberConfig{
+			ChatConfig: api.ChatConfig{
+				ChatID: chatID,
+			},
+			UserID: userID,
+		},
+		UntilDate:      restriction.ExpiresAt.Unix(),
+		RevokeMessages: true,
+	}
+
+	if _, err := s.bot.Request(config); err != nil {
+		return errors.Wrap(err, "failed to restrict user")
+	}
+
+	return nil
+}
+
+func (s *defaultBanService) UnbanUser(ctx context.Context, chatID, userID int64) error {
+	config := api.UnbanChatMemberConfig{
+		ChatMemberConfig: api.ChatMemberConfig{
+			ChatConfig: api.ChatConfig{ChatID: chatID},
+			UserID:     userID,
+		},
+	}
+
+	if _, err := s.bot.Request(config); err != nil {
+		return errors.Wrap(err, "failed to unban user")
+	}
+
+	if err := s.db.RemoveRestriction(ctx, chatID, userID); err != nil {
+		return errors.Wrap(err, "failed to remove restriction")
+	}
+
+	return nil
+}
+
+func (s *defaultBanService) IsRestricted(ctx context.Context, chatID, userID int64) (bool, error) {
+	restriction, err := s.db.GetActiveRestriction(ctx, chatID, userID)
+	if err != nil {
+		return false, errors.Wrap(err, "failed to check restrictions")
+	}
+	return restriction != nil && restriction.ExpiresAt.After(time.Now()), nil
 }

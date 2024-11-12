@@ -17,7 +17,7 @@ import (
 	"github.com/iamwavecut/ngbot/internal/handlers"
 	"github.com/iamwavecut/ngbot/internal/i18n"
 
-	api "github.com/OvyFlash/telegram-bot-api/v6"
+	api "github.com/OvyFlash/telegram-bot-api"
 	log "github.com/sirupsen/logrus"
 
 	"github.com/iamwavecut/ngbot/internal/bot"
@@ -148,17 +148,25 @@ func runBot(ctx context.Context, cfg *config.Config, errChan chan<- error) {
 }
 
 func initializeHandlers(service bot.Service, cfg *config.Config) {
-	bot.RegisterUpdateHandler("admin", handlers.NewAdmin(service))
 	bot.RegisterUpdateHandler("gatekeeper", handlers.NewGatekeeper(service))
+
+	banService := handlers.NewBanService(
+		"https://api.lols.bot/account",
+		service.GetBot(),
+		service.GetDB(),
+	)
+	spamControl := handlers.NewSpamControl(service, cfg.SpamControl, banService)
+
+	bot.RegisterUpdateHandler("admin", handlers.NewAdmin(service, banService, spamControl))
 
 	llmAPIConfig := openai.DefaultConfig(cfg.OpenAI.APIKey)
 	llmAPIConfig.BaseURL = cfg.OpenAI.BaseURL
 	llmAPI := openai.NewClientWithConfig(llmAPIConfig)
 
-	bot.RegisterUpdateHandler("reactor", handlers.NewReactor(service, llmAPI, handlers.Config{
-		FlaggedEmojis:   cfg.Reactor.FlaggedEmojis,
-		CheckUserAPIURL: "https://api.lols.bot/account",
-		OpenAIModel:     cfg.OpenAI.Model,
+	bot.RegisterUpdateHandler("reactor", handlers.NewReactor(service, llmAPI, banService, spamControl, handlers.Config{
+		FlaggedEmojis: cfg.Reactor.FlaggedEmojis,
+		OpenAIModel:   cfg.OpenAI.Model,
+		SpamControl:   cfg.SpamControl,
 	}))
 }
 
