@@ -313,6 +313,9 @@ func (r *Reactor) checkMessageForSpam(ctx context.Context, msg *api.Message, cha
 		return false, err
 	}
 	if isBanned {
+		if err := bot.DeleteChatMessage(ctx, r.s.GetBot(), chat.ID, msg.MessageID); err != nil {
+			entry.WithError(err).Error("failed to delete message")
+		}
 		if err := r.banService.BanUser(ctx, chat.ID, user.ID, msg.MessageID); err != nil {
 			entry.WithError(err).Error("failed to ban user")
 		}
