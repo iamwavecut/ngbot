@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	api "github.com/OvyFlash/telegram-bot-api"
@@ -32,9 +33,8 @@ func NewSpamControl(s bot.Service, config config.SpamControl, banService BanServ
 func (sc *SpamControl) ProcessSuspectMessage(ctx context.Context, msg *api.Message, lang string) error {
 	spamCase, err := sc.s.GetDB().GetActiveSpamCase(ctx, msg.Chat.ID, msg.From.ID)
 	if err != nil {
-		return fmt.Errorf("failed to get active spam case: %w", err)
+		log.WithError(err).Debug("failed to get active spam case")
 	}
-
 	if spamCase == nil {
 		spamCase, err = sc.s.GetDB().CreateSpamCase(ctx, &db.SpamCase{
 			ChatID:      msg.Chat.ID,
@@ -77,9 +77,8 @@ func (sc *SpamControl) ProcessSuspectMessage(ctx context.Context, msg *api.Messa
 func (sc *SpamControl) ProcessSpamMessage(ctx context.Context, msg *api.Message, isSpam bool, lang string) error {
 	spamCase, err := sc.s.GetDB().GetActiveSpamCase(ctx, msg.Chat.ID, msg.From.ID)
 	if err != nil {
-		return fmt.Errorf("failed to get active spam case: %w", err)
+		log.WithError(err).Debug("failed to get active spam case")
 	}
-
 	if spamCase == nil {
 		spamCase, err = sc.s.GetDB().CreateSpamCase(ctx, &db.SpamCase{
 			ChatID:      msg.Chat.ID,
@@ -89,6 +88,7 @@ func (sc *SpamControl) ProcessSpamMessage(ctx context.Context, msg *api.Message,
 			Status:      "pending",
 		})
 		if err != nil {
+			log.WithError(err).Debug("failed to create spam case")
 			return fmt.Errorf("failed to create spam case: %w", err)
 		}
 	}
@@ -114,6 +114,7 @@ func (sc *SpamControl) ProcessSpamMessage(ctx context.Context, msg *api.Message,
 	} else {
 		notifMsg = sc.createInChatVoting(msg, spamCase.ID, lang)
 	}
+
 	if notifMsg != nil {
 		notification, err := sc.s.GetBot().Send(notifMsg)
 		if err != nil {
@@ -164,10 +165,16 @@ func (sc *SpamControl) createInChatVoting(msg *api.Message, caseID int64, lang s
 }
 
 func (sc *SpamControl) createChannelPost(msg *api.Message, caseID int64, lang string) api.Chattable {
-	text := fmt.Sprintf(i18n.Get("Potential spam message:\n\nFrom: %s\nChat: %s\nMessage: %s", lang),
-		bot.GetUN(msg.From),
-		msg.Chat.Title,
-		msg.Text,
+	from := bot.GetUN(msg.From)
+	textSlice := strings.Split(msg.Text, "\n")
+	for i, line := range textSlice {
+		line = strings.ReplaceAll(line, "http", "_ttp")
+		line = strings.ReplaceAll(line, "+7", "+*")
+		textSlice[i] = api.EscapeText(api.ModeMarkdownV2, line)
+	}
+	text := fmt.Sprintf(i18n.Get(">%s\n**>%s", lang),
+		api.EscapeText(api.ModeMarkdownV2, from),
+		strings.Join(textSlice, ">"),
 	)
 
 	markup := api.NewInlineKeyboardMarkup(
@@ -177,9 +184,11 @@ func (sc *SpamControl) createChannelPost(msg *api.Message, caseID int64, lang st
 		),
 	)
 
-	replyMsg := api.NewMessageToChannel(sc.config.LogChannelUsername, text)
-	replyMsg.ReplyMarkup = &markup
-	return replyMsg
+	channelMsg := api.NewMessageToChannel("@"+strings.TrimPrefix(sc.config.LogChannelUsername, "@"), text)
+	channelMsg.ParseMode = api.ModeMarkdownV2
+	channelMsg.ReplyMarkup = &markup
+
+	return channelMsg
 }
 
 func (sc *SpamControl) createChannelNotification(msg *api.Message, channelPostLink string, lang string) api.Chattable {

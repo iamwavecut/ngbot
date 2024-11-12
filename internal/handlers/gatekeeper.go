@@ -34,7 +34,6 @@ import (
 
 	"github.com/iamwavecut/tool"
 
-	"github.com/iamwavecut/ngbot/internal/config"
 	"github.com/iamwavecut/ngbot/internal/db"
 	"github.com/iamwavecut/ngbot/resources"
 
@@ -277,12 +276,12 @@ func (g *Gatekeeper) handleChallenge(ctx context.Context, u *api.Update, chat *a
 		return errors.WithMessage(err, "failed to get chat member information")
 	}
 
-	lang := g.getLanguage(ctx, chat, user)
-	entry.WithField("language", lang).Debug("using language")
+	language := g.s.GetLanguage(ctx, chat.ID, user)
+	entry.WithField("language", language).Debug("using language")
 	cu := g.extractChallengedUser(joinerID, chat.ID)
 	if cu == nil {
 		entry.Debug("no user matched for challenge")
-		if _, err := b.Request(api.NewCallback(cq.ID, i18n.Get("This challenge isn't your concern", lang))); err != nil {
+		if _, err := b.Request(api.NewCallback(cq.ID, i18n.Get("This challenge isn't your concern", language))); err != nil {
 			entry.WithError(err).Error("cant answer callback query")
 		}
 		return nil
@@ -296,8 +295,8 @@ func (g *Gatekeeper) handleChallenge(ctx context.Context, u *api.Update, chat *a
 		entry.WithError(err).Error("cant get target chat info")
 		return errors.WithMessage(err, "cant get target chat info")
 	}
-	lang = g.getLanguage(ctx, &targetChat.Chat, user)
-	entry.WithField("language", lang).Debug("updated language")
+	language = g.s.GetLanguage(ctx, targetChat.ID, user)
+	entry.WithField("language", language).Debug("updated language")
 
 	isPublic := cu.commChat.ID == cu.targetChat.ID
 	entry.WithField("isPublic", isPublic).Debug("chat visibility")
@@ -310,7 +309,7 @@ func (g *Gatekeeper) handleChallenge(ctx context.Context, u *api.Update, chat *a
 
 	if !isAdmin && joinerID != user.ID {
 		entry.WithField("user", bot.GetUN(user)).Info("user is not admin and not the joiner")
-		if _, err := b.Request(api.NewCallback(cq.ID, i18n.Get("Stop it! You're too real", lang))); err != nil {
+		if _, err := b.Request(api.NewCallback(cq.ID, i18n.Get("Stop it! You're too real", language))); err != nil {
 			entry.WithError(err).Error("cant answer callback query")
 		}
 		return nil
@@ -319,7 +318,7 @@ func (g *Gatekeeper) handleChallenge(ctx context.Context, u *api.Update, chat *a
 	switch {
 	case isAdmin, cu.successUUID == challengeUUID:
 		entry.WithField("user", bot.GetUN(cu.user)).Info("successful challenge for user")
-		if _, err := b.Request(api.NewCallback(cq.ID, i18n.Get("Welcome, friend!", lang))); err != nil {
+		if _, err := b.Request(api.NewCallback(cq.ID, i18n.Get("Welcome, friend!", language))); err != nil {
 			entry.WithError(err).Error("cant answer callback query")
 		}
 
@@ -330,7 +329,7 @@ func (g *Gatekeeper) handleChallenge(ctx context.Context, u *api.Update, chat *a
 		if !isPublic {
 			entry.WithField("user", bot.GetUN(cu.user)).Info("approving join request for user")
 			_ = bot.ApproveJoinRequest(ctx, b, cu.user.ID, cu.targetChat.ID)
-			msg := api.NewMessage(cu.commChat.ID, fmt.Sprintf(i18n.Get("Awesome, you're good to go! Feel free to start chatting in the group \"%s\".", lang), api.EscapeText(api.ModeMarkdown, cu.targetChat.Title)))
+			msg := api.NewMessage(cu.commChat.ID, fmt.Sprintf(i18n.Get("Awesome, you're good to go! Feel free to start chatting in the group \"%s\".", language), api.EscapeText(api.ModeMarkdown, cu.targetChat.Title)))
 			msg.ParseMode = api.ModeMarkdown
 			_ = tool.Err(b.Send(msg))
 		} else {
@@ -362,14 +361,14 @@ func (g *Gatekeeper) handleChallenge(ctx context.Context, u *api.Update, chat *a
 	case cu.successUUID != challengeUUID:
 		entry.WithField("user", bot.GetUN(cu.user)).Info("failed challenge for user")
 
-		if _, err := b.Request(api.NewCallbackWithAlert(cq.ID, fmt.Sprintf(i18n.Get("Oops, it looks like you missed the deadline to join \"%s\", but don't worry! You can try again in %s minutes. Keep trying, I believe in you!", lang), cu.targetChat.Title, 10))); err != nil {
+		if _, err := b.Request(api.NewCallbackWithAlert(cq.ID, fmt.Sprintf(i18n.Get("Oops, it looks like you missed the deadline to join \"%s\", but don't worry! You can try again in %s minutes. Keep trying, I believe in you!", language), cu.targetChat.Title, 10))); err != nil {
 			entry.WithError(err).Error("cant answer callback query")
 		}
 
 		if !isPublic {
 			entry.WithField("user", bot.GetUN(cu.user)).Info("declining join request for user")
 			_ = bot.DeclineJoinRequest(ctx, b, cu.user.ID, cu.targetChat.ID)
-			msg := api.NewMessage(cu.commChat.ID, fmt.Sprintf(i18n.Get("Oops, it looks like you missed the deadline to join \"%s\", but don't worry! You can try again in %s minutes. Keep trying, I believe in you!", lang), cu.targetChat.Title, 10))
+			msg := api.NewMessage(cu.commChat.ID, fmt.Sprintf(i18n.Get("Oops, it looks like you missed the deadline to join \"%s\", but don't worry! You can try again in %s minutes. Keep trying, I believe in you!", language), cu.targetChat.Title, 10))
 			msg.ParseMode = api.ModeMarkdown
 			_ = tool.Err(b.Send(msg))
 		}
@@ -399,7 +398,7 @@ func (g *Gatekeeper) handleChallenge(ctx context.Context, u *api.Update, chat *a
 		g.removeChallengedUser(cu.user.ID, cu.commChat.ID)
 	default:
 		entry.WithField("user", bot.GetUN(cu.user)).Info("Unknown challenge result for user")
-		if _, err := b.Request(api.NewCallback(cq.ID, i18n.Get("I have no idea what is going on", lang))); err != nil {
+		if _, err := b.Request(api.NewCallback(cq.ID, i18n.Get("I have no idea what is going on", language))); err != nil {
 			entry.WithError(err).Error("cant answer callback query")
 		}
 	}
@@ -528,7 +527,7 @@ func (g *Gatekeeper) handleJoin(ctx context.Context, u *api.Update, jus []api.Us
 			g.joiners[cu.commChat.ID] = map[int64]*challengedUser{}
 		}
 		g.joiners[cu.commChat.ID][cu.user.ID] = cu
-		commLang := g.getLanguage(ctx, cu.commChat, cu.user)
+		commLang := g.s.GetLanguage(ctx, cu.commChat.ID, cu.user)
 
 		go func() {
 			entry.WithField("user", bot.GetUN(cu.user)).Info("Setting timer")
@@ -573,19 +572,19 @@ func (g *Gatekeeper) handleJoin(ctx context.Context, u *api.Update, jus []api.Us
 				}
 
 				if len(errs) > 0 {
-					lang := g.getLanguage(ctx, cu.commChat, cu.user)
+					language := g.s.GetLanguage(ctx, cu.commChat.ID, cu.user)
 					var msgContent string
 					if len(errs) == 2 {
 						entry.Warn("failed to ban and delete message")
-						msgContent = fmt.Sprintf(i18n.Get("I can't delete messages or ban spammer \"%s\".", lang), bot.GetUN(cu.user))
+						msgContent = fmt.Sprintf(i18n.Get("I can't delete messages or ban spammer \"%s\".", language), bot.GetUN(cu.user))
 					} else if errors.Is(errs[0], errors.New("failed to delete message")) {
 						entry.Warn("failed to delete message")
-						msgContent = fmt.Sprintf(i18n.Get("I can't delete messages from spammer \"%s\".", lang), bot.GetUN(cu.user))
+						msgContent = fmt.Sprintf(i18n.Get("I can't delete messages from spammer \"%s\".", language), bot.GetUN(cu.user))
 					} else {
 						entry.Warn("failed to ban joiner")
-						msgContent = fmt.Sprintf(i18n.Get("I can't ban new chat member \"%s\".", lang), bot.GetUN(cu.user))
+						msgContent = fmt.Sprintf(i18n.Get("I can't ban new chat member \"%s\".", language), bot.GetUN(cu.user))
 					}
-					msgContent += " " + i18n.Get("I should have the permissions to ban and delete messages here.", lang)
+					msgContent += " " + i18n.Get("I should have the permissions to ban and delete messages here.", language)
 					msg := api.NewMessage(cu.commChat.ID, msgContent)
 					msg.ParseMode = api.ModeHTML
 					if _, err := b.Send(msg); err != nil {
@@ -768,25 +767,4 @@ func (g *Gatekeeper) createCaptchaButtons(cu *challengedUser, lang string) ([]ap
 
 func (g *Gatekeeper) getLogEntry() *log.Entry {
 	return log.WithField("context", "gatekeeper")
-}
-
-func (g *Gatekeeper) getLanguage(ctx context.Context, chat *api.Chat, user *api.User) string {
-	entry := g.getLogEntry().WithFields(log.Fields{
-		"method": "getLanguage",
-		"chatID": chat.ID,
-	})
-	entry.Debug("Entering method")
-
-	if settings, err := g.s.GetDB().GetSettings(ctx, chat.ID); !tool.Try(err) {
-		entry.Debug("Using language from chat settings")
-		return settings.Language
-	}
-	if user != nil && tool.In(user.LanguageCode, i18n.GetLanguagesList()...) {
-		entry.Debug("Using language from user settings")
-		return user.LanguageCode
-	}
-	entry.Debug("Using default language")
-
-	entry.Debug("Exiting method")
-	return config.Get().DefaultLanguage
 }

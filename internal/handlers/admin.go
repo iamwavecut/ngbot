@@ -12,7 +12,6 @@ import (
 	log "github.com/sirupsen/logrus"
 
 	"github.com/iamwavecut/ngbot/internal/bot"
-	"github.com/iamwavecut/ngbot/internal/config"
 	"github.com/iamwavecut/ngbot/internal/i18n"
 )
 
@@ -65,7 +64,7 @@ func (a *Admin) Handle(ctx context.Context, u *api.Update, chat *api.Chat, user 
 	}
 	entry.Debugf("user is admin: %v", isAdmin)
 
-	language := a.getLanguage(ctx, chat, user)
+	language := a.s.GetLanguage(ctx, chat.ID, user)
 
 	switch m.Command() {
 	case "lang":
@@ -225,27 +224,6 @@ func (a *Admin) isAdmin(chatID, userID int64) (bool, error) {
 	}
 
 	return chatMember.IsCreator() || (chatMember.IsAdministrator() && chatMember.CanRestrictMembers), nil
-}
-
-func (a *Admin) getLanguage(ctx context.Context, chat *api.Chat, user *api.User) string {
-	entry := a.getLogEntry().WithFields(log.Fields{
-		"method": "getLanguage",
-		"chatID": chat.ID,
-	})
-	entry.Debug("Entering method")
-
-	if settings, err := a.s.GetDB().GetSettings(ctx, chat.ID); !tool.Try(err) {
-		entry.Debug("Using language from chat settings")
-		return settings.Language
-	}
-	if user != nil && tool.In(user.LanguageCode, i18n.GetLanguagesList()...) {
-		entry.Debug("Using language from user settings")
-		return user.LanguageCode
-	}
-	entry.Debug("Using default language")
-
-	entry.Debug("Exiting method")
-	return config.Get().DefaultLanguage
 }
 
 func (a *Admin) getLogEntry() *log.Entry {

@@ -10,7 +10,10 @@ import (
 	api "github.com/OvyFlash/telegram-bot-api"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/iamwavecut/ngbot/internal/config"
 	"github.com/iamwavecut/ngbot/internal/db"
+	"github.com/iamwavecut/ngbot/internal/i18n"
+	"github.com/iamwavecut/tool"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 )
@@ -30,6 +33,7 @@ type Service interface {
 	InsertMember(ctx context.Context, chatID, userID int64) error
 	GetSettings(ctx context.Context, chatID int64) (*db.Settings, error)
 	SetSettings(ctx context.Context, settings *db.Settings) error
+	GetLanguage(ctx context.Context, chatID int64, user *api.User) string
 }
 
 type service struct {
@@ -219,4 +223,14 @@ func (s *service) Shutdown(ctx context.Context) error {
 	s.memberCache = nil
 	s.settingsCache = nil
 	return nil
+}
+
+func (s *service) GetLanguage(ctx context.Context, chatID int64, user *api.User) string {
+	if settings, err := s.GetSettings(ctx, chatID); err == nil && settings != nil {
+		return settings.Language
+	}
+	if user != nil && tool.In(user.LanguageCode, i18n.GetLanguagesList()...) {
+		return user.LanguageCode
+	}
+	return config.Get().DefaultLanguage
 }

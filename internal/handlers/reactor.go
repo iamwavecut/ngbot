@@ -17,7 +17,6 @@ import (
 	"github.com/iamwavecut/ngbot/internal/config"
 	"github.com/iamwavecut/ngbot/internal/db"
 	"github.com/iamwavecut/ngbot/internal/i18n"
-	"github.com/iamwavecut/tool"
 )
 
 // SpamDetector handles spam detection logic
@@ -141,7 +140,9 @@ func (r *Reactor) handleCallbackQuery(ctx context.Context, u *api.Update, chat *
 		}
 	}
 
-	text := fmt.Sprintf(i18n.Get("Votes: ✅ %d | 🚫 %d", r.getLanguage(ctx, chat, user)), notSpamVotes, spamVotes)
+	language := r.s.GetLanguage(ctx, chat.ID, user)
+
+	text := fmt.Sprintf(i18n.Get("Votes: ✅ %d | 🚫 %d", language), notSpamVotes, spamVotes)
 
 	edit := api.NewEditMessageText(chat.ID, u.CallbackQuery.Message.MessageID, text)
 	edit.ReplyMarkup = u.CallbackQuery.Message.ReplyMarkup
@@ -149,7 +150,7 @@ func (r *Reactor) handleCallbackQuery(ctx context.Context, u *api.Update, chat *
 		entry.WithError(err).Error("failed to update vote count")
 	}
 
-	_, err = r.s.GetBot().Request(api.NewCallback(u.CallbackQuery.ID, i18n.Get("✓ Vote recorded", r.getLanguage(ctx, chat, user))))
+	_, err = r.s.GetBot().Request(api.NewCallback(u.CallbackQuery.ID, i18n.Get("✓ Vote recorded", language)))
 	if err != nil {
 		entry.WithError(err).Error("failed to acknowledge callback")
 	}
@@ -260,6 +261,10 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 		"message_id": msg.MessageID,
 	})
 
+	if msg.IsCommand() && msg.Command() == "test_spam_trigger" {
+		return r.spamControl.ProcessSpamMessage(ctx, msg, true, r.s.GetLanguage(ctx, chat.ID, user))
+	}
+
 	isMember, err := r.s.IsMember(ctx, chat.ID, user.ID)
 	if err != nil {
 		entry.WithError(err).Error("Failed to check membership")
@@ -319,7 +324,7 @@ func (r *Reactor) checkMessageForSpam(ctx context.Context, msg *api.Message, cha
 		return false, err
 	}
 	if isSpam {
-		if err := r.spamControl.ProcessSpamMessage(ctx, msg, true, r.getLanguage(ctx, chat, user)); err != nil {
+		if err := r.spamControl.ProcessSpamMessage(ctx, msg, true, r.s.GetLanguage(ctx, chat.ID, user)); err != nil {
 			entry.WithError(err).Error("failed to process spam message")
 			// Fallback to direct ban if spam control fails
 			if err := r.banService.BanUser(ctx, chat.ID, user.ID, msg.MessageID); err != nil {
@@ -334,25 +339,4 @@ func (r *Reactor) checkMessageForSpam(ctx context.Context, msg *api.Message, cha
 
 func (r *Reactor) getLogEntry() *log.Entry {
 	return log.WithField("object", "Reactor")
-}
-
-func (r *Reactor) getLanguage(ctx context.Context, chat *api.Chat, user *api.User) string {
-	entry := r.getLogEntry().WithFields(log.Fields{
-		"method": "getLanguage",
-		"chatID": chat.ID,
-	})
-	entry.Debug("Entering method")
-
-	if settings, err := r.s.GetDB().GetSettings(ctx, chat.ID); !tool.Try(err) {
-		entry.Debug("Using language from chat settings")
-		return settings.Language
-	}
-	if user != nil && tool.In(user.LanguageCode, i18n.GetLanguagesList()...) {
-		entry.Debug("Using language from user settings")
-		return user.LanguageCode
-	}
-	entry.Debug("Using default language")
-
-	entry.Debug("Exiting method")
-	return config.Get().DefaultLanguage
 }

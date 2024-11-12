@@ -251,7 +251,7 @@ func (s *sqliteClient) CreateSpamCase(ctx context.Context, sc *db.SpamCase) (*db
 	query := `
 		INSERT INTO spam_cases (chat_id, user_id, message_text, created_at, channel_username, channel_post_id, 
 			notification_message_id, status, resolved_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 	result, err := s.db.ExecContext(ctx, query,
 		sc.ChatID,
