@@ -48,7 +48,7 @@ func (sc *SpamControl) ProcessSuspectMessage(ctx context.Context, msg *api.Messa
 		}
 	}
 
-	notifMsg := sc.createInChatVoting(msg, spamCase.ID, lang)
+	notifMsg := sc.createInChatNotification(msg, spamCase.ID, lang, true)
 	notification, err := sc.s.GetBot().Send(notifMsg)
 	if err != nil {
 		log.WithError(err).Error("failed to send notification")
@@ -74,7 +74,7 @@ func (sc *SpamControl) ProcessSuspectMessage(ctx context.Context, msg *api.Messa
 	return nil
 }
 
-func (sc *SpamControl) ProcessSpamMessage(ctx context.Context, msg *api.Message, isSpam bool, lang string) error {
+func (sc *SpamControl) getSpamCase(ctx context.Context, msg *api.Message) (*db.SpamCase, error) {
 	spamCase, err := sc.s.GetDB().GetActiveSpamCase(ctx, msg.Chat.ID, msg.From.ID)
 	if err != nil {
 		log.WithError(err).Debug("failed to get active spam case")
@@ -89,30 +89,32 @@ func (sc *SpamControl) ProcessSpamMessage(ctx context.Context, msg *api.Message,
 		})
 		if err != nil {
 			log.WithError(err).Debug("failed to create spam case")
-			return fmt.Errorf("failed to create spam case: %w", err)
+			return nil, fmt.Errorf("failed to create spam case: %w", err)
 		}
 	}
+	return spamCase, nil
+}
 
+func (sc *SpamControl) preprocessMessage(ctx context.Context, msg *api.Message, lang string, voting bool) error {
 	if err := bot.DeleteChatMessage(ctx, sc.s.GetBot(), msg.Chat.ID, msg.MessageID); err != nil {
 		log.WithError(err).Error("failed to delete message")
 	}
-
+	spamCase, err := sc.getSpamCase(ctx, msg)
+	if err != nil {
+		return err
+	}
 	var notifMsg api.Chattable
 	if sc.config.LogChannelUsername != "" {
-		channelMsg := sc.createChannelPost(msg, spamCase.ID, lang)
-		sent, err := sc.s.GetBot().Send(channelMsg)
+		channelMsg, err := sc.SendChannelPost(ctx, msg, lang, true)
 		if err != nil {
 			log.WithError(err).Error("failed to send channel post")
 		}
-		spamCase.ChannelUsername = sc.config.LogChannelUsername
-		spamCase.ChannelPostID = sent.MessageID
-
-		if sc.verbose && sent.MessageID != 0 {
-			channelPostLink := fmt.Sprintf("https://t.me/%s/%d", sc.config.LogChannelUsername, sent.MessageID)
+		if sc.verbose && channelMsg.MessageID != 0 {
+			channelPostLink := fmt.Sprintf("https://t.me/%s/%d", sc.config.LogChannelUsername, channelMsg.MessageID)
 			notifMsg = sc.createChannelNotification(msg, channelPostLink, lang)
 		}
 	} else {
-		notifMsg = sc.createInChatVoting(msg, spamCase.ID, lang)
+		notifMsg = sc.createInChatNotification(msg, spamCase.ID, lang, voting)
 	}
 
 	if notifMsg != nil {
@@ -134,37 +136,60 @@ func (sc *SpamControl) ProcessSpamMessage(ctx context.Context, msg *api.Message,
 		log.WithError(err).Error("failed to update spam case")
 	}
 
-	time.AfterFunc(sc.config.VotingTimeoutMinutes, func() {
-		if err := sc.resolveCase(context.Background(), spamCase.ID); err != nil {
-			log.WithError(err).Error("failed to resolve spam case")
-		}
-	})
-
 	return nil
 }
 
-func (sc *SpamControl) createInChatVoting(msg *api.Message, caseID int64, lang string) api.Chattable {
+func (sc *SpamControl) ProcessBannedMessage(ctx context.Context, msg *api.Message, lang string) error {
+	return sc.preprocessMessage(ctx, msg, lang, false)
+}
+
+func (sc *SpamControl) ProcessSpamMessage(ctx context.Context, msg *api.Message, lang string) error {
+	return sc.preprocessMessage(ctx, msg, lang, true)
+}
+
+func (sc *SpamControl) SendChannelPost(ctx context.Context, msg *api.Message, lang string, voting bool) (*api.Message, error) {
+	spamCase, err := sc.getSpamCase(ctx, msg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get spam case: %w", err)
+	}
+	channelMsg := sc.createChannelPost(msg, spamCase.ID, lang, voting)
+	sent, err := sc.s.GetBot().Send(channelMsg)
+	if err != nil {
+		log.WithError(err).Error("failed to send channel post")
+	}
+	spamCase.ChannelUsername = sc.config.LogChannelUsername
+	spamCase.ChannelPostID = sent.MessageID
+	if err := sc.s.GetDB().UpdateSpamCase(ctx, spamCase); err != nil {
+		log.WithError(err).Error("failed to update spam case")
+	}
+
+	return &sent, nil
+}
+
+func (sc *SpamControl) createInChatNotification(msg *api.Message, caseID int64, lang string, voting bool) api.Chattable {
 	text := fmt.Sprintf(i18n.Get("⚠️ Potential spam message from %s\n\nMessage: %s\n\nPlease vote:", lang),
 		bot.GetUN(msg.From),
 		msg.Text,
 	)
 
-	markup := api.NewInlineKeyboardMarkup(
-		api.NewInlineKeyboardRow(
-			api.NewInlineKeyboardButtonData("✅ "+i18n.Get("Not Spam", lang), fmt.Sprintf("spam_vote:%d:0", caseID)),
-			api.NewInlineKeyboardButtonData("🚫 "+i18n.Get("Spam", lang), fmt.Sprintf("spam_vote:%d:1", caseID)),
-		),
-	)
-
 	replyMsg := api.NewMessage(msg.Chat.ID, text)
+	if voting {
+		markup := api.NewInlineKeyboardMarkup(
+			api.NewInlineKeyboardRow(
+				api.NewInlineKeyboardButtonData("✅ "+i18n.Get("Not Spam", lang), fmt.Sprintf("spam_vote:%d:0", caseID)),
+				api.NewInlineKeyboardButtonData("🚫 "+i18n.Get("Spam", lang), fmt.Sprintf("spam_vote:%d:1", caseID)),
+			),
+		)
+		replyMsg.ReplyMarkup = &markup
+	}
+
 	replyMsg.ParseMode = api.ModeMarkdown
 	replyMsg.DisableNotification = true
 	replyMsg.LinkPreviewOptions.IsDisabled = true
-	replyMsg.ReplyMarkup = &markup
 	return replyMsg
 }
 
-func (sc *SpamControl) createChannelPost(msg *api.Message, caseID int64, lang string) api.Chattable {
+func (sc *SpamControl) createChannelPost(msg *api.Message, caseID int64, lang string, voting bool) api.Chattable {
 	from := bot.GetUN(msg.From)
 	textSlice := strings.Split(msg.Text, "\n")
 	for i, line := range textSlice {
@@ -176,18 +201,19 @@ func (sc *SpamControl) createChannelPost(msg *api.Message, caseID int64, lang st
 		api.EscapeText(api.ModeMarkdownV2, from),
 		strings.Join(textSlice, ">"),
 	)
-
-	markup := api.NewInlineKeyboardMarkup(
-		api.NewInlineKeyboardRow(
-			api.NewInlineKeyboardButtonData("✅ "+i18n.Get("Not Spam", lang), fmt.Sprintf("spam_vote:%d:0", caseID)),
-			api.NewInlineKeyboardButtonData("🚫 "+i18n.Get("Spam", lang), fmt.Sprintf("spam_vote:%d:1", caseID)),
-		),
-	)
-
 	channelMsg := api.NewMessageToChannel("@"+strings.TrimPrefix(sc.config.LogChannelUsername, "@"), text)
-	channelMsg.ParseMode = api.ModeMarkdownV2
-	channelMsg.ReplyMarkup = &markup
 
+	if voting {
+		markup := api.NewInlineKeyboardMarkup(
+			api.NewInlineKeyboardRow(
+				api.NewInlineKeyboardButtonData("✅ "+i18n.Get("Not Spam", lang), fmt.Sprintf("spam_vote:%d:0", caseID)),
+				api.NewInlineKeyboardButtonData("🚫 "+i18n.Get("Spam", lang), fmt.Sprintf("spam_vote:%d:1", caseID)),
+			),
+		)
+		channelMsg.ReplyMarkup = &markup
+	}
+
+	channelMsg.ParseMode = api.ModeMarkdownV2
 	return channelMsg
 }
 

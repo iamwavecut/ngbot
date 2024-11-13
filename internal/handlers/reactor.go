@@ -261,10 +261,6 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 		"message_id": msg.MessageID,
 	})
 
-	if msg.IsCommand() && msg.Command() == "test_spam_trigger" {
-		return r.spamControl.ProcessSpamMessage(ctx, msg, true, r.s.GetLanguage(ctx, chat.ID, user))
-	}
-
 	isMember, err := r.s.IsMember(ctx, chat.ID, user.ID)
 	if err != nil {
 		entry.WithError(err).Error("Failed to check membership")
@@ -312,7 +308,12 @@ func (r *Reactor) checkMessageForSpam(ctx context.Context, msg *api.Message, cha
 	if err != nil {
 		return false, err
 	}
+	language := r.s.GetLanguage(ctx, chat.ID, user)
 	if isBanned {
+		_, err := r.spamControl.SendChannelPost(ctx, msg, language, false) // TODO: announce if no channel post
+		if err != nil {
+			entry.WithError(err).Error("failed to send channel post")
+		}
 		if err := bot.DeleteChatMessage(ctx, r.s.GetBot(), chat.ID, msg.MessageID); err != nil {
 			entry.WithError(err).Error("failed to delete message")
 		}
@@ -327,9 +328,8 @@ func (r *Reactor) checkMessageForSpam(ctx context.Context, msg *api.Message, cha
 		return false, err
 	}
 	if isSpam {
-		if err := r.spamControl.ProcessSpamMessage(ctx, msg, true, r.s.GetLanguage(ctx, chat.ID, user)); err != nil {
+		if err := r.spamControl.ProcessSpamMessage(ctx, msg, language); err != nil {
 			entry.WithError(err).Error("failed to process spam message")
-			// Fallback to direct ban if spam control fails
 			if err := r.banService.BanUser(ctx, chat.ID, user.ID, msg.MessageID); err != nil {
 				entry.WithError(err).Error("failed to ban user")
 			}
