@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -195,7 +196,10 @@ func (sc *SpamControl) createChannelPost(msg *api.Message, caseID int64, lang st
 	for i, line := range textSlice {
 		line = strings.ReplaceAll(line, "http", "_ttp")
 		line = strings.ReplaceAll(line, "+7", "+*")
-		textSlice[i] = api.EscapeText(api.ModeMarkdownV2, line)
+
+		line = api.EscapeText(api.ModeMarkdownV2, line)
+		line = regexp.MustCompile(`@(\w+)`).ReplaceAllString(line, "@**")
+		textSlice[i] = line
 	}
 	text := fmt.Sprintf(i18n.Get(">%s\n**>%s", lang),
 		api.EscapeText(api.ModeMarkdownV2, from),

@@ -267,7 +267,6 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 		return fmt.Errorf("failed to check membership: %w", err)
 	}
 	if isMember {
-		entry.Debug("user is already a member")
 		return nil
 	}
 
@@ -276,7 +275,6 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 		return errors.Wrap(err, "failed to check message for spam")
 	}
 	if isSpam {
-		entry.Info("message detected as spam")
 		return nil
 	}
 
@@ -284,7 +282,6 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 		return errors.Wrap(err, "failed to insert member")
 	}
 
-	entry.Debug("successfully added user as member")
 	return nil
 }
 

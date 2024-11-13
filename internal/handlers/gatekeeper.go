@@ -134,7 +134,6 @@ func NewGatekeeper(s bot.Service) *Gatekeeper {
 
 func (g *Gatekeeper) Handle(ctx context.Context, u *api.Update, chat *api.Chat, user *api.User) (bool, error) {
 	entry := g.getLogEntry().WithField("method", "Handle")
-	entry.Debug("handling update")
 
 	select {
 	case <-ctx.Done():

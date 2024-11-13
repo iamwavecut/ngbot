@@ -38,7 +38,6 @@ func NewAdmin(s bot.Service, banService BanService, spamControl *SpamControl) *A
 
 func (a *Admin) Handle(ctx context.Context, u *api.Update, chat *api.Chat, user *api.User) (proceed bool, err error) {
 	entry := a.getLogEntry().WithField("method", "Handle")
-	entry.Debug("handling update")
 
 	if chat == nil || user == nil {
 		entry.Debug("chat or user is nil, proceeding")
@@ -50,7 +49,6 @@ func (a *Admin) Handle(ctx context.Context, u *api.Update, chat *api.Chat, user 
 		u.Message == nil,
 		user.IsBot,
 		!u.Message.IsCommand():
-		entry.Debug("not a command or from a bot, proceeding")
 		return true, nil
 	}
 	m := u.Message
