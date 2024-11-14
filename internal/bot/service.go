@@ -206,8 +206,14 @@ func (s *service) warmupCache(ctx context.Context) error {
 		return err
 	}
 
+	membersCount := 0
+	for _, userIDs := range s.memberCache {
+		membersCount += len(userIDs)
+	}
+
 	s.getLogEntry().WithFields(logrus.Fields{
-		"memberCount":   len(s.memberCache),
+		"membersChats":  len(s.memberCache),
+		"membersCount":  membersCount,
 		"settingsCount": len(s.settingsCache),
 	}).Info("Cache warmed up successfully")
 	return nil
