@@ -203,7 +203,7 @@ func (sc *SpamControl) createChannelPost(msg *api.Message, caseID int64, lang st
 	}
 	text := fmt.Sprintf(i18n.Get(">%s\n**>%s", lang),
 		api.EscapeText(api.ModeMarkdownV2, from),
-		strings.Join(textSlice, ">"),
+		strings.Join(textSlice, "\n>"),
 	)
 	channelMsg := api.NewMessageToChannel("@"+strings.TrimPrefix(sc.config.LogChannelUsername, "@"), text)
 
