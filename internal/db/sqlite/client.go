@@ -420,7 +420,7 @@ func (s *sqliteClient) AddChatRecentJoiner(ctx context.Context, joiner *db.Recen
 		joiner.UserID,
 		joiner.Username,
 		joiner.JoinedAt,
-		joiner.JoinMessageID
+		joiner.JoinMessageID,
 		joiner.Processed,
 		joiner.IsSpammer,
 	)
