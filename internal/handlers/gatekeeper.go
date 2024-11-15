@@ -179,6 +179,9 @@ func (g *Gatekeeper) processNewChatMembers(ctx context.Context) error {
 				entry.WithField("error", err.Error()).Error("failed to ban user")
 			}
 		}
+		if err := g.s.GetDB().ProcessRecentJoiner(ctx, joiner.ChatID, joiner.UserID, banned); err != nil {
+			entry.WithField("error", err.Error()).Error("failed to process joiner")
+		}
 	}
 
 	return nil
