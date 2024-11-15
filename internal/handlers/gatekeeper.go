@@ -154,7 +154,6 @@ func NewGatekeeper(s bot.Service, banChecker GatekeeperBanChecker) *Gatekeeper {
 
 func (g *Gatekeeper) processNewChatMembers(ctx context.Context) error {
 	entry := g.getLogEntry().WithField("method", "processNewChatMembers")
-	entry.Debug("processing new chat members")
 
 	recentJoiners, err := g.s.GetDB().GetUnprocessedRecentJoiners(ctx)
 	if err != nil {
