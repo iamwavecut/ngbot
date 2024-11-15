@@ -483,12 +483,13 @@ func (g *Gatekeeper) handleNewChatMembersV2(ctx context.Context, u *api.Update, 
 
 			// Create RecentJoiner record
 			recentJoiner := &db.RecentJoiner{
-				UserID:    member.ID,
-				ChatID:    chat.ID,
-				JoinedAt:  time.Now(),
-				Username:  userName,
-				Processed: false,
-				IsSpammer: false,
+				UserID:        member.ID,
+				ChatID:        chat.ID,
+				JoinedAt:      time.Now(),
+				JoinMessageID: u.Message.MessageID,
+				Username:      userName,
+				Processed:     false,
+				IsSpammer:     false,
 			}
 
 			_, err := g.s.GetDB().AddChatRecentJoiner(ctx, recentJoiner)
