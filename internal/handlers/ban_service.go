@@ -20,6 +20,8 @@ const (
 	banlistURL       = "https://lols.bot/spam/banlist.txt"
 	banlistURLHourly = "https://lols.bot/spam/banlist-1h.txt"
 	scammersURL      = "https://lols.bot/scammers.txt"
+
+	accoutsAPIURLTemplate = "https://api.lols.bot/account?id=%v"
 )
 
 type BanService interface {
@@ -158,8 +160,40 @@ func (s *defaultBanService) FetchKnownBanned(ctx context.Context) error {
 }
 
 func (s *defaultBanService) CheckBan(ctx context.Context, userID int64) (bool, error) {
-	_, banned := s.knownBanned[userID]
-	return banned, nil
+	if _, banned := s.knownBanned[userID]; banned {
+		return banned, nil
+	}
+
+	url := fmt.Sprintf(accoutsAPIURLTemplate, userID)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("accept", "text/plain")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var banInfo struct {
+		OK         bool    `json:"ok"`
+		UserID     int64   `json:"user_id"`
+		Banned     bool    `json:"banned"`
+		When       string  `json:"when"`
+		Offenses   int     `json:"offenses"`
+		SpamFactor float64 `json:"spam_factor"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&banInfo); err != nil {
+		return false, fmt.Errorf("failed to decode response: %w", err)
+	}
+	if banInfo.Banned {
+		s.knownBanned[userID] = struct{}{}
+	}
+	return banInfo.Banned, nil
 }
 
 func (s *defaultBanService) MuteUser(ctx context.Context, chatID, userID int64) error {
