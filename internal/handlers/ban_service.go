@@ -3,12 +3,12 @@ package handlers
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
+	"encoding/json"
 
 	api "github.com/OvyFlash/telegram-bot-api"
 	"github.com/iamwavecut/ngbot/internal/db"
@@ -275,7 +275,7 @@ func (s *defaultBanService) BanUser(ctx context.Context, chatID, userID int64, m
 		if strings.Contains(err.Error(), MsgNoPrivileges) {
 			return ErrNoPrivileges
 		}
-		return fmt.Errorf("failed to restrict user: %w", err)
+		return fmt.Errorf("failed to ban user: %w", err)
 	}
 
 	restriction := &db.UserRestriction{
