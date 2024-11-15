@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"encoding/json"
 
 	api "github.com/OvyFlash/telegram-bot-api"
 	"github.com/iamwavecut/ngbot/internal/db"
@@ -168,13 +169,13 @@ func (s *defaultBanService) CheckBan(ctx context.Context, userID int64) (bool, e
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+		return false, fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("accept", "text/plain")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to send request: %w", err)
+		return false, fmt.Errorf("failed to send request: %w", err)
 	}
 	defer resp.Body.Close()
 
