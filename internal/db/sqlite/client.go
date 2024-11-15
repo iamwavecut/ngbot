@@ -412,14 +412,15 @@ func (s *sqliteClient) AddChatRecentJoiner(ctx context.Context, joiner *db.Recen
 	defer s.mutex.Unlock()
 
 	query := `
-		INSERT INTO recent_joiners (chat_id, user_id, username, joined_at, processed, is_spammer)
-		VALUES (?, ?, ?, ?, ?, ?)
+		INSERT INTO recent_joiners (chat_id, user_id, username, joined_at, join_message_id, processed, is_spammer)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
 	`
 	result, err := s.db.ExecContext(ctx, query,
 		joiner.ChatID,
 		joiner.UserID,
 		joiner.Username,
 		joiner.JoinedAt,
+		joiner.JoinMessageID
 		joiner.Processed,
 		joiner.IsSpammer,
 	)
