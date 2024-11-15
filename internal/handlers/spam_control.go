@@ -34,7 +34,7 @@ func NewSpamControl(s bot.Service, config config.SpamControl, banService BanServ
 func (sc *SpamControl) ProcessSuspectMessage(ctx context.Context, msg *api.Message, lang string) error {
 	spamCase, err := sc.s.GetDB().GetActiveSpamCase(ctx, msg.Chat.ID, msg.From.ID)
 	if err != nil {
-		log.WithError(err).Debug("failed to get active spam case")
+		log.WithField("error", err.Error()).Debug("failed to get active spam case")
 	}
 	if spamCase == nil {
 		spamCase, err = sc.s.GetDB().CreateSpamCase(ctx, &db.SpamCase{
@@ -52,24 +52,24 @@ func (sc *SpamControl) ProcessSuspectMessage(ctx context.Context, msg *api.Messa
 	notifMsg := sc.createInChatNotification(msg, spamCase.ID, lang, true)
 	notification, err := sc.s.GetBot().Send(notifMsg)
 	if err != nil {
-		log.WithError(err).Error("failed to send notification")
+		log.WithField("error", err.Error()).Error("failed to send notification")
 	} else {
 		spamCase.NotificationMessageID = notification.MessageID
 
 		time.AfterFunc(sc.config.SuspectNotificationTimeout, func() {
 			if _, err := sc.s.GetBot().Request(api.NewDeleteMessage(msg.Chat.ID, notification.MessageID)); err != nil {
-				log.WithError(err).Error("failed to delete notification")
+				log.WithField("error", err.Error()).Error("failed to delete notification")
 			}
 		})
 	}
 
 	if err := sc.s.GetDB().UpdateSpamCase(ctx, spamCase); err != nil {
-		log.WithError(err).Error("failed to update spam case")
+		log.WithField("error", err.Error()).Error("failed to update spam case")
 	}
 
 	time.AfterFunc(sc.config.VotingTimeoutMinutes, func() {
 		if err := sc.resolveCase(context.Background(), spamCase.ID); err != nil {
-			log.WithError(err).Error("failed to resolve spam case")
+			log.WithField("error", err.Error()).Error("failed to resolve spam case")
 		}
 	})
 	return nil
@@ -78,7 +78,7 @@ func (sc *SpamControl) ProcessSuspectMessage(ctx context.Context, msg *api.Messa
 func (sc *SpamControl) getSpamCase(ctx context.Context, msg *api.Message) (*db.SpamCase, error) {
 	spamCase, err := sc.s.GetDB().GetActiveSpamCase(ctx, msg.Chat.ID, msg.From.ID)
 	if err != nil {
-		log.WithError(err).Debug("failed to get active spam case")
+		log.WithField("error", err.Error()).Debug("failed to get active spam case")
 	}
 	if spamCase == nil {
 		spamCase, err = sc.s.GetDB().CreateSpamCase(ctx, &db.SpamCase{
@@ -89,7 +89,7 @@ func (sc *SpamControl) getSpamCase(ctx context.Context, msg *api.Message) (*db.S
 			Status:      "pending",
 		})
 		if err != nil {
-			log.WithError(err).Debug("failed to create spam case")
+			log.WithField("error", err.Error()).Debug("failed to create spam case")
 			return nil, fmt.Errorf("failed to create spam case: %w", err)
 		}
 	}
@@ -98,7 +98,7 @@ func (sc *SpamControl) getSpamCase(ctx context.Context, msg *api.Message) (*db.S
 
 func (sc *SpamControl) preprocessMessage(ctx context.Context, msg *api.Message, lang string, voting bool) error {
 	if err := bot.DeleteChatMessage(ctx, sc.s.GetBot(), msg.Chat.ID, msg.MessageID); err != nil {
-		log.WithError(err).Error("failed to delete message")
+		log.WithField("error", err.Error()).Error("failed to delete message")
 	}
 	spamCase, err := sc.getSpamCase(ctx, msg)
 	if err != nil {
@@ -108,7 +108,7 @@ func (sc *SpamControl) preprocessMessage(ctx context.Context, msg *api.Message, 
 	if sc.config.LogChannelUsername != "" {
 		channelMsg, err := sc.SendChannelPost(ctx, msg, lang, true)
 		if err != nil {
-			log.WithError(err).Error("failed to send channel post")
+			log.WithField("error", err.Error()).Error("failed to send channel post")
 		}
 		if sc.verbose && channelMsg.MessageID != 0 {
 			channelPostLink := fmt.Sprintf("https://t.me/%s/%d", sc.config.LogChannelUsername, channelMsg.MessageID)
@@ -121,20 +121,20 @@ func (sc *SpamControl) preprocessMessage(ctx context.Context, msg *api.Message, 
 	if notifMsg != nil {
 		notification, err := sc.s.GetBot().Send(notifMsg)
 		if err != nil {
-			log.WithError(err).Error("failed to send notification")
+			log.WithField("error", err.Error()).Error("failed to send notification")
 		} else {
 			spamCase.NotificationMessageID = notification.MessageID
 
 			time.AfterFunc(sc.config.SuspectNotificationTimeout, func() {
 				if _, err := sc.s.GetBot().Request(api.NewDeleteMessage(msg.Chat.ID, notification.MessageID)); err != nil {
-					log.WithError(err).Error("failed to delete notification")
+					log.WithField("error", err.Error()).Error("failed to delete notification")
 				}
 			})
 		}
 	}
 
 	if err := sc.s.GetDB().UpdateSpamCase(ctx, spamCase); err != nil {
-		log.WithError(err).Error("failed to update spam case")
+		log.WithField("error", err.Error()).Error("failed to update spam case")
 	}
 
 	return nil
@@ -156,12 +156,12 @@ func (sc *SpamControl) SendChannelPost(ctx context.Context, msg *api.Message, la
 	channelMsg := sc.createChannelPost(msg, spamCase.ID, lang, voting)
 	sent, err := sc.s.GetBot().Send(channelMsg)
 	if err != nil {
-		log.WithError(err).Error("failed to send channel post")
+		log.WithField("error", err.Error()).Error("failed to send channel post")
 	}
 	spamCase.ChannelUsername = sc.config.LogChannelUsername
 	spamCase.ChannelPostID = sent.MessageID
 	if err := sc.s.GetDB().UpdateSpamCase(ctx, spamCase); err != nil {
-		log.WithError(err).Error("failed to update spam case")
+		log.WithField("error", err.Error()).Error("failed to update spam case")
 	}
 
 	return &sent, nil
@@ -250,7 +250,7 @@ func (sc *SpamControl) resolveCase(ctx context.Context, caseID int64) error {
 
 	members, err := sc.s.GetDB().GetMembers(ctx, spamCase.ChatID)
 	if err != nil {
-		log.WithError(err).Error("failed to get members count")
+		log.WithField("error", err.Error()).Error("failed to get members count")
 	}
 
 	minVotersFromPercentage := int(float64(len(members)) * sc.config.MinVotersPercentage / 100)
@@ -281,11 +281,11 @@ func (sc *SpamControl) resolveCase(ctx context.Context, caseID int64) error {
 
 	if spamCase.Status == "spam" {
 		if err := sc.banService.BanUser(ctx, spamCase.ChatID, spamCase.UserID, 0); err != nil {
-			log.WithError(err).Error("failed to ban user")
+			log.WithField("error", err.Error()).Error("failed to ban user")
 		}
 	} else {
 		if err := sc.banService.UnmuteUser(ctx, spamCase.ChatID, spamCase.UserID); err != nil {
-			log.WithError(err).Error("failed to unmute user")
+			log.WithField("error", err.Error()).Error("failed to unmute user")
 		}
 	}
 

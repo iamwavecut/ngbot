@@ -52,7 +52,7 @@ func NewReactor(s bot.Service, llmAPI *openai.Client, banService BanService, spa
 		spamControl:  spamControl,
 		spamDetector: spamDetector,
 	}
-
+	r.getLogEntry().Debug("created new reactor")
 	return r
 }
 
@@ -88,7 +88,7 @@ func (r *Reactor) Handle(ctx context.Context, u *api.Update, chat *api.Chat, use
 
 	if u.Message != nil {
 		if err := r.handleMessage(ctx, u.Message, chat, user); err != nil {
-			entry.WithError(err).Error("error handling message")
+			entry.WithField("error", err.Error()).Error("error handling message")
 			return true, err
 		}
 	}
@@ -121,12 +121,12 @@ func (r *Reactor) handleCallbackQuery(ctx context.Context, u *api.Update, chat *
 		VotedAt: time.Now(),
 	})
 	if err != nil {
-		entry.WithError(err).Error("failed to add spam vote")
+		entry.WithField("error", err.Error()).Error("failed to add spam vote")
 	}
 
 	votes, err := r.s.GetDB().GetSpamVotes(ctx, caseID)
 	if err != nil {
-		entry.WithError(err).Error("failed to get votes")
+		entry.WithField("error", err.Error()).Error("failed to get votes")
 		return true, nil
 	}
 
@@ -147,17 +147,17 @@ func (r *Reactor) handleCallbackQuery(ctx context.Context, u *api.Update, chat *
 	edit := api.NewEditMessageText(chat.ID, u.CallbackQuery.Message.MessageID, text)
 	edit.ReplyMarkup = u.CallbackQuery.Message.ReplyMarkup
 	if _, err := r.s.GetBot().Send(edit); err != nil {
-		entry.WithError(err).Error("failed to update vote count")
+		entry.WithField("error", err.Error()).Error("failed to update vote count")
 	}
 
 	_, err = r.s.GetBot().Request(api.NewCallback(u.CallbackQuery.ID, i18n.Get("✓ Vote recorded", language)))
 	if err != nil {
-		entry.WithError(err).Error("failed to acknowledge callback")
+		entry.WithField("error", err.Error()).Error("failed to acknowledge callback")
 	}
 
 	if max(notSpamVotes, spamVotes) >= r.config.SpamControl.MaxVoters {
 		if err := r.spamControl.resolveCase(ctx, caseID); err != nil {
-			entry.WithError(err).Error("failed to resolve spam case after max votes reached")
+			entry.WithField("error", err.Error()).Error("failed to resolve spam case after max votes reached")
 		}
 	}
 
@@ -219,11 +219,11 @@ func (r *Reactor) handleReaction(ctx context.Context, reactions *api.MessageReac
 
 		// Add context to API calls
 		if err := bot.DeleteChatMessage(ctx, r.s.GetBot(), chat.ID, reactions.MessageID); err != nil {
-			entry.WithError(err).Error("Failed to delete message")
+			entry.WithField("error", err.Error()).Error("Failed to delete message")
 		}
 
 		if err := bot.BanUserFromChat(ctx, r.s.GetBot(), user.ID, chat.ID); err != nil {
-			entry.WithError(err).Error("Failed to ban user")
+			entry.WithField("error", err.Error()).Error("Failed to ban user")
 			return true, fmt.Errorf("failed to ban user: %w", err)
 		}
 
@@ -247,7 +247,7 @@ func (r *Reactor) getEmojiFromReaction(react api.ReactionType) string {
 		CustomEmojiIDs: []string{react.CustomEmoji},
 	})
 	if err != nil || len(emojiStickers) == 0 {
-		entry.WithError(err).Error("Failed to get custom emoji sticker")
+		entry.WithField("error", err.Error()).Error("Failed to get custom emoji sticker")
 		return react.Emoji
 	}
 	return emojiStickers[0].Emoji
@@ -263,7 +263,7 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 
 	isMember, err := r.s.IsMember(ctx, chat.ID, user.ID)
 	if err != nil {
-		entry.WithError(err).Error("Failed to check membership")
+		entry.WithField("error", err.Error()).Error("Failed to check membership")
 		return fmt.Errorf("failed to check membership: %w", err)
 	}
 	if isMember {
@@ -309,13 +309,13 @@ func (r *Reactor) checkMessageForSpam(ctx context.Context, msg *api.Message, cha
 	if isBanned {
 		_, err := r.spamControl.SendChannelPost(ctx, msg, language, false) // TODO: announce if no channel post
 		if err != nil {
-			entry.WithError(err).Error("failed to send channel post")
+			entry.WithField("error", err.Error()).Error("failed to send channel post")
 		}
 		if err := bot.DeleteChatMessage(ctx, r.s.GetBot(), chat.ID, msg.MessageID); err != nil {
-			entry.WithError(err).Error("failed to delete message")
+			entry.WithField("error", err.Error()).Error("failed to delete message")
 		}
 		if err := r.banService.BanUser(ctx, chat.ID, user.ID, msg.MessageID); err != nil {
-			entry.WithError(err).Error("failed to ban user")
+			entry.WithField("error", err.Error()).Error("failed to ban user")
 		}
 		return true, nil
 	}
@@ -326,9 +326,9 @@ func (r *Reactor) checkMessageForSpam(ctx context.Context, msg *api.Message, cha
 	}
 	if isSpam {
 		if err := r.spamControl.ProcessSpamMessage(ctx, msg, language); err != nil {
-			entry.WithError(err).Error("failed to process spam message")
+			entry.WithField("error", err.Error()).Error("failed to process spam message")
 			if err := r.banService.BanUser(ctx, chat.ID, user.ID, msg.MessageID); err != nil {
-				entry.WithError(err).Error("failed to ban user")
+				entry.WithField("error", err.Error()).Error("failed to ban user")
 			}
 		}
 		return true, nil

@@ -26,7 +26,7 @@ type sqliteClient struct {
 func NewSQLiteClient(ctx context.Context, dbPath string) *sqliteClient {
 	dbx, err := sqlx.Open("sqlite", filepath.Join(infra.GetWorkDir(), dbPath))
 	if err != nil {
-		log.WithError(err).Fatal("Failed to open database")
+		log.WithField("error", err.Error()).Fatal("Failed to open database")
 	}
 	dbx.SetMaxOpenConns(42)
 
@@ -36,11 +36,11 @@ func NewSQLiteClient(ctx context.Context, dbPath string) *sqliteClient {
 	}
 
 	if _, _, err := migrate.PlanMigration(dbx.DB, "sqlite3", migrationsSource, migrate.Up, 0); err != nil {
-		log.WithError(err).Fatal("Failed to plan migration")
+		log.WithField("error", err.Error()).Fatal("Failed to plan migration")
 	}
 
 	if n, err := migrate.Exec(dbx.DB, "sqlite3", migrationsSource, migrate.Up); err != nil {
-		log.WithError(err).WithField("migration", migrationsSource).Fatal("Failed to execute migration")
+		log.WithField("error", err.Error()).WithField("migration", migrationsSource).Fatal("Failed to execute migration")
 	} else if n > 0 {
 		log.Infof("Applied %d migrations", n)
 	}
@@ -405,4 +405,114 @@ func (s *sqliteClient) RemoveExpiredRestrictions(ctx context.Context) error {
 	query := `DELETE FROM user_restrictions WHERE expires_at <= datetime('now')`
 	_, err := s.db.ExecContext(ctx, query)
 	return err
+}
+
+func (s *sqliteClient) AddChatRecentJoiner(ctx context.Context, joiner *db.RecentJoiner) (*db.RecentJoiner, error) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	query := `
+		INSERT INTO recent_joiners (chat_id, user_id, username, joined_at, processed, is_spammer)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`
+	result, err := s.db.ExecContext(ctx, query,
+		joiner.ChatID,
+		joiner.UserID,
+		joiner.Username,
+		joiner.JoinedAt,
+		joiner.Processed,
+		joiner.IsSpammer,
+	)
+	if err != nil {
+		return nil, err
+	}
+	id, err := result.LastInsertId()
+	if err != nil {
+		return nil, err
+	}
+	joiner.ID = id
+	return joiner, nil
+}
+
+func (s *sqliteClient) GetChatRecentJoiners(ctx context.Context, chatID int64) ([]*db.RecentJoiner, error) {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+
+	var joiners []*db.RecentJoiner
+	err := s.db.SelectContext(ctx, &joiners, `
+		SELECT * FROM recent_joiners 
+		WHERE chat_id = ?
+		ORDER BY joined_at DESC
+	`, chatID)
+	return joiners, err
+}
+
+func (s *sqliteClient) GetUnprocessedRecentJoiners(ctx context.Context) ([]*db.RecentJoiner, error) {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+
+	var joiners []*db.RecentJoiner
+	err := s.db.SelectContext(ctx, &joiners, `
+		SELECT * FROM recent_joiners 
+		WHERE processed = FALSE
+		ORDER BY joined_at ASC
+	`)
+	return joiners, err
+}
+
+func (s *sqliteClient) ProcessRecentJoiner(ctx context.Context, chatID int64, userID int64, isSpammer bool) error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	query := `
+		UPDATE recent_joiners 
+		SET processed = TRUE, is_spammer = ?
+		WHERE chat_id = ? AND user_id = ?
+	`
+	_, err := s.db.ExecContext(ctx, query, isSpammer, chatID, userID)
+	return err
+}
+
+func (s *sqliteClient) UpsertBanlist(ctx context.Context, userIDs []int64) error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.PrepareContext(ctx, `
+		INSERT INTO banlist (user_id) VALUES (?)
+		ON CONFLICT(user_id) DO NOTHING
+	`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for _, userID := range userIDs {
+		if _, err := stmt.ExecContext(ctx, userID); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
+}
+
+func (s *sqliteClient) GetBanlist(ctx context.Context) (map[int64]struct{}, error) {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+
+	var userIDs []int64
+	err := s.db.SelectContext(ctx, &userIDs, `SELECT user_id FROM banlist`)
+	if err != nil {
+		return nil, err
+	}
+	results := make(map[int64]struct{})
+	for _, userID := range userIDs {
+		results[userID] = struct{}{}
+	}
+	return results, nil
 }

@@ -30,11 +30,11 @@ func Init() {
 	}
 	i18n, err := resources.FS.ReadFile(state.resourcesPath + "/translations.yml")
 	if err != nil {
-		log.WithError(err).Errorln("cant load translations")
+		log.WithField("error", err.Error()).Errorln("cant load translations")
 		return
 	}
 	if err := yaml.Unmarshal(i18n, &(state.translations)); err != nil {
-		log.WithError(err).Errorln("cant unmarshal translations")
+		log.WithField("error", err.Error()).Errorln("cant unmarshal translations")
 		return
 	}
 	languages := map[string]struct{}{}

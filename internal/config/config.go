@@ -56,7 +56,7 @@ func Get() Config {
 			Target:   cfg,
 		}
 		if err := envconfig.ProcessWith(context.Background(), &envcfg); err != nil {
-			log.WithError(err).Fatalln("cant load config")
+			log.WithField("error", err.Error()).Fatalln("cant load config")
 
 		}
 		cfg.DotPath = strings.Replace(cfg.DotPath, "~", os.Getenv("HOME"), 1)

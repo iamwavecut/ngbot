@@ -34,7 +34,7 @@ func main() {
 
 	maskedConfig := maskConfiguration(&cfg)
 	if configJSON, err := json.MarshalIndent(maskedConfig, "", "  "); err != nil {
-		log.WithError(err).Error("Failed to marshal config to JSON")
+		log.WithField("error", err.Error()).Error("Failed to marshal config to JSON")
 	} else {
 		log.WithField("config", string(configJSON)).Debug("Application configuration")
 	}
@@ -62,7 +62,7 @@ func main() {
 			log.Infof("Received signal %v, initiating shutdown...", sig)
 			shutdown = true
 		case err := <-errChan:
-			log.WithError(err).Error("Bot error occurred")
+			log.WithField("error", err.Error()).Error("Bot error occurred")
 			shutdown = true
 		}
 	}
@@ -104,7 +104,7 @@ func runBot(ctx context.Context, cfg *config.Config, errChan chan<- error) {
 		// Initialize bot API
 		botAPI, err := api.NewBotAPI(cfg.TelegramAPIToken)
 		if err != nil {
-			log.WithError(err).Error("Failed to initialize bot API")
+			log.WithField("error", err.Error()).Error("Failed to initialize bot API")
 			errChan <- err
 			return
 		}
@@ -123,7 +123,7 @@ func runBot(ctx context.Context, cfg *config.Config, errChan chan<- error) {
 
 		// _, err = botAPI.Request(setMyCommandsConfig)
 		// if err != nil {
-		// 	log.WithError(err).Error("Failed to set my commands")
+		// 	log.WithField("error", err.Error()).Error("Failed to set my commands")
 		// }
 
 		// Initialize services and handlers
@@ -141,12 +141,12 @@ func runBot(ctx context.Context, cfg *config.Config, errChan chan<- error) {
 		for {
 			select {
 			case err := <-updateErrChan:
-				log.WithError(err).Error("Bot API get updates error")
+				log.WithField("error", err.Error()).Error("Bot API get updates error")
 				errChan <- err
 				return
 			case update := <-updateChan:
 				if err := updateProcessor.Process(ctx, &update); err != nil {
-					log.WithError(err).Error("Failed to process update")
+					log.WithField("error", err.Error()).Error("Failed to process update")
 				}
 			case <-ctx.Done():
 				log.Info("Bot shutdown initiated")
@@ -161,14 +161,13 @@ func runBot(ctx context.Context, cfg *config.Config, errChan chan<- error) {
 }
 
 func initializeHandlers(service bot.Service, cfg *config.Config) {
-	bot.RegisterUpdateHandler("gatekeeper", handlers.NewGatekeeper(service))
 
 	banService := handlers.NewBanService(
-		"https://api.lols.bot/account",
 		service.GetBot(),
 		service.GetDB(),
 	)
 	spamControl := handlers.NewSpamControl(service, cfg.SpamControl, banService, cfg.SpamControl.Verbose)
+	bot.RegisterUpdateHandler("gatekeeper", handlers.NewGatekeeper(service, banService))
 	bot.RegisterUpdateHandler("admin", handlers.NewAdmin(service, banService, spamControl))
 
 	llmAPIConfig := openai.DefaultConfig(cfg.OpenAI.APIKey)

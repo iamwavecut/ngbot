@@ -31,4 +31,10 @@ type Client interface {
 	GetActiveSpamCase(ctx context.Context, chatID int64, userID int64) (*SpamCase, error)
 	AddSpamVote(ctx context.Context, vote *SpamVote) error
 	GetSpamVotes(ctx context.Context, caseID int64) ([]*SpamVote, error)
+	AddChatRecentJoiner(ctx context.Context, joiner *RecentJoiner) (*RecentJoiner, error)
+	GetChatRecentJoiners(ctx context.Context, chatID int64) ([]*RecentJoiner, error)
+	GetUnprocessedRecentJoiners(ctx context.Context) ([]*RecentJoiner, error)
+	ProcessRecentJoiner(ctx context.Context, chatID int64, userID int64, isSpammer bool) error
+	UpsertBanlist(ctx context.Context, userIDs []int64) error
+	GetBanlist(ctx context.Context) (map[int64]struct{}, error)
 }

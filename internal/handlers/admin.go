@@ -24,7 +24,6 @@ type Admin struct {
 
 func NewAdmin(s bot.Service, banService BanService, spamControl *SpamControl) *Admin {
 	entry := log.WithField("object", "Admin").WithField("method", "NewAdmin")
-	entry.Debug("creating new admin handler")
 
 	a := &Admin{
 		s:           s,
@@ -32,7 +31,7 @@ func NewAdmin(s bot.Service, banService BanService, spamControl *SpamControl) *A
 		spamControl: spamControl,
 		languages:   i18n.GetLanguagesList(),
 	}
-
+	entry.Debug("created new admin handler")
 	return a
 }
 
@@ -57,7 +56,7 @@ func (a *Admin) Handle(ctx context.Context, u *api.Update, chat *api.Chat, user 
 
 	isAdmin, err := a.isAdmin(chat.ID, user.ID)
 	if err != nil {
-		entry.WithError(err).Error("can't check admin status")
+		entry.WithField("error", err.Error()).Error("can't check admin status")
 		return true, err
 	}
 	entry.Debugf("user is admin: %v", isAdmin)
@@ -112,7 +111,7 @@ func (a *Admin) handleLangCommand(ctx context.Context, msg *api.Message, isAdmin
 	settings, err := a.s.GetDB().GetSettings(ctx, msg.Chat.ID)
 	if tool.Try(err) {
 		if errors.Cause(err) != sql.ErrNoRows {
-			entry.WithError(err).Error("can't get chat settings")
+			entry.WithField("error", err.Error()).Error("can't get chat settings")
 			return true, errors.WithMessage(err, "cant get chat settings")
 		}
 	}
@@ -120,7 +119,7 @@ func (a *Admin) handleLangCommand(ctx context.Context, msg *api.Message, isAdmin
 	settings.Language = argument
 	err = a.s.GetDB().SetSettings(ctx, settings)
 	if tool.Try(err) {
-		entry.WithError(err).Error("can't update chat language")
+		entry.WithField("error", err.Error()).Error("can't update chat language")
 		return false, errors.WithMessage(err, "cant update chat language")
 	}
 

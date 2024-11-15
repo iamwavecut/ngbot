@@ -34,6 +34,17 @@ type (
 		Vote    bool      `db:"vote"` // true = not spam, false = spam
 		VotedAt time.Time `db:"voted_at"`
 	}
+
+	RecentJoiner struct {
+		ID            int64     `db:"id"`
+		JoinMessageID int       `db:"join_message_id"`
+		ChatID        int64     `db:"chat_id"`
+		UserID        int64     `db:"user_id"`
+		Username      string    `db:"username"`
+		JoinedAt      time.Time `db:"joined_at"`
+		Processed     bool      `db:"processed"`
+		IsSpammer     bool      `db:"is_spammer"`
+	}
 )
 
 const (
