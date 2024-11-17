@@ -100,6 +100,10 @@ func (sc *SpamControl) preprocessMessage(ctx context.Context, msg *api.Message, 
 	if err := bot.DeleteChatMessage(ctx, sc.s.GetBot(), msg.Chat.ID, msg.MessageID); err != nil {
 		log.WithField("error", err.Error()).Error("failed to delete message")
 	}
+	if err := bot.BanUserFromChat(ctx, sc.s.GetBot(), msg.From.ID, msg.Chat.ID); err != nil {
+		log.WithField("error", err.Error()).Error("failed to ban user")
+	}
+
 	spamCase, err := sc.getSpamCase(ctx, msg)
 	if err != nil {
 		return err
@@ -280,7 +284,7 @@ func (sc *SpamControl) resolveCase(ctx context.Context, caseID int64) error {
 	}
 
 	if spamCase.Status == "spam" {
-		if err := sc.banService.BanUser(ctx, spamCase.ChatID, spamCase.UserID, 0); err != nil {
+		if err := bot.BanUserFromChat(ctx, sc.s.GetBot(), spamCase.UserID, spamCase.ChatID); err != nil {
 			log.WithField("error", err.Error()).Error("failed to ban user")
 		}
 	} else {

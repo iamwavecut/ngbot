@@ -3,12 +3,12 @@ package handlers
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
-	"encoding/json"
 
 	api "github.com/OvyFlash/telegram-bot-api"
 	"github.com/iamwavecut/ngbot/internal/db"
@@ -29,7 +29,7 @@ type BanService interface {
 	CheckBan(ctx context.Context, userID int64) (bool, error)
 	MuteUser(ctx context.Context, chatID, userID int64) error
 	UnmuteUser(ctx context.Context, chatID, userID int64) error
-	BanUser(ctx context.Context, chatID, userID int64, messageID int) error
+	BanUserWithMessage(ctx context.Context, chatID, userID int64, messageID int) error
 	UnbanUser(ctx context.Context, chatID, userID int64) error
 	IsRestricted(ctx context.Context, chatID, userID int64) (bool, error)
 }
@@ -258,7 +258,7 @@ func (s *defaultBanService) UnmuteUser(ctx context.Context, chatID, userID int64
 	return nil
 }
 
-func (s *defaultBanService) BanUser(ctx context.Context, chatID, userID int64, messageID int) error {
+func (s *defaultBanService) BanUserWithMessage(ctx context.Context, chatID, userID int64, messageID int) error {
 	expiresAt := time.Now().Add(10 * time.Minute)
 	config := api.BanChatMemberConfig{
 		ChatMemberConfig: api.ChatMemberConfig{

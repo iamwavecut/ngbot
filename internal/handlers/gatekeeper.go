@@ -88,7 +88,6 @@ type Gatekeeper struct {
 
 type GatekeeperBanChecker interface {
 	CheckBan(ctx context.Context, userID int64) (bool, error)
-	BanUser(ctx context.Context, chatID, userID int64, messageID int) error
 }
 
 var challengeKeys = []string{
@@ -174,8 +173,13 @@ func (g *Gatekeeper) processNewChatMembers(ctx context.Context) error {
 		}
 		if banned {
 			entry.WithField("userID", joiner.UserID).Info("user is banned")
-			if err := g.banChecker.BanUser(ctx, joiner.ChatID, joiner.UserID, joiner.JoinMessageID); err != nil {
+			if err := bot.BanUserFromChat(ctx, g.s.GetBot(), joiner.UserID, joiner.ChatID); err != nil {
 				entry.WithField("error", err.Error()).Error("failed to ban user")
+			}
+			if joiner.JoinMessageID != 0 {
+				if err := bot.DeleteChatMessage(ctx, g.s.GetBot(), joiner.ChatID, joiner.JoinMessageID); err != nil {
+					entry.WithField("error", err.Error()).Error("failed to delete join message")
+				}
 			}
 		}
 		if err := g.s.GetDB().ProcessRecentJoiner(ctx, joiner.ChatID, joiner.UserID, banned); err != nil {

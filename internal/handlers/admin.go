@@ -172,7 +172,7 @@ func (a *Admin) handleBanCommand(ctx context.Context, msg *api.Message, isAdmin 
 func (a *Admin) handleAdminBan(ctx context.Context, msg *api.Message, language string) error {
 	targetMsg := msg.ReplyToMessage
 
-	err := a.banService.BanUser(ctx, msg.Chat.ID, targetMsg.From.ID, msg.MessageID)
+	err := bot.BanUserFromChat(ctx, a.s.GetBot(), targetMsg.From.ID, msg.Chat.ID)
 	if err != nil {
 		if errors.Is(err, ErrNoPrivileges) {
 			msg := api.NewMessage(msg.Chat.ID, i18n.Get("I don't have enough rights to ban this user", language))
