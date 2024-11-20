@@ -406,7 +406,6 @@ func ExtractContentFromMessage(msg *api.Message) (content string) {
 
 func GetMessageType(msg *api.Message) MessageType {
 	switch {
-
 	case msg.Animation != nil:
 		return MessageTypeAnimation
 	case msg.Audio != nil:
