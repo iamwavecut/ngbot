@@ -294,11 +294,30 @@ func (r *Reactor) checkMessageForSpam(ctx context.Context, msg *api.Message, cha
 
 	content := msg.Text
 	if content == "" {
-		content = msg.Caption
-	}
-	if content == "" {
 		entry.Debug("empty message content")
-		return false, nil
+
+		// disallow inline keyboard as first message
+		if msg.ReplyMarkup != nil {
+			if err := r.spamControl.ProcessSpamMessage(ctx, msg, r.s.GetLanguage(ctx, chat.ID, user)); err != nil {
+				entry.WithField("error", err.Error()).Error("failed to process media message")
+			}
+			return true, nil
+		}
+		// ! dsabled due to high risk of false positives
+		// disallow media messages as first message if not caption
+		// if msg.Photo != nil || msg.MediaGroupID != "" || msg.Video != nil || msg.VideoNote != nil || msg.Audio != nil {
+		// 	if err := r.spamControl.ProcessSpamMessage(ctx, msg, r.s.GetLanguage(ctx, chat.ID, user)); err != nil {
+		// 		entry.WithField("error", err.Error()).Error("failed to process media message")
+		// 	}
+		// 	return true, nil
+		// }
+
+		if msg.Caption != "" {
+			content = msg.Caption
+			entry.Debug("using media caption as content")
+		} else {
+			entry.Debug("media message without caption")
+		}
 	}
 
 	isBanned, err := r.banService.CheckBan(ctx, user.ID)
