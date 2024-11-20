@@ -40,7 +40,7 @@ func (sc *SpamControl) ProcessSuspectMessage(ctx context.Context, msg *api.Messa
 		spamCase, err = sc.s.GetDB().CreateSpamCase(ctx, &db.SpamCase{
 			ChatID:      msg.Chat.ID,
 			UserID:      msg.From.ID,
-			MessageText: msg.Text,
+			MessageText: bot.ExtractContentFromMessage(msg),
 			CreatedAt:   time.Now(),
 			Status:      "pending",
 		})
@@ -84,7 +84,7 @@ func (sc *SpamControl) getSpamCase(ctx context.Context, msg *api.Message) (*db.S
 		spamCase, err = sc.s.GetDB().CreateSpamCase(ctx, &db.SpamCase{
 			ChatID:      msg.Chat.ID,
 			UserID:      msg.From.ID,
-			MessageText: msg.Text,
+			MessageText: bot.ExtractContentFromMessage(msg),
 			CreatedAt:   time.Now(),
 			Status:      "pending",
 		})
@@ -174,7 +174,7 @@ func (sc *SpamControl) SendChannelPost(ctx context.Context, msg *api.Message, la
 func (sc *SpamControl) createInChatNotification(msg *api.Message, caseID int64, lang string, voting bool) api.Chattable {
 	text := fmt.Sprintf(i18n.Get("⚠️ Potential spam message from %s\n\nMessage: %s\n\nPlease vote:", lang),
 		bot.GetUN(msg.From),
-		msg.Text,
+		bot.ExtractContentFromMessage(msg),
 	)
 
 	replyMsg := api.NewMessage(msg.Chat.ID, text)
@@ -196,7 +196,7 @@ func (sc *SpamControl) createInChatNotification(msg *api.Message, caseID int64, 
 
 func (sc *SpamControl) createChannelPost(msg *api.Message, caseID int64, lang string, voting bool) api.Chattable {
 	from := bot.GetUN(msg.From)
-	textSlice := strings.Split(msg.Text, "\n")
+	textSlice := strings.Split(bot.ExtractContentFromMessage(msg), "\n")
 	for i, line := range textSlice {
 		line = strings.ReplaceAll(line, "http", "_ttp")
 		line = strings.ReplaceAll(line, "+7", "+*")

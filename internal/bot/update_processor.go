@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -25,6 +26,36 @@ type (
 		s              Service
 		updateHandlers []Handler
 	}
+
+	MessageType string
+)
+
+const (
+	MessageTypeText              MessageType = "text"
+	MessageTypeAnimation         MessageType = "animation"
+	MessageTypeAudio             MessageType = "audio"
+	MessageTypeContact           MessageType = "contact"
+	MessageTypeDice              MessageType = "dice"
+	MessageTypeDocument          MessageType = "document"
+	MessageTypeGame              MessageType = "game"
+	MessageTypeInvoice           MessageType = "invoice"
+	MessageTypeLocation          MessageType = "location"
+	MessageTypePhoto             MessageType = "photo"
+	MessageTypePoll              MessageType = "poll"
+	MessageTypeSticker           MessageType = "sticker"
+	MessageTypeStory             MessageType = "story"
+	MessageTypeVenue             MessageType = "venue"
+	MessageTypeVideo             MessageType = "video"
+	MessageTypeVideoNote         MessageType = "video_note"
+	MessageTypeVoice             MessageType = "voice"
+	MessageTypeEditedMessage     MessageType = "edited_message"
+	MessageTypeChannelPost       MessageType = "channel_post"
+	MessageTypeEditedChannelPost MessageType = "edited_channel_post"
+	MessageTypePollAnswer        MessageType = "poll_answer"
+	MessageTypeMyChatMember      MessageType = "my_chat_member"
+	MessageTypeChatMember        MessageType = "chat_member"
+	MessageTypeChatJoinRequest   MessageType = "chat_join_request"
+	MessageTypeChatBoost         MessageType = "chat_boost"
 )
 
 var registeredHandlers = make(map[string]Handler)
@@ -306,4 +337,109 @@ func GetFullName(user *api.User) string {
 		fullName = user.UserName
 	}
 	return fullName
+}
+
+func ExtractContentFromMessage(msg *api.Message) (content string) {
+	var markupContent string
+	defer func() {
+		content = strings.TrimSpace(content)
+		markupContent = strings.TrimSpace(markupContent)
+		if markupContent != "" {
+			content = strings.TrimSpace(content + " " + markupContent)
+		}
+	}()
+
+	content = strings.TrimSpace(msg.Text + " " + msg.Caption)
+
+	addMessageType := false
+	messageType := GetMessageType(msg)
+	switch messageType {
+	case MessageTypeAnimation:
+		addMessageType = true
+	case MessageTypeAudio:
+		content += fmt.Sprintf(" [%s] %s", messageType, msg.Audio.Title)
+	case MessageTypeContact:
+		content += fmt.Sprintf(" [%s] %s", messageType, msg.Contact.PhoneNumber)
+	case MessageTypeDice:
+		content += fmt.Sprintf(" [%s] %s (%d)", messageType, msg.Dice.Emoji, msg.Dice.Value)
+	case MessageTypeDocument:
+		addMessageType = true
+	case MessageTypeGame:
+		content += fmt.Sprintf(" [%s] %s %s", messageType, msg.Game.Title, msg.Game.Description)
+	case MessageTypeInvoice:
+		content += fmt.Sprintf(" [%s] %s %s", messageType, msg.Invoice.Title, msg.Invoice.Description)
+	case MessageTypeLocation:
+		content += fmt.Sprintf(" [%s] %f,%f", messageType, msg.Location.Latitude, msg.Location.Longitude)
+	case MessageTypePoll:
+		content += fmt.Sprintf(" [%s] %s", messageType, msg.Poll.Question)
+	case MessageTypeStory:
+		addMessageType = true
+	case MessageTypeVenue:
+		content += fmt.Sprintf(" [%s] %s %s", messageType, msg.Venue.Title, msg.Venue.Address)
+	case MessageTypeVideo:
+		addMessageType = true
+	case MessageTypeVideoNote:
+		addMessageType = true
+	case MessageTypeVoice:
+		addMessageType = true
+	}
+	if addMessageType {
+		content += fmt.Sprintf(" [%s]", messageType)
+	}
+
+	if msg.ReplyMarkup != nil {
+		var buttonTexts []string
+		for _, row := range msg.ReplyMarkup.InlineKeyboard {
+			for _, button := range row {
+				if button.Text != "" {
+					buttonTexts = append(buttonTexts, button.Text)
+				}
+			}
+		}
+		if len(buttonTexts) > 0 {
+			markupContent = strings.Join(buttonTexts, " ")
+		}
+	}
+
+	return content
+}
+
+func GetMessageType(msg *api.Message) MessageType {
+	switch {
+
+	case msg.Animation != nil:
+		return MessageTypeAnimation
+	case msg.Audio != nil:
+		return MessageTypeAudio
+	case msg.Contact != nil:
+		return MessageTypeContact
+	case msg.Dice != nil:
+		return MessageTypeDice
+	case msg.Document != nil:
+		return MessageTypeDocument
+	case msg.Game != nil:
+		return MessageTypeGame
+	case msg.Invoice != nil:
+		return MessageTypeInvoice
+	case msg.Location != nil:
+		return MessageTypeLocation
+	case msg.Photo != nil:
+		return MessageTypePhoto
+	case msg.Poll != nil:
+		return MessageTypePoll
+	case msg.Sticker != nil:
+		return MessageTypeSticker
+	case msg.Story != nil:
+		return MessageTypeStory
+	case msg.Venue != nil:
+		return MessageTypeVenue
+	case msg.Video != nil:
+		return MessageTypeVideo
+	case msg.VideoNote != nil:
+		return MessageTypeVideoNote
+	case msg.Voice != nil:
+		return MessageTypeVoice
+	default:
+		return MessageTypeText
+	}
 }
