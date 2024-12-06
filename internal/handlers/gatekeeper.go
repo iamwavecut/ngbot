@@ -35,6 +35,7 @@ import (
 
 	"github.com/iamwavecut/tool"
 
+	"github.com/iamwavecut/ngbot/internal/config"
 	"github.com/iamwavecut/ngbot/internal/db"
 	"github.com/iamwavecut/ngbot/resources"
 
@@ -216,6 +217,15 @@ func (g *Gatekeeper) Handle(ctx context.Context, u *api.Update, chat *api.Chat, 
 	settings, err := g.fetchAndValidateSettings(ctx, chat.ID)
 	if err != nil {
 		return true, err
+	}
+	if settings == nil {
+		settings = &db.Settings{
+			ID:               chat.ID,
+			Enabled:          true,
+			Language:         config.Get().DefaultLanguage,
+			ChallengeTimeout: defaultChallengeTimeout.Nanoseconds(),
+			RejectTimeout:    defaultRejectTimeout.Nanoseconds(),
+		}
 	}
 	if !settings.Enabled {
 		entry.Debug("gatekeeper is disabled for this chat")
