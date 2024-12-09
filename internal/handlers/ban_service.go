@@ -160,9 +160,15 @@ func (s *defaultBanService) FetchKnownBanned(ctx context.Context) error {
 	return nil
 }
 
+func (s *defaultBanService) IsKnownBanned(userID int64) bool {
+	_, banned := s.knownBanned[userID]
+	return banned
+}
+
 func (s *defaultBanService) CheckBan(ctx context.Context, userID int64) (bool, error) {
-	if _, banned := s.knownBanned[userID]; banned {
-		return banned, nil
+	banned := s.IsKnownBanned(userID)
+	if banned {
+		return true, nil
 	}
 
 	url := fmt.Sprintf(accoutsAPIURLTemplate, userID)
@@ -270,7 +276,6 @@ func (s *defaultBanService) BanUserWithMessage(ctx context.Context, chatID, user
 		UntilDate:      expiresAt.Unix(),
 		RevokeMessages: true,
 	}
-
 	if _, err := s.bot.Request(config); err != nil {
 		if strings.Contains(err.Error(), MsgNoPrivileges) {
 			return ErrNoPrivileges

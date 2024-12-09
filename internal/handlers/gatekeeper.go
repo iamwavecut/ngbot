@@ -89,6 +89,8 @@ type Gatekeeper struct {
 
 type GatekeeperBanChecker interface {
 	CheckBan(ctx context.Context, userID int64) (bool, error)
+	IsKnownBanned(userID int64) bool
+	BanUserWithMessage(ctx context.Context, chatID, userID int64, messageID int) error
 }
 
 var challengeKeys = []string{
@@ -491,6 +493,10 @@ func (g *Gatekeeper) handleNewChatMembersV2(ctx context.Context, u *api.Update, 
 	if u.Message != nil && u.Message.NewChatMembers != nil {
 		entry.Info("Processing new chat members")
 		for _, member := range u.Message.NewChatMembers {
+			if g.banChecker.IsKnownBanned(member.ID) {
+				g.banChecker.BanUserWithMessage(ctx, chat.ID, member.ID, u.Message.MessageID)
+				continue
+			}
 			userName := bot.GetUN(&member)
 			entry := entry.WithField("user", userName)
 			entry.Debug("Saving user as recent joiner")
