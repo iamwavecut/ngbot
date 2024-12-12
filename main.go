@@ -23,6 +23,7 @@ import (
 	"github.com/iamwavecut/ngbot/internal/bot"
 	"github.com/iamwavecut/ngbot/internal/config"
 	"github.com/iamwavecut/ngbot/internal/infra"
+	"github.com/iamwavecut/ngbot/internal/observability"
 )
 
 func main() {
@@ -42,8 +43,12 @@ func main() {
 	tool.Try(api.SetLogger(log.WithField("context", "bot_api")), true)
 	i18n.Init()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := context.Background()
+
+	// Initialize observability stack
+	if err := observability.Init(ctx); err != nil {
+		log.Fatalf("Failed to initialize observability: %v", err)
+	}
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
@@ -68,7 +73,6 @@ func main() {
 	}
 
 	log.Info("Starting graceful shutdown...")
-	cancel()
 
 	// Wait for graceful shutdown with timeout
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)

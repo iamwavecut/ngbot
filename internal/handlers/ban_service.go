@@ -32,6 +32,7 @@ type BanService interface {
 	BanUserWithMessage(ctx context.Context, chatID, userID int64, messageID int) error
 	UnbanUser(ctx context.Context, chatID, userID int64) error
 	IsRestricted(ctx context.Context, chatID, userID int64) (bool, error)
+	IsKnownBanned(userID int64) bool
 }
 
 type defaultBanService struct {
