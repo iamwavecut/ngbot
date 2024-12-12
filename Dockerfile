@@ -1,7 +1,5 @@
 FROM golang:alpine AS build
 HEALTHCHECK NONE
-RUN apk add --no-cache --update \
-    gcc g++ sqlite
 
 WORKDIR /build
 COPY go.mod go.sum ./
