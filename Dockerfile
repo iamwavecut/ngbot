@@ -1,4 +1,4 @@
-FROM golang:1.21-alpine AS build
+FROM golang:1.23-alpine AS build
 HEALTHCHECK NONE
 RUN apk add --no-cache \
     gcc \
