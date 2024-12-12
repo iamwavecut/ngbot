@@ -15,7 +15,6 @@ require (
 	github.com/rubenv/sql-migrate v1.7.0
 	github.com/sirupsen/logrus v1.9.3
 	go.opentelemetry.io/otel v1.32.0
-	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.21.0
 	go.opentelemetry.io/otel/sdk v1.32.0
 	go.uber.org/zap v1.27.0
 	golang.org/x/sync v0.10.0
@@ -30,7 +29,6 @@ require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/go-logr/logr v1.4.2 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
-	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/google/flatbuffers v24.3.25+incompatible // indirect
 	github.com/google/pprof v0.0.0-20240424215950-a892ee059fd6 // indirect
 	github.com/google/uuid v1.6.0 // indirect
@@ -38,7 +36,6 @@ require (
 	github.com/klauspost/compress v1.17.11 // indirect
 	github.com/mattn/go-colorable v0.1.13 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
-	github.com/matttproud/golang_protobuf_extensions v1.0.4 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/ncruces/go-strftime v0.1.9 // indirect
 	github.com/nlpodyssey/gopickle v0.3.0 // indirect
@@ -67,6 +64,6 @@ require (
 	github.com/rs/zerolog v1.33.0
 	github.com/sashabaranov/go-openai v1.36.0
 	github.com/sethvargo/go-envconfig v1.1.0
-	golang.org/x/exp v0.0.0-20241204233417-43b7b7cde48d // indirect
+	golang.org/x/exp v0.0.0-20241210194714-1829a127f884 // indirect
 	golang.org/x/sys v0.28.0 // indirect
 )
