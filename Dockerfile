@@ -1,10 +1,8 @@
 FROM golang:1.23-alpine AS build
 HEALTHCHECK NONE
-RUN apk add --no-cache \
-    gcc \
-    g++ \
-    sqlite \
-    musl-dev
+RUN apk add --no-cache --update \
+    gcc g++ sqlite
+
 WORKDIR /build
 COPY go.mod go.sum ./
 RUN go mod download
