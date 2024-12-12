@@ -1,21 +1,28 @@
-version: "3.9"
 services:
   ngbot:
     build:
-      args:
-        - NG_TOKEN
-        - NG_LANG
-        - NG_HANDLERS
-        - NG_LOG_LEVEL
       context: .
       dockerfile: Dockerfile
+    environment:
+      - NG_TOKEN
+      - NG_LANG
+      - NG_HANDLERS
+      - NG_LOG_LEVEL
+      - NG_DOT_PATH
+      - OPENAI_API_KEY
+      - OPENAI_BASE_URL
+      - OPENAI_MODEL
+      - NG_FLAGGED_EMOJIS
+      - NG_SPAM_LOG_CHANNEL_USERNAME
+      - NG_SPAM_VERBOSE
+      - NG_SPAM_VOTING_TIMEOUT
+      - NG_SPAM_MIN_VOTERS
+      - NG_SPAM_MAX_VOTERS
+      - NG_SPAM_MIN_VOTERS_PERCENTAGE
+      - NG_SPAM_SUSPECT_NOTIFICATION_TIMEOUT
     volumes:
       - ${HOME}/.ngbot:/root/.ngbot:delegated
     deploy:
       restart_policy:
         condition: on-failure
         delay: 5s
-    
-    
-    
-  

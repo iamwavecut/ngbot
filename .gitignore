@@ -2,5 +2,6 @@ ngbot
 .*/
 !**/*.go
 /.*
-!.env
+!.env.example
 dbconfig.yml
+.env

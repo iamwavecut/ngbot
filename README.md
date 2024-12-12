@@ -20,103 +20,70 @@
 2. If the message is considered as spam - newcomer gets kick-banned.
 3. If the message is not considered as spam - user becomes a normal trusted chat member.
 
+## Installation
+
+### Quick Start with Docker Compose
+1. Create a bot via [BotFather](https://t.me/BotFather) and enable group messages access.
+2. Clone the repository:
+```bash
+git clone https://github.com/iamwavecut/ngbot.git
+cd ngbot
+```
+3. Copy the example environment file and configure it:
+```bash
+cp .env.example .env
+# Edit .env with your favorite editor and set required variables
+```
+4. Start the bot:
+```bash
+docker compose up -d
+```
+5. Add your bot to chat and give it **Ban**, **Delete**, and **Invite** permissions.
+6. Optional: Change bot language with `/lang <code>` (e.g., `/lang ru`).
+
+### Manual Installation
+1. Follow steps 1-3 from Quick Start.
+2. Build and run:
+```bash
+go mod download
+go run .
+```
+
+## Configuration
+All configuration is done through environment variables. You can:
+- Set them in your environment
+- Use a `.env` file (recommended)
+- Pass them directly to docker compose or the binary
+
+See [.env.example](.env.example) for a quick reference of all available options.
+
+### Configuration Options
+
+| Required | Variable name | Description | Default | Options |
+| --- | --- | --- | --- | --- |
+| :heavy_check_mark: | `NG_TOKEN` | Telegram BOT API token | | |
+| :heavy_check_mark: | `NG_OPENAI_API_KEY` | OpenAI API key for content analysis | | |
+| :x: | `NG_LANG` | Default language to use in new chats | `en` | `be`, `bg`, `cs`, `da`, `de`, `el`, `en`, `es`, `et`, `fi`, `fr`, `hu`, `id`, `it`, `ja`, `ko`, `lt`, `lv`, `nb`, `nl`, `pl`, `pt`, `ro`, `ru`, `sk`, `sl`, `sv`, `tr`, `uk`, `zh` |
+| :x: | `NG_HANDLERS` | Enabled bot handlers | `admin,gatekeeper,reactor` | Comma-separated list of handlers |
+| :x: | `NG_LOG_LEVEL` | Logging verbosity | `2` | `0`=Panic, `1`=Fatal, `2`=Error, `3`=Warn, `4`=Info, `5`=Debug, `6`=Trace |
+| :x: | `NG_DOT_PATH` | Bot data storage path | `~/.ngbot` | Any valid filesystem path |
+| :x: | `NG_OPENAI_MODEL` | OpenAI model to use | `gpt-4o-mini` | Any valid OpenAI model |
+| :x: | `NG_OPENAI_BASE_URL` | OpenAI API base URL | `https://api.openai.com/v1` | Any valid OpenAI API compliant base URL |
+| :x: | `NG_FLAGGED_EMOJIS` | Emojis used for content flagging | `👎,💩` | Comma-separated list of emojis |
+| :x: | `NG_SPAM_LOG_CHANNEL_USERNAME` | Channel for spam logging | | Any valid channel username |
+| :x: | `NG_SPAM_VERBOSE` | Verbose in-chat notifications | `false` | `true`, `false` |
+| :x: | `NG_SPAM_VOTING_TIMEOUT` | Voting time limit | `5m` | Any valid duration string |
+| :x: | `NG_SPAM_MIN_VOTERS` | Minimum required voters | `2` | Any positive integer |
+| :x: | `NG_SPAM_MAX_VOTERS` | Maximum voters cap | `10` | Any positive integer |
+| :x: | `NG_SPAM_MIN_VOTERS_PERCENTAGE` | Minimum voter percentage | `5` | Any positive float |
+| :x: | `NG_SPAM_SUSPECT_NOTIFICATION_TIMEOUT` | Suspect notification timeout | `2m` | Any valid duration string |
+
 ## Troubleshooting
 Don't hesitate to contact me
 
 [![telegram](https://user-images.githubusercontent.com/239034/142726254-d3378dee-5b73-41b0-858d-b2a6e85dc735.png)
 ](https://t.me/WaveCut) [![linkedin](https://user-images.githubusercontent.com/239034/142726236-86c526e0-8fc3-4570-bd2d-fc7723d5dc09.png)
 ](https://linkedin.com/in/wavecut)
-
-## Installation
-
-
-### "I'm a teapot"
-
-Ok, I've got something for ya.
-1. Invite the [Quarantino](https://tg.me/nedoibot) into your chat group. 
-2. Promote him to Admin with at least **Ban**, **Delete**, and **Invite** permissions enabled.
-3. *(optional)* Message`/lang ru` to change chat language.
-4. ...
-5. PROFIT.
-
->I respect your privacy, so **I do NOT log messages nor collecting personal data**. This bot is hosted on my personal VDS instance, and it's completely private. Happy chatting!
-
-
-### "I'm too young to die"
-1. Create a bot via [BotFather](https://t.me/BotFather).
-2. Finally, **enable group messages access** for your bot, it's essential for your bot to be able to see newcomers.
-3. Memorize the unique **token** string of your bot.
-4. Have recent version of [Docker](https://www.docker.com/get-started).
-5. Obtain code either via `git clone` :arrow_upper_right: or by [downloading zip](https://github.com/iamwavecut/ngbot/archive/refs/heads/master.zip) and extracting it.
-6. Open terminal app of your choice and navigate into the code folder.
-7. Run this command, replacing the **T** with the actual token string
- ```
- docker compose build --build-arg NG_TOKEN=<REPLACE_THIS> --build-arg OPENAI_API_KEY=<REPLACE_THIS>
- docker compose up -d --no-recreate
- ```
-8. Add your bot to chat, give him permissions to **Ban**, **Delete**, and **Invite**.
-9. Change bot language for this chat, if needed.
- - `/lang ru` (see below for the complete list of available languages)
-10. `docker compose stop` to stop bot `docker compose start` to get it up and running again.
-11. `docker compose down` to remove bot's artifacs.
-12. `rm ~/.ngbot/bot.db` to start clean.
-
-
-### "Hurt me plenty"
-```shell
-NG_DIR=${GOPATH-$HOME/go}/src/github.com/iamwavecut/ngbot
-git clone git@github.com:iamwavecut/ngbot.git ${NG_DIR}
-cd ${NG_DIR}
-
-NG_TOKEN=<REPLACE_THIS>
-OPENAI_API_KEY=<REPLACE_THIS>
-docker build . --build-arg NG_TOKEN=$NG_TOKEN --build-arg OPENAI_API_KEY=$OPENAI_API_KEY -t ngbot
-// token gets baked into container, so you just simply
-docker run ngbot
-```
-Override baked variables by providing them as runtime flags
-```shell
-docker run -e NG_TOKEN=<ANOTHER_TOKEN> -e OPENAI_API_KEY=<ANOTHER_OPENAI_API_KEY> ngbot
-```
-
-
-### "Ultra-Violence"
-```shell
-NG_DIR=${GOPATH-$HOME/go}/src/github.com/iamwavecut/ngbot
-git clone git@github.com:iamwavecut/ngbot.git ${NG_DIR}
-cd ${NG_DIR}
-
-NG_TOKEN=<REPLACE_THIS>
-NG_LANG=en
-NG_HANDLERS=admin,gatekeeper,reactor
-NG_LOG_LEVEL=6
-OPENAI_API_KEY=<REPLACE_THIS>
-CGO_ENABLE=1 go run .
-```
-
-
-## Configuration
-
-> All configuration is meant to be passed as build time arguments, however, you are free to modify env vars at runtime at your own risk.
-
-| Required | Variable name | Description | Default | Options |
-| --- | --- | --- | --- | --- |
-| :heavy_check_mark: | `NG_TOKEN` | Telegram BOT API token | | |
-| :x: | `NG_LANG` | Default language to use in new chats | `en` | `be`, `bg`, `cs`, `da`, `de`, `el`, `en`, `es`, `et`, `fi`, `fr`, `hu`, `id`, `it`, `ja`, `ko`, `lt`, `lv`, `nb`, `nl`, `pl`, `pt`, `ro`, `ru`, `sk`, `sl`, `sv`, `tr`, `uk`, `zh` |
-| :x: | `NG_HANDLERS` | Enabled bot handlers. Modify to add custom handlers or change invocation order | `admin,gatekeeper,reactor` | Comma-separated list of handlers |
-| :x: | `NG_LOG_LEVEL` | Limits the logs spam | `2` | `0`=Panic, `1`=Fatal, `2`=Error, `3`=Warn, `4`=Info, `5`=Debug, `6`=Trace |
-| :x: | `NG_DOT_PATH` | Path for bot data storage | `~/.ngbot` | Any valid filesystem path |
-| :heavy_check_mark: | `NG_OPENAI_API_KEY` | OpenAI API key for content analysis | | |
-| :x: | `NG_OPENAI_MODEL` | OpenAI model to use | `gpt-4o-mini` | Any valid OpenAI model |
-| :x: | `NG_OPENAI_BASE_URL` | OpenAI API base URL | `https://api.openai.com/v1` | Any valid OpenAI API compliant base URL |
-| :x: | `NG_FLAGGED_EMOJIS` | Emojis used to flag content | `👎🏻,💩` | Comma-separated list of emojis |
-| :x: | `NG_SPAM_LOG_CHANNEL_ID` | Telegram channel ID for spam logging | | Any valid channel ID, that bot may post to |
-| :x: | `NG_SPAM_VERBOSE` | Whether to send verbose in-chat suspect notifications | `false` | `true`, `false` |
-| :x: | `NG_SPAM_VOTING_TIMEOUT` | Time limit for spam voting in minutes | `5` | Any positive integer |
-| :x: | `NG_SPAM_MIN_VOTERS` | Minimum number of voters required | `2` | Any positive integer |
-| :x: | `NG_SPAM_MAX_VOTERS` | Maximum number of voters cap | `10` | Any positive integer |
-| :x: | `NG_SPAM_MIN_VOTERS_PERCENTAGE` | Minimum percentage of voters required if chat is populated | `5` | Any positive float |
-| :x: | `NG_SPAM_SUSPECT_NOTIFICATION_TIMEOUT` | Timeout for suspect notifications | `2m` | Any valid duration string |
 
 ## TODO
 
