@@ -12,7 +12,7 @@ RUN CGO_ENABLED=0 \
 
 FROM gcr.io/distroless/static-debian12
 HEALTHCHECK NONE
-USER 1001
+USER 1000
 WORKDIR /app
 COPY --from=build /build/ngbot ./
 ENTRYPOINT ["./ngbot"]
