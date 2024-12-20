@@ -5,3 +5,4 @@ ngbot
 !.env.example
 dbconfig.yml
 .env
+compose.yaml

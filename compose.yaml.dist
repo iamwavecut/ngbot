@@ -21,6 +21,7 @@ services:
       - NG_SPAM_MIN_VOTERS_PERCENTAGE
       - NG_SPAM_SUSPECT_NOTIFICATION_TIMEOUT
     volumes:
+      # Set the path to your ngbot directory
       - /home/username/.ngbot:/root/.ngbot:delegated
     deploy:
       restart_policy:
