@@ -21,7 +21,7 @@ services:
       - NG_SPAM_MIN_VOTERS_PERCENTAGE
       - NG_SPAM_SUSPECT_NOTIFICATION_TIMEOUT
     volumes:
-      - ${HOME}/.ngbot:/root/.ngbot:delegated
+      - /home/username/.ngbot:/root/.ngbot:delegated
     deploy:
       restart_policy:
         condition: on-failure
