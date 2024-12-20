@@ -2,47 +2,62 @@ package handlers
 
 import (
 	"context"
+	"strings"
 
+	"github.com/iamwavecut/ngbot/internal/adapters"
+	"github.com/iamwavecut/ngbot/internal/adapters/llm"
 	"github.com/pkg/errors"
-	"github.com/sashabaranov/go-openai"
+	log "github.com/sirupsen/logrus"
 )
 
 type spamDetector struct {
-	client *openai.Client
-	model  string
+	llm    adapters.LLM
+	logger *log.Entry
 }
 
-func NewSpamDetector(client *openai.Client, model string) *spamDetector {
+func NewSpamDetector(llm adapters.LLM, logger *log.Entry) *spamDetector {
 	return &spamDetector{
-		client: client,
-		model:  model,
+		llm: llm,
 	}
 }
 
 func (d *spamDetector) IsSpam(ctx context.Context, message string) (bool, error) {
-	resp, err := d.client.CreateChatCompletion(
+	resp, err := d.llm.ChatCompletion(
 		ctx,
-		openai.ChatCompletionRequest{
-			Model:       d.model,
-			Temperature: 0.01,
-			Messages: []openai.ChatCompletionMessage{
-				{
-					Role:    openai.ChatMessageRoleSystem,
-					Content: spamDetectionPrompt,
-				},
-				{
-					Role:    openai.ChatMessageRoleUser,
-					Content: message,
-				},
+		[]llm.ChatCompletionMessage{
+			{
+				Role:    "system",
+				Content: spamDetectionPrompt,
+			},
+			{
+				Role:    "user",
+				Content: message,
 			},
 		},
 	)
 
 	if err != nil {
-		return false, errors.Wrap(err, "failed to check spam with OpenAI")
+		return false, errors.Wrap(err, "failed to check spam with LLM")
 	}
 
-	return len(resp.Choices) > 0 && resp.Choices[0].Message.Content == "SPAM", nil
+	if len(resp.Choices) == 0 {
+		return false, errors.New("no response from LLM")
+	}
+
+	if len(resp.Choices) == 0 || resp.Choices[0].Message.Content == "" {
+		return false, errors.New("empty response from LLM")
+	}
+	choice := resp.Choices[0].Message.Content
+	choice = strings.TrimSpace(choice)
+	if choice == "SPAM" {
+		return true, nil
+	} else if choice == "NOT_SPAM" {
+		return false, nil
+	} else {
+		d.logger.WithField("message", message).WithField("response", choice).Warn("unknown response from LLM")
+	}
+
+	return false, errors.New("unknown response from LLM: " + choice)
 }
 
 const spamDetectionPrompt = `Ты ассистент для обнаружения спама, анализирующий сообщения на различных языках. Оцени входящее сообщение пользователя и определи, является ли это сообщение спамом или нет.

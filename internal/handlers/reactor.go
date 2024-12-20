@@ -10,7 +10,6 @@ import (
 
 	api "github.com/OvyFlash/telegram-bot-api"
 	"github.com/pkg/errors"
-	"github.com/sashabaranov/go-openai"
 	log "github.com/sirupsen/logrus"
 
 	"github.com/iamwavecut/ngbot/internal/bot"
@@ -36,7 +35,6 @@ type Config struct {
 // Reactor handles message processing and spam detection
 type Reactor struct {
 	s            bot.Service
-	llmAPI       *openai.Client
 	config       Config
 	spamDetector SpamDetectorInterface
 	banService   BanService
@@ -44,10 +42,9 @@ type Reactor struct {
 }
 
 // NewReactor creates a new Reactor instance with the given configuration
-func NewReactor(s bot.Service, llmAPI *openai.Client, banService BanService, spamControl *SpamControl, spamDetector SpamDetectorInterface, config Config) *Reactor {
+func NewReactor(s bot.Service, banService BanService, spamControl *SpamControl, spamDetector SpamDetectorInterface, config Config) *Reactor {
 	r := &Reactor{
 		s:            s,
-		llmAPI:       llmAPI,
 		config:       config,
 		banService:   banService,
 		spamControl:  spamControl,

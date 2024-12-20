@@ -62,21 +62,22 @@ See [.env.example](.env.example) for a quick reference of all available options.
 | Required | Variable name | Description | Default | Options |
 | --- | --- | --- | --- | --- |
 | :heavy_check_mark: | `NG_TOKEN` | Telegram BOT API token | | |
-| :heavy_check_mark: | `NG_OPENAI_API_KEY` | OpenAI API key for content analysis | | |
-| :x: | `NG_LANG` | Default language to use in new chats | `en` | `be`, `bg`, `cs`, `da`, `de`, `el`, `en`, `es`, `et`, `fi`, `fr`, `hu`, `id`, `it`, `ja`, `ko`, `lt`, `lv`, `nb`, `nl`, `pl`, `pt`, `ro`, `ru`, `sk`, `sl`, `sv`, `tr`, `uk`, `zh` |
-| :x: | `NG_HANDLERS` | Enabled bot handlers | `admin,gatekeeper,reactor` | Comma-separated list of handlers |
-| :x: | `NG_LOG_LEVEL` | Logging verbosity | `2` | `0`=Panic, `1`=Fatal, `2`=Error, `3`=Warn, `4`=Info, `5`=Debug, `6`=Trace |
-| :x: | `NG_DOT_PATH` | Bot data storage path | `~/.ngbot` | Any valid filesystem path |
-| :x: | `NG_OPENAI_MODEL` | OpenAI model to use | `gpt-4o-mini` | Any valid OpenAI model |
-| :x: | `NG_OPENAI_BASE_URL` | OpenAI API base URL | `https://api.openai.com/v1` | Any valid OpenAI API compliant base URL |
-| :x: | `NG_FLAGGED_EMOJIS` | Emojis used for content flagging | `👎,💩` | Comma-separated list of emojis |
-| :x: | `NG_SPAM_LOG_CHANNEL_USERNAME` | Channel for spam logging | | Any valid channel username |
-| :x: | `NG_SPAM_VERBOSE` | Verbose in-chat notifications | `false` | `true`, `false` |
-| :x: | `NG_SPAM_VOTING_TIMEOUT` | Voting time limit | `5m` | Any valid duration string |
-| :x: | `NG_SPAM_MIN_VOTERS` | Minimum required voters | `2` | Any positive integer |
-| :x: | `NG_SPAM_MAX_VOTERS` | Maximum voters cap | `10` | Any positive integer |
-| :x: | `NG_SPAM_MIN_VOTERS_PERCENTAGE` | Minimum voter percentage | `5` | Any positive float |
-| :x: | `NG_SPAM_SUSPECT_NOTIFICATION_TIMEOUT` | Suspect notification timeout | `2m` | Any valid duration string |
+| :heavy_check_mark: | `NG_LLM_API_KEY` | OpenAI API key for content analysis | | |
+| | `NG_LANG` | Default language to use in new chats | `en` | `be`, `bg`, `cs`, `da`, `de`, `el`, `en`, `es`, `et`, `fi`, `fr`, `hu`, `id`, `it`, `ja`, `ko`, `lt`, `lv`, `nb`, `nl`, `pl`, `pt`, `ro`, `ru`, `sk`, `sl`, `sv`, `tr`, `uk`, `zh` |
+| | `NG_HANDLERS` | Enabled bot handlers | `admin,gatekeeper,reactor` | Comma-separated list of handlers |
+| | `NG_LOG_LEVEL` | Logging verbosity | `2` | `0`=Panic, `1`=Fatal, `2`=Error, `3`=Warn, `4`=Info, `5`=Debug, `6`=Trace |
+| | `NG_DOT_PATH` | Bot data storage path | `~/.ngbot` | Any valid filesystem path |
+| | `NG_LLM_API_MODEL` | OpenAI model to use | `gpt-4o-mini` | Any valid OpenAI model |
+| | `NG_LLM_API_URL` | OpenAI API base URL | `https://api.openai.com/v1` | Any valid OpenAI API compliant base URL |
+| | `NG_LLM_API_TYPE` | API type | `openai` | `openai`, `gemini` |
+| | `NG_FLAGGED_EMOJIS` | Emojis used for content flagging | `👎,💩` | Comma-separated list of emojis |
+| | `NG_SPAM_LOG_CHANNEL_USERNAME` | Channel for spam logging | | Any valid channel username |
+| | `NG_SPAM_VERBOSE` | Verbose in-chat notifications | `false` | `true`, `false` |
+| | `NG_SPAM_VOTING_TIMEOUT` | Voting time limit | `5m` | Any valid duration string |
+| | `NG_SPAM_MIN_VOTERS` | Minimum required voters | `2` | Any positive integer |
+| | `NG_SPAM_MAX_VOTERS` | Maximum voters cap | `10` | Any positive integer |
+| | `NG_SPAM_MIN_VOTERS_PERCENTAGE` | Minimum voter percentage | `5` | Any positive float |
+| | `NG_SPAM_SUSPECT_NOTIFICATION_TIMEOUT` | Suspect notification timeout | `2m` | Any valid duration string |
 
 ## Troubleshooting
 Don't hesitate to contact me

@@ -9,9 +9,9 @@ services:
       - NG_HANDLERS
       - NG_LOG_LEVEL
       - NG_DOT_PATH
-      - NG_OPENAI_API_KEY
-      - NG_OPENAI_BASE_URL
-      - NG_OPENAI_MODEL
+      - NG_LLM_API_KEY
+      - NG_LLM_API_URL
+      - NG_LLM_API_MODEL
       - NG_FLAGGED_EMOJIS
       - NG_SPAM_LOG_CHANNEL_USERNAME
       - NG_SPAM_VERBOSE

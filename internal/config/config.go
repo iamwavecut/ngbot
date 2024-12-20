@@ -18,15 +18,16 @@ type (
 		EnabledHandlers  []string `env:"HANDLERS,default=admin,gatekeeper,reactor"`
 		LogLevel         int      `env:"LOG_LEVEL,default=2"`
 		DotPath          string   `env:"DOT_PATH,default=~/.ngbot"`
-		OpenAI           OpenAI
+		LLM              LLM
 		Reactor          Reactor
 		SpamControl      SpamControl
 	}
 
-	OpenAI struct {
-		APIKey  string `env:"OPENAI_API_KEY,required"`
-		Model   string `env:"OPENAI_MODEL,default=gpt-4o-mini"`
-		BaseURL string `env:"OPENAI_BASE_URL,default=https://api.openai.com/v1"`
+	LLM struct {
+		APIKey  string `env:"LLM_API_KEY,required"`
+		Model   string `env:"LLM_API_MODEL,default=gpt-4o-mini"`
+		BaseURL string `env:"LLM_API_URL,default=https://api.openai.com/v1"`
+		Type    string `env:"LLM_API_TYPE,default=openai"`
 	}
 
 	Reactor struct {

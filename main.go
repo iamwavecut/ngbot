@@ -10,8 +10,10 @@ import (
 	"time"
 
 	"github.com/iamwavecut/tool"
-	"github.com/sashabaranov/go-openai"
 
+	"github.com/iamwavecut/ngbot/internal/adapters"
+	"github.com/iamwavecut/ngbot/internal/adapters/llm/gemini"
+	"github.com/iamwavecut/ngbot/internal/adapters/llm/openai"
 	"github.com/iamwavecut/ngbot/internal/db/sqlite"
 	"github.com/iamwavecut/ngbot/internal/event"
 	"github.com/iamwavecut/ngbot/internal/handlers"
@@ -97,7 +99,7 @@ func maskConfiguration(cfg *config.Config) *config.Config {
 		return s[:visiblePart] + strings.Repeat("*", len(s)-2*visiblePart) + s[len(s)-visiblePart:]
 	}
 	maskedConfig.TelegramAPIToken = maskSecret(cfg.TelegramAPIToken)
-	maskedConfig.OpenAI.APIKey = maskSecret(cfg.OpenAI.APIKey)
+	maskedConfig.LLM.APIKey = maskSecret(cfg.LLM.APIKey)
 	return &maskedConfig
 }
 
@@ -132,7 +134,7 @@ func runBot(ctx context.Context, cfg *config.Config, errChan chan<- error) {
 
 		// Initialize services and handlers
 		service := bot.NewService(ctx, botAPI, sqlite.NewSQLiteClient(ctx, "bot.db"), log.WithField("context", "service"))
-		initializeHandlers(service, cfg)
+		initializeHandlers(service, cfg, log.WithField("context", "handlers"))
 
 		// Configure updates
 		updateConfig := configureUpdates()
@@ -164,7 +166,7 @@ func runBot(ctx context.Context, cfg *config.Config, errChan chan<- error) {
 	}
 }
 
-func initializeHandlers(service bot.Service, cfg *config.Config) {
+func initializeHandlers(service bot.Service, cfg *config.Config, logger *log.Entry) {
 
 	banService := handlers.NewBanService(
 		service.GetBot(),
@@ -174,16 +176,33 @@ func initializeHandlers(service bot.Service, cfg *config.Config) {
 	bot.RegisterUpdateHandler("gatekeeper", handlers.NewGatekeeper(service, banService))
 	bot.RegisterUpdateHandler("admin", handlers.NewAdmin(service, banService, spamControl))
 
-	llmAPIConfig := openai.DefaultConfig(cfg.OpenAI.APIKey)
-	llmAPIConfig.BaseURL = cfg.OpenAI.BaseURL
-	llmAPI := openai.NewClientWithConfig(llmAPIConfig)
-	spamDetector := handlers.NewSpamDetector(llmAPI, cfg.OpenAI.Model)
+	llmAPI := configureLLM(cfg, logger)
+	spamDetector := handlers.NewSpamDetector(llmAPI, logger.WithField("context", "spam_detector"))
 
-	bot.RegisterUpdateHandler("reactor", handlers.NewReactor(service, llmAPI, banService, spamControl, spamDetector, handlers.Config{
+	bot.RegisterUpdateHandler("reactor", handlers.NewReactor(service, banService, spamControl, spamDetector, handlers.Config{
 		FlaggedEmojis: cfg.Reactor.FlaggedEmojis,
-		OpenAIModel:   cfg.OpenAI.Model,
+		OpenAIModel:   cfg.LLM.Model,
 		SpamControl:   cfg.SpamControl,
 	}))
+}
+
+func configureLLM(cfg *config.Config, logger *log.Entry) adapters.LLM {
+	switch cfg.LLM.Type {
+	case "openai":
+		return openai.NewOpenAI(
+			cfg.LLM.APIKey,
+			cfg.LLM.Model,
+			cfg.LLM.BaseURL,
+			logger.WithField("context", "llm"),
+		)
+	case "gemini":
+		return gemini.NewGemini(
+			cfg.LLM.APIKey,
+			cfg.LLM.Model,
+			logger.WithField("context", "llm"),
+		)
+	}
+	return nil
 }
 
 func configureUpdates() api.UpdateConfig {
