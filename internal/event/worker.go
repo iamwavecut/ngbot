@@ -9,13 +9,14 @@ import (
 
 type worker struct {
 	subscriptions map[string][]func(event Queueable)
+	logger        *log.Entry
 }
 
 var (
 	instance = &worker{
 		subscriptions: map[string][]func(event Queueable){},
+		logger:        log.WithField("context", "event_worker"),
 	}
-	l = log.WithField("context", "event_worker")
 )
 
 func RunWorker() context.CancelFunc {
@@ -25,6 +26,10 @@ func RunWorker() context.CancelFunc {
 }
 
 func (w *worker) Run(ctx context.Context) {
+	if w.logger == nil {
+		w.logger = log.WithField("context", "event_worker")
+	}
+
 	done := ctx.Done()
 	toProfile := false
 	profileTicker := time.NewTicker(time.Minute * 5)
@@ -33,7 +38,6 @@ func (w *worker) Run(ctx context.Context) {
 		for {
 			select {
 			case <-done:
-				// l.Info("shutting down event profile ticker by cancelled context")
 				return
 			case <-profileTicker.C:
 				toProfile = true
@@ -42,12 +46,12 @@ func (w *worker) Run(ctx context.Context) {
 	}()
 
 	go func() {
-		l.Trace("events runner go")
+		w.logger.Trace("events runner go")
 		var event Queueable
 		for {
 			select {
 			case <-done:
-				l.Info("shutting down event worker by cancelled context")
+				w.logger.Info("shutting down event worker by cancelled context")
 				return
 			default:
 				time.Sleep(1 * time.Millisecond)
@@ -57,35 +61,30 @@ func (w *worker) Run(ctx context.Context) {
 				}
 
 				if event.Expired() {
-					// l.Trace("skip event ", event)
 					continue
 				}
 
 				subscribers, ok := w.subscriptions[event.Type()]
 				if !ok {
-					// l.Trace("no event subs")
 					Bus.NQ(event)
 					continue
 				}
 				for _, sub := range subscribers {
 					sub(event)
 					if event.IsDropped() {
-						// l.Trace("drop event after sub process", event)
 						continue
 					}
 				}
 
 				if event.IsDropped() {
-					// l.Trace("drop event after all sub processed", event)
 					continue
 				}
 				if !event.IsProcessed() {
-					// l.Trace("unprocessed event, re-queueing ", event)
 					Bus.NQ(event)
 				}
 
 				if qLen := len(Bus.q); toProfile && qLen > 0 {
-					l.Debugf("unprocessed queue length: %d", qLen)
+					w.logger.WithField("queue_length", qLen).Debug("unprocessed queue length")
 				}
 			}
 		}

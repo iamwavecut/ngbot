@@ -85,6 +85,8 @@ type Gatekeeper struct {
 	banChecker GatekeeperBanChecker
 
 	Variants map[string]map[string]string `yaml:"variants"`
+
+	logger *log.Entry
 }
 
 type GatekeeperBanChecker interface {
@@ -157,6 +159,11 @@ func NewGatekeeper(s bot.Service, banChecker GatekeeperBanChecker) *Gatekeeper {
 func (g *Gatekeeper) processNewChatMembers(ctx context.Context) error {
 	entry := g.getLogEntry().WithField("method", "processNewChatMembers")
 
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
 	recentJoiners, err := g.s.GetDB().GetUnprocessedRecentJoiners(ctx)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -193,8 +200,23 @@ func (g *Gatekeeper) processNewChatMembers(ctx context.Context) error {
 	return nil
 }
 
-func (g *Gatekeeper) Handle(ctx context.Context, u *api.Update, chat *api.Chat, user *api.User) (bool, error) {
-	entry := g.getLogEntry().WithField("method", "Handle")
+func (g *Gatekeeper) Handle(ctx context.Context, u *api.Update, chat *api.Chat, user *api.User) (proceed bool, err error) {
+	entry := g.getLogEntry()
+
+	if chat == nil {
+		entry.Debug("chat is nil")
+		return true, nil
+	}
+
+	entry = entry.WithFields(log.Fields{
+		"chat_id": chat.ID,
+	})
+
+	if user != nil {
+		entry = entry.WithFields(log.Fields{
+			"user_id": user.ID,
+		})
+	}
 
 	select {
 	case <-ctx.Done():
@@ -478,7 +500,18 @@ func (g *Gatekeeper) handleChallenge(ctx context.Context, u *api.Update, chat *a
 }
 
 func (g *Gatekeeper) handleNewChatMembersV2(ctx context.Context, u *api.Update, chat *api.Chat) error {
-	entry := g.getLogEntry().WithFields(log.Fields{
+	entry := g.getLogEntry()
+
+	if chat == nil {
+		entry.Debug("chat is nil")
+		return nil
+	}
+
+	if u == nil {
+		entry.Debug("update is nil")
+		return nil
+	}
+	entry = entry.WithFields(log.Fields{
 		"method":  "handleNewChatMembersV2",
 		"chat_id": chat.ID,
 	})
@@ -883,5 +916,8 @@ func (g *Gatekeeper) createCaptchaButtons(cu *challengedUser, lang string) ([]ap
 }
 
 func (g *Gatekeeper) getLogEntry() *log.Entry {
-	return log.WithField("context", "gatekeeper")
+	if g.logger == nil {
+		g.logger = log.WithField("handler", "gatekeeper")
+	}
+	return g.logger
 }

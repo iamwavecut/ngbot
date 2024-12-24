@@ -60,7 +60,11 @@ func Get() Config {
 			log.WithField("error", err.Error()).Fatalln("cant load config")
 
 		}
-		cfg.DotPath = strings.Replace(cfg.DotPath, "~", os.Getenv("HOME"), 1)
+		home, err := os.UserHomeDir()
+		if err != nil {
+			log.WithField("error", err.Error()).Fatalln("failed to get user home directory")
+		}
+		cfg.DotPath = strings.Replace(cfg.DotPath, "~", home, 1)
 		log.Traceln("loaded config")
 		globalConfig = cfg
 	})
