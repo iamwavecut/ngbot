@@ -104,65 +104,60 @@ func maskConfiguration(cfg *config.Config) *config.Config {
 }
 
 func runBot(ctx context.Context, cfg *config.Config, errChan chan<- error) {
-	err := tool.Recoverer(-1, func() {
-		defer event.RunWorker()()
 
-		// Initialize bot API
-		botAPI, err := api.NewBotAPI(cfg.TelegramAPIToken)
-		if err != nil {
-			log.WithField("error", err.Error()).Error("Failed to initialize bot API")
+	defer event.RunWorker()()
+
+	// Initialize bot API
+	botAPI, err := api.NewBotAPI(cfg.TelegramAPIToken)
+	if err != nil {
+		log.WithField("error", err.Error()).Error("Failed to initialize bot API")
+		errChan <- err
+		return
+	}
+	if log.Level(cfg.LogLevel) == log.TraceLevel {
+		botAPI.Debug = true
+	}
+	defer botAPI.StopReceivingUpdates()
+
+	botAPI.GetMyCommands()
+
+	// commandsScope := api.NewBotCommandScopeAllGroupChats()
+	// setMyCommandsConfig := api.NewSetMyCommandsWithScope(commandsScope, api.BotCommand{
+	// 	Command:     "ban",
+	// 	Description: "Ban user (admin), or start a voting to ban user (all)",
+	// })
+
+	// _, err = botAPI.Request(setMyCommandsConfig)
+	// if err != nil {
+	// 	log.WithField("error", err.Error()).Error("Failed to set my commands")
+	// }
+
+	// Initialize services and handlers
+	service := bot.NewService(ctx, botAPI, sqlite.NewSQLiteClient(ctx, "bot.db"), log.WithField("context", "service"))
+	initializeHandlers(service, cfg, log.WithField("context", "handlers"))
+
+	// Configure updates
+	updateConfig := configureUpdates()
+	updateProcessor := bot.NewUpdateProcessor(service)
+
+	// Start receiving updates
+	updateChan, updateErrChan := bot.GetUpdatesChans(ctx, botAPI, updateConfig)
+
+	// Process updates
+	for {
+		select {
+		case err := <-updateErrChan:
+			log.WithField("error", err.Error()).Error("Bot API get updates error")
 			errChan <- err
 			return
-		}
-		if log.Level(cfg.LogLevel) == log.TraceLevel {
-			botAPI.Debug = true
-		}
-		defer botAPI.StopReceivingUpdates()
-
-		botAPI.GetMyCommands()
-
-		// commandsScope := api.NewBotCommandScopeAllGroupChats()
-		// setMyCommandsConfig := api.NewSetMyCommandsWithScope(commandsScope, api.BotCommand{
-		// 	Command:     "ban",
-		// 	Description: "Ban user (admin), or start a voting to ban user (all)",
-		// })
-
-		// _, err = botAPI.Request(setMyCommandsConfig)
-		// if err != nil {
-		// 	log.WithField("error", err.Error()).Error("Failed to set my commands")
-		// }
-
-		// Initialize services and handlers
-		service := bot.NewService(ctx, botAPI, sqlite.NewSQLiteClient(ctx, "bot.db"), log.WithField("context", "service"))
-		initializeHandlers(service, cfg, log.WithField("context", "handlers"))
-
-		// Configure updates
-		updateConfig := configureUpdates()
-		updateProcessor := bot.NewUpdateProcessor(service)
-
-		// Start receiving updates
-		updateChan, updateErrChan := bot.GetUpdatesChans(ctx, botAPI, updateConfig)
-
-		// Process updates
-		for {
-			select {
-			case err := <-updateErrChan:
-				log.WithField("error", err.Error()).Error("Bot API get updates error")
-				errChan <- err
-				return
-			case update := <-updateChan:
-				if err := updateProcessor.Process(ctx, &update); err != nil {
-					log.WithField("error", err.Error()).Error("Failed to process update")
-				}
-			case <-ctx.Done():
-				log.Info("Bot shutdown initiated")
-				return
+		case update := <-updateChan:
+			if err := updateProcessor.Process(ctx, &update); err != nil {
+				log.WithField("error", err.Error()).Error("Failed to process update")
 			}
+		case <-ctx.Done():
+			log.Info("Bot shutdown initiated")
+			return
 		}
-	})
-
-	if err != nil {
-		errChan <- err
 	}
 }
 
