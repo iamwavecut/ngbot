@@ -313,9 +313,9 @@ func (r *Reactor) checkMessageForSpam(ctx context.Context, msg *api.Message, cha
 			words[i] = normalizeCyrillics(word)
 		}
 	}
-	content = strings.Join(words, " ")
+	contentAltered := strings.Join(words, " ")
 
-	isSpam, err := r.spamDetector.IsSpam(ctx, content)
+	isSpam, err := r.spamDetector.IsSpam(ctx, contentAltered)
 	if err != nil {
 		return false, err
 	}
@@ -324,6 +324,20 @@ func (r *Reactor) checkMessageForSpam(ctx context.Context, msg *api.Message, cha
 			entry.WithField("error", err.Error()).Error("failed to process spam message")
 		}
 		return true, nil
+	}
+
+	if r.config.SpamControl.DebugUserID != 0 {
+		debugMsg := tool.ExecTemplate(`
+{{- .content }}
+
+---
+Is Spam result: {{ .isSpam -}}
+`, map[string]any{
+			"content": content,
+			// "contentAltered": contentAltered,
+			"isSpam": isSpam,
+		})
+		_, _ = r.s.GetBot().Send(api.NewMessage(r.config.SpamControl.DebugUserID, debugMsg))
 	}
 
 	return false, nil
