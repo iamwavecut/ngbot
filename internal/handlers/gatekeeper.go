@@ -35,7 +35,6 @@ import (
 
 	"github.com/iamwavecut/tool"
 
-	"github.com/iamwavecut/ngbot/internal/config"
 	"github.com/iamwavecut/ngbot/internal/db"
 	"github.com/iamwavecut/ngbot/resources"
 
@@ -182,7 +181,7 @@ func (g *Gatekeeper) processNewChatMembers(ctx context.Context) error {
 			entry.WithField("error", err.Error()).Error("failed to check ban")
 		}
 		if banned {
-			entry.WithField("userID", joiner.UserID).Info("user is banned")
+			entry.WithField("userID", joiner.UserID).Info("recent joiner is banned")
 			if err := bot.BanUserFromChat(ctx, g.s.GetBot(), joiner.UserID, joiner.ChatID); err != nil {
 				entry.WithField("error", err.Error()).Error("failed to ban user")
 			}
@@ -193,7 +192,7 @@ func (g *Gatekeeper) processNewChatMembers(ctx context.Context) error {
 			}
 		}
 		if err := g.s.GetDB().ProcessRecentJoiner(ctx, joiner.ChatID, joiner.UserID, banned); err != nil {
-			entry.WithField("error", err.Error()).Error("failed to process joiner")
+			entry.WithField("error", err.Error()).Error("failed to process recent joiner")
 		}
 	}
 
@@ -212,11 +211,14 @@ func (g *Gatekeeper) Handle(ctx context.Context, u *api.Update, chat *api.Chat, 
 		"chat_id": chat.ID,
 	})
 
-	if user != nil {
-		entry = entry.WithFields(log.Fields{
-			"user_id": user.ID,
-		})
+	if user == nil {
+		entry.Debug("Missing user information")
+		return true, nil
 	}
+
+	entry = entry.WithFields(log.Fields{
+		"user_id": user.ID,
+	})
 
 	select {
 	case <-ctx.Done():
@@ -229,28 +231,11 @@ func (g *Gatekeeper) Handle(ctx context.Context, u *api.Update, chat *api.Chat, 
 		return true, nil
 	}
 
-	if chat == nil {
-		entry.Debug("Missing chat information")
-		return true, nil
-	}
-	if user == nil {
-		entry.Debug("Missing user information")
-		return true, nil
-	}
-
 	settings, err := g.fetchAndValidateSettings(ctx, chat.ID)
 	if err != nil {
 		return true, err
 	}
-	if settings == nil {
-		settings = &db.Settings{
-			ID:               chat.ID,
-			Enabled:          true,
-			Language:         config.Get().DefaultLanguage,
-			ChallengeTimeout: defaultChallengeTimeout.Nanoseconds(),
-			RejectTimeout:    defaultRejectTimeout.Nanoseconds(),
-		}
-	}
+
 	if !settings.Enabled {
 		entry.Debug("gatekeeper is disabled for this chat")
 		return true, nil
@@ -294,15 +279,16 @@ func (g *Gatekeeper) fetchAndValidateSettings(ctx context.Context, chatID int64)
 		return nil, ctx.Err()
 	default:
 	}
+	zeroSettings := db.Settings{
+		Enabled:          true,
+		ChallengeTimeout: defaultChallengeTimeout.Nanoseconds(),
+		RejectTimeout:    defaultRejectTimeout.Nanoseconds(),
+		Language:         "en",
+		ID:               chatID,
+	}
 	settings, err := g.s.GetDB().GetSettings(ctx, chatID)
-	if err != nil {
-		settings = &db.Settings{
-			Enabled:          true,
-			ChallengeTimeout: defaultChallengeTimeout.Nanoseconds(),
-			RejectTimeout:    defaultRejectTimeout.Nanoseconds(),
-			Language:         "en",
-			ID:               chatID,
-		}
+	if err != nil || settings == nil || settings == (&db.Settings{}) {
+		settings = &zeroSettings
 		if err := g.s.GetDB().SetSettings(ctx, settings); err != nil {
 			return nil, fmt.Errorf("failed to set default chat settings: %w", err)
 		}
@@ -511,10 +497,6 @@ func (g *Gatekeeper) handleNewChatMembersV2(ctx context.Context, u *api.Update, 
 		entry.Debug("update is nil")
 		return nil
 	}
-	entry = entry.WithFields(log.Fields{
-		"method":  "handleNewChatMembersV2",
-		"chat_id": chat.ID,
-	})
 
 	select {
 	case <-ctx.Done():
@@ -524,10 +506,14 @@ func (g *Gatekeeper) handleNewChatMembersV2(ctx context.Context, u *api.Update, 
 	}
 
 	if u.Message != nil && u.Message.NewChatMembers != nil {
-		entry.Info("Processing new chat members")
+		entry.Info("Adding new chat members")
 		for _, member := range u.Message.NewChatMembers {
 			if g.banChecker.IsKnownBanned(member.ID) {
-				g.banChecker.BanUserWithMessage(ctx, chat.ID, member.ID, u.Message.MessageID)
+				entry.WithField("userID", member.ID).WithField("name", bot.GetUN(&member)).Info("recent joiner is known banned")
+				err := g.banChecker.BanUserWithMessage(ctx, chat.ID, member.ID, u.Message.MessageID)
+				if err != nil {
+					entry.WithField("error", err.Error()).Error("failed to ban known banned user")
+				}
 				continue
 			}
 			userName := bot.GetUN(&member)
