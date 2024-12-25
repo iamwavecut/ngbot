@@ -85,6 +85,13 @@ func (r *Reactor) Handle(ctx context.Context, u *api.Update, chat *api.Chat, use
 	}
 
 	if u.Message != nil {
+		if u.Message.IsCommand() {
+			if err := r.handleCommand(ctx, u.Message, chat, user); err != nil {
+				entry.WithField("error", err.Error()).Error("error handling message")
+				return true, err
+			}
+			return true, nil
+		}
 		if err := r.handleMessage(ctx, u.Message, chat, user); err != nil {
 			entry.WithField("error", err.Error()).Error("error handling message")
 			return true, err
@@ -251,12 +258,38 @@ func (r *Reactor) getEmojiFromReaction(react api.ReactionType) string {
 	return emojiStickers[0].Emoji
 }
 
+func (r *Reactor) handleCommand(ctx context.Context, msg *api.Message, chat *api.Chat, user *api.User) error {
+	switch msg.Command() {
+	case "/testspam":
+		return r.testSpamCommand(ctx, msg, chat, user)
+	}
+
+	return nil
+}
+
+func (r *Reactor) testSpamCommand(ctx context.Context, msg *api.Message, chat *api.Chat, user *api.User) error {
+	content := msg.CommandArguments()
+	testMsg := api.Message{
+		Text: content,
+	}
+
+	isSpam, err := r.checkMessageForSpam(ctx, &testMsg, chat, user)
+	if err != nil {
+		return errors.Wrap(err, "failed to check message for spam")
+	}
+	responseMsg := api.NewMessage(chat.ID, fmt.Sprintf("Is spam: %t", *isSpam))
+	responseMsg.ReplyParameters.AllowSendingWithoutReply = true
+	responseMsg.ReplyParameters.MessageID = msg.MessageID
+	responseMsg.ReplyParameters.ChatID = chat.ID
+	responseMsg.MessageThreadID = msg.MessageThreadID
+	_, _ = r.s.GetBot().Send(responseMsg)
+
+	return nil
+}
+
 func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api.Chat, user *api.User) error {
 	entry := r.getLogEntry().WithFields(log.Fields{
-		"method":     "handleMessage",
-		"chat_id":    chat.ID,
-		"user_id":    user.ID,
-		"message_id": msg.MessageID,
+		"method": "handleMessage",
 	})
 
 	isMember, err := r.s.IsMember(ctx, chat.ID, user.ID)
