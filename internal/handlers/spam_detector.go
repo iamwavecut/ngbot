@@ -183,7 +183,12 @@ func (d *spamDetector) IsSpam(ctx context.Context, message string) (bool, error)
 		return false, errors.New("empty response from LLM")
 	}
 	choice := resp.Choices[0].Message.Content
-	choice = strings.TrimSpace(choice)
+	choice = strings.Map(func(r rune) rune {
+		if r >= '0' && r <= '1' {
+			return r
+		}
+		return -1
+	}, choice)
 	if choice == "1" {
 		return true, nil
 	} else if choice == "0" {
