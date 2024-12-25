@@ -268,6 +268,25 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 		return nil
 	}
 
+	language := r.s.GetLanguage(ctx, chat.ID, user)
+	isBanned, err := r.banService.CheckBan(ctx, user.ID)
+	if err != nil {
+		return errors.Wrap(err, "failed to check ban")
+	}
+	if isBanned {
+		if r.config.SpamControl.DebugUserID != 0 {
+			debugMsg := tool.ExecTemplate(`Banned user: {{ .user_name }} ({{ .user_id }})`, map[string]any{
+				"user_name": bot.GetUN(user),
+				"user_id":   user.ID,
+			})
+			_, _ = r.s.GetBot().Send(api.NewMessage(r.config.SpamControl.DebugUserID, debugMsg))
+		}
+		if err := r.spamControl.ProcessBannedMessage(ctx, msg, language); err != nil {
+			entry.WithField("error", err.Error()).Error("failed to process banned message")
+		}
+		return nil
+	}
+
 	isSpam, err := r.checkMessageForSpam(ctx, msg, chat, user)
 	if err != nil {
 		return errors.Wrap(err, "failed to check message for spam")
@@ -275,12 +294,17 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 	if isSpam == nil {
 		return nil
 	}
-
-	if !*isSpam {
-		if err := r.s.InsertMember(ctx, chat.ID, user.ID); err != nil {
-			return errors.Wrap(err, "failed to insert member")
+	if *isSpam {
+		if err := r.spamControl.ProcessSpamMessage(ctx, msg, language); err != nil {
+			entry.WithField("error", err.Error()).Error("failed to process spam message")
 		}
+		return nil
 	}
+
+	if err := r.s.InsertMember(ctx, chat.ID, user.ID); err != nil {
+		return errors.Wrap(err, "failed to insert member")
+	}
+
 	return nil
 }
 
@@ -290,18 +314,6 @@ func (r *Reactor) checkMessageForSpam(ctx context.Context, msg *api.Message, cha
 		"user_name": bot.GetUN(user),
 		"user_id":   user.ID,
 	})
-
-	isBanned, err := r.banService.CheckBan(ctx, user.ID)
-	if err != nil {
-		return nil, err
-	}
-	language := r.s.GetLanguage(ctx, chat.ID, user)
-	if isBanned {
-		if err := r.spamControl.ProcessBannedMessage(ctx, msg, language); err != nil {
-			entry.WithField("error", err.Error()).Error("failed to process banned message")
-		}
-		return tool.Ptr(true), nil
-	}
 
 	content := bot.ExtractContentFromMessage(msg)
 	if content == "" {
@@ -317,9 +329,6 @@ func (r *Reactor) checkMessageForSpam(ctx context.Context, msg *api.Message, cha
 	contentAltered := strings.Join(words, " ")
 
 	isSpam, err := r.spamDetector.IsSpam(ctx, contentAltered)
-	if err != nil {
-		return nil, err
-	}
 	if r.config.SpamControl.DebugUserID != 0 {
 		debugMsg := tool.ExecTemplate(`
 {{- .content }}
@@ -333,17 +342,8 @@ Is Spam result: {{ .isSpam -}}
 		})
 		_, _ = r.s.GetBot().Send(api.NewMessage(r.config.SpamControl.DebugUserID, debugMsg))
 	}
-	if isSpam == nil {
-		return nil, nil
-	}
-	if *isSpam {
-		if err := r.spamControl.ProcessSpamMessage(ctx, msg, language); err != nil {
-			entry.WithField("error", err.Error()).Error("failed to process spam message")
-		}
-		return tool.Ptr(true), nil
-	}
 
-	return tool.Ptr(false), nil
+	return isSpam, err
 }
 
 func (r *Reactor) getLogEntry() *log.Entry {
