@@ -217,11 +217,11 @@ func (r *Reactor) handleReaction(ctx context.Context, reactions *api.MessageReac
 
 		// Add context to API calls
 		if err := bot.DeleteChatMessage(ctx, r.s.GetBot(), chat.ID, reactions.MessageID); err != nil {
-			entry.WithField("error", err.Error()).Error("Failed to delete message")
+			entry.WithField("error", err.Error()).WithField("chat_title", chat.Title).Error("Failed to delete message")
 		}
 
 		if err := bot.BanUserFromChat(ctx, r.s.GetBot(), user.ID, chat.ID); err != nil {
-			entry.WithField("error", err.Error()).Error("Failed to ban user")
+			entry.WithField("error", err.Error()).WithField("chat_title", chat.Title).Error("Failed to ban user")
 			return true, fmt.Errorf("failed to ban user: %w", err)
 		}
 
