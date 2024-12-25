@@ -269,11 +269,8 @@ func (r *Reactor) handleCommand(ctx context.Context, msg *api.Message, chat *api
 
 func (r *Reactor) testSpamCommand(ctx context.Context, msg *api.Message, chat *api.Chat, user *api.User) error {
 	content := msg.CommandArguments()
-	testMsg := api.Message{
-		Text: content,
-	}
 
-	isSpam, err := r.checkMessageForSpam(ctx, &testMsg, chat, user)
+	isSpam, err := r.checkMessageForSpam(ctx, content, user)
 	if err != nil {
 		return errors.Wrap(err, "failed to check message for spam")
 	}
@@ -320,7 +317,12 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 		return nil
 	}
 
-	isSpam, err := r.checkMessageForSpam(ctx, msg, chat, user)
+	content := bot.ExtractContentFromMessage(msg)
+	if content == "" {
+		entry.WithField("message", msg).Warn("empty message content")
+		return nil
+	}
+	isSpam, err := r.checkMessageForSpam(ctx, content, user)
 	if err != nil {
 		return errors.Wrap(err, "failed to check message for spam")
 	}
@@ -341,18 +343,7 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 	return nil
 }
 
-func (r *Reactor) checkMessageForSpam(ctx context.Context, msg *api.Message, chat *api.Chat, user *api.User) (*bool, error) {
-	entry := r.getLogEntry().WithFields(log.Fields{
-		"method":    "checkMessageForSpam",
-		"user_name": bot.GetUN(user),
-		"user_id":   user.ID,
-	})
-
-	content := bot.ExtractContentFromMessage(msg)
-	if content == "" {
-		entry.WithField("message", msg).Warn("empty message content")
-		return nil, nil
-	}
+func (r *Reactor) checkMessageForSpam(ctx context.Context, content string, user *api.User) (*bool, error) {
 	words := strings.Fields(content)
 	for i, word := range words {
 		if hasCyrillics(word) {
