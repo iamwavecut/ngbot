@@ -184,19 +184,20 @@ func (d *spamDetector) IsSpam(ctx context.Context, message string) (*bool, error
 		return nil, errors.New("empty response from LLM")
 	}
 	choice := resp.Choices[0].Message.Content
-	choice = strings.Map(func(r rune) rune {
+	cleanedChoice := strings.Map(func(r rune) rune {
 		if r >= '0' && r <= '1' {
 			return r
 		}
 		return -1
 	}, choice)
-	if choice == "1" {
+
+	if cleanedChoice == "1" {
 		return tool.Ptr(true), nil
-	} else if choice == "0" {
+	} else if cleanedChoice == "0" {
 		return tool.Ptr(false), nil
 	}
 
-	return nil, errors.New("unknown response from LLM: " + choice)
+	return nil, errors.New("unknown response from LLM: " + cleanedChoice + " (" + choice + ")")
 }
 
 const spamDetectionPrompt = `Ты ассистент для обнаружения спама, анализирующий сообщения на различных языках. Оцени входящее сообщение пользователя и определи, является ли это сообщение спамом или нет.
