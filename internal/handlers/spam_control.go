@@ -100,11 +100,15 @@ func (sc *SpamControl) preprocessMessage(ctx context.Context, msg *api.Message, 
 	success := true
 	if err := bot.DeleteChatMessage(ctx, sc.s.GetBot(), msg.Chat.ID, msg.MessageID); err != nil {
 		log.WithField("error", err.Error()).WithField("chat_title", msg.Chat.Title).Error("failed to delete message")
-		success = false
+		if strings.Contains(err.Error(), "CHAT_ADMIN_REQUIRED") {
+			success = false
+		}
 	}
 	if err := bot.BanUserFromChat(ctx, sc.s.GetBot(), msg.From.ID, msg.Chat.ID); err != nil {
 		log.WithField("error", err.Error()).WithField("chat_title", msg.Chat.Title).Error("failed to ban user")
-		success = false
+		if strings.Contains(err.Error(), "CHAT_ADMIN_REQUIRED") {
+			success = false
+		}
 	}
 	if !success {
 		unsuccessReply := api.NewMessage(chat.ID, "I don't have enough rights to ban this user")
