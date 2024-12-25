@@ -17,7 +17,8 @@ type spamDetector struct {
 
 func NewSpamDetector(llm adapters.LLM, logger *log.Entry) *spamDetector {
 	return &spamDetector{
-		llm: llm,
+		llm:    llm,
+		logger: logger,
 	}
 }
 
