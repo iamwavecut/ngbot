@@ -311,7 +311,7 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 			})
 			_, _ = r.s.GetBot().Send(api.NewMessage(r.config.SpamControl.DebugUserID, debugMsg))
 		}
-		if err := r.spamControl.ProcessBannedMessage(ctx, msg, language); err != nil {
+		if err := r.spamControl.ProcessBannedMessage(ctx, msg, chat, language); err != nil {
 			entry.WithField("error", err.Error()).Error("failed to process banned message")
 		}
 		return nil
@@ -330,7 +330,7 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 		return nil
 	}
 	if *isSpam {
-		if err := r.spamControl.ProcessSpamMessage(ctx, msg, language); err != nil {
+		if err := r.spamControl.ProcessSpamMessage(ctx, msg, chat, language); err != nil {
 			entry.WithField("error", err.Error()).Error("failed to process spam message")
 		}
 		return nil

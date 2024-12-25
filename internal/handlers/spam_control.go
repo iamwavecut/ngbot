@@ -96,12 +96,38 @@ func (sc *SpamControl) getSpamCase(ctx context.Context, msg *api.Message) (*db.S
 	return spamCase, nil
 }
 
-func (sc *SpamControl) preprocessMessage(ctx context.Context, msg *api.Message, lang string, voting bool) error {
+func (sc *SpamControl) preprocessMessage(ctx context.Context, msg *api.Message, chat *api.Chat, lang string, voting bool) error {
+	success := true
 	if err := bot.DeleteChatMessage(ctx, sc.s.GetBot(), msg.Chat.ID, msg.MessageID); err != nil {
 		log.WithField("error", err.Error()).WithField("chat_title", msg.Chat.Title).Error("failed to delete message")
+		success = false
 	}
 	if err := bot.BanUserFromChat(ctx, sc.s.GetBot(), msg.From.ID, msg.Chat.ID); err != nil {
 		log.WithField("error", err.Error()).WithField("chat_title", msg.Chat.Title).Error("failed to ban user")
+		success = false
+	}
+	if !success {
+		unsuccessReply := api.NewMessage(chat.ID, "I don't have enough rights to ban this user")
+		unsuccessReply.ReplyParameters = api.ReplyParameters{
+			ChatID:                   chat.ID,
+			MessageID:                msg.MessageID,
+			AllowSendingWithoutReply: true,
+		}
+		unsuccessReply.DisableNotification = true
+		unsuccessReply.LinkPreviewOptions.IsDisabled = true
+		apiResult, err := sc.s.GetBot().Send(unsuccessReply)
+		if err != nil {
+			log.WithField("error", err.Error()).Error("failed to send unsuccess reply")
+		}
+		if apiResult.MessageID != 0 {
+			time.AfterFunc(sc.config.SuspectNotificationTimeout, func() {
+				if _, err := sc.s.GetBot().Request(api.NewDeleteMessage(chat.ID, apiResult.MessageID)); err != nil {
+					log.WithField("error", err.Error()).Error("failed to delete unsuccess reply")
+				}
+			})
+		}
+
+		return nil
 	}
 
 	spamCase, err := sc.getSpamCase(ctx, msg)
@@ -144,12 +170,12 @@ func (sc *SpamControl) preprocessMessage(ctx context.Context, msg *api.Message, 
 	return nil
 }
 
-func (sc *SpamControl) ProcessBannedMessage(ctx context.Context, msg *api.Message, lang string) error {
-	return sc.preprocessMessage(ctx, msg, lang, false)
+func (sc *SpamControl) ProcessBannedMessage(ctx context.Context, msg *api.Message, chat *api.Chat, lang string) error {
+	return sc.preprocessMessage(ctx, msg, chat, lang, false)
 }
 
-func (sc *SpamControl) ProcessSpamMessage(ctx context.Context, msg *api.Message, lang string) error {
-	return sc.preprocessMessage(ctx, msg, lang, true)
+func (sc *SpamControl) ProcessSpamMessage(ctx context.Context, msg *api.Message, chat *api.Chat, lang string) error {
+	return sc.preprocessMessage(ctx, msg, chat, lang, true)
 }
 
 func (sc *SpamControl) SendChannelPost(ctx context.Context, msg *api.Message, lang string, voting bool) (*api.Message, error) {
