@@ -35,6 +35,7 @@ import (
 
 	"github.com/iamwavecut/tool"
 
+	"github.com/iamwavecut/ngbot/internal/config"
 	"github.com/iamwavecut/ngbot/internal/db"
 	"github.com/iamwavecut/ngbot/resources"
 
@@ -77,6 +78,7 @@ type challengedUser struct {
 
 type Gatekeeper struct {
 	s          bot.Service
+	config     *config.Config
 	joiners    map[int64]map[int64]*challengedUser
 	newcomers  map[int64]map[int64]struct{}
 	restricted map[int64]map[int64]struct{}
@@ -115,12 +117,12 @@ var privateChallengeKeys = []string{
 	"Hi there, %s! Welcome to the group \"%s\"! We need one more thing from you to confirm that you're human - pick %s. If you can't, we might have to let you go. Thanks for your cooperation!",
 }
 
-func NewGatekeeper(s bot.Service, banChecker GatekeeperBanChecker) *Gatekeeper {
+func NewGatekeeper(s bot.Service, config *config.Config, banChecker GatekeeperBanChecker) *Gatekeeper {
 	entry := log.WithFields(log.Fields{"object": "Gatekeeper", "method": "NewGatekeeper"})
 
 	g := &Gatekeeper{
-		s: s,
-
+		s:          s,
+		config:     config,
 		joiners:    map[int64]map[int64]*challengedUser{},
 		Variants:   map[string]map[string]string{},
 		newcomers:  map[int64]map[int64]struct{}{},
@@ -184,6 +186,14 @@ func (g *Gatekeeper) processNewChatMembers(ctx context.Context) error {
 			entry.WithField("userID", joiner.UserID).Info("recent joiner is banned")
 			if err := bot.BanUserFromChat(ctx, g.s.GetBot(), joiner.UserID, joiner.ChatID); err != nil {
 				entry.WithField("error", err.Error()).Error("failed to ban user")
+			}
+			if g.config.SpamControl.DebugUserID != 0 {
+				debugMsg := tool.ExecTemplate(`Banned joiner: {{ .user_name }} ({{ .user_id }}) {{ .error }}`, map[string]any{
+					"user_name": joiner.Username,
+					"user_id":   joiner.UserID,
+					"error":     err.Error(),
+				})
+				_, _ = g.s.GetBot().Send(api.NewMessage(g.config.SpamControl.DebugUserID, debugMsg))
 			}
 			if joiner.JoinMessageID != 0 {
 				if err := bot.DeleteChatMessage(ctx, g.s.GetBot(), joiner.ChatID, joiner.JoinMessageID); err != nil {

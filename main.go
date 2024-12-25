@@ -168,7 +168,7 @@ func initializeHandlers(service bot.Service, cfg *config.Config, logger *log.Ent
 		service.GetDB(),
 	)
 	spamControl := handlers.NewSpamControl(service, cfg.SpamControl, banService, cfg.SpamControl.Verbose)
-	bot.RegisterUpdateHandler("gatekeeper", handlers.NewGatekeeper(service, banService))
+	bot.RegisterUpdateHandler("gatekeeper", handlers.NewGatekeeper(service, cfg, banService))
 	bot.RegisterUpdateHandler("admin", handlers.NewAdmin(service, banService, spamControl))
 
 	llmAPI := configureLLM(cfg, logger)
