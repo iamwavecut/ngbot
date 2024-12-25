@@ -317,7 +317,7 @@ func (r *Reactor) checkMessageForSpam(ctx context.Context, msg *api.Message, cha
 
 	content := bot.ExtractContentFromMessage(msg)
 	if content == "" {
-		entry.Warn("empty message content")
+		entry.WithField("message", msg).Warn("empty message content")
 		return nil, nil
 	}
 	words := strings.Fields(content)
