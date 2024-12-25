@@ -7,6 +7,7 @@ import (
 
 	"github.com/iamwavecut/ngbot/internal/adapters"
 	"github.com/iamwavecut/ngbot/internal/adapters/llm"
+	"github.com/iamwavecut/tool"
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 )
@@ -146,7 +147,7 @@ func NewSpamDetector(llm adapters.LLM, logger *log.Entry) *spamDetector {
 	}
 }
 
-func (d *spamDetector) IsSpam(ctx context.Context, message string) (bool, error) {
+func (d *spamDetector) IsSpam(ctx context.Context, message string) (*bool, error) {
 
 	messagesChain := []llm.ChatCompletionMessage{
 		{
@@ -172,15 +173,15 @@ func (d *spamDetector) IsSpam(ctx context.Context, message string) (bool, error)
 	)
 
 	if err != nil {
-		return false, errors.Wrap(err, "failed to check spam with LLM")
+		return nil, errors.Wrap(err, "failed to check spam with LLM")
 	}
 
 	if len(resp.Choices) == 0 {
-		return false, errors.New("no response from LLM")
+		return nil, errors.New("no response from LLM")
 	}
 
 	if len(resp.Choices) == 0 || resp.Choices[0].Message.Content == "" {
-		return false, errors.New("empty response from LLM")
+		return nil, errors.New("empty response from LLM")
 	}
 	choice := resp.Choices[0].Message.Content
 	choice = strings.Map(func(r rune) rune {
@@ -190,14 +191,12 @@ func (d *spamDetector) IsSpam(ctx context.Context, message string) (bool, error)
 		return -1
 	}, choice)
 	if choice == "1" {
-		return true, nil
+		return tool.Ptr(true), nil
 	} else if choice == "0" {
-		return false, nil
-	} else {
-		d.logger.WithField("message", message).WithField("response", choice).Warn("unknown response from LLM")
+		return tool.Ptr(false), nil
 	}
 
-	return false, errors.New("unknown response from LLM: " + choice)
+	return nil, errors.New("unknown response from LLM: " + choice)
 }
 
 const spamDetectionPrompt = `Ты ассистент для обнаружения спама, анализирующий сообщения на различных языках. Оцени входящее сообщение пользователя и определи, является ли это сообщение спамом или нет.

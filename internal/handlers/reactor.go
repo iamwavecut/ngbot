@@ -21,7 +21,7 @@ import (
 
 // SpamDetector handles spam detection logic
 type SpamDetectorInterface interface {
-	IsSpam(ctx context.Context, message string) (bool, error)
+	IsSpam(ctx context.Context, message string) (*bool, error)
 }
 
 // Config holds reactor configuration
@@ -272,18 +272,19 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 	if err != nil {
 		return errors.Wrap(err, "failed to check message for spam")
 	}
-	if isSpam {
+	if isSpam == nil {
 		return nil
 	}
 
-	if err := r.s.InsertMember(ctx, chat.ID, user.ID); err != nil {
-		return errors.Wrap(err, "failed to insert member")
+	if !*isSpam {
+		if err := r.s.InsertMember(ctx, chat.ID, user.ID); err != nil {
+			return errors.Wrap(err, "failed to insert member")
+		}
 	}
-
 	return nil
 }
 
-func (r *Reactor) checkMessageForSpam(ctx context.Context, msg *api.Message, chat *api.Chat, user *api.User) (bool, error) {
+func (r *Reactor) checkMessageForSpam(ctx context.Context, msg *api.Message, chat *api.Chat, user *api.User) (*bool, error) {
 	entry := r.getLogEntry().WithFields(log.Fields{
 		"method":    "checkMessageForSpam",
 		"user_name": bot.GetUN(user),
@@ -292,20 +293,20 @@ func (r *Reactor) checkMessageForSpam(ctx context.Context, msg *api.Message, cha
 
 	isBanned, err := r.banService.CheckBan(ctx, user.ID)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	language := r.s.GetLanguage(ctx, chat.ID, user)
 	if isBanned {
 		if err := r.spamControl.ProcessBannedMessage(ctx, msg, language); err != nil {
 			entry.WithField("error", err.Error()).Error("failed to process banned message")
 		}
-		return true, nil
+		return tool.Ptr(true), nil
 	}
 
 	content := bot.ExtractContentFromMessage(msg)
 	if content == "" {
 		entry.Warn("empty message content")
-		return false, nil
+		return nil, nil
 	}
 	words := strings.Fields(content)
 	for i, word := range words {
@@ -317,15 +318,8 @@ func (r *Reactor) checkMessageForSpam(ctx context.Context, msg *api.Message, cha
 
 	isSpam, err := r.spamDetector.IsSpam(ctx, contentAltered)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
-	if isSpam {
-		if err := r.spamControl.ProcessSpamMessage(ctx, msg, language); err != nil {
-			entry.WithField("error", err.Error()).Error("failed to process spam message")
-		}
-		return true, nil
-	}
-
 	if r.config.SpamControl.DebugUserID != 0 {
 		debugMsg := tool.ExecTemplate(`
 {{- .content }}
@@ -339,8 +333,17 @@ Is Spam result: {{ .isSpam -}}
 		})
 		_, _ = r.s.GetBot().Send(api.NewMessage(r.config.SpamControl.DebugUserID, debugMsg))
 	}
+	if isSpam == nil {
+		return nil, nil
+	}
+	if *isSpam {
+		if err := r.spamControl.ProcessSpamMessage(ctx, msg, language); err != nil {
+			entry.WithField("error", err.Error()).Error("failed to process spam message")
+		}
+		return tool.Ptr(true), nil
+	}
 
-	return false, nil
+	return tool.Ptr(false), nil
 }
 
 func (r *Reactor) getLogEntry() *log.Entry {
