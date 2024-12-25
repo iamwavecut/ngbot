@@ -74,9 +74,8 @@ func (a *Admin) Handle(ctx context.Context, u *api.Update, chat *api.Chat, user 
 
 	default:
 		entry.Debug("unknown command")
+		return false, nil
 	}
-
-	return true, nil
 }
 
 func (a *Admin) handleLangCommand(ctx context.Context, msg *api.Message, isAdmin bool, language string) (bool, error) {
