@@ -167,6 +167,11 @@ func (d *spamDetector) IsSpam(ctx context.Context, message string) (*bool, error
 		})
 	}
 
+	messagesChain = append(messagesChain, llm.ChatCompletionMessage{
+		Role:    "user",
+		Content: message,
+	})
+
 	resp, err := d.llm.ChatCompletion(
 		ctx,
 		messagesChain,
