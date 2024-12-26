@@ -99,13 +99,13 @@ func (sc *SpamControl) getSpamCase(ctx context.Context, msg *api.Message) (*db.S
 func (sc *SpamControl) preprocessMessage(ctx context.Context, msg *api.Message, chat *api.Chat, lang string, voting bool) error {
 	success := true
 	if err := bot.DeleteChatMessage(ctx, sc.s.GetBot(), msg.Chat.ID, msg.MessageID); err != nil {
-		log.WithField("error", err.Error()).WithField("chat_title", msg.Chat.Title).Error("failed to delete message")
+		log.WithField("error", err.Error()).WithField("chat_title", msg.Chat.Title).WithField("chat_username", msg.Chat.UserName).Error("failed to delete message")
 		if strings.Contains(err.Error(), "CHAT_ADMIN_REQUIRED") {
 			success = false
 		}
 	}
 	if err := bot.BanUserFromChat(ctx, sc.s.GetBot(), msg.From.ID, msg.Chat.ID); err != nil {
-		log.WithField("error", err.Error()).WithField("chat_title", msg.Chat.Title).Error("failed to ban user")
+		log.WithField("error", err.Error()).WithField("chat_title", msg.Chat.Title).WithField("chat_username", msg.Chat.UserName).Error("failed to ban user")
 		if strings.Contains(err.Error(), "CHAT_ADMIN_REQUIRED") {
 			success = false
 		}
