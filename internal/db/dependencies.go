@@ -17,6 +17,10 @@ type Client interface {
 	GetAllMembers(ctx context.Context) (map[int64][]int64, error)
 	IsMember(ctx context.Context, chatID int64, userID int64) (bool, error)
 
+	// KV store methods
+	GetKV(ctx context.Context, key string) (string, error)
+	SetKV(ctx context.Context, key string, value string) error
+
 	// Spam tracking methods
 	AddRestriction(ctx context.Context, restriction *UserRestriction) error
 	GetActiveRestriction(ctx context.Context, chatID, userID int64) (*UserRestriction, error)

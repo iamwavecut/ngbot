@@ -23,6 +23,10 @@ const (
 	scammersURL      = "https://lols.bot/scammers.txt"
 
 	accoutsAPIURLTemplate = "https://api.lols.bot/account?id=%v"
+
+	// KV store keys
+	kvKeyLastDailyFetch  = "last_daily_fetch"
+	kvKeyLastHourlyFetch = "last_hourly_fetch"
 )
 
 type BanService interface {
@@ -52,18 +56,25 @@ func NewBanService(bot *api.BotAPI, db db.Client) BanService {
 		shutdown:    make(chan struct{}),
 	}
 
-	go func() {
-		for {
-			if err := s.FetchKnownBannedDaily(context.Background()); err != nil {
-				log.WithField("error", err.Error()).Error("Failed to fetch known banned users")
-			}
+	ctx := context.Background()
+	lastDailyFetch, err := s.getLastDailyFetch(ctx)
+	if err != nil {
+		log.WithError(err).Error("Failed to get last daily fetch time")
+	}
 
-			select {
-			case <-s.shutdown:
-				log.WithField("routine", "FetchKnownBannedDaily").Info("Graceful shutdown completed")
-				return
-			case <-time.After(24 * time.Hour):
-				continue
+	lastHourlyFetch, err := s.getLastHourlyFetch(ctx)
+	if err != nil {
+		log.WithError(err).Error("Failed to get last hourly fetch time")
+	}
+
+	go func() {
+		if lastDailyFetch.IsZero() || time.Since(lastDailyFetch) > time.Hour {
+			if err := s.FetchKnownBannedDaily(ctx); err != nil {
+				log.WithError(err).Error("Failed to fetch known banned users daily")
+			}
+		} else if lastHourlyFetch.IsZero() || time.Since(lastHourlyFetch) <= time.Hour {
+			if err := s.FetchKnownBanned(ctx); err != nil {
+				log.WithError(err).Error("Failed to fetch known banned users hourly")
 			}
 		}
 	}()
@@ -75,8 +86,18 @@ func NewBanService(bot *api.BotAPI, db db.Client) BanService {
 				log.WithField("routine", "FetchKnownBanned").Info("Graceful shutdown completed")
 				return
 			case <-time.After(time.Hour):
-				if err := s.FetchKnownBanned(context.Background()); err != nil {
-					log.WithField("error", err.Error()).Error("Failed to fetch known banned users")
+				ctx := context.Background()
+				lastFetch, err := s.getLastHourlyFetch(ctx)
+				if err != nil {
+					log.WithError(err).Error("Failed to get last hourly fetch time")
+					continue
+				}
+
+				// Only fetch if last fetch was more than 1 hour ago
+				if lastFetch.IsZero() || time.Since(lastFetch) >= time.Hour {
+					if err := s.FetchKnownBanned(ctx); err != nil {
+						log.WithError(err).Error("Failed to fetch known banned users hourly")
+					}
 				}
 			}
 		}
@@ -118,6 +139,44 @@ func fetchURLs(ctx context.Context, urls []string) (map[int64]struct{}, error) {
 	return results, nil
 }
 
+func (s *defaultBanService) getLastDailyFetch(ctx context.Context) (time.Time, error) {
+	val, err := s.db.GetKV(ctx, kvKeyLastDailyFetch)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("failed to get last daily fetch time: %w", err)
+	}
+	if val == "" {
+		return time.Time{}, nil
+	}
+	t, err := time.Parse(time.RFC3339, val)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("failed to parse last daily fetch time: %w", err)
+	}
+	return t, nil
+}
+
+func (s *defaultBanService) getLastHourlyFetch(ctx context.Context) (time.Time, error) {
+	val, err := s.db.GetKV(ctx, kvKeyLastHourlyFetch)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("failed to get last hourly fetch time: %w", err)
+	}
+	if val == "" {
+		return time.Time{}, nil
+	}
+	t, err := time.Parse(time.RFC3339, val)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("failed to parse last hourly fetch time: %w", err)
+	}
+	return t, nil
+}
+
+func (s *defaultBanService) updateLastDailyFetch(ctx context.Context) error {
+	return s.db.SetKV(ctx, kvKeyLastDailyFetch, time.Now().Format(time.RFC3339))
+}
+
+func (s *defaultBanService) updateLastHourlyFetch(ctx context.Context) error {
+	return s.db.SetKV(ctx, kvKeyLastHourlyFetch, time.Now().Format(time.RFC3339))
+}
+
 func (s *defaultBanService) FetchKnownBannedDaily(ctx context.Context) error {
 	results, err := fetchURLs(ctx, []string{scammersURL, banlistURL})
 	if err != nil {
@@ -138,8 +197,13 @@ func (s *defaultBanService) FetchKnownBannedDaily(ctx context.Context) error {
 	s.knownBanned = fullBanlist
 	log.WithField("count", len(fullBanlist)).Debug("fetched known banned ids daily")
 
+	if err := s.updateLastDailyFetch(ctx); err != nil {
+		log.WithError(err).Error("Failed to update last daily fetch time")
+	}
+
 	return nil
 }
+
 func (s *defaultBanService) FetchKnownBanned(ctx context.Context) error {
 	results, err := fetchURLs(ctx, []string{banlistURLHourly})
 	if err != nil {
@@ -158,6 +222,11 @@ func (s *defaultBanService) FetchKnownBanned(ctx context.Context) error {
 	}
 	s.knownBanned = fullBanlist
 	log.WithField("count", len(fullBanlist)).Debug("fetched known banned ids hourly")
+
+	if err := s.updateLastHourlyFetch(ctx); err != nil {
+		log.WithError(err).Error("Failed to update last hourly fetch time")
+	}
+
 	return nil
 }
 
