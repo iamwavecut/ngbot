@@ -1,4 +1,5 @@
 ngbot
+!cmd/ngbot
 .*/
 !**/*.go
 /.*
@@ -6,3 +7,4 @@ ngbot
 dbconfig.yml
 .env
 compose.yaml
+__debug*
