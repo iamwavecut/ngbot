@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	api "github.com/OvyFlash/telegram-bot-api"
@@ -67,7 +68,10 @@ func NewBanService(bot *api.BotAPI, db db.Client) BanService {
 		log.WithError(err).Error("Failed to get last hourly fetch time")
 	}
 
+	wg := sync.WaitGroup{}
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		if lastDailyFetch.IsZero() || time.Since(lastDailyFetch) > time.Hour {
 			if err := s.FetchKnownBannedDaily(ctx); err != nil {
 				log.WithError(err).Error("Failed to fetch known banned users daily")
@@ -102,6 +106,7 @@ func NewBanService(bot *api.BotAPI, db db.Client) BanService {
 			}
 		}
 	}()
+	wg.Wait()
 	return s
 }
 
