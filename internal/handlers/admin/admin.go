@@ -12,17 +12,18 @@ import (
 	log "github.com/sirupsen/logrus"
 
 	"github.com/iamwavecut/ngbot/internal/bot"
+	moderation "github.com/iamwavecut/ngbot/internal/handlers/moderation"
 	"github.com/iamwavecut/ngbot/internal/i18n"
 )
 
 type Admin struct {
 	s           bot.Service
 	languages   []string
-	banService  BanService
-	spamControl *SpamControl
+	banService  moderation.BanService
+	spamControl *moderation.SpamControl
 }
 
-func NewAdmin(s bot.Service, banService BanService, spamControl *SpamControl) *Admin {
+func NewAdmin(s bot.Service, banService moderation.BanService, spamControl *moderation.SpamControl) *Admin {
 	entry := log.WithField("object", "Admin").WithField("method", "NewAdmin")
 
 	a := &Admin{
@@ -173,7 +174,7 @@ func (a *Admin) handleAdminBan(ctx context.Context, msg *api.Message, language s
 
 	err := bot.BanUserFromChat(ctx, a.s.GetBot(), targetMsg.From.ID, msg.Chat.ID)
 	if err != nil {
-		if errors.Is(err, ErrNoPrivileges) {
+		if errors.Is(err, moderation.ErrNoPrivileges) {
 			msg := api.NewMessage(msg.Chat.ID, i18n.Get("I don't have enough rights to ban this user", language))
 			msg.DisableNotification = true
 			_, _ = a.s.GetBot().Send(msg)

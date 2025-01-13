@@ -15,6 +15,7 @@ import (
 	"github.com/iamwavecut/ngbot/internal/bot"
 	"github.com/iamwavecut/ngbot/internal/config"
 	"github.com/iamwavecut/ngbot/internal/db"
+	moderation "github.com/iamwavecut/ngbot/internal/handlers/moderation"
 	"github.com/iamwavecut/ngbot/internal/i18n"
 	"github.com/iamwavecut/tool"
 )
@@ -37,12 +38,12 @@ type Reactor struct {
 	s            bot.Service
 	config       Config
 	spamDetector SpamDetectorInterface
-	banService   BanService
-	spamControl  *SpamControl
+	banService   moderation.BanService
+	spamControl  *moderation.SpamControl
 }
 
 // NewReactor creates a new Reactor instance with the given configuration
-func NewReactor(s bot.Service, banService BanService, spamControl *SpamControl, spamDetector SpamDetectorInterface, config Config) *Reactor {
+func NewReactor(s bot.Service, banService moderation.BanService, spamControl *moderation.SpamControl, spamDetector SpamDetectorInterface, config Config) *Reactor {
 	r := &Reactor{
 		s:            s,
 		config:       config,
@@ -161,7 +162,7 @@ func (r *Reactor) handleCallbackQuery(ctx context.Context, u *api.Update, chat *
 	}
 
 	if max(notSpamVotes, spamVotes) >= r.config.SpamControl.MaxVoters {
-		if err := r.spamControl.resolveCase(ctx, caseID); err != nil {
+		if err := r.spamControl.ResolveCase(ctx, caseID); err != nil {
 			entry.WithField("error", err.Error()).Error("failed to resolve spam case after max votes reached")
 		}
 	}

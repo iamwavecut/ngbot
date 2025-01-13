@@ -68,7 +68,7 @@ func (sc *SpamControl) ProcessSuspectMessage(ctx context.Context, msg *api.Messa
 	}
 
 	time.AfterFunc(sc.config.VotingTimeoutMinutes, func() {
-		if err := sc.resolveCase(context.Background(), spamCase.ID); err != nil {
+		if err := sc.ResolveCase(context.Background(), spamCase.ID); err != nil {
 			log.WithField("error", err.Error()).Error("failed to resolve spam case")
 		}
 	})
@@ -266,7 +266,7 @@ func (sc *SpamControl) createChannelNotification(msg *api.Message, channelPostLi
 	return notificationMsg
 }
 
-func (sc *SpamControl) resolveCase(ctx context.Context, caseID int64) error {
+func (sc *SpamControl) ResolveCase(ctx context.Context, caseID int64) error {
 	entry := sc.getLogEntry().WithField("method", "resolveCase").WithField("case_id", caseID)
 	spamCase, err := sc.s.GetDB().GetSpamCase(ctx, caseID)
 	if err != nil {
