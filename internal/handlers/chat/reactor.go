@@ -228,7 +228,7 @@ func (r *Reactor) handleReaction(ctx context.Context, reactions *api.MessageReac
 			entry.WithField("error", err.Error()).WithField("chat_title", chat.Title).Error("Failed to delete message")
 		}
 
-		if err := bot.BanUserFromChat(ctx, r.s.GetBot(), user.ID, chat.ID); err != nil {
+		if err := bot.BanUserFromChat(ctx, r.s.GetBot(), user.ID, chat.ID, 0); err != nil {
 			entry.WithField("error", err.Error()).WithField("chat_title", chat.Title).Error("Failed to ban user")
 			return true, fmt.Errorf("failed to ban user: %w", err)
 		}

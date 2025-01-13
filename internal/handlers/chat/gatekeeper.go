@@ -184,7 +184,7 @@ func (g *Gatekeeper) processNewChatMembers(ctx context.Context) error {
 		}
 		if banned {
 			entry.WithField("userID", joiner.UserID).Info("recent joiner is banned")
-			if err := bot.BanUserFromChat(ctx, g.s.GetBot(), joiner.UserID, joiner.ChatID); err != nil {
+			if err := bot.BanUserFromChat(ctx, g.s.GetBot(), joiner.UserID, joiner.ChatID, 0); err != nil {
 				entry.WithField("error", err.Error()).Error("failed to ban user")
 			}
 			if g.config.SpamControl.DebugUserID != 0 {
@@ -474,7 +474,7 @@ func (g *Gatekeeper) handleChallenge(ctx context.Context, u *api.Update, chat *a
 		}
 
 		entry.WithFields(log.Fields{"user": bot.GetUN(cu.user), "chatID": cu.targetChat.ID}).Info("Banning user from chat")
-		if err := bot.BanUserFromChat(ctx, b, cu.user.ID, cu.targetChat.ID); err != nil {
+		if err := bot.BanUserFromChat(ctx, b, cu.user.ID, cu.targetChat.ID, time.Now().Add(10*time.Minute).Unix()); err != nil {
 			entry.WithField("error", err.Error()).Error("cant kick failed")
 		}
 
@@ -551,30 +551,6 @@ func (g *Gatekeeper) handleNewChatMembersV2(ctx context.Context, u *api.Update, 
 	}
 
 	return nil
-}
-
-func (g *Gatekeeper) handleNewChatMembers(ctx context.Context, u *api.Update, chat *api.Chat) error {
-	entry := g.getLogEntry().WithFields(log.Fields{
-		"method": "handleNewChatMembers",
-		"chat":   chat.Title,
-	})
-
-	select {
-	case <-ctx.Done():
-		entry.Debug("Context cancelled")
-		return ctx.Err()
-	default:
-	}
-	comm, err := g.s.GetBot().GetChat(api.ChatInfoConfig{
-		ChatConfig: api.ChatConfig{
-			ChatID: chat.ID,
-		},
-	})
-	if err != nil {
-		entry.WithField("error", err.Error()).Error("Failed to get chat info")
-		return err
-	}
-	return g.handleJoin(ctx, u, u.Message.NewChatMembers, chat, &comm)
 }
 
 func (g *Gatekeeper) handleChatJoinRequest(ctx context.Context, u *api.Update) error {
@@ -712,7 +688,7 @@ func (g *Gatekeeper) handleJoin(ctx context.Context, u *api.Update, jus []api.Us
 					"user":   bot.GetUN(cu.user),
 					"chatID": cu.targetChat.ID,
 				}).Info("Banning user from chat")
-				if err := bot.BanUserFromChat(ctx, b, cu.user.ID, cu.targetChat.ID); err != nil {
+				if err := bot.BanUserFromChat(ctx, b, cu.user.ID, cu.targetChat.ID, time.Now().Add(10*time.Minute).Unix()); err != nil {
 					entry.WithField("error", err.Error()).Error("Failed to ban user")
 					errs = append(errs, errors.Wrap(err, "failed to ban user"))
 				}

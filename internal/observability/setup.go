@@ -6,6 +6,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	log "github.com/sirupsen/logrus"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/sdk/trace"
 	"go.uber.org/zap"
@@ -53,7 +54,9 @@ func Init(ctx context.Context) error {
 	// Start Prometheus metrics endpoint
 	go func() {
 		http.Handle("/metrics", promhttp.Handler())
-		http.ListenAndServe(":2112", nil)
+		if err := http.ListenAndServe(":2112", nil); err != nil {
+			log.WithError(err).Error("metrics server failed")
+		}
 	}()
 
 	return nil

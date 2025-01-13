@@ -1,11 +1,12 @@
 package handlers
 
 import (
-	"context"
-
-	api "github.com/OvyFlash/telegram-bot-api"
+	"github.com/iamwavecut/ngbot/internal/bot"
+	adminhandler "github.com/iamwavecut/ngbot/internal/handlers/admin"
+	chathandler "github.com/iamwavecut/ngbot/internal/handlers/chat"
 )
 
-type Handler interface {
-	Handle(ctx context.Context, u *api.Update, chat *api.Chat, user *api.User) (proceed bool, err error)
-}
+// Ensure all handlers implement the Handler interface
+var _ bot.Handler = (*adminhandler.Admin)(nil)
+var _ bot.Handler = (*chathandler.Gatekeeper)(nil)
+var _ bot.Handler = (*chathandler.Reactor)(nil)

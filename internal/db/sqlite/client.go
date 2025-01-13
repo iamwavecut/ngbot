@@ -480,26 +480,38 @@ func (s *sqliteClient) UpsertBanlist(ctx context.Context, userIDs []int64) error
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
-	defer tx.Rollback()
+
+	rollback := true
+	defer func() {
+		if rollback {
+			if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+				log.WithError(err).Error("failed to rollback transaction")
+			}
+		}
+	}()
 
 	stmt, err := tx.PrepareContext(ctx, `
 		INSERT INTO banlist (user_id) VALUES (?)
 		ON CONFLICT(user_id) DO NOTHING
 	`)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to prepare statement: %w", err)
 	}
 	defer stmt.Close()
 
 	for _, userID := range userIDs {
 		if _, err := stmt.ExecContext(ctx, userID); err != nil {
-			return err
+			return fmt.Errorf("failed to insert user %d: %w", userID, err)
 		}
 	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+	rollback = false
+	return nil
 }
 
 func (s *sqliteClient) GetBanlist(ctx context.Context) (map[int64]struct{}, error) {

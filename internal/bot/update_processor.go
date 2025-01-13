@@ -18,10 +18,6 @@ const (
 )
 
 type (
-	Handler interface {
-		Handle(ctx context.Context, u *api.Update, chat *api.Chat, user *api.User) (proceed bool, err error)
-	}
-
 	UpdateProcessor struct {
 		s              Service
 		updateHandlers []Handler
@@ -151,7 +147,7 @@ func DeleteChatMessage(ctx context.Context, bot *api.BotAPI, chatID int64, messa
 	}
 }
 
-func BanUserFromChat(ctx context.Context, bot *api.BotAPI, userID int64, chatID int64) error {
+func BanUserFromChat(ctx context.Context, bot *api.BotAPI, userID int64, chatID int64, untilUnix int64) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -163,7 +159,7 @@ func BanUserFromChat(ctx context.Context, bot *api.BotAPI, userID int64, chatID 
 				},
 				UserID: userID,
 			},
-			UntilDate:      time.Now().Add(10 * time.Minute).Unix(),
+			UntilDate:      untilUnix,
 			RevokeMessages: true,
 		}); err != nil {
 			return errors.WithMessage(err, "cant kick")

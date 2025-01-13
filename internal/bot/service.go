@@ -18,24 +18,6 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-type ServiceBot interface {
-	GetBot() *api.BotAPI
-}
-
-type ServiceDB interface {
-	GetDB() db.Client
-}
-
-type Service interface {
-	ServiceBot
-	ServiceDB
-	IsMember(ctx context.Context, chatID, userID int64) (bool, error)
-	InsertMember(ctx context.Context, chatID, userID int64) error
-	GetSettings(ctx context.Context, chatID int64) (*db.Settings, error)
-	SetSettings(ctx context.Context, settings *db.Settings) error
-	GetLanguage(ctx context.Context, chatID int64, user *api.User) string
-}
-
 type service struct {
 	bot             *api.BotAPI
 	dbClient        db.Client

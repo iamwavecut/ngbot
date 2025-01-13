@@ -3,6 +3,7 @@ package gemini
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/google/generative-ai-go/genai"
 	"github.com/iamwavecut/ngbot/internal/adapters"
@@ -25,7 +26,14 @@ func NewGemini(apiKey, model string, logger *log.Entry) adapters.LLM {
 	if err != nil {
 		logger.Fatalf("Error creating client: %v", err)
 	}
-	return (&API{client: client, logger: logger, model: client.GenerativeModel(model)}).WithSafetySettings(nil).WithParameters(nil)
+	api := &API{
+		client: client,
+		logger: logger,
+		model:  client.GenerativeModel(model),
+	}
+	api.WithSafetySettings(nil)
+	api.WithParameters(nil)
+	return api
 }
 
 func (g *API) WithModel(modelName string) adapters.LLM {
@@ -150,4 +158,30 @@ func (g *API) ChatCompletion(ctx context.Context, messages []llm.ChatCompletionM
 	return llm.ChatCompletionResponse{
 		Choices: []llm.ChatCompletionChoice{{Message: llm.ChatCompletionMessage{Content: response}}},
 	}, nil
+}
+
+// Detect implements the LLM interface
+func (g *API) Detect(ctx context.Context, message string) (*bool, error) {
+	messages := []llm.ChatCompletionMessage{
+		{
+			Role:    "system",
+			Content: "You are a spam detection system. Analyze the following message and respond with true if it's spam, false if it's not. Consider advertising, scams, and inappropriate content as spam.",
+		},
+		{
+			Role:    "user",
+			Content: message,
+		},
+	}
+
+	resp, err := g.ChatCompletion(ctx, messages)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(resp.Choices) == 0 {
+		return nil, fmt.Errorf("no response choices available")
+	}
+
+	result := strings.ToLower(strings.TrimSpace(resp.Choices[0].Message.Content)) == "true"
+	return &result, nil
 }

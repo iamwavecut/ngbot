@@ -2,6 +2,8 @@ package openai
 
 import (
 	"context"
+	"fmt"
+	"strings"
 
 	"github.com/iamwavecut/ngbot/internal/adapters"
 	"github.com/iamwavecut/ngbot/internal/adapters/llm"
@@ -23,7 +25,13 @@ func NewOpenAI(apiKey, model, baseURL string, logger *log.Entry) adapters.LLM {
 	config := openai.DefaultConfig(apiKey)
 	config.BaseURL = baseURL
 	client := openai.NewClientWithConfig(config)
-	return (&API{client: client, logger: logger}).WithModel(model).WithParameters(nil)
+	api := &API{
+		client: client,
+		logger: logger,
+	}
+	api.WithModel(model)
+	api.WithParameters(nil)
+	return api
 }
 
 func (o *API) WithModel(modelName string) adapters.LLM {
@@ -99,4 +107,30 @@ func (o *API) ChatCompletion(ctx context.Context, messages []llm.ChatCompletionM
 		},
 	}, nil
 
+}
+
+// Detect implements the LLM interface
+func (o *API) Detect(ctx context.Context, message string) (*bool, error) {
+	messages := []llm.ChatCompletionMessage{
+		{
+			Role:    "system",
+			Content: "You are a spam detection system. Analyze the following message and respond with true if it's spam, false if it's not. Consider advertising, scams, and inappropriate content as spam.",
+		},
+		{
+			Role:    "user",
+			Content: message,
+		},
+	}
+
+	resp, err := o.ChatCompletion(ctx, messages)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(resp.Choices) == 0 {
+		return nil, fmt.Errorf("no response choices available")
+	}
+
+	result := strings.ToLower(strings.TrimSpace(resp.Choices[0].Message.Content)) == "true"
+	return &result, nil
 }

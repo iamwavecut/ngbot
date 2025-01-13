@@ -104,7 +104,24 @@ func (sc *SpamControl) preprocessMessage(ctx context.Context, msg *api.Message, 
 			success = false
 		}
 	}
-	if err := bot.BanUserFromChat(ctx, sc.s.GetBot(), msg.From.ID, msg.Chat.ID); err != nil {
+	chatMember, err := sc.s.GetBot().GetChatMember(api.GetChatMemberConfig{
+		ChatConfigWithUser: api.ChatConfigWithUser{
+			UserID: msg.From.ID,
+			ChatConfig: api.ChatConfig{
+				ChatID: msg.Chat.ID,
+			},
+		},
+	})
+	if err != nil {
+		log.WithField("error", err.Error()).Error("failed to get chat member")
+	}
+
+	banUntil := time.Now().Add(10 * time.Minute).Unix()
+	if chatMember.HasLeft() {
+		banUntil = 0 // Permanent ban
+	}
+
+	if err := bot.BanUserFromChat(ctx, sc.s.GetBot(), msg.From.ID, msg.Chat.ID, banUntil); err != nil {
 		log.WithField("error", err.Error()).WithField("chat_title", msg.Chat.Title).WithField("chat_username", msg.Chat.UserName).Error("failed to ban user")
 		if strings.Contains(err.Error(), "CHAT_ADMIN_REQUIRED") {
 			success = false
@@ -314,7 +331,7 @@ func (sc *SpamControl) ResolveCase(ctx context.Context, caseID int64) error {
 	}
 
 	if spamCase.Status == "spam" {
-		if err := bot.BanUserFromChat(ctx, sc.s.GetBot(), spamCase.UserID, spamCase.ChatID); err != nil {
+		if err := bot.BanUserFromChat(ctx, sc.s.GetBot(), spamCase.UserID, spamCase.ChatID, 0); err != nil {
 			log.WithField("error", err.Error()).Error("failed to ban user")
 		}
 	} else {
