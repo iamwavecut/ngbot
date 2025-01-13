@@ -25,7 +25,7 @@ func NewGemini(apiKey, model string, logger *log.Entry) adapters.LLM {
 	if err != nil {
 		logger.Fatalf("Error creating client: %v", err)
 	}
-	return (&API{client: client, logger: logger}).WithSafetySettings(nil).WithModel(model).WithParameters(nil)
+	return (&API{client: client, logger: logger, model: client.GenerativeModel(model)}).WithSafetySettings(nil).WithParameters(nil)
 }
 
 func (g *API) WithModel(modelName string) adapters.LLM {

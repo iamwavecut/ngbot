@@ -322,25 +322,24 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 		entry.WithField("message", msg).Warn("empty message content")
 		return nil
 	}
-	isSpam, err := r.checkMessageForSpam(ctx, content, user)
-	if err != nil {
-		return errors.Wrap(err, "failed to check message for spam")
-	}
-	if isSpam == nil {
-		return nil
-	}
-	if *isSpam {
-		if err := r.spamControl.ProcessSpamMessage(ctx, msg, chat, language); err != nil {
-			entry.WithField("error", err.Error()).Error("failed to process spam message")
+	var isSpam *bool
+	defer func() {
+		if isSpam == nil {
+			return
 		}
-		return nil
-	}
+		if *isSpam {
+			if processErr := r.spamControl.ProcessSpamMessage(ctx, msg, chat, language); processErr != nil {
+				entry.WithField("error", processErr.Error()).Error("failed to process spam message")
+			}
+			return
+		}
 
-	if err := r.s.InsertMember(ctx, chat.ID, user.ID); err != nil {
-		return errors.Wrap(err, "failed to insert member")
-	}
-
-	return nil
+		if insertErr := r.s.InsertMember(ctx, chat.ID, user.ID); insertErr != nil {
+			entry.WithField("error", insertErr.Error()).Error("failed to insert member")
+		}
+	}()
+	isSpam, err = r.checkMessageForSpam(ctx, content, user)
+	return err
 }
 
 func (r *Reactor) checkMessageForSpam(ctx context.Context, content string, user *api.User) (*bool, error) {

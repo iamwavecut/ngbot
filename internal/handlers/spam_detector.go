@@ -148,6 +148,7 @@ func NewSpamDetector(llm adapters.LLM, logger *log.Entry) *spamDetector {
 }
 
 func (d *spamDetector) IsSpam(ctx context.Context, message string) (*bool, error) {
+	d.logger.WithField("message", message).Debug("checking spam")
 
 	messagesChain := []llm.ChatCompletionMessage{
 		{
@@ -201,6 +202,7 @@ func (d *spamDetector) IsSpam(ctx context.Context, message string) (*bool, error
 	} else if cleanedChoice == "0" {
 		return tool.Ptr(false), nil
 	}
+
 
 	return nil, errors.New("unknown response from LLM: " + cleanedChoice + " (" + choice + ")")
 }
