@@ -188,10 +188,14 @@ func (g *Gatekeeper) processNewChatMembers(ctx context.Context) error {
 				entry.WithField("error", err.Error()).Error("failed to ban user")
 			}
 			if g.config.SpamControl.DebugUserID != 0 {
-				debugMsg := tool.ExecTemplate(`Banned joiner: {{ .user_name }} ({{ .user_id }}) {{ .error }}`, map[string]any{
+				errMsg := ""
+				if err != nil {
+					errMsg = err.Error()
+				}
+				debugMsg := tool.ExecTemplate(`Banned joiner: {{ .user_name }} ({{ .user_id }}){{ if .error }} {{ .error }}{{end}}`, map[string]any{
 					"user_name": joiner.Username,
 					"user_id":   joiner.UserID,
-					"error":     err.Error(),
+					"error":     errMsg,
 				})
 				_, _ = g.s.GetBot().Send(api.NewMessage(g.config.SpamControl.DebugUserID, debugMsg))
 			}
