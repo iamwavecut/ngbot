@@ -23,6 +23,7 @@ type Service interface {
 	ServiceDB
 	IsMember(ctx context.Context, chatID, userID int64) (bool, error)
 	InsertMember(ctx context.Context, chatID, userID int64) error
+	DeleteMember(ctx context.Context, chatID, userID int64) error
 	GetSettings(ctx context.Context, chatID int64) (*db.Settings, error)
 	SetSettings(ctx context.Context, settings *db.Settings) error
 	GetLanguage(ctx context.Context, chatID int64, user *api.User) string

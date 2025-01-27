@@ -295,6 +295,8 @@ func (r *Reactor) handleCommand(ctx context.Context, msg *api.Message, chat *api
 		return r.testSpamCommand(ctx, msg, chat, user)
 	case "skipreason":
 		return r.skipReasonCommand(ctx, msg, chat)
+	case "spam":
+		return r.spamCommand(ctx, msg, chat, user)
 	}
 
 	return nil
@@ -352,6 +354,78 @@ func (r *Reactor) skipReasonCommand(ctx context.Context, msg *api.Message, chat 
 	if msg.Chat.IsForum {
 		responseMsg.MessageThreadID = msg.MessageThreadID
 	}
+	_, _ = r.s.GetBot().Send(responseMsg)
+
+	return nil
+}
+
+
+
+func (r *Reactor) spamCommand(ctx context.Context, msg *api.Message, chat *api.Chat, user *api.User) error {
+	entry := r.getLogEntry().WithFields(log.Fields{
+		"method": "spamCommand", 
+		"chatID": chat.ID,
+		"userID": user.ID,
+	})
+
+	if msg.ReplyToMessage == nil {
+		responseMsg := api.NewMessage(chat.ID, "Please reply to a message to mark it as spam")
+		responseMsg.ReplyParameters.MessageID = msg.MessageID
+		responseMsg.ReplyParameters.ChatID = chat.ID
+		responseMsg.MessageThreadID = msg.MessageThreadID
+		_, _ = r.s.GetBot().Send(responseMsg)
+		return nil
+	}
+
+	member, err := r.s.GetBot().GetChatMember(api.GetChatMemberConfig{
+		ChatConfigWithUser: api.ChatConfigWithUser{
+			ChatConfig: api.ChatConfig{
+				ChatID: chat.ID,
+			},
+			UserID: user.ID,
+		},
+	})
+	if err != nil {
+		entry.WithError(err).Error("Failed to get chat member")
+		return errors.Wrap(err, "failed to get chat member")
+	}
+
+	if !member.CanRestrictMembers || !member.CanDeleteMessages {
+		responseMsg := api.NewMessage(chat.ID, "You don't have permission to use this command. Required permissions: Ban users and Delete messages")
+		responseMsg.ReplyParameters.MessageID = msg.MessageID
+		responseMsg.ReplyParameters.ChatID = chat.ID
+		responseMsg.MessageThreadID = msg.MessageThreadID
+		_, _ = r.s.GetBot().Send(responseMsg)
+		return nil
+	}
+
+	language := r.s.GetLanguage(ctx, chat.ID, user)
+	result, err := r.spamControl.ProcessBannedMessage(ctx, msg.ReplyToMessage, chat, language)
+	if err != nil {
+		entry.WithError(err).Error("Failed to process spam message")
+		return errors.Wrap(err, "failed to process spam message")
+	}
+
+	if err := r.s.DeleteMember(ctx, chat.ID, msg.ReplyToMessage.From.ID); err != nil {
+		entry.WithError(err).Error("Failed to delete member")
+	}
+
+	var response string
+	if result != nil {
+		if result.Error != "" {
+			response = fmt.Sprintf("Error processing spam: %s", result.Error)
+		} else {
+			response = fmt.Sprintf("Message processed as spam. Actions taken: message deleted=%v, user banned=%v", 
+				result.MessageDeleted, result.UserBanned)
+		}
+	} else {
+		response = "Message processed as spam"
+	}
+
+	responseMsg := api.NewMessage(chat.ID, response)
+	responseMsg.ReplyParameters.MessageID = msg.MessageID
+	responseMsg.ReplyParameters.ChatID = chat.ID
+	responseMsg.MessageThreadID = msg.MessageThreadID
 	_, _ = r.s.GetBot().Send(responseMsg)
 
 	return nil

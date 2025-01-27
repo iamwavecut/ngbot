@@ -109,6 +109,31 @@ func (s *service) InsertMember(ctx context.Context, chatID, userID int64) error 
 	}
 }
 
+func (s *service) DeleteMember(ctx context.Context, chatID, userID int64) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+		err := s.dbClient.DeleteMember(ctx, chatID, userID)
+		if err != nil {
+			return err
+		}
+
+		s.cacheMutex.Lock()
+		defer s.cacheMutex.Unlock()
+		if members, ok := s.memberCache[chatID]; ok {
+			for i, member := range members {
+				if member == userID {
+					s.memberCache[chatID] = append(members[:i], members[i+1:]...)
+					break
+				}
+			}
+		}
+
+		return nil
+	}
+}
+
 func (s *service) GetSettings(ctx context.Context, chatID int64) (*db.Settings, error) {
 	s.cacheMutex.RLock()
 	if settings, ok := s.settingsCache[chatID]; ok {
