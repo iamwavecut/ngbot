@@ -37,12 +37,19 @@ type Config struct {
 type MessageProcessingStage string
 
 const (
-	StageInit          MessageProcessingStage = "init"
+	StageInit            MessageProcessingStage = "init"
 	StageMembershipCheck MessageProcessingStage = "membership_check"
-	StageBanCheck      MessageProcessingStage = "ban_check"
-	StageContentCheck  MessageProcessingStage = "content_check"
-	StageSpamCheck     MessageProcessingStage = "spam_check"
+	StageBanCheck        MessageProcessingStage = "ban_check"
+	StageContentCheck    MessageProcessingStage = "content_check"
+	StageSpamCheck       MessageProcessingStage = "spam_check"
 )
+
+// MessageProcessingActions tracks what actions were taken during message processing
+type MessageProcessingActions struct {
+	MessageDeleted bool
+	UserBanned     bool
+	Error         string
+}
 
 // MessageProcessingResult tracks the processing of a message through various stages
 type MessageProcessingResult struct {
@@ -51,6 +58,7 @@ type MessageProcessingResult struct {
 	Skipped   bool
 	SkipReason string
 	IsSpam    *bool
+	Actions   MessageProcessingActions
 }
 
 // Reactor handles message processing and spam detection
@@ -390,8 +398,22 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 			})
 			_, _ = r.s.GetBot().Send(api.NewMessage(r.config.SpamControl.DebugUserID, debugMsg))
 		}
-		if err := r.spamControl.ProcessBannedMessage(ctx, msg, chat, language); err != nil {
+		processingResult, err := r.spamControl.ProcessBannedMessage(ctx, msg, chat, language)
+		if err != nil {
 			entry.WithField("error", err.Error()).Error("failed to process banned message")
+			result.Actions.Error = err.Error()
+		} else if processingResult != nil {
+			result.Actions.MessageDeleted = processingResult.MessageDeleted
+			result.Actions.UserBanned = processingResult.UserBanned
+			result.Actions.Error = processingResult.Error
+			if !processingResult.MessageDeleted || !processingResult.UserBanned {
+				result.SkipReason += fmt.Sprintf(" (Actions: message_deleted=%v, user_banned=%v", 
+					processingResult.MessageDeleted, processingResult.UserBanned)
+				if processingResult.Error != "" {
+					result.SkipReason += fmt.Sprintf(", error=%s", processingResult.Error)
+				}
+				result.SkipReason += ")"
+			}
 		}
 		return nil
 	}
@@ -414,8 +436,22 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 
 	if isSpam != nil {
 		if *isSpam {
-			if processErr := r.spamControl.ProcessSpamMessage(ctx, msg, chat, language); processErr != nil {
+			processingResult, processErr := r.spamControl.ProcessSpamMessage(ctx, msg, chat, language)
+			if processErr != nil {
 				entry.WithField("error", processErr.Error()).Error("failed to process spam message")
+				result.Actions.Error = processErr.Error()
+			} else if processingResult != nil {
+				result.Actions.MessageDeleted = processingResult.MessageDeleted
+				result.Actions.UserBanned = processingResult.UserBanned
+				result.Actions.Error = processingResult.Error
+				if !processingResult.MessageDeleted || !processingResult.UserBanned {
+					result.SkipReason = fmt.Sprintf("Spam detected (Actions: message_deleted=%v, user_banned=%v", 
+						processingResult.MessageDeleted, processingResult.UserBanned)
+					if processingResult.Error != "" {
+						result.SkipReason += fmt.Sprintf(", error=%s", processingResult.Error)
+					}
+					result.SkipReason += ")"
+				}
 			}
 			return nil
 		}

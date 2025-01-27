@@ -96,13 +96,22 @@ func (sc *SpamControl) getSpamCase(ctx context.Context, msg *api.Message) (*db.S
 	return spamCase, nil
 }
 
-func (sc *SpamControl) preprocessMessage(ctx context.Context, msg *api.Message, chat *api.Chat, lang string, voting bool) error {
+type ProcessingResult struct {
+	MessageDeleted bool
+	UserBanned     bool
+	Error         string
+}
+
+func (sc *SpamControl) preprocessMessage(ctx context.Context, msg *api.Message, chat *api.Chat, lang string, voting bool) (*ProcessingResult, error) {
+	result := &ProcessingResult{}
 	success := true
 	if err := bot.DeleteChatMessage(ctx, sc.s.GetBot(), msg.Chat.ID, msg.MessageID); err != nil {
 		log.WithField("error", err.Error()).WithField("chat_title", msg.Chat.Title).WithField("chat_username", msg.Chat.UserName).Error("failed to delete message")
 		if strings.Contains(err.Error(), "CHAT_ADMIN_REQUIRED") {
 			success = false
 		}
+	} else {
+		result.MessageDeleted = true
 	}
 	chatMember, err := sc.s.GetBot().GetChatMember(api.GetChatMemberConfig{
 		ChatConfigWithUser: api.ChatConfigWithUser{
@@ -125,7 +134,10 @@ func (sc *SpamControl) preprocessMessage(ctx context.Context, msg *api.Message, 
 		log.WithField("error", err.Error()).WithField("chat_title", msg.Chat.Title).WithField("chat_username", msg.Chat.UserName).Error("failed to ban user")
 		if strings.Contains(err.Error(), "CHAT_ADMIN_REQUIRED") {
 			success = false
+			result.Error = "CHAT_ADMIN_REQUIRED"
 		}
+	} else {
+		result.UserBanned = true
 	}
 	if !success {
 		unsuccessReply := api.NewMessage(chat.ID, "I don't have enough rights to ban this user")
@@ -148,12 +160,12 @@ func (sc *SpamControl) preprocessMessage(ctx context.Context, msg *api.Message, 
 			})
 		}
 
-		return nil
+		return result, nil
 	}
 
 	spamCase, err := sc.getSpamCase(ctx, msg)
 	if err != nil {
-		return err
+		return result, err
 	}
 	var notifMsg api.Chattable
 	if sc.config.LogChannelUsername != "" {
@@ -188,14 +200,14 @@ func (sc *SpamControl) preprocessMessage(ctx context.Context, msg *api.Message, 
 		log.WithField("error", err.Error()).Error("failed to update spam case")
 	}
 
-	return nil
+	return result, nil
 }
 
-func (sc *SpamControl) ProcessBannedMessage(ctx context.Context, msg *api.Message, chat *api.Chat, lang string) error {
+func (sc *SpamControl) ProcessBannedMessage(ctx context.Context, msg *api.Message, chat *api.Chat, lang string) (*ProcessingResult, error) {
 	return sc.preprocessMessage(ctx, msg, chat, lang, false)
 }
 
-func (sc *SpamControl) ProcessSpamMessage(ctx context.Context, msg *api.Message, chat *api.Chat, lang string) error {
+func (sc *SpamControl) ProcessSpamMessage(ctx context.Context, msg *api.Message, chat *api.Chat, lang string) (*ProcessingResult, error) {
 	return sc.preprocessMessage(ctx, msg, chat, lang, true)
 }
 
