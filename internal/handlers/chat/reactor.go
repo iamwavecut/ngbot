@@ -33,6 +33,26 @@ type Config struct {
 	SpamControl     config.SpamControl
 }
 
+// MessageProcessingStage represents a stage in message processing pipeline
+type MessageProcessingStage string
+
+const (
+	StageInit          MessageProcessingStage = "init"
+	StageMembershipCheck MessageProcessingStage = "membership_check"
+	StageBanCheck      MessageProcessingStage = "ban_check"
+	StageContentCheck  MessageProcessingStage = "content_check"
+	StageSpamCheck     MessageProcessingStage = "spam_check"
+)
+
+// MessageProcessingResult tracks the processing of a message through various stages
+type MessageProcessingResult struct {
+	Message   *api.Message
+	Stage     MessageProcessingStage
+	Skipped   bool
+	SkipReason string
+	IsSpam    *bool
+}
+
 // Reactor handles message processing and spam detection
 type Reactor struct {
 	s            bot.Service
@@ -40,6 +60,7 @@ type Reactor struct {
 	spamDetector SpamDetectorInterface
 	banService   moderation.BanService
 	spamControl  *moderation.SpamControl
+	lastResults  map[int64]*MessageProcessingResult // map[messageID]*MessageProcessingResult
 }
 
 // NewReactor creates a new Reactor instance with the given configuration
@@ -50,6 +71,7 @@ func NewReactor(s bot.Service, banService moderation.BanService, spamControl *mo
 		banService:   banService,
 		spamControl:  spamControl,
 		spamDetector: spamDetector,
+		lastResults:  make(map[int64]*MessageProcessingResult),
 	}
 	r.getLogEntry().Debug("created new reactor")
 	return r
@@ -261,8 +283,10 @@ func (r *Reactor) getEmojiFromReaction(react api.ReactionType) string {
 
 func (r *Reactor) handleCommand(ctx context.Context, msg *api.Message, chat *api.Chat, user *api.User) error {
 	switch msg.Command() {
-	case "/testspam":
+	case "testspam":
 		return r.testSpamCommand(ctx, msg, chat, user)
+	case "skipreason":
+		return r.skipReasonCommand(ctx, msg, chat)
 	}
 
 	return nil
@@ -285,26 +309,78 @@ func (r *Reactor) testSpamCommand(ctx context.Context, msg *api.Message, chat *a
 	return nil
 }
 
+func (r *Reactor) skipReasonCommand(ctx context.Context, msg *api.Message, chat *api.Chat) error {
+	if msg.ReplyToMessage == nil {
+		responseMsg := api.NewMessage(chat.ID, "Please reply to a message to see its skip reason")
+		responseMsg.ReplyParameters.MessageID = msg.MessageID
+		responseMsg.ReplyParameters.ChatID = chat.ID
+		responseMsg.MessageThreadID = msg.MessageThreadID
+		_, _ = r.s.GetBot().Send(responseMsg)
+		return nil
+	}
+
+	result := r.GetLastProcessingResult(int64(msg.ReplyToMessage.MessageID))
+	if result == nil {
+		responseMsg := api.NewMessage(chat.ID, "No processing information available for this message")
+		responseMsg.ReplyParameters.MessageID = msg.MessageID
+		responseMsg.ReplyParameters.ChatID = chat.ID
+		responseMsg.MessageThreadID = msg.MessageThreadID
+		_, _ = r.s.GetBot().Send(responseMsg)
+		return nil
+	}
+
+	var response string
+	if result.Skipped {
+		response = fmt.Sprintf("Message was skipped at stage %s\nReason: %s", result.Stage, result.SkipReason)
+	} else if result.IsSpam != nil {
+		response = fmt.Sprintf("Message was processed through stage %s\nSpam check result: %v", result.Stage, *result.IsSpam)
+	} else {
+		response = fmt.Sprintf("Message processing stopped at stage %s", result.Stage)
+	}
+
+	responseMsg := api.NewMessage(chat.ID, response)
+	responseMsg.ReplyParameters.MessageID = msg.MessageID
+	responseMsg.ReplyParameters.ChatID = chat.ID
+	responseMsg.MessageThreadID = msg.MessageThreadID
+	_, _ = r.s.GetBot().Send(responseMsg)
+
+	return nil
+}
+
 func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api.Chat, user *api.User) error {
 	entry := r.getLogEntry().WithFields(log.Fields{
 		"method": "handleMessage",
 	})
+
+	result := &MessageProcessingResult{
+		Message: msg,
+		Stage:   StageInit,
+	}
+	r.lastResults[int64(msg.MessageID)] = result
 
 	isMember, err := r.s.IsMember(ctx, chat.ID, user.ID)
 	if err != nil {
 		entry.WithField("error", err.Error()).Error("Failed to check membership")
 		return fmt.Errorf("failed to check membership: %w", err)
 	}
+
+	result.Stage = StageMembershipCheck
 	if isMember {
+		result.Skipped = true
+		result.SkipReason = "User is already a member"
 		return nil
 	}
 
 	language := r.s.GetLanguage(ctx, chat.ID, user)
+	result.Stage = StageBanCheck
+	
 	isBanned, err := r.banService.CheckBan(ctx, user.ID)
 	if err != nil {
 		return errors.Wrap(err, "failed to check ban")
 	}
 	if isBanned {
+		result.Skipped = true
+		result.SkipReason = "User is banned"
 		if r.config.SpamControl.DebugUserID != 0 {
 			debugMsg := tool.ExecTemplate(`Banned user: {{ .user_name }} ({{ .user_id }})`, map[string]any{
 				"user_name": bot.GetUN(user),
@@ -318,29 +394,36 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 		return nil
 	}
 
+	result.Stage = StageContentCheck
 	content := bot.ExtractContentFromMessage(msg)
 	if content == "" {
+		result.Skipped = true
+		result.SkipReason = "Empty message content"
 		entry.WithField("message", msg).Warn("empty message content")
 		return nil
 	}
-	var isSpam *bool
-	defer func() {
-		if isSpam == nil {
-			return
-		}
+
+	result.Stage = StageSpamCheck
+	isSpam, err := r.checkMessageForSpam(ctx, content, user)
+	if err != nil {
+		return err
+	}
+	result.IsSpam = isSpam
+
+	if isSpam != nil {
 		if *isSpam {
 			if processErr := r.spamControl.ProcessSpamMessage(ctx, msg, chat, language); processErr != nil {
 				entry.WithField("error", processErr.Error()).Error("failed to process spam message")
 			}
-			return
+			return nil
 		}
 
 		if insertErr := r.s.InsertMember(ctx, chat.ID, user.ID); insertErr != nil {
 			entry.WithField("error", insertErr.Error()).Error("failed to insert member")
 		}
-	}()
-	isSpam, err = r.checkMessageForSpam(ctx, content, user)
-	return err
+	}
+
+	return nil
 }
 
 func (r *Reactor) checkMessageForSpam(ctx context.Context, content string, user *api.User) (*bool, error) {
@@ -543,4 +626,9 @@ func normalizeCyrillics(content string) string {
 		"Ψ": "П",
 		"Ω": "О",
 	})
+}
+
+// GetLastProcessingResult returns the processing result for a given message ID
+func (r *Reactor) GetLastProcessingResult(messageID int64) *MessageProcessingResult {
+	return r.lastResults[messageID]
 }
