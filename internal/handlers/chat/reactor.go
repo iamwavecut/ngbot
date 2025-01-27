@@ -341,7 +341,9 @@ func (r *Reactor) skipReasonCommand(ctx context.Context, msg *api.Message, chat 
 	responseMsg := api.NewMessage(chat.ID, response)
 	responseMsg.ReplyParameters.MessageID = msg.MessageID
 	responseMsg.ReplyParameters.ChatID = chat.ID
-	responseMsg.MessageThreadID = msg.MessageThreadID
+	if msg.Chat.IsForum {
+		responseMsg.MessageThreadID = msg.MessageThreadID
+	}
 	_, _ = r.s.GetBot().Send(responseMsg)
 
 	return nil
