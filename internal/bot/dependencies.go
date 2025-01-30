@@ -38,11 +38,11 @@ type Handler interface {
 type Client interface {
 	GetSettings(ctx context.Context, chatID int64) (*db.Settings, error)
 	SetSettings(ctx context.Context, settings *db.Settings) error
-	
+
 	// Spam control methods
 	CreateSpamCase(ctx context.Context, sc *db.SpamCase) (*db.SpamCase, error)
 	UpdateSpamCase(ctx context.Context, sc *db.SpamCase) error
 	GetSpamCase(ctx context.Context, id int64) (*db.SpamCase, error)
 	GetSpamVotes(ctx context.Context, caseID int64) ([]*db.SpamVote, error)
 	AddSpamVote(ctx context.Context, vote *db.SpamVote) error
-} 
+}

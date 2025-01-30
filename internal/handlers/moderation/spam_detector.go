@@ -177,7 +177,6 @@ func (d *spamDetector) IsSpam(ctx context.Context, message string) (*bool, error
 		ctx,
 		messagesChain,
 	)
-
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to check spam with LLM")
 	}
@@ -202,7 +201,6 @@ func (d *spamDetector) IsSpam(ctx context.Context, message string) (*bool, error
 	} else if cleanedChoice == "0" {
 		return tool.Ptr(false), nil
 	}
-
 
 	return nil, errors.New("unknown response from LLM: " + cleanedChoice + " (" + choice + ")")
 }

@@ -7,6 +7,8 @@ import (
 )
 
 // Ensure all handlers implement the Handler interface
-var _ bot.Handler = (*adminhandler.Admin)(nil)
-var _ bot.Handler = (*chathandler.Gatekeeper)(nil)
-var _ bot.Handler = (*chathandler.Reactor)(nil)
+var (
+	_ bot.Handler = (*adminhandler.Admin)(nil)
+	_ bot.Handler = (*chathandler.Gatekeeper)(nil)
+	_ bot.Handler = (*chathandler.Reactor)(nil)
+)

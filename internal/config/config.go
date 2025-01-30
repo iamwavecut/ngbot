@@ -47,8 +47,10 @@ type (
 	}
 )
 
-var once sync.Once
-var globalConfig = &Config{}
+var (
+	once         sync.Once
+	globalConfig = &Config{}
+)
 
 func Get() Config {
 	once.Do(func() {
@@ -59,7 +61,6 @@ func Get() Config {
 		}
 		if err := envconfig.ProcessWith(context.Background(), &envcfg); err != nil {
 			log.WithField("error", err.Error()).Fatalln("cant load config")
-
 		}
 		home, err := os.UserHomeDir()
 		if err != nil {

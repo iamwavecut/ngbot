@@ -12,12 +12,10 @@ type worker struct {
 	logger        *log.Entry
 }
 
-var (
-	instance = &worker{
-		subscriptions: map[string][]func(event Queueable){},
-		logger:        log.WithField("context", "event_worker"),
-	}
-)
+var instance = &worker{
+	subscriptions: map[string][]func(event Queueable){},
+	logger:        log.WithField("context", "event_worker"),
+}
 
 func RunWorker() context.CancelFunc {
 	ctx, cancelFunc := context.WithCancel(context.Background())

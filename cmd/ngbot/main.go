@@ -106,7 +106,6 @@ func maskConfiguration(cfg *config.Config) *config.Config {
 }
 
 func runBot(ctx context.Context, cfg *config.Config, errChan chan<- error) {
-
 	defer event.RunWorker()()
 
 	// Initialize bot API
@@ -166,7 +165,6 @@ func runBot(ctx context.Context, cfg *config.Config, errChan chan<- error) {
 }
 
 func initializeHandlers(service bot.Service, cfg *config.Config, logger *log.Entry) {
-
 	banService := moderationHandlers.NewBanService(
 		service.GetBot(),
 		service.GetDB(),

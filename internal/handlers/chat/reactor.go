@@ -48,17 +48,17 @@ const (
 type MessageProcessingActions struct {
 	MessageDeleted bool
 	UserBanned     bool
-	Error         string
+	Error          string
 }
 
 // MessageProcessingResult tracks the processing of a message through various stages
 type MessageProcessingResult struct {
-	Message   *api.Message
-	Stage     MessageProcessingStage
-	Skipped   bool
+	Message    *api.Message
+	Stage      MessageProcessingStage
+	Skipped    bool
 	SkipReason string
-	IsSpam    *bool
-	Actions   MessageProcessingActions
+	IsSpam     *bool
+	Actions    MessageProcessingActions
 }
 
 // Reactor handles message processing and spam detection
@@ -359,11 +359,9 @@ func (r *Reactor) skipReasonCommand(ctx context.Context, msg *api.Message, chat 
 	return nil
 }
 
-
-
 func (r *Reactor) spamCommand(ctx context.Context, msg *api.Message, chat *api.Chat, user *api.User) error {
 	entry := r.getLogEntry().WithFields(log.Fields{
-		"method": "spamCommand", 
+		"method": "spamCommand",
 		"chatID": chat.ID,
 		"userID": user.ID,
 	})
@@ -415,7 +413,7 @@ func (r *Reactor) spamCommand(ctx context.Context, msg *api.Message, chat *api.C
 		if result.Error != "" {
 			response = fmt.Sprintf("Error processing spam: %s", result.Error)
 		} else {
-			response = fmt.Sprintf("Message processed as spam. Actions taken: message deleted=%v, user banned=%v", 
+			response = fmt.Sprintf("Message processed as spam. Actions taken: message deleted=%v, user banned=%v",
 				result.MessageDeleted, result.UserBanned)
 		}
 	} else {
@@ -433,7 +431,8 @@ func (r *Reactor) spamCommand(ctx context.Context, msg *api.Message, chat *api.C
 
 func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api.Chat, user *api.User) error {
 	entry := r.getLogEntry().WithFields(log.Fields{
-		"method": "handleMessage",
+		"chat_id": chat.ID,
+		"user_id": user.ID,
 	})
 
 	result := &MessageProcessingResult{
@@ -457,7 +456,7 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 
 	language := r.s.GetLanguage(ctx, chat.ID, user)
 	result.Stage = StageBanCheck
-	
+
 	isBanned, err := r.banService.CheckBan(ctx, user.ID)
 	if err != nil {
 		return errors.Wrap(err, "failed to check ban")
@@ -481,7 +480,7 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 			result.Actions.UserBanned = processingResult.UserBanned
 			result.Actions.Error = processingResult.Error
 			if !processingResult.MessageDeleted || !processingResult.UserBanned {
-				result.SkipReason += fmt.Sprintf(" (Actions: message_deleted=%v, user_banned=%v", 
+				result.SkipReason += fmt.Sprintf(" (Actions: message_deleted=%v, user_banned=%v",
 					processingResult.MessageDeleted, processingResult.UserBanned)
 				if processingResult.Error != "" {
 					result.SkipReason += fmt.Sprintf(", error=%s", processingResult.Error)
@@ -519,7 +518,7 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 				result.Actions.UserBanned = processingResult.UserBanned
 				result.Actions.Error = processingResult.Error
 				if !processingResult.MessageDeleted || !processingResult.UserBanned {
-					result.SkipReason = fmt.Sprintf("Spam detected (Actions: message_deleted=%v, user_banned=%v", 
+					result.SkipReason = fmt.Sprintf("Spam detected (Actions: message_deleted=%v, user_banned=%v",
 						processingResult.MessageDeleted, processingResult.UserBanned)
 					if processingResult.Error != "" {
 						result.SkipReason += fmt.Sprintf(", error=%s", processingResult.Error)
@@ -530,8 +529,32 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 			return nil
 		}
 
-		if insertErr := r.s.InsertMember(ctx, chat.ID, user.ID); insertErr != nil {
-			entry.WithField("error", insertErr.Error()).Error("failed to insert member")
+		chatMember, err := r.s.GetBot().GetChatMember(api.GetChatMemberConfig{
+			ChatConfigWithUser: api.ChatConfigWithUser{
+				ChatConfig: api.ChatConfig{
+					ChatID: chat.ID,
+				},
+				UserID: user.ID,
+			},
+		})
+		if err != nil {
+			entry.WithField("error", err.Error()).Error("failed to get chat member")
+			return err
+		}
+
+		if !(chatMember.HasLeft() || chatMember.WasKicked()) {
+			entry.WithFields(log.Fields{
+				"user_id": user.ID,
+				"chat_id": chat.ID,
+			}).Info("Adding user as member after spam check")
+			if insertErr := r.s.InsertMember(ctx, chat.ID, user.ID); insertErr != nil {
+				entry.WithField("error", insertErr.Error()).Error("failed to insert member")
+			}
+		} else {
+			entry.WithFields(log.Fields{
+				"user_id": user.ID,
+				"chat_id": chat.ID,
+			}).Info("User has left the chat, skipping member insertion")
 		}
 	}
 

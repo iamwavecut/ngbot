@@ -99,7 +99,7 @@ func (sc *SpamControl) getSpamCase(ctx context.Context, msg *api.Message) (*db.S
 type ProcessingResult struct {
 	MessageDeleted bool
 	UserBanned     bool
-	Error         string
+	Error          string
 }
 
 func (sc *SpamControl) preprocessMessage(ctx context.Context, msg *api.Message, chat *api.Chat, lang string, voting bool) (*ProcessingResult, error) {
@@ -126,7 +126,7 @@ func (sc *SpamControl) preprocessMessage(ctx context.Context, msg *api.Message, 
 	}
 
 	banUntil := time.Now().Add(10 * time.Minute).Unix()
-	if chatMember.HasLeft() {
+	if chatMember.HasLeft() || chatMember.WasKicked() {
 		banUntil = 0 // Permanent ban
 	}
 
@@ -333,7 +333,6 @@ func (sc *SpamControl) ResolveCase(ctx context.Context, caseID int64) error {
 
 		if noVotes >= yesVotes {
 			spamCase.Status = "spam"
-
 		} else {
 			spamCase.Status = "false_positive"
 		}

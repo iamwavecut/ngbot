@@ -44,6 +44,14 @@ func NewService(ctx context.Context, bot *api.BotAPI, dbClient db.Client, log *l
 	}
 
 	go func() {
+		for range time.Tick(24 * time.Hour) {
+			if err := s.CleanupLeftMembers(s.ctx); err != nil {
+				s.getLogEntry().WithField("error", err.Error()).Error("Failed to cleanup left members")
+			}
+		}
+	}()
+
+	go func() {
 		ctx, cancel := context.WithTimeout(s.ctx, 30*time.Second)
 		defer cancel()
 
@@ -96,15 +104,34 @@ func (s *service) InsertMember(ctx context.Context, chatID, userID int64) error 
 	case <-ctx.Done():
 		return ctx.Err()
 	default:
-		err := s.dbClient.InsertMember(ctx, chatID, userID)
+		chatMember, err := s.bot.GetChatMember(api.GetChatMemberConfig{
+			ChatConfigWithUser: api.ChatConfigWithUser{
+				ChatConfig: api.ChatConfig{
+					ChatID: chatID,
+				},
+				UserID: userID,
+			},
+		})
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to get chat member: %w", err)
+		}
+
+		if chatMember.HasLeft() {
+			return fmt.Errorf("user has left the chat")
+		}
+		if chatMember.WasKicked() {
+			return fmt.Errorf("user was kicked from the chat")
 		}
 
 		s.cacheMutex.Lock()
 		defer s.cacheMutex.Unlock()
-		s.memberCache[chatID] = append(s.memberCache[chatID], userID)
 
+		err = s.dbClient.InsertMember(ctx, chatID, userID)
+		if err != nil {
+			return fmt.Errorf("failed to insert member: %w", err)
+		}
+
+		s.memberCache[chatID] = append(s.memberCache[chatID], userID)
 		return nil
 	}
 }
@@ -246,4 +273,44 @@ func (s *service) GetLanguage(ctx context.Context, chatID int64, user *api.User)
 		return user.LanguageCode
 	}
 	return config.Get().DefaultLanguage
+}
+
+func (s *service) CleanupLeftMembers(ctx context.Context) error {
+	members, err := s.dbClient.GetAllMembers(ctx)
+	if err != nil {
+		s.getLogEntry().WithField("error", err.Error()).Error("failed to get all members")
+		return err
+	}
+
+	throttle := time.NewTicker(1 * time.Second)
+	defer throttle.Stop()
+
+	for chatID, userIDs := range members {
+		for _, userID := range userIDs {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-throttle.C:
+				chatMember, err := s.bot.GetChatMember(api.GetChatMemberConfig{
+					ChatConfigWithUser: api.ChatConfigWithUser{
+						ChatConfig: api.ChatConfig{
+							ChatID: chatID,
+						},
+						UserID: userID,
+					},
+				})
+				if err != nil {
+					continue
+				}
+
+				if chatMember.HasLeft() || chatMember.WasKicked() {
+					if err := s.DeleteMember(ctx, chatID, userID); err != nil {
+						s.getLogEntry().WithField("error", err.Error()).Error("failed to delete left member")
+					}
+				}
+				throttle.Reset(1 * time.Second)
+			}
+		}
+	}
+	return nil
 }

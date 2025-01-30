@@ -106,7 +106,6 @@ func (o *API) ChatCompletion(ctx context.Context, messages []llm.ChatCompletionM
 			},
 		},
 	}, nil
-
 }
 
 // Detect implements the LLM interface

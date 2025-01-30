@@ -63,7 +63,7 @@ func (o *Operations) RestrictUser(ctx context.Context, userID int64, chatID int6
 		UntilDate: untilDate.Unix(),
 		Permissions: &api.ChatPermissions{
 			CanSendMessages:       false,
-			CanSendOtherMessages: false,
+			CanSendOtherMessages:  false,
 			CanAddWebPagePreviews: false,
 		},
 	}
@@ -85,7 +85,7 @@ func (o *Operations) UnrestrictUser(ctx context.Context, userID int64, chatID in
 		},
 		Permissions: &api.ChatPermissions{
 			CanSendMessages:       true,
-			CanSendOtherMessages: true,
+			CanSendOtherMessages:  true,
 			CanAddWebPagePreviews: true,
 		},
 	}
@@ -124,4 +124,4 @@ func (o *Operations) DeclineJoinRequest(ctx context.Context, userID int64, chatI
 		return fmt.Errorf("failed to decline join request: %w", err)
 	}
 	return nil
-} 
+}

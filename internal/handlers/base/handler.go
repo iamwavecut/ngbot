@@ -80,4 +80,4 @@ func (h *BaseHandler) GetLanguage(ctx context.Context, chat *api.Chat, user *api
 var (
 	ErrNilUpdate     = errors.New("nil update")
 	ErrNilChatOrUser = errors.New("nil chat or user")
-) 
+)

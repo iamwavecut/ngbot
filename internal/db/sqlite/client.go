@@ -123,8 +123,37 @@ func (c *sqliteClient) InsertMember(ctx context.Context, chatID, userID int64) e
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
-	_, err := c.db.ExecContext(ctx, "INSERT OR IGNORE INTO chat_members (chat_id, user_id) VALUES (?, ?)", chatID, userID)
-	return err
+	tx, err := c.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer func() {
+		if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+			log.WithError(err).Error("failed to rollback transaction")
+		}
+	}()
+
+	// First check if member already exists to avoid duplicates
+	var exists bool
+	err = tx.GetContext(ctx, &exists, "SELECT EXISTS(SELECT 1 FROM chat_members WHERE chat_id = ? AND user_id = ?)", chatID, userID)
+	if err != nil {
+		return fmt.Errorf("failed to check member existence: %w", err)
+	}
+	if exists {
+		return nil
+	}
+
+	// Insert the new member
+	_, err = tx.ExecContext(ctx, "INSERT INTO chat_members (chat_id, user_id) VALUES (?, ?)", chatID, userID)
+	if err != nil {
+		return fmt.Errorf("failed to insert member: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return nil
 }
 
 func (c *sqliteClient) InsertMembers(ctx context.Context, chatID int64, userIDs []int64) error {
@@ -326,7 +355,6 @@ func (s *sqliteClient) GetActiveSpamCase(ctx context.Context, chatID, userID int
 		ORDER BY created_at DESC 
 		LIMIT 1
 	`, chatID, userID)
-
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil

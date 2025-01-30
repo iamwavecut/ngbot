@@ -28,4 +28,4 @@ func NormalizeCyrillics(content string) string {
 		}
 	}
 	return string(result)
-} 
+}
