@@ -282,15 +282,20 @@ func (s *service) CleanupLeftMembers(ctx context.Context) error {
 		return err
 	}
 
+	skipChats := []int64{}
 	throttle := time.NewTicker(1 * time.Second)
 	defer throttle.Stop()
 
 	for chatID, userIDs := range members {
 		for _, userID := range userIDs {
+			if tool.In(chatID, skipChats...) {
+				continue
+			}
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
 			case <-throttle.C:
+
 				chatMember, err := s.bot.GetChatMember(api.GetChatMemberConfig{
 					ChatConfigWithUser: api.ChatConfigWithUser{
 						ChatConfig: api.ChatConfig{
@@ -300,6 +305,7 @@ func (s *service) CleanupLeftMembers(ctx context.Context) error {
 					},
 				})
 				if err != nil {
+					skipChats = append(skipChats, chatID)
 					continue
 				}
 

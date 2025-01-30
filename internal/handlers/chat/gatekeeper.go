@@ -150,7 +150,7 @@ func NewGatekeeper(s bot.Service, config *config.Config, banChecker GatekeeperBa
 
 	// Start cleanup goroutine
 	go func() {
-		for range time.Tick(1 * time.Minute) {
+		for range time.Tick(1 * time.Hour) {
 			g.cleanupAbandonedChallenges()
 		}
 	}()
