@@ -21,7 +21,7 @@ import (
 type service struct {
 	bot             *api.BotAPI
 	dbClient        db.Client
-	memberCache     map[int64][]int64
+	memberCache     map[int64]map[int64]time.Time
 	settingsCache   map[int64]*db.Settings
 	cacheMutex      sync.RWMutex
 	cacheExpiration time.Duration
@@ -35,7 +35,7 @@ func NewService(ctx context.Context, bot *api.BotAPI, dbClient db.Client, log *l
 	s := &service{
 		bot:             bot,
 		dbClient:        dbClient,
-		memberCache:     make(map[int64][]int64),
+		memberCache:     make(map[int64]map[int64]time.Time),
 		settingsCache:   make(map[int64]*db.Settings),
 		cacheExpiration: 5 * time.Minute,
 		log:             log,
@@ -77,14 +77,22 @@ func (s *service) IsMember(ctx context.Context, chatID, userID int64) (bool, err
 	default:
 		s.cacheMutex.RLock()
 		if chatMembers, ok := s.memberCache[chatID]; ok {
-			for _, member := range chatMembers {
-				if member == userID {
+			if expTime, ok := chatMembers[userID]; ok {
+				if time.Now().Before(expTime) {
 					s.cacheMutex.RUnlock()
 					return true, nil
 				}
+				// Expired entry, remove it
+				s.cacheMutex.RUnlock()
+				s.cacheMutex.Lock()
+				delete(s.memberCache[chatID], userID)
+				s.cacheMutex.Unlock()
+			} else {
+				s.cacheMutex.RUnlock()
 			}
+		} else {
+			s.cacheMutex.RUnlock()
 		}
-		s.cacheMutex.RUnlock()
 
 		isMember, err := s.dbClient.IsMember(ctx, chatID, userID)
 		if err != nil {
@@ -92,9 +100,35 @@ func (s *service) IsMember(ctx context.Context, chatID, userID int64) (bool, err
 		}
 
 		if isMember {
+			chatMember, err := s.bot.GetChatMember(api.GetChatMemberConfig{
+				ChatConfigWithUser: api.ChatConfigWithUser{
+					ChatConfig: api.ChatConfig{
+						ChatID: chatID,
+					},
+					UserID: userID,
+				},
+			})
+			if err != nil {
+				s.log.WithError(err).WithFields(logrus.Fields{
+					"chat_id": chatID,
+					"user_id": userID,
+				}).Warn("Failed to verify membership with Telegram API")
+			} else {
+				if chatMember.HasLeft() || chatMember.WasKicked() {
+					// User is not in chat anymore, remove from DB and return false
+					if err := s.DeleteMember(ctx, chatID, userID); err != nil {
+						s.log.WithError(err).Error("Failed to delete member who left")
+					}
+					return false, nil
+				}
+			}
+
 			s.cacheMutex.Lock()
-			defer s.cacheMutex.Unlock()
-			s.memberCache[chatID] = append(s.memberCache[chatID], userID)
+			if _, ok := s.memberCache[chatID]; !ok {
+				s.memberCache[chatID] = make(map[int64]time.Time)
+			}
+			s.memberCache[chatID][userID] = time.Now().Add(s.cacheExpiration)
+			s.cacheMutex.Unlock()
 		}
 
 		return isMember, nil
@@ -125,15 +159,18 @@ func (s *service) InsertMember(ctx context.Context, chatID, userID int64) error 
 			return fmt.Errorf("user was kicked from the chat")
 		}
 
-		s.cacheMutex.Lock()
-		defer s.cacheMutex.Unlock()
-
 		err = s.dbClient.InsertMember(ctx, chatID, userID)
 		if err != nil {
 			return fmt.Errorf("failed to insert member: %w", err)
 		}
 
-		s.memberCache[chatID] = append(s.memberCache[chatID], userID)
+		s.cacheMutex.Lock()
+		defer s.cacheMutex.Unlock()
+
+		if _, ok := s.memberCache[chatID]; !ok {
+			s.memberCache[chatID] = make(map[int64]time.Time)
+		}
+		s.memberCache[chatID][userID] = time.Now().Add(s.cacheExpiration)
 		return nil
 	}
 }
@@ -151,12 +188,7 @@ func (s *service) DeleteMember(ctx context.Context, chatID, userID int64) error 
 		s.cacheMutex.Lock()
 		defer s.cacheMutex.Unlock()
 		if members, ok := s.memberCache[chatID]; ok {
-			for i, member := range members {
-				if member == userID {
-					s.memberCache[chatID] = append(members[:i], members[i+1:]...)
-					break
-				}
-			}
+			delete(members, userID)
 		}
 
 		return nil
@@ -219,7 +251,12 @@ func (s *service) warmupCache(ctx context.Context) error {
 		}
 		s.cacheMutex.Lock()
 		for chatID, userIDs := range members {
-			s.memberCache[chatID] = append(s.memberCache[chatID], userIDs...)
+			if _, ok := s.memberCache[chatID]; !ok {
+				s.memberCache[chatID] = make(map[int64]time.Time)
+			}
+			for userID := range userIDs {
+				s.memberCache[chatID][int64(userID)] = time.Now().Add(s.cacheExpiration)
+			}
 		}
 		s.cacheMutex.Unlock()
 		return nil
