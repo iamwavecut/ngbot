@@ -91,9 +91,11 @@ func (s *service) IsMember(ctx context.Context, chatID, userID int64) (bool, err
 			return false, fmt.Errorf("failed to check membership: %w", err)
 		}
 
-		s.cacheMutex.Lock()
-		defer s.cacheMutex.Unlock()
-		s.memberCache[chatID] = append(s.memberCache[chatID], userID)
+		if isMember {
+			s.cacheMutex.Lock()
+			defer s.cacheMutex.Unlock()
+			s.memberCache[chatID] = append(s.memberCache[chatID], userID)
+		}
 
 		return isMember, nil
 	}
