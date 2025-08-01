@@ -196,11 +196,22 @@ func (g *Gatekeeper) processNewChatMembers(ctx context.Context) error {
 			},
 		})
 		if err != nil {
-			entry.WithField("error", err.Error()).Error("failed to get chat member")
+			if strings.Contains(err.Error(), "PARTICIPANT_ID_INVALID") {
+				entry.WithFields(log.Fields{
+					"user_id": joiner.UserID,
+					"chat_id": joiner.ChatID,
+					"reason":  "User not found in chat (left)",
+				}).Info("Marking recent joiner as processed because they are no longer in the chat.")
+			} else {
+				entry.WithField("error", err.Error()).Error("failed to get chat member")
+			}
+			if err := g.s.GetDB().ProcessRecentJoiner(ctx, joiner.ChatID, joiner.UserID, false); err != nil {
+				entry.WithField("error", err.Error()).Error("failed to process recent joiner")
+			}
 			continue
 		}
 
-		if chatMember.HasLeft() || chatMember.WasKicked() {
+		if (chatMember == api.ChatMember{}) || chatMember.HasLeft() || chatMember.WasKicked() {
 			entry.WithFields(log.Fields{
 				"user_id": joiner.UserID,
 				"chat_id": joiner.ChatID,

@@ -8,3 +8,4 @@ dbconfig.yml
 .env
 compose.yaml
 __debug*
+.qodo
