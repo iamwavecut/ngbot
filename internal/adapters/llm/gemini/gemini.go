@@ -18,7 +18,7 @@ type API struct {
 	logger *log.Entry
 }
 
-const DefaultModel = "gemini-1.5-flash-8b"
+const DefaultModel = "gemini-2.5-flash-lite"
 
 func NewGemini(apiKey, model string, logger *log.Entry) adapters.LLM {
 	ctx := context.Background()
