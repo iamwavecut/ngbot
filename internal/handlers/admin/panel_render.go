@@ -1,0 +1,373 @@
+package handlers
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
+	"time"
+
+	api "github.com/OvyFlash/telegram-bot-api"
+	"github.com/iamwavecut/ngbot/internal/db"
+	"github.com/iamwavecut/ngbot/internal/i18n"
+)
+
+func (a *Admin) renderHome(ctx context.Context, session *db.AdminPanelSession, state *panelState) (string, *api.InlineKeyboardMarkup, error) {
+	lang := state.Language
+	title := i18n.Get("Settings", lang)
+	chatTitle := state.ChatTitle
+	if chatTitle == "" {
+		chatTitle = i18n.Get("Unknown chat", lang)
+	}
+	body := fmt.Sprintf("%s\n\n%s: %s\n%s: %d",
+		title,
+		i18n.Get("Chat", lang),
+		chatTitle,
+		i18n.Get("Chat ID", lang),
+		state.ChatID,
+	)
+
+	languageLabelText := fmt.Sprintf("%s: %s", i18n.Get("Language", lang), languageLabel(state.Language))
+	languageBtn, err := a.commandButton(ctx, session.ID, languageLabelText, panelCommand{Action: panelActionOpenLanguage})
+	if err != nil {
+		return "", nil, err
+	}
+
+	gatekeeperLabel := fmt.Sprintf("%s: %s", i18n.Get("Gatekeeper", lang), statusEmoji(state.Features.GatekeeperEnabled))
+	gatekeeperBtn, err := a.commandButton(ctx, session.ID, gatekeeperLabel, panelCommand{Action: panelActionToggleFeature, Feature: panelFeatureGatekeeper})
+	if err != nil {
+		return "", nil, err
+	}
+
+	llmLabel := fmt.Sprintf("%s: %s", i18n.Get("LLM First Message", lang), statusEmoji(state.Features.LLMFirstMessageEnabled))
+	llmBtn, err := a.commandButton(ctx, session.ID, llmLabel, panelCommand{Action: panelActionToggleFeature, Feature: panelFeatureLLMFirst})
+	if err != nil {
+		return "", nil, err
+	}
+
+	votingLabel := fmt.Sprintf("%s: %s", i18n.Get("Community Voting", lang), statusEmoji(state.Features.CommunityVotingEnabled))
+	votingBtn, err := a.commandButton(ctx, session.ID, votingLabel, panelCommand{Action: panelActionToggleFeature, Feature: panelFeatureVoting})
+	if err != nil {
+		return "", nil, err
+	}
+
+	examplesBtn, err := a.commandButton(ctx, session.ID, i18n.Get("Spam Examples", lang), panelCommand{Action: panelActionOpenExamples})
+	if err != nil {
+		return "", nil, err
+	}
+
+	closeBtn, err := a.commandButton(ctx, session.ID, "❌", panelCommand{Action: panelActionClose})
+	if err != nil {
+		return "", nil, err
+	}
+
+	keyboard := api.NewInlineKeyboardMarkup(
+		api.NewInlineKeyboardRow(languageBtn),
+		api.NewInlineKeyboardRow(gatekeeperBtn, llmBtn),
+		api.NewInlineKeyboardRow(votingBtn, examplesBtn),
+		api.NewInlineKeyboardRow(closeBtn),
+	)
+
+	return body, &keyboard, nil
+}
+
+func (a *Admin) renderLanguageList(ctx context.Context, session *db.AdminPanelSession, state *panelState) (string, *api.InlineKeyboardMarkup, error) {
+	lang := state.Language
+	allLanguages := i18n.GetLanguagesList()
+	totalPages := pageCount(len(allLanguages), panelLanguagePageSize)
+	state.LanguagePage = clampPage(state.LanguagePage, totalPages)
+
+	start := state.LanguagePage * panelLanguagePageSize
+	end := minInt(start+panelLanguagePageSize, len(allLanguages))
+	pageLangs := allLanguages
+	if start < end {
+		pageLangs = allLanguages[start:end]
+	} else {
+		pageLangs = []string{}
+	}
+
+	builder := strings.Builder{}
+	builder.WriteString(i18n.Get("Language", lang))
+	builder.WriteString("\n\n")
+	if len(pageLangs) == 0 {
+		builder.WriteString(i18n.Get("No languages available", lang))
+	} else {
+		for i, code := range pageLangs {
+			name := i18n.GetLanguageName(code)
+			label := fmt.Sprintf("%d. %s (%s)", i+1, name, code)
+			if code == state.Language {
+				label = "✅ " + label
+			}
+			builder.WriteString(label)
+			builder.WriteString("\n")
+		}
+	}
+
+	var buttons []api.InlineKeyboardButton
+	for _, code := range pageLangs {
+		name := i18n.GetLanguageName(code)
+		label := fmt.Sprintf("%s (%s)", name, code)
+		if code == state.Language {
+			label = "✅ " + label
+		}
+		btn, err := a.commandButton(ctx, session.ID, label, panelCommand{Action: panelActionSelectLanguage, Language: code})
+		if err != nil {
+			return "", nil, err
+		}
+		buttons = append(buttons, btn)
+	}
+
+	rows := chunkButtons(buttons, 2)
+	navRow, err := a.navRow(ctx, session.ID, panelActionLanguagePagePrev, panelActionLanguagePageNext, state.LanguagePage > 0, state.LanguagePage < totalPages-1)
+	if err != nil {
+		return "", nil, err
+	}
+	rows = append(rows, navRow)
+
+	keyboard := api.NewInlineKeyboardMarkup(rows...)
+	return builder.String(), &keyboard, nil
+}
+
+func (a *Admin) renderExamplesList(ctx context.Context, session *db.AdminPanelSession, state *panelState) (string, *api.InlineKeyboardMarkup, error) {
+	lang := state.Language
+	totalCount, err := a.s.GetDB().CountChatSpamExamples(ctx, session.ChatID)
+	if err != nil {
+		return "", nil, err
+	}
+	totalPages := pageCount(totalCount, panelExamplesPageSize)
+	state.ListPage = clampPage(state.ListPage, totalPages)
+
+	offset := state.ListPage * panelExamplesPageSize
+	examples, err := a.s.GetDB().ListChatSpamExamples(ctx, session.ChatID, panelExamplesPageSize, offset)
+	if err != nil {
+		return "", nil, err
+	}
+
+	builder := strings.Builder{}
+	builder.WriteString(i18n.Get("Spam Examples", lang))
+	builder.WriteString("\n\n")
+	if len(examples) == 0 {
+		builder.WriteString(i18n.Get("No spam examples yet", lang))
+	} else {
+		for i, example := range examples {
+			preview := makePreview(example.Text, panelPreviewMaxLen)
+			line := fmt.Sprintf("%d. %s", i+1, preview)
+			builder.WriteString(line)
+			builder.WriteString("\n")
+		}
+	}
+
+	addBtn, err := a.commandButton(ctx, session.ID, i18n.Get("Add Example", lang), panelCommand{Action: panelActionAddExample})
+	if err != nil {
+		return "", nil, err
+	}
+
+	var exampleButtons []api.InlineKeyboardButton
+	for i, example := range examples {
+		label := fmt.Sprintf("%d", i+1)
+		btn, err := a.commandButton(ctx, session.ID, label, panelCommand{Action: panelActionSelectExample, ExampleID: example.ID})
+		if err != nil {
+			return "", nil, err
+		}
+		exampleButtons = append(exampleButtons, btn)
+	}
+
+	rows := [][]api.InlineKeyboardButton{api.NewInlineKeyboardRow(addBtn)}
+	rows = append(rows, chunkButtons(exampleButtons, 2)...)
+	navRow, err := a.navRow(ctx, session.ID, panelActionExamplesPagePrev, panelActionExamplesPageNext, state.ListPage > 0, state.ListPage < totalPages-1)
+	if err != nil {
+		return "", nil, err
+	}
+	rows = append(rows, navRow)
+
+	keyboard := api.NewInlineKeyboardMarkup(rows...)
+	return builder.String(), &keyboard, nil
+}
+
+func (a *Admin) renderExampleDetail(ctx context.Context, session *db.AdminPanelSession, state *panelState) (string, *api.InlineKeyboardMarkup, error) {
+	lang := state.Language
+	example, err := a.s.GetDB().GetChatSpamExample(ctx, state.SelectedExampleID)
+	if err != nil {
+		return "", nil, err
+	}
+	if example == nil {
+		state.Page = panelPageExamplesList
+		return a.renderExamplesList(ctx, session, state)
+	}
+
+	text := fmt.Sprintf("%s\n\n%s", i18n.Get("Spam Example", lang), example.Text)
+	deleteBtn, err := a.commandButton(ctx, session.ID, i18n.Get("Delete", lang), panelCommand{Action: panelActionOpenDelete})
+	if err != nil {
+		return "", nil, err
+	}
+	backBtn, err := a.commandButton(ctx, session.ID, "↩️", panelCommand{Action: panelActionBack})
+	if err != nil {
+		return "", nil, err
+	}
+	keyboard := api.NewInlineKeyboardMarkup(api.NewInlineKeyboardRow(deleteBtn, backBtn))
+	return text, &keyboard, nil
+}
+
+func (a *Admin) renderExamplePrompt(ctx context.Context, session *db.AdminPanelSession, state *panelState) (string, *api.InlineKeyboardMarkup, error) {
+	lang := state.Language
+	builder := strings.Builder{}
+	builder.WriteString(i18n.Get("Add Spam Example", lang))
+	builder.WriteString("\n\n")
+	if state.PromptError != "" {
+		builder.WriteString(state.PromptError)
+		builder.WriteString("\n\n")
+	}
+	builder.WriteString(i18n.Get("Send the spam example text", lang))
+
+	backBtn, err := a.commandButton(ctx, session.ID, "↩️", panelCommand{Action: panelActionBack})
+	if err != nil {
+		return "", nil, err
+	}
+	keyboard := api.NewInlineKeyboardMarkup(api.NewInlineKeyboardRow(backBtn))
+	return builder.String(), &keyboard, nil
+}
+
+func (a *Admin) renderConfirmDelete(ctx context.Context, session *db.AdminPanelSession, state *panelState) (string, *api.InlineKeyboardMarkup, error) {
+	lang := state.Language
+	example, err := a.s.GetDB().GetChatSpamExample(ctx, state.SelectedExampleID)
+	if err != nil {
+		return "", nil, err
+	}
+	preview := ""
+	if example != nil {
+		preview = makePreview(example.Text, panelPreviewMaxLen)
+	}
+	text := fmt.Sprintf("%s\n\n%s", i18n.Get("Delete example?", lang), preview)
+
+	deleteBtn, err := a.commandButton(ctx, session.ID, i18n.Get("Delete", lang), panelCommand{Action: panelActionDeleteYes})
+	if err != nil {
+		return "", nil, err
+	}
+	backBtn, err := a.commandButton(ctx, session.ID, "↩️", panelCommand{Action: panelActionDeleteNo})
+	if err != nil {
+		return "", nil, err
+	}
+	keyboard := api.NewInlineKeyboardMarkup(api.NewInlineKeyboardRow(deleteBtn, backBtn))
+	return text, &keyboard, nil
+}
+
+func (a *Admin) commandButton(ctx context.Context, sessionID int64, label string, cmd panelCommand) (api.InlineKeyboardButton, error) {
+	payload, err := a.createPanelCommand(ctx, sessionID, cmd)
+	if err != nil {
+		return api.InlineKeyboardButton{}, err
+	}
+	return api.NewInlineKeyboardButtonData(label, payload), nil
+}
+
+func (a *Admin) navRow(ctx context.Context, sessionID int64, prevAction string, nextAction string, hasPrev bool, hasNext bool) ([]api.InlineKeyboardButton, error) {
+	if !hasPrev {
+		prevAction = panelActionNoop
+	}
+	if !hasNext {
+		nextAction = panelActionNoop
+	}
+	prevBtn, err := a.commandButton(ctx, sessionID, "⬅️", panelCommand{Action: prevAction})
+	if err != nil {
+		return nil, err
+	}
+	backBtn, err := a.commandButton(ctx, sessionID, "↩️", panelCommand{Action: panelActionBack})
+	if err != nil {
+		return nil, err
+	}
+	nextBtn, err := a.commandButton(ctx, sessionID, "➡️", panelCommand{Action: nextAction})
+	if err != nil {
+		return nil, err
+	}
+	return api.NewInlineKeyboardRow(prevBtn, backBtn, nextBtn), nil
+}
+
+func (a *Admin) createPanelCommand(ctx context.Context, sessionID int64, cmd panelCommand) (string, error) {
+	payload, err := jsonMarshalCommand(cmd)
+	if err != nil {
+		return "", err
+	}
+	created, err := a.s.GetDB().CreateAdminPanelCommand(ctx, &db.AdminPanelCommand{
+		SessionID: sessionID,
+		Payload:   payload,
+		CreatedAt: time.Now(),
+	})
+	if err != nil {
+		return "", err
+	}
+	sessionEnc := encodeUint64Min(uint64(sessionID))
+	commandEnc := encodeUint64Min(uint64(created.ID))
+	return sessionEnc + "_" + commandEnc, nil
+}
+
+func jsonMarshalCommand(cmd panelCommand) (string, error) {
+	data, err := json.Marshal(cmd)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+func chunkButtons(buttons []api.InlineKeyboardButton, perRow int) [][]api.InlineKeyboardButton {
+	if len(buttons) == 0 {
+		return nil
+	}
+	var rows [][]api.InlineKeyboardButton
+	for i := 0; i < len(buttons); i += perRow {
+		end := i + perRow
+		if end > len(buttons) {
+			end = len(buttons)
+		}
+		rows = append(rows, api.NewInlineKeyboardRow(buttons[i:end]...))
+	}
+	return rows
+}
+
+func languageLabel(code string) string {
+	name := i18n.GetLanguageName(code)
+	return fmt.Sprintf("%s (%s)", name, code)
+}
+
+func statusEmoji(enabled bool) string {
+	if enabled {
+		return "✅"
+	}
+	return "⬜"
+}
+
+func makePreview(text string, maxLen int) string {
+	normalized := strings.ReplaceAll(text, "\n", " ")
+	normalized = strings.TrimSpace(normalized)
+	normalized = strings.Join(strings.Fields(normalized), " ")
+	runes := []rune(normalized)
+	if len(runes) <= maxLen {
+		return normalized
+	}
+	return string(runes[:maxLen]) + "..."
+}
+
+func pageCount(total int, pageSize int) int {
+	if total <= 0 {
+		return 1
+	}
+	return (total + pageSize - 1) / pageSize
+}
+
+func clampPage(page int, totalPages int) int {
+	if totalPages <= 0 {
+		return 0
+	}
+	if page < 0 {
+		return 0
+	}
+	if page >= totalPages {
+		return totalPages - 1
+	}
+	return page
+}
+
+func minInt(a int, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}

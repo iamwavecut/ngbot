@@ -147,7 +147,7 @@ func NewSpamDetector(llm adapters.LLM, logger *log.Entry) *spamDetector {
 	}
 }
 
-func (d *spamDetector) IsSpam(ctx context.Context, message string) (*bool, error) {
+func (d *spamDetector) IsSpam(ctx context.Context, message string, extraExamples []string) (*bool, error) {
 	d.logger.WithField("message", message).Debug("checking spam")
 
 	messagesChain := []llm.ChatCompletionMessage{
@@ -157,14 +157,29 @@ func (d *spamDetector) IsSpam(ctx context.Context, message string) (*bool, error
 		},
 	}
 
-	for _, example := range examples {
+	for _, item := range examples {
 		messagesChain = append(messagesChain, llm.ChatCompletionMessage{
 			Role:    "user",
-			Content: example.Message,
+			Content: item.Message,
 		})
 		messagesChain = append(messagesChain, llm.ChatCompletionMessage{
 			Role:    "assistant",
-			Content: strconv.Itoa(example.Response),
+			Content: strconv.Itoa(item.Response),
+		})
+	}
+
+	for _, text := range extraExamples {
+		text = strings.TrimSpace(text)
+		if text == "" {
+			continue
+		}
+		messagesChain = append(messagesChain, llm.ChatCompletionMessage{
+			Role:    "user",
+			Content: text,
+		})
+		messagesChain = append(messagesChain, llm.ChatCompletionMessage{
+			Role:    "assistant",
+			Content: "1",
 		})
 	}
 

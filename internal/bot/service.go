@@ -207,11 +207,14 @@ func (s *service) GetSettings(ctx context.Context, chatID int64) (*db.Settings, 
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			settings = &db.Settings{
-				ID:               chatID,
-				Enabled:          true,
-				ChallengeTimeout: (3 * time.Minute).Nanoseconds(),
-				RejectTimeout:    (10 * time.Minute).Nanoseconds(),
-				Language:         "en",
+				ID:                     chatID,
+				Enabled:                true,
+				GatekeeperEnabled:      true,
+				LLMFirstMessageEnabled: true,
+				CommunityVotingEnabled: true,
+				ChallengeTimeout:       (3 * time.Minute).Nanoseconds(),
+				RejectTimeout:          (10 * time.Minute).Nanoseconds(),
+				Language:               "en",
 			}
 			if err := s.SetSettings(ctx, settings); err != nil {
 				return nil, fmt.Errorf("error setting default settings: %w", err)

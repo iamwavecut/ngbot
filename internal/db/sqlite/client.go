@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/iamwavecut/ngbot/internal/db"
 	"github.com/iamwavecut/ngbot/internal/infra"
@@ -53,7 +54,7 @@ func (c *sqliteClient) GetSettings(ctx context.Context, chatID int64) (*db.Setti
 	defer c.mutex.RUnlock()
 
 	res := &db.Settings{}
-	query := "SELECT id, language, enabled, challenge_timeout, reject_timeout FROM chats WHERE id = ?"
+	query := "SELECT id, language, enabled, gatekeeper_enabled, llm_first_message_enabled, community_voting_enabled, challenge_timeout, reject_timeout FROM chats WHERE id = ?"
 	err := c.db.QueryRowxContext(ctx, query, chatID).StructScan(res)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -74,7 +75,7 @@ func (c *sqliteClient) GetAllSettings(ctx context.Context) (map[int64]*db.Settin
 	c.mutex.RLock()
 	defer c.mutex.RUnlock()
 
-	query := "SELECT id, language, enabled, challenge_timeout, reject_timeout FROM chats"
+	query := "SELECT id, language, enabled, gatekeeper_enabled, llm_first_message_enabled, community_voting_enabled, challenge_timeout, reject_timeout FROM chats"
 	rows, err := c.db.QueryxContext(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query all settings: %w", err)
@@ -101,18 +102,37 @@ func (c *sqliteClient) SetSettings(ctx context.Context, settings *db.Settings) e
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
+	settings.Enabled = settings.GatekeeperEnabled
+
 	query := `
-		INSERT INTO chats (id, language, enabled, challenge_timeout, reject_timeout) 
-		VALUES (?, ?, ?, ?, ?)
-		ON CONFLICT(id) DO UPDATE SET 
+		INSERT INTO chats (id, language, enabled, gatekeeper_enabled, llm_first_message_enabled, community_voting_enabled, challenge_timeout, reject_timeout)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
 		language = ?,
-		enabled = ?, 
-		challenge_timeout = ?, 
+		enabled = ?,
+		gatekeeper_enabled = ?,
+		llm_first_message_enabled = ?,
+		community_voting_enabled = ?,
+		challenge_timeout = ?,
 		reject_timeout = ?
 	`
 	_, err := c.db.ExecContext(ctx, query,
-		settings.ID, settings.Language, settings.Enabled, settings.ChallengeTimeout, settings.RejectTimeout,
-		settings.Language, settings.Enabled, settings.ChallengeTimeout, settings.RejectTimeout)
+		settings.ID,
+		settings.Language,
+		settings.Enabled,
+		settings.GatekeeperEnabled,
+		settings.LLMFirstMessageEnabled,
+		settings.CommunityVotingEnabled,
+		settings.ChallengeTimeout,
+		settings.RejectTimeout,
+		settings.Language,
+		settings.Enabled,
+		settings.GatekeeperEnabled,
+		settings.LLMFirstMessageEnabled,
+		settings.CommunityVotingEnabled,
+		settings.ChallengeTimeout,
+		settings.RejectTimeout,
+	)
 	if err != nil {
 		return fmt.Errorf("failed to set settings: %w", err)
 	}
@@ -240,6 +260,109 @@ func (c *sqliteClient) IsMember(ctx context.Context, chatID, userID int64) (bool
 	var count int
 	err := c.db.GetContext(ctx, &count, "SELECT COUNT(*) FROM chat_members WHERE chat_id = ? AND user_id = ?", chatID, userID)
 	return count > 0, err
+}
+
+func (c *sqliteClient) CreateChallenge(ctx context.Context, challenge *db.Challenge) (*db.Challenge, error) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	query := `
+		INSERT INTO gatekeeper_challenges (
+			comm_chat_id, user_id, chat_id, success_uuid, join_message_id, challenge_message_id, attempts, created_at, expires_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(comm_chat_id, user_id) DO UPDATE SET
+			chat_id = excluded.chat_id,
+			success_uuid = excluded.success_uuid,
+			join_message_id = excluded.join_message_id,
+			challenge_message_id = excluded.challenge_message_id,
+			attempts = excluded.attempts,
+			created_at = excluded.created_at,
+			expires_at = excluded.expires_at
+	`
+	_, err := c.db.ExecContext(ctx, query,
+		challenge.CommChatID,
+		challenge.UserID,
+		challenge.ChatID,
+		challenge.SuccessUUID,
+		challenge.JoinMessageID,
+		challenge.ChallengeMessageID,
+		challenge.Attempts,
+		challenge.CreatedAt,
+		challenge.ExpiresAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return challenge, nil
+}
+
+func (c *sqliteClient) GetChallenge(ctx context.Context, commChatID, userID int64) (*db.Challenge, error) {
+	c.mutex.RLock()
+	defer c.mutex.RUnlock()
+
+	var challenge db.Challenge
+	err := c.db.GetContext(ctx, &challenge, `
+		SELECT comm_chat_id, user_id, chat_id, success_uuid, join_message_id, challenge_message_id, attempts, created_at, expires_at
+		FROM gatekeeper_challenges
+		WHERE comm_chat_id = ? AND user_id = ?
+	`, commChatID, userID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &challenge, nil
+}
+
+func (c *sqliteClient) UpdateChallenge(ctx context.Context, challenge *db.Challenge) error {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	query := `
+		UPDATE gatekeeper_challenges
+		SET chat_id = ?,
+			success_uuid = ?,
+			join_message_id = ?,
+			challenge_message_id = ?,
+			attempts = ?,
+			created_at = ?,
+			expires_at = ?
+		WHERE comm_chat_id = ? AND user_id = ?
+	`
+	_, err := c.db.ExecContext(ctx, query,
+		challenge.ChatID,
+		challenge.SuccessUUID,
+		challenge.JoinMessageID,
+		challenge.ChallengeMessageID,
+		challenge.Attempts,
+		challenge.CreatedAt,
+		challenge.ExpiresAt,
+		challenge.CommChatID,
+		challenge.UserID,
+	)
+	return err
+}
+
+func (c *sqliteClient) DeleteChallenge(ctx context.Context, commChatID, userID int64) error {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	_, err := c.db.ExecContext(ctx, `DELETE FROM gatekeeper_challenges WHERE comm_chat_id = ? AND user_id = ?`, commChatID, userID)
+	return err
+}
+
+func (c *sqliteClient) GetExpiredChallenges(ctx context.Context, now time.Time) ([]*db.Challenge, error) {
+	c.mutex.RLock()
+	defer c.mutex.RUnlock()
+
+	var challenges []*db.Challenge
+	err := c.db.SelectContext(ctx, &challenges, `
+		SELECT comm_chat_id, user_id, chat_id, success_uuid, join_message_id, challenge_message_id, attempts, created_at, expires_at
+		FROM gatekeeper_challenges
+		WHERE expires_at <= ?
+	`, now)
+	return challenges, err
 }
 
 func (c *sqliteClient) Close() error {

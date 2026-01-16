@@ -1270,3 +1270,54 @@
   TR: "%s'den gelen mesaj spam için inceleniyor\n\nİtiraz et: bağlantı"
   UK: "Повідомлення від %s перевіряється на спам\n\nОскаржити тут: посилання"
   ZH: "来自 %s 的消息正在进行垃圾信息审查\n\n在此申诉：链接"
+
+"Settings":
+  RU: "Настройки"
+"Unknown chat":
+  RU: "Неизвестный чат"
+"Chat":
+  RU: "Чат"
+"Chat ID":
+  RU: "ID чата"
+"Language":
+  RU: "Язык"
+"Gatekeeper":
+  RU: "Гейткипер"
+"LLM First Message":
+  RU: "Проверка первого сообщения LLM"
+"Community Voting":
+  RU: "Голосование сообщества"
+"Spam Examples":
+  RU: "Примеры спама"
+"No languages available":
+  RU: "Список языков пуст"
+"Add Example":
+  RU: "Добавить пример"
+"No spam examples yet":
+  RU: "Пока нет примеров спама"
+"Spam Example":
+  RU: "Пример спама"
+"Add Spam Example":
+  RU: "Добавить пример спама"
+"Send the spam example text":
+  RU: "Отправьте текст примера спама"
+"Delete example?":
+  RU: "Удалить пример?"
+"Delete":
+  RU: "Удалить"
+"Open settings in private chat":
+  RU: "Открыть настройки в личном чате"
+"Open Settings":
+  RU: "Открыть настройки"
+"No access":
+  RU: "Нет доступа"
+"Please run /settings in the group first":
+  RU: "Сначала выполните /settings в группе"
+"Session expired":
+  RU: "Сессия истекла"
+"Invalid input":
+  RU: "Некорректный ввод"
+"Please wait...":
+  RU: "Пожалуйста, подождите..."
+"Community voting is disabled":
+  RU: "Голосование сообщества отключено"

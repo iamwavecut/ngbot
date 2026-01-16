@@ -3,7 +3,6 @@ package handlers
 import (
 	"context"
 	"database/sql"
-	"fmt"
 	"strings"
 
 	api "github.com/OvyFlash/telegram-bot-api"
@@ -12,26 +11,22 @@ import (
 	log "github.com/sirupsen/logrus"
 
 	"github.com/iamwavecut/ngbot/internal/bot"
-	moderation "github.com/iamwavecut/ngbot/internal/handlers/moderation"
 	"github.com/iamwavecut/ngbot/internal/i18n"
 )
 
 type Admin struct {
-	s           bot.Service
-	languages   []string
-	banService  moderation.BanService
-	spamControl *moderation.SpamControl
+	s         bot.Service
+	languages []string
 }
 
-func NewAdmin(s bot.Service, banService moderation.BanService, spamControl *moderation.SpamControl) *Admin {
+func NewAdmin(s bot.Service) *Admin {
 	entry := log.WithField("object", "Admin").WithField("method", "NewAdmin")
 
 	a := &Admin{
-		s:           s,
-		banService:  banService,
-		spamControl: spamControl,
-		languages:   i18n.GetLanguagesList(),
+		s:         s,
+		languages: i18n.GetLanguagesList(),
 	}
+	a.startPanelCleanup()
 	entry.Debug("created new admin handler")
 	return a
 }
@@ -39,21 +34,34 @@ func NewAdmin(s bot.Service, banService moderation.BanService, spamControl *mode
 func (a *Admin) Handle(ctx context.Context, u *api.Update, chat *api.Chat, user *api.User) (proceed bool, err error) {
 	entry := a.getLogEntry().WithField("method", "Handle")
 
-	if chat == nil || user == nil {
+	if u == nil {
+		return true, nil
+	}
+
+	if u.MyChatMember != nil {
+		if err := a.handleMyChatMember(ctx, u.MyChatMember); err != nil {
+			entry.WithField("error", err.Error()).Error("failed to handle my_chat_member update")
+			return false, err
+		}
+		return false, nil
+	}
+
+	if u.CallbackQuery != nil {
+		handled, err := a.handlePanelCallback(ctx, u.CallbackQuery, chat, user)
+		if err != nil {
+			entry.WithField("error", err.Error()).Error("failed to handle callback")
+			return false, err
+		}
+		if handled {
+			return false, nil
+		}
+		return true, nil
+	}
+
+	if u.Message == nil || user == nil || chat == nil {
 		entry.Debug("chat or user is nil, proceeding")
 		return true, nil
 	}
-
-	switch {
-	case
-		u.Message == nil,
-		user.IsBot,
-		!u.Message.IsCommand():
-		return true, nil
-	}
-	m := u.Message
-
-	entry.Debugf("processing command: %s", m.Command())
 
 	isAdmin, err := a.isAdmin(chat.ID, user.ID)
 	if err != nil {
@@ -64,19 +72,34 @@ func (a *Admin) Handle(ctx context.Context, u *api.Update, chat *api.Chat, user 
 
 	language := a.s.GetLanguage(ctx, chat.ID, user)
 
-	switch m.Command() {
-	case "lang":
-		return a.handleLangCommand(ctx, m, isAdmin, language)
-	case "start":
-		return a.handleStartCommand(m, language)
-
-	// case "ban":
-	// 	return a.handleBanCommand(ctx, m, isAdmin, language)
-
-	default:
-		entry.Debug("unknown command")
-		return true, nil
+	if u.Message.IsCommand() {
+		entry.Debugf("processing command: %s", u.Message.Command())
+		switch u.Message.Command() {
+		case "lang":
+			return a.handleLangCommand(ctx, u.Message, isAdmin, language)
+		case "settings":
+			return false, a.handleSettingsCommand(ctx, u.Message, chat, user)
+		case "start":
+			payload := strings.TrimSpace(u.Message.CommandArguments())
+			if strings.HasPrefix(payload, "settings_") {
+				return false, a.handleStartSettings(ctx, u.Message, chat, user, payload)
+			}
+			return a.handleStartCommand(u.Message, language)
+		default:
+			entry.Debug("unknown command")
+			return true, nil
+		}
 	}
+
+	handled, err := a.handlePanelInput(ctx, u.Message, chat, user)
+	if err != nil {
+		entry.WithField("error", err.Error()).Error("failed to handle panel input")
+		return false, err
+	}
+	if handled {
+		return false, nil
+	}
+	return true, nil
 }
 
 func (a *Admin) handleLangCommand(ctx context.Context, msg *api.Message, isAdmin bool, language string) (bool, error) {
@@ -141,69 +164,6 @@ func (a *Admin) handleStartCommand(msg *api.Message, language string) (bool, err
 	))
 
 	return false, nil
-}
-
-func (a *Admin) handleBanCommand(ctx context.Context, msg *api.Message, isAdmin bool, language string) (bool, error) {
-	entry := log.WithField("method", "handleBanCommand")
-	entry.Debug("handling ban command")
-
-	if msg.Chat.Type == "private" {
-		entry.Debug("command used in private chat, ignoring")
-		msg := api.NewMessage(msg.Chat.ID, i18n.Get("This command can only be used in groups", language))
-		msg.DisableNotification = true
-		_, _ = a.s.GetBot().Send(msg)
-		return false, nil
-	}
-
-	if msg.ReplyToMessage == nil {
-		msg := api.NewMessage(msg.Chat.ID, i18n.Get("This command must be used as a reply to a message", language))
-		msg.DisableNotification = true
-		_, _ = a.s.GetBot().Send(msg)
-		return false, nil
-	}
-
-	if isAdmin {
-		return false, a.handleAdminBan(ctx, msg, language)
-	} else {
-		return false, a.handleUserBanVote(ctx, msg, language)
-	}
-}
-
-func (a *Admin) handleAdminBan(ctx context.Context, msg *api.Message, language string) error {
-	targetMsg := msg.ReplyToMessage
-
-	err := bot.BanUserFromChat(ctx, a.s.GetBot(), targetMsg.From.ID, msg.Chat.ID, 0)
-	if err != nil {
-		if errors.Is(err, moderation.ErrNoPrivileges) {
-			msg := api.NewMessage(msg.Chat.ID, i18n.Get("I don't have enough rights to ban this user", language))
-			msg.DisableNotification = true
-			_, _ = a.s.GetBot().Send(msg)
-		}
-		return fmt.Errorf("failed to ban user: %w", err)
-	}
-
-	err = bot.DeleteChatMessage(ctx, a.s.GetBot(), msg.Chat.ID, targetMsg.MessageID)
-	if err != nil {
-		return fmt.Errorf("failed to delete message: %w", err)
-	}
-
-	err = bot.DeleteChatMessage(ctx, a.s.GetBot(), msg.Chat.ID, msg.MessageID)
-	if err != nil {
-		return fmt.Errorf("failed to delete command message: %w", err)
-	}
-
-	return nil
-}
-
-func (a *Admin) handleUserBanVote(ctx context.Context, msg *api.Message, language string) error {
-	targetMsg := msg.ReplyToMessage
-	if targetMsg == nil {
-		err := bot.DeleteChatMessage(ctx, a.s.GetBot(), msg.Chat.ID, msg.MessageID)
-		if err != nil {
-			return fmt.Errorf("failed to delete command message: %w", err)
-		}
-	}
-	return a.spamControl.ProcessSuspectMessage(ctx, targetMsg, language)
 }
 
 func (a *Admin) isAdmin(chatID, userID int64) (bool, error) {

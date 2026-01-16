@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -32,47 +33,11 @@ func NewSpamControl(s bot.Service, config config.SpamControl, banService BanServ
 }
 
 func (sc *SpamControl) ProcessSuspectMessage(ctx context.Context, msg *api.Message, lang string) error {
-	spamCase, err := sc.s.GetDB().GetActiveSpamCase(ctx, msg.Chat.ID, msg.From.ID)
-	if err != nil {
-		log.WithField("error", err.Error()).Debug("failed to get active spam case")
+	if msg == nil {
+		return nil
 	}
-	if spamCase == nil {
-		spamCase, err = sc.s.GetDB().CreateSpamCase(ctx, &db.SpamCase{
-			ChatID:      msg.Chat.ID,
-			UserID:      msg.From.ID,
-			MessageText: bot.ExtractContentFromMessage(msg),
-			CreatedAt:   time.Now(),
-			Status:      "pending",
-		})
-		if err != nil {
-			return fmt.Errorf("failed to create spam case: %w", err)
-		}
-	}
-
-	notifMsg := sc.createInChatNotification(msg, spamCase.ID, lang, true)
-	notification, err := sc.s.GetBot().Send(notifMsg)
-	if err != nil {
-		log.WithField("error", err.Error()).Error("failed to send notification")
-	} else {
-		spamCase.NotificationMessageID = notification.MessageID
-
-		time.AfterFunc(sc.config.SuspectNotificationTimeout, func() {
-			if _, err := sc.s.GetBot().Request(api.NewDeleteMessage(msg.Chat.ID, notification.MessageID)); err != nil {
-				log.WithField("error", err.Error()).Error("failed to delete notification")
-			}
-		})
-	}
-
-	if err := sc.s.GetDB().UpdateSpamCase(ctx, spamCase); err != nil {
-		log.WithField("error", err.Error()).Error("failed to update spam case")
-	}
-
-	time.AfterFunc(sc.config.VotingTimeoutMinutes, func() {
-		if err := sc.ResolveCase(context.Background(), spamCase.ID); err != nil {
-			log.WithField("error", err.Error()).Error("failed to resolve spam case")
-		}
-	})
-	return nil
+	_, err := sc.preprocessMessage(ctx, msg, &msg.Chat, lang, true)
+	return err
 }
 
 func (sc *SpamControl) getSpamCase(ctx context.Context, msg *api.Message) (*db.SpamCase, error) {
@@ -104,42 +69,48 @@ type ProcessingResult struct {
 
 func (sc *SpamControl) preprocessMessage(ctx context.Context, msg *api.Message, chat *api.Chat, lang string, voting bool) (*ProcessingResult, error) {
 	result := &ProcessingResult{}
-	success := true
-	if err := bot.DeleteChatMessage(ctx, sc.s.GetBot(), msg.Chat.ID, msg.MessageID); err != nil {
-		log.WithField("error", err.Error()).WithField("chat_title", msg.Chat.Title).WithField("chat_username", msg.Chat.UserName).Error("failed to delete message")
-		if strings.Contains(err.Error(), "CHAT_ADMIN_REQUIRED") {
-			success = false
-		}
+	if msg == nil || chat == nil || msg.From == nil {
+		return result, nil
+	}
+
+	if err := bot.DeleteChatMessage(ctx, sc.s.GetBot(), chat.ID, msg.MessageID); err != nil {
+		log.WithField("error", err.Error()).WithField("chat_title", chat.Title).WithField("chat_username", chat.UserName).Error("failed to delete message")
 	} else {
 		result.MessageDeleted = true
 	}
-	chatMember, err := sc.s.GetBot().GetChatMember(api.GetChatMemberConfig{
-		ChatConfigWithUser: api.ChatConfigWithUser{
-			UserID: msg.From.ID,
-			ChatConfig: api.ChatConfig{
-				ChatID: msg.Chat.ID,
-			},
-		},
-	})
+
+	spamCase, err := sc.getSpamCase(ctx, msg)
 	if err != nil {
-		log.WithField("error", err.Error()).Error("failed to get chat member")
+		return result, err
 	}
 
-	banUntil := time.Now().Add(10 * time.Minute).Unix()
-	if chatMember.HasLeft() || chatMember.WasKicked() {
-		banUntil = 0 // Permanent ban
-	}
-
-	if err := bot.BanUserFromChat(ctx, sc.s.GetBot(), msg.From.ID, msg.Chat.ID, banUntil); err != nil {
-		log.WithField("error", err.Error()).WithField("chat_title", msg.Chat.Title).WithField("chat_username", msg.Chat.UserName).Error("failed to ban user")
-		if strings.Contains(err.Error(), "CHAT_ADMIN_REQUIRED") {
-			success = false
-			result.Error = "CHAT_ADMIN_REQUIRED"
+	if voting {
+		if err := sc.banService.MuteUser(ctx, chat.ID, msg.From.ID); err != nil {
+			if errors.Is(err, ErrNoPrivileges) {
+				result.Error = "CHAT_ADMIN_REQUIRED"
+			} else {
+				result.Error = err.Error()
+			}
+		} else {
+			result.UserBanned = true
 		}
 	} else {
-		result.UserBanned = true
+		if err := bot.BanUserFromChat(ctx, sc.s.GetBot(), msg.From.ID, chat.ID, 0); err != nil {
+			log.WithField("error", err.Error()).WithField("chat_title", chat.Title).WithField("chat_username", chat.UserName).Error("failed to ban user")
+			if strings.Contains(err.Error(), "CHAT_ADMIN_REQUIRED") {
+				result.Error = "CHAT_ADMIN_REQUIRED"
+			} else {
+				result.Error = err.Error()
+			}
+		} else {
+			result.UserBanned = true
+		}
+		now := time.Now()
+		spamCase.Status = "spam"
+		spamCase.ResolvedAt = &now
 	}
-	if !success {
+
+	if result.Error == "CHAT_ADMIN_REQUIRED" {
 		unsuccessReply := api.NewMessage(chat.ID, "I don't have enough rights to ban this user")
 		unsuccessReply.ReplyParameters = api.ReplyParameters{
 			ChatID:                   chat.ID,
@@ -159,45 +130,50 @@ func (sc *SpamControl) preprocessMessage(ctx context.Context, msg *api.Message, 
 				}
 			})
 		}
-
-		return result, nil
 	}
 
-	spamCase, err := sc.getSpamCase(ctx, msg)
-	if err != nil {
-		return result, err
-	}
-	var notifMsg api.Chattable
-	if sc.config.LogChannelUsername != "" {
-		channelMsg, err := sc.SendChannelPost(ctx, msg, lang, true)
-		if err != nil {
-			log.WithField("error", err.Error()).Error("failed to send channel post")
-		}
-		if sc.verbose && channelMsg.MessageID != 0 {
-			channelPostLink := fmt.Sprintf("https://t.me/%s/%d", sc.config.LogChannelUsername, channelMsg.MessageID)
-			notifMsg = sc.createChannelNotification(msg, channelPostLink, lang)
-		}
-	} else {
-		notifMsg = sc.createInChatNotification(msg, spamCase.ID, lang, voting)
-	}
-
-	if notifMsg != nil {
-		notification, err := sc.s.GetBot().Send(notifMsg)
-		if err != nil {
-			log.WithField("error", err.Error()).Error("failed to send notification")
+	shouldNotify := spamCase.NotificationMessageID == 0 && spamCase.ChannelPostID == 0
+	if shouldNotify {
+		var notifMsg api.Chattable
+		if sc.config.LogChannelUsername != "" {
+			channelMsg, err := sc.SendChannelPost(ctx, msg, lang, voting)
+			if err != nil {
+				log.WithField("error", err.Error()).Error("failed to send channel post")
+			}
+			if sc.verbose && channelMsg.MessageID != 0 {
+				channelPostLink := fmt.Sprintf("https://t.me/%s/%d", sc.config.LogChannelUsername, channelMsg.MessageID)
+				notifMsg = sc.createChannelNotification(msg, channelPostLink, lang)
+			}
 		} else {
-			spamCase.NotificationMessageID = notification.MessageID
+			notifMsg = sc.createInChatNotification(msg, spamCase.ID, lang, voting)
+		}
 
-			time.AfterFunc(sc.config.SuspectNotificationTimeout, func() {
-				if _, err := sc.s.GetBot().Request(api.NewDeleteMessage(msg.Chat.ID, notification.MessageID)); err != nil {
-					log.WithField("error", err.Error()).Error("failed to delete notification")
-				}
-			})
+		if notifMsg != nil {
+			notification, err := sc.s.GetBot().Send(notifMsg)
+			if err != nil {
+				log.WithField("error", err.Error()).Error("failed to send notification")
+			} else {
+				spamCase.NotificationMessageID = notification.MessageID
+
+				time.AfterFunc(sc.config.SuspectNotificationTimeout, func() {
+					if _, err := sc.s.GetBot().Request(api.NewDeleteMessage(msg.Chat.ID, notification.MessageID)); err != nil {
+						log.WithField("error", err.Error()).Error("failed to delete notification")
+					}
+				})
+			}
 		}
 	}
 
 	if err := sc.s.GetDB().UpdateSpamCase(ctx, spamCase); err != nil {
 		log.WithField("error", err.Error()).Error("failed to update spam case")
+	}
+
+	if voting {
+		time.AfterFunc(sc.config.VotingTimeoutMinutes, func() {
+			if err := sc.ResolveCase(context.Background(), spamCase.ID); err != nil {
+				log.WithField("error", err.Error()).Error("failed to resolve spam case")
+			}
+		})
 	}
 
 	return result, nil
@@ -295,6 +271,67 @@ func (sc *SpamControl) createChannelNotification(msg *api.Message, channelPostLi
 	return notificationMsg
 }
 
+func (sc *SpamControl) RecordVote(ctx context.Context, caseID int64, voterID int64, vote bool) (int, int, error) {
+	if err := sc.s.GetDB().AddSpamVote(ctx, &db.SpamVote{
+		CaseID:  caseID,
+		VoterID: voterID,
+		Vote:    vote,
+		VotedAt: time.Now(),
+	}); err != nil {
+		return 0, 0, err
+	}
+
+	votes, err := sc.s.GetDB().GetSpamVotes(ctx, caseID)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	spamVotes := 0
+	notSpamVotes := 0
+	for _, v := range votes {
+		if v.Vote {
+			notSpamVotes++
+		} else {
+			spamVotes++
+		}
+	}
+
+	required, err := sc.requiredVoters(ctx, caseID)
+	if err != nil {
+		return notSpamVotes, spamVotes, err
+	}
+	if len(votes) >= required {
+		if err := sc.ResolveCase(ctx, caseID); err != nil {
+			return notSpamVotes, spamVotes, err
+		}
+	}
+
+	return notSpamVotes, spamVotes, nil
+}
+
+func (sc *SpamControl) requiredVoters(ctx context.Context, caseID int64) (int, error) {
+	spamCase, err := sc.s.GetDB().GetSpamCase(ctx, caseID)
+	if err != nil {
+		return 0, err
+	}
+
+	members, err := sc.s.GetDB().GetMembers(ctx, spamCase.ChatID)
+	if err != nil {
+		log.WithField("error", err.Error()).Error("failed to get members count")
+	}
+
+	minVotersFromPercentage := int(float64(len(members)) * sc.config.MinVotersPercentage / 100)
+	required := max(sc.config.MinVoters, minVotersFromPercentage)
+	if sc.config.MaxVoters > 0 && required > sc.config.MaxVoters {
+		required = sc.config.MaxVoters
+	}
+	if required < 1 {
+		required = 1
+	}
+
+	return required, nil
+}
+
 func (sc *SpamControl) ResolveCase(ctx context.Context, caseID int64) error {
 	entry := sc.getLogEntry().WithField("method", "resolveCase").WithField("case_id", caseID)
 	spamCase, err := sc.s.GetDB().GetSpamCase(ctx, caseID)
@@ -311,14 +348,10 @@ func (sc *SpamControl) ResolveCase(ctx context.Context, caseID int64) error {
 		return fmt.Errorf("failed to get votes: %w", err)
 	}
 
-	members, err := sc.s.GetDB().GetMembers(ctx, spamCase.ChatID)
+	requiredVoters, err := sc.requiredVoters(ctx, caseID)
 	if err != nil {
-		log.WithField("error", err.Error()).Error("failed to get members count")
+		return fmt.Errorf("failed to calculate required voters: %w", err)
 	}
-
-	minVotersFromPercentage := int(float64(len(members)) * sc.config.MinVotersPercentage / 100)
-
-	requiredVoters := max(sc.config.MinVoters, minVotersFromPercentage)
 
 	if len(votes) >= requiredVoters {
 		yesVotes := 0

@@ -57,13 +57,23 @@ This document serves as the **single source of truth** for all development rules
 - **Interfaces Near Consumer** 📍: Ports (interfaces) must be defined near the code that uses them.
 
 ### Project Structure & Module Organization
-TBD
+- `cmd/ngbot`: entrypoint and lifecycle wiring.
+- `internal/bot`: core service, update processor, Telegram helpers.
+- `internal/handlers`: admin, gatekeeper, reactor, moderation workflows.
+- `internal/db/sqlite`: persistence with embedded migrations (including gatekeeper challenges).
+- `internal/adapters/llm`: OpenAI/Gemini clients.
+- `resources`: embedded i18n, gatekeeper challenges, migrations.
+- Observability stack is removed; logs only.
 
 ### Architecture Layers
-TBD
+- Domain: `internal/db` entities and pure policies where applicable.
+- Application: `internal/bot` and workflow handlers.
+- Adapters: Telegram API, SQLite, LLM providers, banlist HTTP.
 
 ### External Services
-TBD
+- Telegram Bot API.
+- LLM APIs (OpenAI-compatible and Gemini).
+- Banlist API (lols.bot).
 
 ---
 

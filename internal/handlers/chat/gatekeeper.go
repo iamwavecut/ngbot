@@ -51,7 +51,8 @@ import (
 )
 
 const (
-	captchaSize = 5
+	captchaSize          = 5
+	maxChallengeAttempts = 3
 
 	defaultChallengeTimeout = 3 * time.Minute
 	defaultRejectTimeout    = 10 * time.Minute
@@ -61,30 +62,15 @@ const (
 	updateTypeNewChatMembers  updateType = "new_chat_members"
 	updateTypeIgnore          updateType = "ignore"
 
-	processNewChatMembersInterval = 1 * time.Minute
+	processNewChatMembersInterval    = 1 * time.Minute
+	processExpiredChallengesInterval = 1 * time.Minute
 )
 
 type updateType string
 
-type challengedUser struct {
-	user               *api.User
-	successFunc        func()
-	joinMessageID      int
-	challengeMessageID int
-	successUUID        string
-	targetChat         *api.Chat
-	commChat           *api.Chat
-	challengeStartTime time.Time
-	attempts           int
-}
-
 type Gatekeeper struct {
 	s          bot.Service
 	config     *config.Config
-	joiners    map[int64]map[int64]*challengedUser
-	newcomers  map[int64]map[int64]struct{}
-	restricted map[int64]map[int64]struct{}
-
 	banChecker GatekeeperBanChecker
 
 	Variants map[string]map[string]string `yaml:"variants"`
@@ -125,10 +111,7 @@ func NewGatekeeper(s bot.Service, config *config.Config, banChecker GatekeeperBa
 	g := &Gatekeeper{
 		s:          s,
 		config:     config,
-		joiners:    map[int64]map[int64]*challengedUser{},
 		Variants:   map[string]map[string]string{},
-		newcomers:  map[int64]map[int64]struct{}{},
-		restricted: map[int64]map[int64]struct{}{},
 		banChecker: banChecker,
 	}
 
@@ -148,17 +131,17 @@ func NewGatekeeper(s bot.Service, config *config.Config, banChecker GatekeeperBa
 		g.Variants[lang] = localVariants
 	}
 
-	// Start cleanup goroutine
-	go func() {
-		for range time.Tick(1 * time.Hour) {
-			g.cleanupAbandonedChallenges()
-		}
-	}()
-
 	go func() {
 		for range time.Tick(processNewChatMembersInterval) {
 			if err := g.processNewChatMembers(context.Background()); err != nil {
 				entry.WithField("error", err.Error()).Error("failed to process new chat members")
+			}
+		}
+	}()
+	go func() {
+		for range time.Tick(processExpiredChallengesInterval) {
+			if err := g.processExpiredChallenges(context.Background()); err != nil {
+				entry.WithField("error", err.Error()).Error("failed to process expired challenges")
 			}
 		}
 	}()
@@ -257,6 +240,51 @@ func (g *Gatekeeper) processNewChatMembers(ctx context.Context) error {
 	return nil
 }
 
+func (g *Gatekeeper) processExpiredChallenges(ctx context.Context) error {
+	entry := g.getLogEntry().WithField("method", "processExpiredChallenges")
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
+	expired, err := g.s.GetDB().GetExpiredChallenges(ctx, time.Now())
+	if err != nil {
+		entry.WithField("error", err.Error()).Error("failed to get expired challenges")
+		return err
+	}
+	for _, challenge := range expired {
+		var targetChat *api.ChatFullInfo
+		chat, err := g.s.GetBot().GetChat(api.ChatInfoConfig{
+			ChatConfig: api.ChatConfig{
+				ChatID: challenge.ChatID,
+			},
+		})
+		if err != nil {
+			entry.WithField("error", err.Error()).Error("cant get target chat info")
+		} else {
+			targetChat = &chat
+		}
+
+		language := g.s.GetLanguage(ctx, challenge.ChatID, nil)
+		title := ""
+		if targetChat != nil {
+			title = targetChat.Title
+		}
+		rejectDuration, rejectText, err := g.rejectConfig(ctx, challenge.ChatID, language, title)
+		if err != nil {
+			entry.WithField("error", err.Error()).Error("failed to build reject config")
+			continue
+		}
+		if err := g.failChallenge(ctx, challenge, rejectText, rejectDuration); err != nil {
+			entry.WithField("error", err.Error()).Error("failed to process expired challenge")
+		}
+	}
+
+	return nil
+}
+
 func (g *Gatekeeper) Handle(ctx context.Context, u *api.Update, chat *api.Chat, user *api.User) (proceed bool, err error) {
 	entry := g.getLogEntry()
 
@@ -294,7 +322,7 @@ func (g *Gatekeeper) Handle(ctx context.Context, u *api.Update, chat *api.Chat, 
 		return true, err
 	}
 
-	if !settings.Enabled {
+	if !settings.GatekeeperEnabled {
 		entry.Debug("gatekeeper is disabled for this chat")
 		return true, nil
 	}
@@ -338,11 +366,14 @@ func (g *Gatekeeper) fetchAndValidateSettings(ctx context.Context, chatID int64)
 	default:
 	}
 	zeroSettings := db.Settings{
-		Enabled:          true,
-		ChallengeTimeout: defaultChallengeTimeout.Nanoseconds(),
-		RejectTimeout:    defaultRejectTimeout.Nanoseconds(),
-		Language:         "en",
-		ID:               chatID,
+		Enabled:                true,
+		GatekeeperEnabled:      true,
+		LLMFirstMessageEnabled: true,
+		CommunityVotingEnabled: true,
+		ChallengeTimeout:       defaultChallengeTimeout.Nanoseconds(),
+		RejectTimeout:          defaultRejectTimeout.Nanoseconds(),
+		Language:               "en",
+		ID:                     chatID,
 	}
 	settings, err := g.s.GetDB().GetSettings(ctx, chatID)
 	if err != nil || settings == nil || settings == (&db.Settings{}) {
@@ -364,8 +395,8 @@ func (g *Gatekeeper) handleChallenge(ctx context.Context, u *api.Update, chat *a
 	default:
 	}
 	b := g.s.GetBot()
-
 	cq := u.CallbackQuery
+
 	entry.WithFields(log.Fields{
 		"data": cq.Data,
 		"user": bot.GetUN(user),
@@ -395,8 +426,20 @@ func (g *Gatekeeper) handleChallenge(ctx context.Context, u *api.Update, chat *a
 		return err
 	}
 
-	cu := g.extractChallengedUser(joinerID, chat.ID)
-	if cu == nil {
+	if user.ID != joinerID {
+		language := g.s.GetLanguage(ctx, chat.ID, user)
+		if _, err := b.Request(api.NewCallback(cq.ID, i18n.Get("Stop it! You're too real", language))); err != nil {
+			entry.WithField("error", err.Error()).Error("cant answer callback query")
+		}
+		return nil
+	}
+
+	challenge, err := g.s.GetDB().GetChallenge(ctx, chat.ID, joinerID)
+	if err != nil {
+		entry.WithField("error", err.Error()).Error("failed to fetch challenge")
+		return err
+	}
+	if challenge == nil {
 		entry.Debug("no user matched for challenge")
 		if _, err := b.Request(api.NewCallback(cq.ID, i18n.Get("This challenge isn't your concern", g.s.GetLanguage(ctx, chat.ID, user)))); err != nil {
 			entry.WithField("error", err.Error()).Error("cant answer callback query")
@@ -404,166 +447,138 @@ func (g *Gatekeeper) handleChallenge(ctx context.Context, u *api.Update, chat *a
 		return nil
 	}
 
-	// Validate challenge attempt
-	cu.attempts++
-	if cu.attempts > 3 {
-		entry.WithField("user", bot.GetUN(cu.user)).Warn("Too many challenge attempts")
-		if err := g.banUserForSpam(ctx, cu, "Too many challenge attempts"); err != nil {
-			entry.WithError(err).Error("Failed to ban user for spam")
-		}
-		return nil
-	}
-
-	if time.Since(cu.challengeStartTime) > 3*time.Minute {
-		entry.WithField("user", bot.GetUN(cu.user)).Warn("Challenge timeout")
-		if err := g.banUserForSpam(ctx, cu, "Challenge timeout"); err != nil {
-			entry.WithError(err).Error("Failed to ban user for spam")
-		}
-		return nil
-	}
-
 	targetChat, err := g.s.GetBot().GetChat(api.ChatInfoConfig{
 		ChatConfig: api.ChatConfig{
-			ChatID: cu.targetChat.ID,
+			ChatID: challenge.ChatID,
 		},
 	})
 	if err != nil {
 		entry.WithField("error", err.Error()).Error("cant get target chat info")
 		return errors.WithMessage(err, "cant get target chat info")
 	}
+
 	language := g.s.GetLanguage(ctx, targetChat.ID, user)
-	entry.WithField("language", language).Debug("updated language")
-
-	isPublic := cu.commChat.ID == cu.targetChat.ID
-	entry.WithField("isPublic", isPublic).Debug("chat visibility")
-	if !isPublic {
-		entry.WithField("user", bot.GetUN(user)).Info("restricting chatting for user")
-		_ = bot.RestrictChatting(ctx, b, user.ID, cu.targetChat.ID)
+	rejectDuration, rejectText, err := g.rejectConfig(ctx, targetChat.ID, language, targetChat.Title)
+	if err != nil {
+		entry.WithField("error", err.Error()).Error("failed to build reject config")
+		return err
 	}
 
-	if !isPublic && joinerID != user.ID {
-		entry.WithField("user", bot.GetUN(user)).Info("user is not admin and not the joiner")
-		if _, err := b.Request(api.NewCallback(cq.ID, i18n.Get("Stop it! You're too real", language))); err != nil {
+	if time.Now().After(challenge.ExpiresAt) {
+		if _, err := b.Request(api.NewCallbackWithAlert(cq.ID, rejectText)); err != nil {
 			entry.WithField("error", err.Error()).Error("cant answer callback query")
 		}
-		return nil
+		return g.failChallenge(ctx, challenge, rejectText, rejectDuration)
 	}
 
-	switch {
-	case isPublic, cu.successUUID == challengeUUID:
-		entry.WithField("user", bot.GetUN(cu.user)).Info("successful challenge for user")
-		if _, err := b.Request(api.NewCallback(cq.ID, i18n.Get("Welcome, friend!", language))); err != nil {
-			entry.WithField("error", err.Error()).Error("cant answer callback query")
-		}
-
-		if _, err = b.Request(api.NewDeleteMessage(cu.commChat.ID, cu.challengeMessageID)); err != nil {
-			entry.WithField("error", err.Error()).Error("cant delete challenge message")
-		}
-
-		if !isPublic {
-			entry.WithField("user", bot.GetUN(cu.user)).Info("approving join request for user")
-			_ = bot.ApproveJoinRequest(ctx, b, cu.user.ID, cu.targetChat.ID)
-			msg := api.NewMessage(cu.commChat.ID, fmt.Sprintf(i18n.Get("Awesome, you're good to go! Feel free to start chatting in the group \"%s\".", language), api.EscapeText(api.ModeMarkdown, cu.targetChat.Title)))
-			msg.ParseMode = api.ModeMarkdown
-			_ = tool.Err(b.Send(msg))
-		} else {
-			entry.WithField("user", bot.GetUN(user)).Info("unrestricting chatting for user")
-			_ = bot.UnrestrictChatting(ctx, b, user.ID, cu.targetChat.ID)
-		}
-
-		if cu.successFunc != nil {
-			entry.WithField("user", bot.GetUN(cu.user)).Info("calling success function for user")
-			cu.successFunc()
-		}
-		entry.WithFields(log.Fields{"user": bot.GetUN(cu.user), "chatID": cu.targetChat.ID}).Info("Adding user to newcomers list for chat")
-		if _, ok := g.newcomers[cu.targetChat.ID]; !ok {
-			entry.WithField("chatID", cu.targetChat.ID).Info("Initializing newcomers map for target chat")
-			g.newcomers[cu.targetChat.ID] = map[int64]struct{}{}
-		}
-		if _, ok := g.newcomers[cu.targetChat.ID][cu.user.ID]; !ok {
-			entry.WithFields(log.Fields{"user": bot.GetUN(cu.user), "chatID": cu.targetChat.ID}).Info("Adding user to newcomers list for chat")
-			g.newcomers[cu.targetChat.ID][cu.user.ID] = struct{}{}
-		}
-		entry.WithFields(log.Fields{"user": bot.GetUN(cu.user), "chatID": cu.targetChat.ID}).Info("Adding user to restricted list for chat")
-		if _, ok := g.restricted[cu.targetChat.ID]; !ok {
-			entry.WithField("chatID", cu.targetChat.ID).Info("Initializing restricted map for target chat")
-			g.restricted[cu.targetChat.ID] = map[int64]struct{}{}
-		}
-		entry.WithFields(log.Fields{"user": bot.GetUN(cu.user), "chatID": cu.commChat.ID}).Info("Removing challenged user from chat")
-		g.removeChallengedUser(cu.user.ID, cu.commChat.ID)
-
-	case cu.successUUID != challengeUUID:
-		entry.WithField("user", bot.GetUN(cu.user)).Info("failed challenge for user")
-
-		if _, err := b.Request(api.NewCallbackWithAlert(cq.ID, fmt.Sprintf(i18n.Get("Oops, it looks like you missed the deadline to join \"%s\", but don't worry! You can try again in %s minutes. Keep trying, I believe in you!", language), cu.targetChat.Title, 10))); err != nil {
-			entry.WithField("error", err.Error()).Error("cant answer callback query")
-		}
-
-		if !isPublic {
-			entry.WithField("user", bot.GetUN(cu.user)).Info("declining join request for user")
-			_ = bot.DeclineJoinRequest(ctx, b, cu.user.ID, cu.targetChat.ID)
-			msg := api.NewMessage(cu.commChat.ID, fmt.Sprintf(i18n.Get("Oops, it looks like you missed the deadline to join \"%s\", but don't worry! You can try again in %s minutes. Keep trying, I believe in you!", language), cu.targetChat.Title, 10))
-			msg.ParseMode = api.ModeMarkdown
-			_ = tool.Err(b.Send(msg))
-		}
-		if cu.joinMessageID != 0 {
-			entry.WithFields(log.Fields{"messageID": cu.joinMessageID, "chatID": cu.targetChat.ID}).Info("Deleting join message from chat")
-			if err := bot.DeleteChatMessage(ctx, b, cu.targetChat.ID, cu.joinMessageID); err != nil {
-				entry.WithField("error", err.Error()).Error("cant delete join message")
-			}
-		}
-
-		entry.WithFields(log.Fields{"messageID": cu.challengeMessageID, "chatID": cu.commChat.ID}).Info("Deleting challenge message from chat")
-		if err := bot.DeleteChatMessage(ctx, b, cu.commChat.ID, cu.challengeMessageID); err != nil {
-			entry.WithField("error", err.Error()).Error("cant delete join message")
-		}
-
-		entry.WithFields(log.Fields{"user": bot.GetUN(cu.user), "chatID": cu.targetChat.ID}).Info("Banning user from chat")
-		if err := bot.BanUserFromChat(ctx, b, cu.user.ID, cu.targetChat.ID, time.Now().Add(10*time.Minute).Unix()); err != nil {
-			entry.WithField("error", err.Error()).Error("cant kick failed")
-		}
-
-		// stop timer anyway
-		if cu.successFunc != nil {
-			entry.WithField("user", bot.GetUN(cu.user)).Info("Calling success function to stop timer for user")
-			cu.successFunc()
-		}
-		entry.WithFields(log.Fields{"user": bot.GetUN(cu.user), "chatID": cu.commChat.ID}).Info("Removing challenged user from chat")
-		g.removeChallengedUser(cu.user.ID, cu.commChat.ID)
-	default:
-		entry.WithField("user", bot.GetUN(cu.user)).Info("Unknown challenge result for user")
-		if _, err := b.Request(api.NewCallback(cq.ID, i18n.Get("I have no idea what is going on", language))); err != nil {
-			entry.WithField("error", err.Error()).Error("cant answer callback query")
-		}
+	challenge.Attempts++
+	if err := g.s.GetDB().UpdateChallenge(ctx, challenge); err != nil {
+		entry.WithField("error", err.Error()).Error("failed to update challenge")
+		return err
 	}
-	return err
+	if challenge.Attempts > maxChallengeAttempts {
+		if _, err := b.Request(api.NewCallbackWithAlert(cq.ID, rejectText)); err != nil {
+			entry.WithField("error", err.Error()).Error("cant answer callback query")
+		}
+		return g.failChallenge(ctx, challenge, rejectText, rejectDuration)
+	}
+
+	if challenge.SuccessUUID != challengeUUID {
+		if _, err := b.Request(api.NewCallbackWithAlert(cq.ID, rejectText)); err != nil {
+			entry.WithField("error", err.Error()).Error("cant answer callback query")
+		}
+		return g.failChallenge(ctx, challenge, rejectText, rejectDuration)
+	}
+
+	if _, err := b.Request(api.NewCallback(cq.ID, i18n.Get("Welcome, friend!", language))); err != nil {
+		entry.WithField("error", err.Error()).Error("cant answer callback query")
+	}
+
+	return g.completeChallenge(ctx, challenge, &targetChat, language)
 }
 
-func (g *Gatekeeper) banUserForSpam(ctx context.Context, cu *challengedUser, reason string) error {
-	entry := g.getLogEntry().WithFields(log.Fields{
-		"method": "banUserForSpam",
-		"user":   bot.GetUN(cu.user),
-		"reason": reason,
-	})
+func (g *Gatekeeper) completeChallenge(ctx context.Context, challenge *db.Challenge, target *api.ChatFullInfo, language string) error {
+	entry := g.getLogEntry().WithField("method", "completeChallenge")
+	b := g.s.GetBot()
 
-	if err := bot.BanUserFromChat(ctx, g.s.GetBot(), cu.user.ID, cu.targetChat.ID, time.Now().Add(10*time.Minute).Unix()); err != nil {
-		return fmt.Errorf("failed to ban user: %w", err)
-	}
-
-	if cu.challengeMessageID != 0 {
-		if err := bot.DeleteChatMessage(ctx, g.s.GetBot(), cu.commChat.ID, cu.challengeMessageID); err != nil {
-			entry.WithError(err).Error("Failed to delete challenge message")
+	if challenge.ChallengeMessageID != 0 {
+		if err := bot.DeleteChatMessage(ctx, b, challenge.CommChatID, challenge.ChallengeMessageID); err != nil {
+			entry.WithField("error", err.Error()).Error("cant delete challenge message")
 		}
 	}
 
-	if cu.joinMessageID != 0 {
-		if err := bot.DeleteChatMessage(ctx, g.s.GetBot(), cu.targetChat.ID, cu.joinMessageID); err != nil {
-			entry.WithError(err).Error("Failed to delete join message")
+	if challenge.CommChatID != challenge.ChatID {
+		if err := bot.ApproveJoinRequest(ctx, b, challenge.UserID, challenge.ChatID); err != nil {
+			entry.WithField("error", err.Error()).Error("cant approve join request")
+		}
+		msg := api.NewMessage(
+			challenge.CommChatID,
+			fmt.Sprintf(
+				i18n.Get("Awesome, you're good to go! Feel free to start chatting in the group \"%s\".", language),
+				api.EscapeText(api.ModeMarkdown, target.Title),
+			),
+		)
+		msg.ParseMode = api.ModeMarkdown
+		_ = tool.Err(b.Send(msg))
+	} else {
+		_ = bot.UnrestrictChatting(ctx, b, challenge.UserID, challenge.ChatID)
+	}
+
+	return g.s.GetDB().DeleteChallenge(ctx, challenge.CommChatID, challenge.UserID)
+}
+
+func (g *Gatekeeper) failChallenge(ctx context.Context, challenge *db.Challenge, rejectText string, rejectDuration time.Duration) error {
+	entry := g.getLogEntry().WithField("method", "failChallenge")
+	b := g.s.GetBot()
+
+	if challenge.ChallengeMessageID != 0 {
+		if err := bot.DeleteChatMessage(ctx, b, challenge.CommChatID, challenge.ChallengeMessageID); err != nil {
+			entry.WithField("error", err.Error()).Error("cant delete challenge message")
 		}
 	}
 
-	g.removeChallengedUser(cu.user.ID, cu.commChat.ID)
-	return nil
+	if challenge.JoinMessageID != 0 {
+		if err := bot.DeleteChatMessage(ctx, b, challenge.ChatID, challenge.JoinMessageID); err != nil {
+			entry.WithField("error", err.Error()).Error("cant delete join message")
+		}
+	}
+
+	if err := bot.BanUserFromChat(ctx, b, challenge.UserID, challenge.ChatID, time.Now().Add(rejectDuration).Unix()); err != nil {
+		entry.WithField("error", err.Error()).Error("cant ban user")
+	}
+
+	if challenge.CommChatID != challenge.ChatID {
+		if err := bot.DeclineJoinRequest(ctx, b, challenge.UserID, challenge.ChatID); err != nil {
+			entry.WithField("error", err.Error()).Error("decline join request failed")
+		}
+		msg := api.NewMessage(challenge.CommChatID, rejectText)
+		sentMsg, err := b.Send(msg)
+		if err == nil && sentMsg.MessageID != 0 {
+			time.AfterFunc(rejectDuration, func() {
+				_ = bot.DeleteChatMessage(ctx, b, challenge.CommChatID, sentMsg.MessageID)
+			})
+		}
+	}
+
+	return g.s.GetDB().DeleteChallenge(ctx, challenge.CommChatID, challenge.UserID)
+}
+
+func (g *Gatekeeper) rejectConfig(ctx context.Context, chatID int64, language string, title string) (time.Duration, string, error) {
+	settings, err := g.fetchAndValidateSettings(ctx, chatID)
+	if err != nil {
+		return 0, "", err
+	}
+	rejectDuration := settings.GetRejectTimeout()
+	rejectMinutes := int(rejectDuration.Minutes())
+	if rejectMinutes < 1 {
+		rejectMinutes = 1
+	}
+	rejectText := fmt.Sprintf(
+		i18n.Get("Oops, it looks like you missed the deadline to join \"%s\", but don't worry! You can try again in %s minutes. Keep trying, I believe in you!", language),
+		title,
+		strconv.Itoa(rejectMinutes),
+	)
+	return rejectDuration, rejectText, nil
 }
 
 func (g *Gatekeeper) handleNewChatMembersV2(ctx context.Context, u *api.Update, chat *api.Chat) error {
@@ -661,158 +676,75 @@ func (g *Gatekeeper) handleJoin(ctx context.Context, u *api.Update, jus []api.Us
 		return errors.New("target or comm is nil")
 	}
 	b := g.s.GetBot()
+	settings, err := g.fetchAndValidateSettings(ctx, target.ID)
+	if err != nil {
+		return err
+	}
+	challengeTimeout := settings.GetChallengeTimeout()
 
 	for _, ju := range jus {
 		if ju.IsBot {
 			entry.WithField("user", bot.GetUN(&ju)).Debug("Skipping bot user")
 			continue
 		}
-
-		entry.WithFields(log.Fields{
-			"user":   bot.GetUN(&ju),
-			"chatID": target.ID,
-		}).Info("Restricting user in chat")
-		if _, err := b.Request(api.RestrictChatMemberConfig{
-			ChatMemberConfig: api.ChatMemberConfig{
-				ChatConfig: api.ChatConfig{
-					ChatID: target.ID,
+		isPublic := comm.Chat.ID == target.ID
+		if isPublic {
+			entry.WithFields(log.Fields{
+				"user":   bot.GetUN(&ju),
+				"chatID": target.ID,
+			}).Info("Restricting user in chat")
+			if _, err := b.Request(api.RestrictChatMemberConfig{
+				ChatMemberConfig: api.ChatMemberConfig{
+					ChatConfig: api.ChatConfig{
+						ChatID: target.ID,
+					},
+					UserID: ju.ID,
 				},
-				UserID: ju.ID,
-			},
-			UntilDate: time.Now().Add(3 * time.Minute).Unix(),
-			Permissions: &api.ChatPermissions{
-				CanSendMessages:       false,
-				CanSendAudios:         false,
-				CanSendDocuments:      false,
-				CanSendPhotos:         false,
-				CanSendVideos:         false,
-				CanSendVideoNotes:     false,
-				CanSendVoiceNotes:     false,
-				CanSendPolls:          false,
-				CanSendOtherMessages:  false,
-				CanAddWebPagePreviews: false,
-				CanChangeInfo:         false,
-				CanInviteUsers:        false,
-				CanPinMessages:        false,
-				CanManageTopics:       false,
-			},
-		}); err != nil {
-			entry.WithField("error", err.Error()).Error("Failed to restrict user")
+				UntilDate: time.Now().Add(challengeTimeout).Unix(),
+				Permissions: &api.ChatPermissions{
+					CanSendMessages:       false,
+					CanSendAudios:         false,
+					CanSendDocuments:      false,
+					CanSendPhotos:         false,
+					CanSendVideos:         false,
+					CanSendVideoNotes:     false,
+					CanSendVoiceNotes:     false,
+					CanSendPolls:          false,
+					CanSendOtherMessages:  false,
+					CanAddWebPagePreviews: false,
+					CanChangeInfo:         false,
+					CanInviteUsers:        false,
+					CanPinMessages:        false,
+					CanManageTopics:       false,
+				},
+			}); err != nil {
+				entry.WithField("error", err.Error()).Error("Failed to restrict user")
+			}
 		}
 
-		challengeCtx, cancel := context.WithTimeout(ctx, 4*time.Minute)
-
-		cu := &challengedUser{
-			user:               &ju,
-			successFunc:        cancel,
-			successUUID:        uuid.New(),
-			targetChat:         target,
-			commChat:           &comm.Chat,
-			challengeStartTime: time.Now(),
-			attempts:           0,
+		commLang := g.s.GetLanguage(ctx, comm.Chat.ID, &ju)
+		now := time.Now()
+		challenge := &db.Challenge{
+			CommChatID:  comm.Chat.ID,
+			UserID:      ju.ID,
+			ChatID:      target.ID,
+			SuccessUUID: uuid.New(),
+			CreatedAt:   now,
+			ExpiresAt:   now.Add(challengeTimeout),
 		}
 		if u.Message != nil {
-			cu.joinMessageID = u.Message.MessageID
+			challenge.JoinMessageID = u.Message.MessageID
 		}
-		entry.WithFields(log.Fields{
-			"user": bot.GetUN(cu.user),
-			"chat": cu.commChat.ID,
-		}).Info("Adding challenged user to joiners list")
-		if _, ok := g.joiners[cu.commChat.ID]; !ok {
-			g.joiners[cu.commChat.ID] = map[int64]*challengedUser{}
+
+		if _, err := g.s.GetDB().CreateChallenge(ctx, challenge); err != nil {
+			entry.WithField("error", err.Error()).Error("Failed to create challenge")
+			return err
 		}
-		g.joiners[cu.commChat.ID][cu.user.ID] = cu
-		commLang := g.s.GetLanguage(ctx, cu.commChat.ID, cu.user)
-
-		go func() {
-			entry.WithField("user", bot.GetUN(cu.user)).Info("Setting timer")
-			timeout := time.NewTimer(3 * time.Minute)
-			defer delete(g.joiners[cu.commChat.ID], cu.user.ID)
-
-			select {
-			case <-challengeCtx.Done():
-				entry.WithField("user", bot.GetUN(cu.user)).Info("Removing challenge timer")
-				timeout.Stop()
-				return
-
-			case <-timeout.C:
-				entry.WithField("user", bot.GetUN(cu.user)).Info("Challenge timed out")
-				if cu.challengeMessageID != 0 {
-					entry.WithFields(log.Fields{
-						"messageID": cu.challengeMessageID,
-						"chatID":    cu.commChat.ID,
-					}).Info("Deleting challenge message from chat")
-					if err := bot.DeleteChatMessage(ctx, b, cu.commChat.ID, cu.challengeMessageID); err != nil {
-						entry.WithField("error", err.Error()).Error("Failed to delete challenge message")
-					}
-				}
-				var errs []error
-				if cu.joinMessageID != 0 {
-					entry.WithFields(log.Fields{
-						"messageID": cu.joinMessageID,
-						"chatID":    cu.commChat.ID,
-					}).Info("Deleting join message from chat")
-					if err := bot.DeleteChatMessage(ctx, b, cu.commChat.ID, cu.joinMessageID); err != nil {
-						entry.WithField("error", err.Error()).Error("Failed to delete join message")
-						errs = append(errs, errors.Wrap(err, "failed to delete message"))
-					}
-				}
-				entry.WithFields(log.Fields{
-					"user":   bot.GetUN(cu.user),
-					"chatID": cu.targetChat.ID,
-				}).Info("Banning user from chat")
-				if err := bot.BanUserFromChat(ctx, b, cu.user.ID, cu.targetChat.ID, time.Now().Add(10*time.Minute).Unix()); err != nil {
-					entry.WithField("error", err.Error()).Error("Failed to ban user")
-					errs = append(errs, errors.Wrap(err, "failed to ban user"))
-				}
-
-				if len(errs) > 0 {
-					language := g.s.GetLanguage(ctx, cu.commChat.ID, cu.user)
-					var msgContent string
-					if len(errs) == 2 {
-						entry.Warn("failed to ban and delete message")
-						msgContent = fmt.Sprintf(i18n.Get("I can't delete messages or ban spammer \"%s\".", language), bot.GetUN(cu.user))
-					} else if errors.Is(errs[0], errors.New("failed to delete message")) {
-						entry.Warn("failed to delete message")
-						msgContent = fmt.Sprintf(i18n.Get("I can't delete messages from spammer \"%s\".", language), bot.GetUN(cu.user))
-					} else {
-						entry.Warn("failed to ban joiner")
-						msgContent = fmt.Sprintf(i18n.Get("I can't ban new chat member \"%s\".", language), bot.GetUN(cu.user))
-					}
-					msgContent += " " + i18n.Get("I should have the permissions to ban and delete messages here.", language)
-					msg := api.NewMessage(cu.commChat.ID, msgContent)
-					msg.ParseMode = api.ModeHTML
-					if _, err := b.Send(msg); err != nil {
-						entry.WithField("error", err.Error()).Error("failed to send message about lack of permissions")
-					}
-				}
-				if cu.commChat.ID != cu.targetChat.ID {
-					entry.WithField("user", bot.GetUN(cu.user)).Info("Declining join request")
-					if err := bot.DeclineJoinRequest(ctx, b, cu.user.ID, cu.targetChat.ID); err != nil {
-						entry.WithField("error", err.Error()).Debug("Decline failed")
-					}
-					entry.WithField("user", bot.GetUN(cu.user)).Info("Sending timeout message")
-					sentMsg, err := b.Send(api.NewMessage(cu.commChat.ID, i18n.Get("Your answer is WRONG. Try again in 10 minutes", commLang)))
-					if err != nil {
-						entry.WithField("error", err.Error()).Error("Failed to send timeout message")
-					}
-					time.AfterFunc(10*time.Minute, func() {
-						entry.WithFields(log.Fields{
-							"messageID": sentMsg.MessageID,
-							"chatID":    cu.commChat.ID,
-						}).Info("Deleting timeout message")
-						_ = bot.DeleteChatMessage(ctx, b, cu.commChat.ID, sentMsg.MessageID)
-					})
-				}
-				return
-			}
-		}()
 
 		entry.Debug("Creating captcha buttons")
-		buttons, correctVariant := g.createCaptchaButtons(cu, commLang)
+		buttons, correctVariant := g.createCaptchaButtons(ju.ID, challenge.SuccessUUID, commLang)
 
 		var keys []string
-		isPublic := cu.commChat.ID == cu.targetChat.ID
 		if isPublic {
 			keys = challengeKeys
 		} else {
@@ -820,7 +752,7 @@ func (g *Gatekeeper) handleJoin(ctx context.Context, u *api.Update, jus []api.Us
 		}
 
 		randomKey := keys[tool.RandInt(0, len(keys)-1)]
-		nameString := fmt.Sprintf("[%s](tg://user?id=%d) ", api.EscapeText(api.ModeMarkdown, bot.GetFullName(cu.user)), cu.user.ID)
+		nameString := fmt.Sprintf("[%s](tg://user?id=%d) ", api.EscapeText(api.ModeMarkdown, bot.GetFullName(&ju)), ju.ID)
 
 		args := []interface{}{nameString}
 		if !isPublic {
@@ -828,7 +760,7 @@ func (g *Gatekeeper) handleJoin(ctx context.Context, u *api.Update, jus []api.Us
 		}
 		args = append(args, correctVariant[1])
 		msgText := fmt.Sprintf(i18n.Get(randomKey, commLang), args...)
-		msg := api.NewMessage(cu.commChat.ID, msgText)
+		msg := api.NewMessage(comm.Chat.ID, msgText)
 		msg.ParseMode = api.ModeMarkdown
 		if isPublic {
 			msg.DisableNotification = true
@@ -842,71 +774,16 @@ func (g *Gatekeeper) handleJoin(ctx context.Context, u *api.Update, jus []api.Us
 		sentMsg, err := b.Send(msg)
 		if err != nil {
 			entry.WithField("error", err.Error()).Error("Failed to send challenge message")
+			_ = g.s.GetDB().DeleteChallenge(ctx, comm.Chat.ID, ju.ID)
 			return errors.WithMessage(err, "cant send")
 		}
-		cu.challengeMessageID = sentMsg.MessageID
+		challenge.ChallengeMessageID = sentMsg.MessageID
+		if err := g.s.GetDB().UpdateChallenge(ctx, challenge); err != nil {
+			entry.WithField("error", err.Error()).Error("Failed to update challenge")
+		}
 	}
-	entry.Debug("Exiting handleChallenge method")
+	entry.Debug("Exiting handleJoin method")
 	return nil
-}
-
-func (g *Gatekeeper) extractChallengedUser(userID int64, chatID int64) *challengedUser {
-	entry := g.getLogEntry().WithFields(log.Fields{
-		"method": "extractChallengedUser",
-		"chatID": chatID,
-	})
-	entry.Debug("Entering method")
-
-	joiner := g.findChallengedUser(userID, chatID)
-	if joiner == nil || joiner.user == nil {
-		entry.Info("No challenged user found")
-		return nil
-	}
-	entry.WithField("user", bot.GetUN(joiner.user)).Info("Removing challenged user from joiners list")
-	delete(g.joiners[chatID], userID)
-
-	entry.Debug("Exiting method")
-	return joiner
-}
-
-func (g *Gatekeeper) findChallengedUser(userID int64, chatID int64) *challengedUser {
-	entry := g.getLogEntry().WithFields(log.Fields{
-		"method": "findChallengedUser",
-		"chatID": chatID,
-	})
-	entry.Debug("Entering method")
-
-	if _, ok := g.joiners[chatID]; !ok {
-		entry.Warn("No challenges for chat")
-		return nil
-	}
-	if user, ok := g.joiners[chatID][userID]; ok {
-		entry.Info("Challenged user found")
-		return user
-	}
-
-	entry.Warn("No challenges for chat user")
-	entry.Debug("Exiting method")
-	return nil
-}
-
-func (g *Gatekeeper) removeChallengedUser(userID int64, chatID int64) {
-	entry := g.getLogEntry().WithFields(log.Fields{
-		"method": "removeChallengedUser",
-	})
-	entry.Debug("Entering method")
-
-	if _, ok := g.joiners[chatID]; !ok {
-		entry.Trace("No challenges for chat")
-		return
-	}
-	if _, ok := g.joiners[chatID][userID]; ok {
-		entry.Info("Removing challenged user")
-		delete(g.joiners[chatID], userID)
-		return
-	}
-	entry.Trace("No challenges for chat user")
-	entry.Debug("Exiting method")
 }
 
 func (g *Gatekeeper) createCaptchaIndex(lang string) [][2]string {
@@ -928,7 +805,7 @@ func (g *Gatekeeper) createCaptchaIndex(lang string) [][2]string {
 	return captchaIndex
 }
 
-func (g *Gatekeeper) createCaptchaButtons(cu *challengedUser, lang string) ([]api.InlineKeyboardButton, [2]string) {
+func (g *Gatekeeper) createCaptchaButtons(userID int64, successUUID string, lang string) ([]api.InlineKeyboardButton, [2]string) {
 	entry := g.getLogEntry().WithFields(log.Fields{
 		"method": "createCaptchaButtons",
 		"lang":   lang,
@@ -949,40 +826,15 @@ func (g *Gatekeeper) createCaptchaButtons(cu *challengedUser, lang string) ([]ap
 	correctVariant := captchaRandomSet[rand.Intn(captchaSize-1)+1]
 	var buttons []api.InlineKeyboardButton
 	for _, v := range captchaRandomSet {
-		result := strconv.FormatInt(cu.user.ID, 10) + ";" + uuid.New()
+		result := strconv.FormatInt(userID, 10) + ";" + uuid.New()
 		if v[0] == correctVariant[0] {
-			result = strconv.FormatInt(cu.user.ID, 10) + ";" + cu.successUUID
+			result = strconv.FormatInt(userID, 10) + ";" + successUUID
 		}
 		buttons = append(buttons, api.NewInlineKeyboardButtonData(v[0], result))
 	}
 
 	entry.Debug("Exiting method")
 	return buttons, correctVariant
-}
-
-func (g *Gatekeeper) cleanupAbandonedChallenges() {
-	entry := g.getLogEntry().WithField("method", "cleanupAbandonedChallenges")
-	entry.Debug("Starting cleanup of abandoned challenges")
-
-	for chatID, chatJoiners := range g.joiners {
-		for userID, cu := range chatJoiners {
-			if time.Since(cu.challengeStartTime) > 5*time.Minute {
-				entry.WithFields(log.Fields{
-					"user": bot.GetUN(cu.user),
-					"chat": chatID,
-				}).Info("Cleaning up abandoned challenge")
-
-				if err := g.banUserForSpam(context.Background(), cu, "Abandoned challenge"); err != nil {
-					entry.WithError(err).Error("Failed to ban user during cleanup")
-				}
-				delete(chatJoiners, userID)
-			}
-		}
-		// Cleanup empty chat maps
-		if len(chatJoiners) == 0 {
-			delete(g.joiners, chatID)
-		}
-	}
 }
 
 func (g *Gatekeeper) getLogEntry() *log.Entry {

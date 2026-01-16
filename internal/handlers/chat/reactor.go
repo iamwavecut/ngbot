@@ -6,7 +6,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"time"
 
 	api "github.com/OvyFlash/telegram-bot-api"
 	"github.com/pkg/errors"
@@ -22,7 +21,7 @@ import (
 
 // SpamDetector handles spam detection logic
 type SpamDetectorInterface interface {
-	IsSpam(ctx context.Context, message string) (*bool, error)
+	IsSpam(ctx context.Context, message string, examples []string) (*bool, error)
 }
 
 // Config holds reactor configuration
@@ -42,6 +41,8 @@ const (
 	StageBanCheck        MessageProcessingStage = "ban_check"
 	StageContentCheck    MessageProcessingStage = "content_check"
 	StageSpamCheck       MessageProcessingStage = "spam_check"
+	maxLastResults                              = 1000
+	maxSpamExamples                             = 50
 )
 
 // MessageProcessingActions tracks what actions were taken during message processing
@@ -68,7 +69,8 @@ type Reactor struct {
 	spamDetector SpamDetectorInterface
 	banService   moderation.BanService
 	spamControl  *moderation.SpamControl
-	lastResults  map[int64]*MessageProcessingResult // map[messageID]*MessageProcessingResult
+	lastResults  map[int64]*MessageProcessingResult
+	resultOrder  []int64
 }
 
 // NewReactor creates a new Reactor instance with the given configuration
@@ -80,6 +82,7 @@ func NewReactor(s bot.Service, banService moderation.BanService, spamControl *mo
 		spamControl:  spamControl,
 		spamDetector: spamDetector,
 		lastResults:  make(map[int64]*MessageProcessingResult),
+		resultOrder:  make([]int64, 0, maxLastResults),
 	}
 	r.getLogEntry().Debug("created new reactor")
 	return r
@@ -102,28 +105,27 @@ func (r *Reactor) Handle(ctx context.Context, u *api.Update, chat *api.Chat, use
 		return false, err
 	}
 
-	if !settings.Enabled {
-		entry.Debug("reactor is disabled for this chat")
-		return true, nil
-	}
-
 	if u.CallbackQuery != nil {
-		return r.handleCallbackQuery(ctx, u, chat, user)
+		return r.handleCallbackQuery(ctx, u, chat, user, settings)
 	}
 
 	if u.MessageReactionCount != nil {
+		if chat == nil || user == nil {
+			entry.Debug("missing chat or user for reaction update")
+			return true, nil
+		}
 		return r.handleReaction(ctx, u.MessageReactionCount, chat, user)
 	}
 
 	if u.Message != nil {
 		if u.Message.IsCommand() {
-			if err := r.handleCommand(ctx, u.Message, chat, user); err != nil {
+			if err := r.handleCommand(ctx, u.Message, chat, user, settings); err != nil {
 				entry.WithField("error", err.Error()).Error("error handling message")
 				return true, err
 			}
 			return true, nil
 		}
-		if err := r.handleMessage(ctx, u.Message, chat, user); err != nil {
+		if err := r.handleMessage(ctx, u.Message, chat, user, settings); err != nil {
 			entry.WithField("error", err.Error()).Error("error handling message")
 			return true, err
 		}
@@ -132,9 +134,24 @@ func (r *Reactor) Handle(ctx context.Context, u *api.Update, chat *api.Chat, use
 	return true, nil
 }
 
-func (r *Reactor) handleCallbackQuery(ctx context.Context, u *api.Update, chat *api.Chat, user *api.User) (bool, error) {
+func (r *Reactor) handleCallbackQuery(ctx context.Context, u *api.Update, chat *api.Chat, user *api.User, settings *db.Settings) (bool, error) {
 	entry := r.getLogEntry().WithFields(log.Fields{"method": "handleCallbackQuery"})
 	if !strings.HasPrefix(u.CallbackQuery.Data, "spam_vote:") {
+		return true, nil
+	}
+
+	if settings != nil && !settings.CommunityVotingEnabled {
+		var chatID int64
+		if chat != nil {
+			chatID = chat.ID
+		} else if u.CallbackQuery.Message != nil {
+			chatID = u.CallbackQuery.Message.Chat.ID
+		}
+		language := "en"
+		if chatID != 0 {
+			language = r.s.GetLanguage(ctx, chatID, user)
+		}
+		_, _ = r.s.GetBot().Request(api.NewCallback(u.CallbackQuery.ID, i18n.Get("Community voting is disabled", language)))
 		return true, nil
 	}
 
@@ -150,30 +167,10 @@ func (r *Reactor) handleCallbackQuery(ctx context.Context, u *api.Update, chat *
 
 	vote := parts[2] == "0" // 0 = not spam, 1 = spam
 
-	err = r.s.GetDB().AddSpamVote(ctx, &db.SpamVote{
-		CaseID:  caseID,
-		VoterID: user.ID,
-		Vote:    vote,
-		VotedAt: time.Now(),
-	})
+	notSpamVotes, spamVotes, err := r.spamControl.RecordVote(ctx, caseID, user.ID, vote)
 	if err != nil {
-		entry.WithField("error", err.Error()).Error("failed to add spam vote")
-	}
-
-	votes, err := r.s.GetDB().GetSpamVotes(ctx, caseID)
-	if err != nil {
-		entry.WithField("error", err.Error()).Error("failed to get votes")
+		entry.WithField("error", err.Error()).Error("failed to record spam vote")
 		return true, nil
-	}
-
-	spamVotes := 0
-	notSpamVotes := 0
-	for _, v := range votes {
-		if v.Vote {
-			notSpamVotes++
-		} else {
-			spamVotes++
-		}
 	}
 
 	language := r.s.GetLanguage(ctx, chat.ID, user)
@@ -189,12 +186,6 @@ func (r *Reactor) handleCallbackQuery(ctx context.Context, u *api.Update, chat *
 	_, err = r.s.GetBot().Request(api.NewCallback(u.CallbackQuery.ID, i18n.Get("✓ Vote recorded", language)))
 	if err != nil {
 		entry.WithField("error", err.Error()).Error("failed to acknowledge callback")
-	}
-
-	if max(notSpamVotes, spamVotes) >= r.config.SpamControl.MaxVoters {
-		if err := r.spamControl.ResolveCase(ctx, caseID); err != nil {
-			entry.WithField("error", err.Error()).Error("failed to resolve spam case after max votes reached")
-		}
 	}
 
 	return true, nil
@@ -220,11 +211,14 @@ func (r *Reactor) getOrCreateSettings(ctx context.Context, chat *api.Chat) (*db.
 	}
 	if settings == nil {
 		settings = &db.Settings{
-			Enabled:          true,
-			ChallengeTimeout: defaultChallengeTimeout.Nanoseconds(),
-			RejectTimeout:    defaultRejectTimeout.Nanoseconds(),
-			Language:         "en",
-			ID:               chat.ID,
+			Enabled:                true,
+			GatekeeperEnabled:      true,
+			LLMFirstMessageEnabled: true,
+			CommunityVotingEnabled: true,
+			ChallengeTimeout:       defaultChallengeTimeout.Nanoseconds(),
+			RejectTimeout:          defaultRejectTimeout.Nanoseconds(),
+			Language:               "en",
+			ID:                     chat.ID,
 		}
 		if err := r.s.SetSettings(ctx, settings); err != nil {
 			return nil, err
@@ -289,14 +283,14 @@ func (r *Reactor) getEmojiFromReaction(react api.ReactionType) string {
 	return emojiStickers[0].Emoji
 }
 
-func (r *Reactor) handleCommand(ctx context.Context, msg *api.Message, chat *api.Chat, user *api.User) error {
+func (r *Reactor) handleCommand(ctx context.Context, msg *api.Message, chat *api.Chat, user *api.User, settings *db.Settings) error {
 	switch msg.Command() {
 	case "testspam":
 		return r.testSpamCommand(ctx, msg, chat, user)
 	case "skipreason":
 		return r.skipReasonCommand(ctx, msg, chat)
-	case "spam":
-		return r.spamCommand(ctx, msg, chat, user)
+	case "ban":
+		return r.banCommand(ctx, msg, chat, user, settings)
 	}
 
 	return nil
@@ -305,7 +299,7 @@ func (r *Reactor) handleCommand(ctx context.Context, msg *api.Message, chat *api
 func (r *Reactor) testSpamCommand(ctx context.Context, msg *api.Message, chat *api.Chat, user *api.User) error {
 	content := msg.CommandArguments()
 
-	isSpam, err := r.checkMessageForSpam(ctx, content, user)
+	isSpam, err := r.checkMessageForSpam(ctx, chat.ID, content, user)
 	if err != nil {
 		return errors.Wrap(err, "failed to check message for spam")
 	}
@@ -359,15 +353,22 @@ func (r *Reactor) skipReasonCommand(ctx context.Context, msg *api.Message, chat 
 	return nil
 }
 
-func (r *Reactor) spamCommand(ctx context.Context, msg *api.Message, chat *api.Chat, user *api.User) error {
+func (r *Reactor) banCommand(ctx context.Context, msg *api.Message, chat *api.Chat, user *api.User, settings *db.Settings) error {
 	entry := r.getLogEntry().WithFields(log.Fields{
-		"method": "spamCommand",
+		"method": "banCommand",
 		"chatID": chat.ID,
 		"userID": user.ID,
 	})
 
-	if msg.ReplyToMessage == nil {
-		responseMsg := api.NewMessage(chat.ID, "Please reply to a message to mark it as spam")
+	if msg.Chat.Type == "private" {
+		responseMsg := api.NewMessage(chat.ID, i18n.Get("This command can only be used in groups", r.s.GetLanguage(ctx, chat.ID, user)))
+		responseMsg.DisableNotification = true
+		_, _ = r.s.GetBot().Send(responseMsg)
+		return nil
+	}
+
+	if msg.ReplyToMessage == nil || msg.ReplyToMessage.From == nil {
+		responseMsg := api.NewMessage(chat.ID, i18n.Get("This command must be used as a reply to a message", r.s.GetLanguage(ctx, chat.ID, user)))
 		responseMsg.ReplyParameters.MessageID = msg.MessageID
 		responseMsg.ReplyParameters.ChatID = chat.ID
 		responseMsg.MessageThreadID = msg.MessageThreadID
@@ -388,8 +389,22 @@ func (r *Reactor) spamCommand(ctx context.Context, msg *api.Message, chat *api.C
 		return errors.Wrap(err, "failed to get chat member")
 	}
 
-	if !member.CanRestrictMembers || !member.CanDeleteMessages {
-		responseMsg := api.NewMessage(chat.ID, "You don't have permission to use this command. Required permissions: Ban users and Delete messages")
+	language := r.s.GetLanguage(ctx, chat.ID, user)
+	if isPrivilegedModerator(&member) {
+		_, err := r.spamControl.ProcessBannedMessage(ctx, msg.ReplyToMessage, chat, language)
+		if err != nil {
+			entry.WithError(err).Error("Failed to process spam message")
+			return errors.Wrap(err, "failed to process spam message")
+		}
+		if err := r.s.DeleteMember(ctx, chat.ID, msg.ReplyToMessage.From.ID); err != nil {
+			entry.WithError(err).Error("Failed to delete member")
+		}
+		_ = bot.DeleteChatMessage(ctx, r.s.GetBot(), chat.ID, msg.MessageID)
+		return nil
+	}
+
+	if settings != nil && !settings.CommunityVotingEnabled {
+		responseMsg := api.NewMessage(chat.ID, i18n.Get("Community voting is disabled", language))
 		responseMsg.ReplyParameters.MessageID = msg.MessageID
 		responseMsg.ReplyParameters.ChatID = chat.ID
 		responseMsg.MessageThreadID = msg.MessageThreadID
@@ -397,39 +412,15 @@ func (r *Reactor) spamCommand(ctx context.Context, msg *api.Message, chat *api.C
 		return nil
 	}
 
-	language := r.s.GetLanguage(ctx, chat.ID, user)
-	result, err := r.spamControl.ProcessBannedMessage(ctx, msg.ReplyToMessage, chat, language)
-	if err != nil {
+	if _, err := r.spamControl.ProcessSpamMessage(ctx, msg.ReplyToMessage, chat, language); err != nil {
 		entry.WithError(err).Error("Failed to process spam message")
 		return errors.Wrap(err, "failed to process spam message")
 	}
 
-	if err := r.s.DeleteMember(ctx, chat.ID, msg.ReplyToMessage.From.ID); err != nil {
-		entry.WithError(err).Error("Failed to delete member")
-	}
-
-	var response string
-	if result != nil {
-		if result.Error != "" {
-			response = fmt.Sprintf("Error processing spam: %s", result.Error)
-		} else {
-			response = fmt.Sprintf("Message processed as spam. Actions taken: message deleted=%v, user banned=%v",
-				result.MessageDeleted, result.UserBanned)
-		}
-	} else {
-		response = "Message processed as spam"
-	}
-
-	responseMsg := api.NewMessage(chat.ID, response)
-	responseMsg.ReplyParameters.MessageID = msg.MessageID
-	responseMsg.ReplyParameters.ChatID = chat.ID
-	responseMsg.MessageThreadID = msg.MessageThreadID
-	_, _ = r.s.GetBot().Send(responseMsg)
-
 	return nil
 }
 
-func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api.Chat, user *api.User) error {
+func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api.Chat, user *api.User, settings *db.Settings) error {
 	entry := r.getLogEntry().WithFields(log.Fields{
 		"chat_id": chat.ID,
 		"user_id": user.ID,
@@ -439,7 +430,7 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 		Message: msg,
 		Stage:   StageInit,
 	}
-	r.lastResults[int64(msg.MessageID)] = result
+	r.storeLastResult(int64(msg.MessageID), result)
 
 	isMember, err := r.s.IsMember(ctx, chat.ID, user.ID)
 	if err != nil {
@@ -491,6 +482,13 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 		return nil
 	}
 
+	if settings != nil && !settings.LLMFirstMessageEnabled {
+		result.Stage = StageSpamCheck
+		result.Skipped = true
+		result.SkipReason = "LLM first message check disabled"
+		return r.insertMemberIfPresent(ctx, chat, user, entry)
+	}
+
 	result.Stage = StageContentCheck
 	content := bot.ExtractContentFromMessage(msg)
 	if content == "" {
@@ -501,7 +499,7 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 	}
 
 	result.Stage = StageSpamCheck
-	isSpam, err := r.checkMessageForSpam(ctx, content, user)
+	isSpam, err := r.checkMessageForSpam(ctx, chat.ID, content, user)
 	if err != nil {
 		return err
 	}
@@ -509,7 +507,13 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 
 	if isSpam != nil {
 		if *isSpam {
-			processingResult, processErr := r.spamControl.ProcessSpamMessage(ctx, msg, chat, language)
+			var processingResult *moderation.ProcessingResult
+			var processErr error
+			if settings != nil && !settings.CommunityVotingEnabled {
+				processingResult, processErr = r.spamControl.ProcessBannedMessage(ctx, msg, chat, language)
+			} else {
+				processingResult, processErr = r.spamControl.ProcessSpamMessage(ctx, msg, chat, language)
+			}
 			if processErr != nil {
 				entry.WithField("error", processErr.Error()).Error("failed to process spam message")
 				result.Actions.Error = processErr.Error()
@@ -529,39 +533,15 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 			return nil
 		}
 
-		chatMember, err := r.s.GetBot().GetChatMember(api.GetChatMemberConfig{
-			ChatConfigWithUser: api.ChatConfigWithUser{
-				ChatConfig: api.ChatConfig{
-					ChatID: chat.ID,
-				},
-				UserID: user.ID,
-			},
-		})
-		if err != nil {
-			entry.WithField("error", err.Error()).Error("failed to get chat member")
+		if err := r.insertMemberIfPresent(ctx, chat, user, entry); err != nil {
 			return err
-		}
-
-		if !(chatMember.HasLeft() || chatMember.WasKicked()) {
-			entry.WithFields(log.Fields{
-				"user_id": user.ID,
-				"chat_id": chat.ID,
-			}).Info("Adding user as member after spam check")
-			if insertErr := r.s.InsertMember(ctx, chat.ID, user.ID); insertErr != nil {
-				entry.WithField("error", insertErr.Error()).Error("failed to insert member")
-			}
-		} else {
-			entry.WithFields(log.Fields{
-				"user_id": user.ID,
-				"chat_id": chat.ID,
-			}).Info("User has left the chat, skipping member insertion")
 		}
 	}
 
 	return nil
 }
 
-func (r *Reactor) checkMessageForSpam(ctx context.Context, content string, user *api.User) (*bool, error) {
+func (r *Reactor) checkMessageForSpam(ctx context.Context, chatID int64, content string, user *api.User) (*bool, error) {
 	words := strings.Fields(content)
 	for i, word := range words {
 		if hasCyrillics(word) {
@@ -570,7 +550,8 @@ func (r *Reactor) checkMessageForSpam(ctx context.Context, content string, user 
 	}
 	contentAltered := strings.Join(words, " ")
 
-	isSpam, err := r.spamDetector.IsSpam(ctx, contentAltered)
+	examples := r.loadSpamExamples(ctx, chatID)
+	isSpam, err := r.spamDetector.IsSpam(ctx, contentAltered, examples)
 	if r.config.SpamControl.DebugUserID != 0 {
 		debugMsg := tool.ExecTemplate(`
 {{- .content }}
@@ -588,8 +569,68 @@ Is Spam result: {{ .isSpam -}}
 	return isSpam, err
 }
 
+func (r *Reactor) loadSpamExamples(ctx context.Context, chatID int64) []string {
+	examples, err := r.s.GetDB().ListChatSpamExamples(ctx, chatID, maxSpamExamples, 0)
+	if err != nil {
+		r.getLogEntry().WithField("error", err.Error()).Error("failed to load spam examples")
+		return nil
+	}
+	texts := make([]string, 0, len(examples))
+	for _, example := range examples {
+		text := strings.TrimSpace(example.Text)
+		if text == "" {
+			continue
+		}
+		texts = append(texts, text)
+	}
+	return texts
+}
+
+func (r *Reactor) insertMemberIfPresent(ctx context.Context, chat *api.Chat, user *api.User, entry *log.Entry) error {
+	chatMember, err := r.s.GetBot().GetChatMember(api.GetChatMemberConfig{
+		ChatConfigWithUser: api.ChatConfigWithUser{
+			ChatConfig: api.ChatConfig{
+				ChatID: chat.ID,
+			},
+			UserID: user.ID,
+		},
+	})
+	if err != nil {
+		entry.WithField("error", err.Error()).Error("failed to get chat member")
+		return err
+	}
+
+	if !(chatMember.HasLeft() || chatMember.WasKicked()) {
+		entry.WithFields(log.Fields{
+			"user_id": user.ID,
+			"chat_id": chat.ID,
+		}).Info("Adding user as member after spam check")
+		if insertErr := r.s.InsertMember(ctx, chat.ID, user.ID); insertErr != nil {
+			entry.WithField("error", insertErr.Error()).Error("failed to insert member")
+		}
+	} else {
+		entry.WithFields(log.Fields{
+			"user_id": user.ID,
+			"chat_id": chat.ID,
+		}).Info("User has left the chat, skipping member insertion")
+	}
+	return nil
+}
+
 func (r *Reactor) getLogEntry() *log.Entry {
 	return log.WithField("object", "Reactor")
+}
+
+func (r *Reactor) storeLastResult(messageID int64, result *MessageProcessingResult) {
+	if _, ok := r.lastResults[messageID]; !ok {
+		r.resultOrder = append(r.resultOrder, messageID)
+	}
+	r.lastResults[messageID] = result
+	if len(r.resultOrder) > maxLastResults {
+		oldest := r.resultOrder[0]
+		r.resultOrder = r.resultOrder[1:]
+		delete(r.lastResults, oldest)
+	}
 }
 
 func hasCyrillics(content string) bool {

@@ -15,7 +15,6 @@ import (
 	"github.com/iamwavecut/ngbot/internal/adapters/llm/gemini"
 	"github.com/iamwavecut/ngbot/internal/adapters/llm/openai"
 	"github.com/iamwavecut/ngbot/internal/db/sqlite"
-	"github.com/iamwavecut/ngbot/internal/event"
 	adminHandlers "github.com/iamwavecut/ngbot/internal/handlers/admin"
 	chatHandlers "github.com/iamwavecut/ngbot/internal/handlers/chat"
 	moderationHandlers "github.com/iamwavecut/ngbot/internal/handlers/moderation"
@@ -27,7 +26,6 @@ import (
 	"github.com/iamwavecut/ngbot/internal/bot"
 	"github.com/iamwavecut/ngbot/internal/config"
 	"github.com/iamwavecut/ngbot/internal/infra"
-	"github.com/iamwavecut/ngbot/internal/observability"
 )
 
 func main() {
@@ -48,11 +46,6 @@ func main() {
 	i18n.Init()
 
 	ctx := context.Background()
-
-	// Initialize observability stack
-	if err := observability.Init(ctx); err != nil {
-		log.Fatalf("Failed to initialize observability: %v", err)
-	}
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
@@ -106,8 +99,6 @@ func maskConfiguration(cfg *config.Config) *config.Config {
 }
 
 func runBot(ctx context.Context, cfg *config.Config, errChan chan<- error) {
-	defer event.RunWorker()()
-
 	// Initialize bot API
 	botAPI, err := api.NewBotAPI(cfg.TelegramAPIToken)
 	if err != nil {
@@ -171,7 +162,7 @@ func initializeHandlers(service bot.Service, cfg *config.Config, logger *log.Ent
 	)
 	spamControl := moderationHandlers.NewSpamControl(service, cfg.SpamControl, banService, cfg.SpamControl.Verbose)
 	bot.RegisterUpdateHandler("gatekeeper", chatHandlers.NewGatekeeper(service, cfg, banService))
-	bot.RegisterUpdateHandler("admin", adminHandlers.NewAdmin(service, banService, spamControl))
+	bot.RegisterUpdateHandler("admin", adminHandlers.NewAdmin(service))
 
 	llmAPI := configureLLM(cfg, logger)
 	spamDetector := moderationHandlers.NewSpamDetector(llmAPI, logger.WithField("context", "spam_detector"))

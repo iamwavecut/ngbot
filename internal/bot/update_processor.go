@@ -89,10 +89,14 @@ func (up *UpdateProcessor) Process(ctx context.Context, u *api.Update) error {
 		switch {
 		case u.Message != nil:
 			updateTime = time.Unix(int64(u.Message.Date), 0)
+		case u.EditedMessage != nil:
+			updateTime = time.Unix(int64(u.EditedMessage.Date), 0)
 		case u.ChannelPost != nil:
 			updateTime = time.Unix(int64(u.ChannelPost.Date), 0)
+		case u.EditedChannelPost != nil:
+			updateTime = time.Unix(int64(u.EditedChannelPost.Date), 0)
 		default:
-			return nil
+			updateTime = time.Now()
 		}
 
 		if time.Since(updateTime) > UpdateTimeout {
@@ -104,13 +108,27 @@ func (up *UpdateProcessor) Process(ctx context.Context, u *api.Update) error {
 		}
 
 		chat := u.FromChat()
-		if chat == nil && u.ChatJoinRequest != nil {
-			chat = &u.ChatJoinRequest.Chat
+		if chat == nil {
+			switch {
+			case u.ChatJoinRequest != nil:
+				chat = &u.ChatJoinRequest.Chat
+			case u.MyChatMember != nil:
+				chat = &u.MyChatMember.Chat
+			case u.ChatMember != nil:
+				chat = &u.ChatMember.Chat
+			}
 		}
 
 		user := u.SentFrom()
-		if user == nil && u.ChatJoinRequest != nil {
-			user = &u.ChatJoinRequest.From
+		if user == nil {
+			switch {
+			case u.ChatJoinRequest != nil:
+				user = &u.ChatJoinRequest.From
+			case u.MyChatMember != nil:
+				user = &u.MyChatMember.From
+			case u.ChatMember != nil:
+				user = &u.ChatMember.From
+			}
 		}
 
 		for _, handler := range up.updateHandlers {
