@@ -4,7 +4,7 @@ import "time"
 
 const (
 	panelExamplesPageSize = 5
-	panelLanguagePageSize = 5
+	panelLanguagePageSize = 6
 	panelPreviewMaxLen    = 80
 	panelMaxInputLen      = 4096
 )

@@ -9,6 +9,7 @@ const (
 	panelPageExampleDetail panelPage = "ExampleDetail"
 	panelPageExamplePrompt panelPage = "ExamplePrompt"
 	panelPageConfirmDelete panelPage = "ConfirmDelete"
+	panelPageConfirmClose  panelPage = "ConfirmClose"
 )
 
 const (
@@ -25,9 +26,9 @@ const (
 	panelActionOpenDelete       = "open_delete"
 	panelActionDeleteYes        = "delete_yes"
 	panelActionDeleteNo         = "delete_no"
+	panelActionCloseConfirm     = "close_confirm"
 	panelActionBack             = "back"
 	panelActionClose            = "close"
-	panelActionNoop             = "noop"
 )
 
 const (

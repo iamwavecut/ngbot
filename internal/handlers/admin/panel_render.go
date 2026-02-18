@@ -33,19 +33,19 @@ func (a *Admin) renderHome(ctx context.Context, session *db.AdminPanelSession, s
 		return "", nil, err
 	}
 
-	gatekeeperLabel := fmt.Sprintf("%s: %s", i18n.Get("Gatekeeper", lang), statusEmoji(state.Features.GatekeeperEnabled))
+	gatekeeperLabel := fmt.Sprintf("%s %s", statusEmoji(state.Features.GatekeeperEnabled), i18n.Get("Gatekeeper", lang))
 	gatekeeperBtn, err := a.commandButton(ctx, session.ID, gatekeeperLabel, panelCommand{Action: panelActionToggleFeature, Feature: panelFeatureGatekeeper})
 	if err != nil {
 		return "", nil, err
 	}
 
-	llmLabel := fmt.Sprintf("%s: %s", i18n.Get("LLM First Message", lang), statusEmoji(state.Features.LLMFirstMessageEnabled))
+	llmLabel := fmt.Sprintf("%s %s", statusEmoji(state.Features.LLMFirstMessageEnabled), i18n.Get("LLM First Message", lang))
 	llmBtn, err := a.commandButton(ctx, session.ID, llmLabel, panelCommand{Action: panelActionToggleFeature, Feature: panelFeatureLLMFirst})
 	if err != nil {
 		return "", nil, err
 	}
 
-	votingLabel := fmt.Sprintf("%s: %s", i18n.Get("Community Voting", lang), statusEmoji(state.Features.CommunityVotingEnabled))
+	votingLabel := fmt.Sprintf("%s %s", statusEmoji(state.Features.CommunityVotingEnabled), i18n.Get("Community Voting", lang))
 	votingBtn, err := a.commandButton(ctx, session.ID, votingLabel, panelCommand{Action: panelActionToggleFeature, Feature: panelFeatureVoting})
 	if err != nil {
 		return "", nil, err
@@ -63,8 +63,10 @@ func (a *Admin) renderHome(ctx context.Context, session *db.AdminPanelSession, s
 
 	keyboard := api.NewInlineKeyboardMarkup(
 		api.NewInlineKeyboardRow(languageBtn),
-		api.NewInlineKeyboardRow(gatekeeperBtn, llmBtn),
-		api.NewInlineKeyboardRow(votingBtn, examplesBtn),
+		api.NewInlineKeyboardRow(gatekeeperBtn),
+		api.NewInlineKeyboardRow(llmBtn),
+		api.NewInlineKeyboardRow(votingBtn),
+		api.NewInlineKeyboardRow(examplesBtn),
 		api.NewInlineKeyboardRow(closeBtn),
 	)
 
@@ -88,13 +90,17 @@ func (a *Admin) renderLanguageList(ctx context.Context, session *db.AdminPanelSe
 
 	builder := strings.Builder{}
 	builder.WriteString(i18n.Get("Language", lang))
+	builder.WriteString("\n")
+	builder.WriteString(fmt.Sprintf(i18n.Get("Page %d/%d", lang), state.LanguagePage+1, totalPages))
+	builder.WriteString(" • ")
+	builder.WriteString(fmt.Sprintf(i18n.Get("Total languages: %d", lang), len(allLanguages)))
 	builder.WriteString("\n\n")
 	if len(pageLangs) == 0 {
 		builder.WriteString(i18n.Get("No languages available", lang))
 	} else {
 		for i, code := range pageLangs {
 			name := i18n.GetLanguageName(code)
-			label := fmt.Sprintf("%d. %s (%s)", i+1, name, code)
+			label := fmt.Sprintf("%d. %s (%s)", start+i+1, name, code)
 			if code == state.Language {
 				label = "✅ " + label
 			}
@@ -251,6 +257,22 @@ func (a *Admin) renderConfirmDelete(ctx context.Context, session *db.AdminPanelS
 	return text, &keyboard, nil
 }
 
+func (a *Admin) renderConfirmClose(ctx context.Context, session *db.AdminPanelSession, state *panelState) (string, *api.InlineKeyboardMarkup, error) {
+	lang := state.Language
+	text := i18n.Get("Close settings panel?", lang)
+
+	confirmBtn, err := a.commandButton(ctx, session.ID, i18n.Get("Close", lang), panelCommand{Action: panelActionCloseConfirm})
+	if err != nil {
+		return "", nil, err
+	}
+	cancelBtn, err := a.commandButton(ctx, session.ID, i18n.Get("Cancel", lang), panelCommand{Action: panelActionBack})
+	if err != nil {
+		return "", nil, err
+	}
+	keyboard := api.NewInlineKeyboardMarkup(api.NewInlineKeyboardRow(confirmBtn, cancelBtn))
+	return text, &keyboard, nil
+}
+
 func (a *Admin) commandButton(ctx context.Context, sessionID int64, label string, cmd panelCommand) (api.InlineKeyboardButton, error) {
 	payload, err := a.createPanelCommand(ctx, sessionID, cmd)
 	if err != nil {
@@ -260,25 +282,27 @@ func (a *Admin) commandButton(ctx context.Context, sessionID int64, label string
 }
 
 func (a *Admin) navRow(ctx context.Context, sessionID int64, prevAction string, nextAction string, hasPrev bool, hasNext bool) ([]api.InlineKeyboardButton, error) {
-	if !hasPrev {
-		prevAction = panelActionNoop
-	}
-	if !hasNext {
-		nextAction = panelActionNoop
-	}
-	prevBtn, err := a.commandButton(ctx, sessionID, "⬅️", panelCommand{Action: prevAction})
-	if err != nil {
-		return nil, err
+	row := make([]api.InlineKeyboardButton, 0, 3)
+	if hasPrev {
+		prevBtn, err := a.commandButton(ctx, sessionID, "⬅️", panelCommand{Action: prevAction})
+		if err != nil {
+			return nil, err
+		}
+		row = append(row, prevBtn)
 	}
 	backBtn, err := a.commandButton(ctx, sessionID, "↩️", panelCommand{Action: panelActionBack})
 	if err != nil {
 		return nil, err
 	}
-	nextBtn, err := a.commandButton(ctx, sessionID, "➡️", panelCommand{Action: nextAction})
-	if err != nil {
-		return nil, err
+	row = append(row, backBtn)
+	if hasNext {
+		nextBtn, err := a.commandButton(ctx, sessionID, "➡️", panelCommand{Action: nextAction})
+		if err != nil {
+			return nil, err
+		}
+		row = append(row, nextBtn)
 	}
-	return api.NewInlineKeyboardRow(prevBtn, backBtn, nextBtn), nil
+	return api.NewInlineKeyboardRow(row...), nil
 }
 
 func (a *Admin) createPanelCommand(ctx context.Context, sessionID int64, cmd panelCommand) (string, error) {

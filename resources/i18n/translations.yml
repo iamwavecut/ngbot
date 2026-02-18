@@ -1291,6 +1291,10 @@
   RU: "Примеры спама"
 "No languages available":
   RU: "Список языков пуст"
+"Page %d/%d":
+  RU: "Страница %d/%d"
+"Total languages: %d":
+  RU: "Всего языков: %d"
 "Add Example":
   RU: "Добавить пример"
 "No spam examples yet":
@@ -1305,6 +1309,12 @@
   RU: "Удалить пример?"
 "Delete":
   RU: "Удалить"
+"Close":
+  RU: "Закрыть"
+"Cancel":
+  RU: "Отмена"
+"Close settings panel?":
+  RU: "Закрыть панель настроек?"
 "Open settings in private chat":
   RU: "Открыть настройки в личном чате"
 "Open Settings":

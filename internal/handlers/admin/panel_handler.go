@@ -285,7 +285,7 @@ func (a *Admin) handlePanelCallback(ctx context.Context, cq *api.CallbackQuery, 
 		return true, err
 	}
 
-	if command.Action == panelActionClose {
+	if command.Action == panelActionCloseConfirm {
 		a.answerCallback(ctx, cq.ID, "")
 		return true, a.closePanelSession(ctx, session)
 	}
@@ -412,6 +412,7 @@ func (a *Admin) applyPanelCommand(ctx context.Context, session *db.AdminPanelSes
 		return a.toggleFeature(ctx, session, state, command.Feature)
 	case panelActionOpenLanguage:
 		state.Page = panelPageLanguageList
+		state.LanguagePage = pageForLanguage(state.Language, i18n.GetLanguagesList(), panelLanguagePageSize)
 	case panelActionLanguagePageNext:
 		state.LanguagePage++
 	case panelActionLanguagePagePrev:
@@ -462,10 +463,13 @@ func (a *Admin) applyPanelCommand(ctx context.Context, session *db.AdminPanelSes
 			state.Page = panelPageExamplesList
 		case panelPageConfirmDelete:
 			state.Page = panelPageExampleDetail
+		case panelPageConfirmClose:
+			state.Page = panelPageHome
 		default:
 			state.Page = panelPageHome
 		}
-	case panelActionNoop:
+	case panelActionClose:
+		state.Page = panelPageConfirmClose
 	default:
 	}
 	return a.savePanelState(ctx, session, *state)
@@ -618,8 +622,7 @@ func (a *Admin) replaceExistingSession(ctx context.Context, userID int64, chatID
 
 func (a *Admin) closePanelSession(ctx context.Context, session *db.AdminPanelSession) error {
 	if session.MessageID != 0 {
-		edit := api.NewEditMessageReplyMarkup(session.UserID, session.MessageID, api.InlineKeyboardMarkup{})
-		_, _ = a.s.GetBot().Send(edit)
+		_ = bot.DeleteChatMessage(ctx, a.s.GetBot(), session.UserID, session.MessageID)
 	}
 	return a.s.GetDB().DeleteAdminPanelSession(ctx, session.ID)
 }
@@ -779,9 +782,15 @@ func (a *Admin) renderAndUpdatePanel(ctx context.Context, session *db.AdminPanel
 		return err
 	}
 	if err := a.editMessage(ctx, session.UserID, messageID, text, markup); err != nil {
-		msg, sendErr := a.s.GetBot().Send(api.NewMessage(session.UserID, text))
+		if isMessageNotModifiedError(err) {
+			return nil
+		}
+		msg := api.NewMessage(session.UserID, text)
+		msg.DisableNotification = true
+		msg.ReplyMarkup = markup
+		sent, sendErr := a.s.GetBot().Send(msg)
 		if sendErr == nil {
-			session.MessageID = msg.MessageID
+			session.MessageID = sent.MessageID
 			if err := a.savePanelState(ctx, session, state); err != nil {
 				return err
 			}
@@ -819,7 +828,28 @@ func (a *Admin) renderPanel(ctx context.Context, session *db.AdminPanelSession, 
 		return a.renderExamplePrompt(ctx, session, state)
 	case panelPageConfirmDelete:
 		return a.renderConfirmDelete(ctx, session, state)
+	case panelPageConfirmClose:
+		return a.renderConfirmClose(ctx, session, state)
 	default:
 		return a.renderHome(ctx, session, state)
 	}
+}
+
+func pageForLanguage(code string, all []string, pageSize int) int {
+	if pageSize <= 0 {
+		return 0
+	}
+	for i, item := range all {
+		if item == code {
+			return i / pageSize
+		}
+	}
+	return 0
+}
+
+func isMessageNotModifiedError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "message is not modified")
 }
