@@ -3,185 +3,101 @@ package gemini
 import (
 	"context"
 	"fmt"
-	"strings"
 
-	"github.com/google/generative-ai-go/genai"
 	"github.com/iamwavecut/ngbot/internal/adapters"
 	"github.com/iamwavecut/ngbot/internal/adapters/llm"
 	log "github.com/sirupsen/logrus"
-	"google.golang.org/api/option"
+	"google.golang.org/genai"
 )
 
 type API struct {
 	client *genai.Client
-	model  *genai.GenerativeModel
-	logger *log.Entry
+	model  string
 }
 
-const DefaultModel = "gemini-2.5-flash-lite"
+const (
+	DefaultModel           = "gemini-2.5-flash-lite"
+	defaultTemperature     = float32(0.9)
+	defaultTopK            = float32(40)
+	defaultTopP            = float32(0.95)
+	defaultMaxOutputTokens = int32(8192)
+)
 
-func NewGemini(apiKey, model string, logger *log.Entry) adapters.LLM {
-	ctx := context.Background()
-	client, err := genai.NewClient(ctx, option.WithAPIKey(apiKey))
+func NewGemini(apiKey, model string, logger *log.Entry) (adapters.LLM, error) {
+	_ = logger
+	if apiKey == "" {
+		return nil, fmt.Errorf("gemini API key is empty")
+	}
+	if model == "" {
+		model = DefaultModel
+	}
+
+	client, err := genai.NewClient(context.Background(), &genai.ClientConfig{
+		APIKey:  apiKey,
+		Backend: genai.BackendGeminiAPI,
+	})
 	if err != nil {
-		logger.Fatalf("Error creating client: %v", err)
-	}
-	api := &API{
-		client: client,
-		logger: logger,
-		model:  client.GenerativeModel(model),
-	}
-	api.WithSafetySettings(nil)
-	api.WithParameters(nil)
-	return api
-}
-
-func (g *API) WithModel(modelName string) adapters.LLM {
-	if modelName == "" {
-		modelName = DefaultModel
-	}
-	model := g.client.GenerativeModel(modelName)
-	g.model = model
-	return g
-}
-
-func (g *API) WithParameters(parameters *llm.GenerationParameters) adapters.LLM {
-	if parameters == nil || (parameters == &llm.GenerationParameters{}) {
-		parameters = &llm.GenerationParameters{
-			Temperature:      0.9,
-			TopK:             40,
-			TopP:             0.95,
-			MaxOutputTokens:  8192,
-			ResponseMIMEType: "text/plain",
-		}
+		return nil, fmt.Errorf("create gemini client: %w", err)
 	}
 
-	g.model.SetTemperature(parameters.Temperature)
-	g.model.SetTopK(parameters.TopK)
-	g.model.SetTopP(parameters.TopP)
-	g.model.SetMaxOutputTokens(int32(parameters.MaxOutputTokens))
-	g.model.ResponseMIMEType = parameters.ResponseMIMEType
-
-	return g
-}
-
-func (g *API) WithSafetySettings(safetySettings []*genai.SafetySetting) *API {
-	if len(safetySettings) == 0 {
-		safetySettings = []*genai.SafetySetting{
-			{
-				Category:  genai.HarmCategoryDangerous,
-				Threshold: genai.HarmBlockNone,
-			},
-			{
-				Category:  genai.HarmCategoryDangerousContent,
-				Threshold: genai.HarmBlockNone,
-			},
-			{
-				Category:  genai.HarmCategoryDerogatory,
-				Threshold: genai.HarmBlockNone,
-			},
-			{
-				Category:  genai.HarmCategoryHarassment,
-				Threshold: genai.HarmBlockNone,
-			},
-			{
-				Category:  genai.HarmCategoryHateSpeech,
-				Threshold: genai.HarmBlockNone,
-			},
-			{
-				Category:  genai.HarmCategoryMedical,
-				Threshold: genai.HarmBlockNone,
-			},
-			{
-				Category:  genai.HarmCategorySexual,
-				Threshold: genai.HarmBlockNone,
-			},
-			{
-				Category:  genai.HarmCategorySexuallyExplicit,
-				Threshold: genai.HarmBlockNone,
-			},
-			{
-				Category:  genai.HarmCategoryToxicity,
-				Threshold: genai.HarmBlockNone,
-			},
-			{
-				Category:  genai.HarmCategoryViolence,
-				Threshold: genai.HarmBlockNone,
-			},
-			{
-				Category:  genai.HarmCategoryUnspecified,
-				Threshold: genai.HarmBlockNone,
-			},
-		}
-	}
-	g.model.SafetySettings = safetySettings
-	return g
-}
-
-func (g *API) WithSystemPrompt(prompt string) adapters.LLM {
-	g.model.SystemInstruction = &genai.Content{
-		Parts: []genai.Part{genai.Text(prompt)},
-	}
-	return g
+	return &API{client: client, model: model}, nil
 }
 
 func (g *API) ChatCompletion(ctx context.Context, messages []llm.ChatCompletionMessage) (llm.ChatCompletionResponse, error) {
-	session := g.model.StartChat()
-	session.History = []*genai.Content{}
+	if len(messages) == 0 {
+		return llm.ChatCompletionResponse{}, fmt.Errorf("chat completion requires at least one message")
+	}
 
-	lastMessage, messages := messages[len(messages)-1], messages[:len(messages)-1]
+	contents := make([]*genai.Content, 0, len(messages))
+	var systemInstruction *genai.Content
 
-	backupGlobalInstruction := g.model.SystemInstruction
 	for _, message := range messages {
-		if message.Role == "system" {
-			g.model.SystemInstruction = &genai.Content{
-				Parts: []genai.Part{genai.Text(message.Content)},
-			}
-			continue
+		switch message.Role {
+		case llm.RoleSystem:
+			systemInstruction = genai.NewContentFromText(message.Content, genai.RoleUser)
+		case llm.RoleAssistant:
+			contents = append(contents, genai.NewContentFromText(message.Content, genai.RoleModel))
+		case llm.RoleUser, "":
+			contents = append(contents, genai.NewContentFromText(message.Content, genai.RoleUser))
+		default:
+			return llm.ChatCompletionResponse{}, fmt.Errorf("unsupported message role: %s", message.Role)
 		}
-		session.History = append(session.History, &genai.Content{
-			Parts: []genai.Part{genai.Text(message.Content)},
-		})
 	}
 
-	resp, err := session.SendMessage(ctx, genai.Text(lastMessage.Content))
+	if len(contents) == 0 {
+		return llm.ChatCompletionResponse{}, fmt.Errorf("chat completion requires at least one non-system message")
+	}
+
+	config := &genai.GenerateContentConfig{
+		SystemInstruction: systemInstruction,
+		Temperature:       genai.Ptr(defaultTemperature),
+		TopK:              genai.Ptr(defaultTopK),
+		TopP:              genai.Ptr(defaultTopP),
+		MaxOutputTokens:   defaultMaxOutputTokens,
+		ResponseMIMEType:  "text/plain",
+		SafetySettings:    defaultSafetySettings(),
+	}
+
+	resp, err := g.client.Models.GenerateContent(ctx, g.model, contents, config)
 	if err != nil {
-		return llm.ChatCompletionResponse{}, err
-	}
-	g.model.SystemInstruction = backupGlobalInstruction
-
-	response := ""
-	for _, part := range resp.Candidates[0].Content.Parts {
-		response += fmt.Sprintf("%v", part)
+		return llm.ChatCompletionResponse{}, fmt.Errorf("generate gemini content: %w", err)
 	}
 
 	return llm.ChatCompletionResponse{
-		Choices: []llm.ChatCompletionChoice{{Message: llm.ChatCompletionMessage{Content: response}}},
+		Choices: []llm.ChatCompletionChoice{{
+			Message: llm.ChatCompletionMessage{
+				Role:    llm.RoleAssistant,
+				Content: resp.Text(),
+			},
+		}},
 	}, nil
 }
 
-// Detect implements the LLM interface
-func (g *API) Detect(ctx context.Context, message string) (*bool, error) {
-	messages := []llm.ChatCompletionMessage{
-		{
-			Role:    "system",
-			Content: "You are a spam detection system. Analyze the following message and respond with true if it's spam, false if it's not. Consider advertising, scams, and inappropriate content as spam.",
-		},
-		{
-			Role:    "user",
-			Content: message,
-		},
+func defaultSafetySettings() []*genai.SafetySetting {
+	return []*genai.SafetySetting{
+		{Category: genai.HarmCategoryHarassment, Threshold: genai.HarmBlockThresholdBlockNone},
+		{Category: genai.HarmCategoryHateSpeech, Threshold: genai.HarmBlockThresholdBlockNone},
+		{Category: genai.HarmCategorySexuallyExplicit, Threshold: genai.HarmBlockThresholdBlockNone},
+		{Category: genai.HarmCategoryDangerousContent, Threshold: genai.HarmBlockThresholdBlockNone},
 	}
-
-	resp, err := g.ChatCompletion(ctx, messages)
-	if err != nil {
-		return nil, err
-	}
-
-	if len(resp.Choices) == 0 {
-		return nil, fmt.Errorf("no response choices available")
-	}
-
-	result := strings.ToLower(strings.TrimSpace(resp.Choices[0].Message.Content)) == "true"
-	return &result, nil
 }

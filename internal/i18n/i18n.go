@@ -4,7 +4,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/iamwavecut/ngbot/internal/config"
 	"github.com/iamwavecut/ngbot/internal/infra"
 	"github.com/iamwavecut/ngbot/resources"
 
@@ -15,11 +14,9 @@ import (
 var state = struct {
 	translations       map[string]map[string]string // [key][lang][translation]
 	resourcesPath      string
-	defaultLanguage    string
 	availableLanguages []string
 }{
 	translations:       map[string]map[string]string{},
-	defaultLanguage:    config.Get().DefaultLanguage,
 	resourcesPath:      infra.GetResourcesPath("i18n"),
 	availableLanguages: []string{"en"},
 }

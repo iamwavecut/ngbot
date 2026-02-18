@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/signal"
 	"strings"
@@ -128,7 +129,10 @@ func runBot(ctx context.Context, cfg *config.Config, errChan chan<- error) {
 
 	// Initialize services and handlers
 	service := bot.NewService(ctx, botAPI, sqlite.NewSQLiteClient(ctx, "bot.db"), log.WithField("context", "service"))
-	initializeHandlers(service, cfg, log.WithField("context", "handlers"))
+	if err := initializeHandlers(service, cfg, log.WithField("context", "handlers")); err != nil {
+		errChan <- err
+		return
+	}
 
 	// Configure updates
 	updateConfig := configureUpdates()
@@ -155,7 +159,7 @@ func runBot(ctx context.Context, cfg *config.Config, errChan chan<- error) {
 	}
 }
 
-func initializeHandlers(service bot.Service, cfg *config.Config, logger *log.Entry) {
+func initializeHandlers(service bot.Service, cfg *config.Config, logger *log.Entry) error {
 	banService := moderationHandlers.NewBanService(
 		service.GetBot(),
 		service.GetDB(),
@@ -164,7 +168,10 @@ func initializeHandlers(service bot.Service, cfg *config.Config, logger *log.Ent
 	bot.RegisterUpdateHandler("gatekeeper", chatHandlers.NewGatekeeper(service, cfg, banService))
 	bot.RegisterUpdateHandler("admin", adminHandlers.NewAdmin(service))
 
-	llmAPI := configureLLM(cfg, logger)
+	llmAPI, err := configureLLM(cfg, logger)
+	if err != nil {
+		return fmt.Errorf("configure llm: %w", err)
+	}
 	spamDetector := moderationHandlers.NewSpamDetector(llmAPI, logger.WithField("context", "spam_detector"))
 
 	bot.RegisterUpdateHandler("reactor", chatHandlers.NewReactor(service, banService, spamControl, spamDetector, chatHandlers.Config{
@@ -172,9 +179,10 @@ func initializeHandlers(service bot.Service, cfg *config.Config, logger *log.Ent
 		OpenAIModel:   cfg.LLM.Model,
 		SpamControl:   cfg.SpamControl,
 	}))
+	return nil
 }
 
-func configureLLM(cfg *config.Config, logger *log.Entry) adapters.LLM {
+func configureLLM(cfg *config.Config, logger *log.Entry) (adapters.LLM, error) {
 	switch cfg.LLM.Type {
 	case "openai":
 		return openai.NewOpenAI(
@@ -189,8 +197,9 @@ func configureLLM(cfg *config.Config, logger *log.Entry) adapters.LLM {
 			cfg.LLM.Model,
 			logger.WithField("context", "llm"),
 		)
+	default:
+		return nil, fmt.Errorf("unsupported LLM type %q", cfg.LLM.Type)
 	}
-	return nil
 }
 
 func configureUpdates() api.UpdateConfig {

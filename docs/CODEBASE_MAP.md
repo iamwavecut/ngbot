@@ -200,22 +200,18 @@ ngbot/
 
 ```go
 type LLM interface {
-    Detect(ctx, message) (*bool, error)
     ChatCompletion(ctx, messages) (Response, error)
-    WithModel(string) LLM
-    WithParameters(*GenerationParameters) LLM
-    WithSystemPrompt(string) LLM
 }
 ```
 
 | Adapter | Default Model | Notes |
 |---------|---------------|-------|
-| `gemini.API` | `gemini-2.5-flash-lite` | Safety settings disabled |
+| `gemini.API` | `gemini-2.5-flash-lite` | Uses `google.golang.org/genai` with fixed `BLOCK_NONE` safety thresholds |
 | `openai.API` | `gpt-4o-mini` | Supports custom base URL |
 
 **Gotchas**:
-- Gemini: Fatal on client creation failure
-- OpenAI: `TopK` parameter ignored (not supported)
+- Gemini: roles are mapped explicitly (`assistant` -> `model`) before request
+- Gemini: safety policy is always `BLOCK_NONE` for supported text categories
 
 ---
 
@@ -343,7 +339,7 @@ sequenceDiagram
 | `NG_DOT_PATH` | `~/.ngbot` | Data directory |
 | `NG_LLM_API_KEY` | *required* | LLM API key |
 | `NG_LLM_API_MODEL` | `gpt-4o-mini` | Model name |
-| `NG_LLM_API_URL` | `https://api.openai.com/v1` | API endpoint |
+| `NG_LLM_API_URL` | `https://api.openai.com/v1` | OpenAI-compatible API endpoint (used when `NG_LLM_API_TYPE=openai`) |
 | `NG_LLM_API_TYPE` | `openai` | Provider (openai/gemini) |
 | `NG_FLAGGED_EMOJIS` | `👎,💩` | Reaction ban triggers |
 | `NG_SPAM_MIN_VOTERS` | `2` | Min votes for action |
@@ -354,7 +350,7 @@ sequenceDiagram
 ## Conventions
 
 ### Go Code Style
-- Go 1.23+ with modern tooling
+- Go 1.25+ with modern tooling
 - Self-documenting code (minimal comments)
 - `gofumpt` formatting
 - `any` instead of `interface{}`
@@ -375,7 +371,7 @@ sequenceDiagram
 
 1. **Handler chain order matters**: Admin → Gatekeeper → Reactor
 2. **SpamVote.Vote is inverted**: `true` = NOT spam, `false` = IS spam
-3. **Gemini adapter fatals on init failure**: Will terminate the app
+3. **LLM provider initialization failure stops startup**: Bot exits with explicit init error
 4. **Update timeout is 5 minutes**: Old updates silently dropped
 5. **Cyrillic normalization**: Used to detect homoglyph spam attacks
 6. **External banlist**: Uses lols.bot API for known spammer database
@@ -418,7 +414,7 @@ sequenceDiagram
 |---------|---------|
 | `github.com/OvyFlash/telegram-bot-api` | Telegram Bot API |
 | `github.com/sashabaranov/go-openai` | OpenAI client |
-| `github.com/google/generative-ai-go` | Gemini client |
+| `google.golang.org/genai` | Gemini client |
 | `modernc.org/sqlite` | Pure-Go SQLite |
 | `github.com/jmoiron/sqlx` | SQL extensions |
 | `github.com/rubenv/sql-migrate` | Migrations |

@@ -3,7 +3,6 @@ package openai
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/iamwavecut/ngbot/internal/adapters"
 	"github.com/iamwavecut/ngbot/internal/adapters/llm"
@@ -12,60 +11,47 @@ import (
 )
 
 type API struct {
-	client       *openai.Client
-	systemPrompt string
-	model        string
-	parameters   *llm.GenerationParameters
-	logger       *log.Entry
+	client *openai.Client
+	model  string
 }
 
-const DefaultModel = "gpt-4o-mini"
+const (
+	DefaultModel           = "gpt-4o-mini"
+	defaultTemperature     = 0.9
+	defaultTopP            = 0.9
+	defaultMaxOutputTokens = 8192
+)
 
-func NewOpenAI(apiKey, model, baseURL string, logger *log.Entry) adapters.LLM {
+func NewOpenAI(apiKey, model, baseURL string, logger *log.Entry) (adapters.LLM, error) {
+	_ = logger
+	if apiKey == "" {
+		return nil, fmt.Errorf("openai API key is empty")
+	}
+	if model == "" {
+		model = DefaultModel
+	}
+
 	config := openai.DefaultConfig(apiKey)
-	config.BaseURL = baseURL
-	client := openai.NewClientWithConfig(config)
-	api := &API{
-		client: client,
-		logger: logger,
+	if baseURL != "" {
+		config.BaseURL = baseURL
 	}
-	api.WithModel(model)
-	api.WithParameters(nil)
-	return api
-}
 
-func (o *API) WithModel(modelName string) adapters.LLM {
-	if modelName == "" {
-		modelName = DefaultModel
-	}
-	o.model = modelName
-	return o
-}
-
-func (o *API) WithParameters(parameters *llm.GenerationParameters) adapters.LLM {
-	if parameters == nil || parameters == (&llm.GenerationParameters{}) {
-		parameters = &llm.GenerationParameters{
-			Temperature:     0.9,
-			TopP:            0.9,
-			TopK:            50,
-			MaxOutputTokens: 8192,
-		}
-	}
-	o.parameters = parameters
-	return o
-}
-
-func (o *API) WithSystemPrompt(prompt string) adapters.LLM {
-	o.systemPrompt = prompt
-	return o
+	return &API{
+		client: openai.NewClientWithConfig(config),
+		model:  model,
+	}, nil
 }
 
 func (o *API) ChatCompletion(ctx context.Context, messages []llm.ChatCompletionMessage) (llm.ChatCompletionResponse, error) {
-	var openaiMessages []openai.ChatCompletionMessage
-	systemPrompt := o.systemPrompt
+	if len(messages) == 0 {
+		return llm.ChatCompletionResponse{}, fmt.Errorf("chat completion requires at least one message")
+	}
+
+	openaiMessages := make([]openai.ChatCompletionMessage, 0, len(messages)+1)
+	systemPrompt := ""
 
 	for _, msg := range messages {
-		if msg.Role == openai.ChatMessageRoleSystem {
+		if msg.Role == llm.RoleSystem {
 			systemPrompt = msg.Content
 			continue
 		}
@@ -74,22 +60,23 @@ func (o *API) ChatCompletion(ctx context.Context, messages []llm.ChatCompletionM
 			Content: msg.Content,
 		})
 	}
-	openaiMessages = append([]openai.ChatCompletionMessage{
-		{
+
+	if systemPrompt != "" {
+		openaiMessages = append([]openai.ChatCompletionMessage{{
 			Role:    openai.ChatMessageRoleSystem,
 			Content: systemPrompt,
-		},
-	}, openaiMessages...)
+		}}, openaiMessages...)
+	}
 
 	resp, err := o.client.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
 		Model:       o.model,
 		Messages:    openaiMessages,
-		Temperature: float32(o.parameters.Temperature),
-		TopP:        float32(o.parameters.TopP),
-		MaxTokens:   int(o.parameters.MaxOutputTokens),
+		Temperature: defaultTemperature,
+		TopP:        defaultTopP,
+		MaxTokens:   defaultMaxOutputTokens,
 	})
 	if err != nil {
-		return llm.ChatCompletionResponse{}, err
+		return llm.ChatCompletionResponse{}, fmt.Errorf("create openai chat completion: %w", err)
 	}
 
 	if len(resp.Choices) == 0 {
@@ -97,39 +84,11 @@ func (o *API) ChatCompletion(ctx context.Context, messages []llm.ChatCompletionM
 	}
 
 	return llm.ChatCompletionResponse{
-		Choices: []llm.ChatCompletionChoice{
-			{
-				Message: llm.ChatCompletionMessage{
-					Role:    resp.Choices[0].Message.Role,
-					Content: resp.Choices[0].Message.Content,
-				},
+		Choices: []llm.ChatCompletionChoice{{
+			Message: llm.ChatCompletionMessage{
+				Role:    resp.Choices[0].Message.Role,
+				Content: resp.Choices[0].Message.Content,
 			},
-		},
+		}},
 	}, nil
-}
-
-// Detect implements the LLM interface
-func (o *API) Detect(ctx context.Context, message string) (*bool, error) {
-	messages := []llm.ChatCompletionMessage{
-		{
-			Role:    "system",
-			Content: "You are a spam detection system. Analyze the following message and respond with true if it's spam, false if it's not. Consider advertising, scams, and inappropriate content as spam.",
-		},
-		{
-			Role:    "user",
-			Content: message,
-		},
-	}
-
-	resp, err := o.ChatCompletion(ctx, messages)
-	if err != nil {
-		return nil, err
-	}
-
-	if len(resp.Choices) == 0 {
-		return nil, fmt.Errorf("no response choices available")
-	}
-
-	result := strings.ToLower(strings.TrimSpace(resp.Choices[0].Message.Content)) == "true"
-	return &result, nil
 }

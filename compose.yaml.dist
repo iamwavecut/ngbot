@@ -12,6 +12,7 @@ services:
       - NG_LLM_API_KEY
       - NG_LLM_API_URL
       - NG_LLM_API_MODEL
+      - NG_LLM_API_TYPE
       - NG_FLAGGED_EMOJIS
       - NG_SPAM_LOG_CHANNEL_USERNAME
       - NG_SPAM_VERBOSE
