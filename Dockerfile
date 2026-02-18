@@ -8,10 +8,9 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     go mod download
 COPY . .
-RUN CGO_ENABLED=0 \
-    --mount=type=cache,target=/go/pkg/mod \
+RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    go build -ldflags='-w -s -extldflags "-static"' -o ngbot cmd/ngbot/main.go && chmod +x ngbot
+    CGO_ENABLED=0 go build -ldflags='-w -s -extldflags "-static"' -o ngbot cmd/ngbot/main.go && chmod +x ngbot
 
 FROM gcr.io/distroless/static-debian12
 HEALTHCHECK NONE
