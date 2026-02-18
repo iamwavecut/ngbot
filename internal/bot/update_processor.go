@@ -116,6 +116,10 @@ func (up *UpdateProcessor) Process(ctx context.Context, u *api.Update) error {
 				chat = &u.MyChatMember.Chat
 			case u.ChatMember != nil:
 				chat = &u.ChatMember.Chat
+			case u.MessageReaction != nil:
+				chat = &u.MessageReaction.Chat
+			case u.MessageReactionCount != nil:
+				chat = &u.MessageReactionCount.Chat
 			}
 		}
 
@@ -128,6 +132,8 @@ func (up *UpdateProcessor) Process(ctx context.Context, u *api.Update) error {
 				user = &u.MyChatMember.From
 			case u.ChatMember != nil:
 				user = &u.ChatMember.From
+			case u.MessageReaction != nil:
+				user = u.MessageReaction.User
 			}
 		}
 

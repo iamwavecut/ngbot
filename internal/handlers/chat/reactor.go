@@ -100,6 +100,10 @@ func (r *Reactor) Handle(ctx context.Context, u *api.Update, chat *api.Chat, use
 		return false, err
 	}
 
+	if chat == nil {
+		return true, nil
+	}
+
 	settings, err := r.getOrCreateSettings(ctx, chat)
 	if err != nil {
 		return false, err
@@ -195,12 +199,20 @@ func (r *Reactor) validateUpdate(u *api.Update, chat *api.Chat, user *api.User) 
 	if u == nil {
 		return errors.New("nil update")
 	}
-	if u.Message == nil && u.MessageReaction == nil {
+
+	if u.Message != nil {
+		if chat == nil || user == nil {
+			return errors.New("nil chat or user")
+		}
 		return nil
 	}
-	if chat == nil || user == nil {
-		return errors.New("nil chat or user")
+
+	if u.MessageReaction != nil {
+		if chat == nil {
+			return errors.New("nil chat or user")
+		}
 	}
+
 	return nil
 }
 
