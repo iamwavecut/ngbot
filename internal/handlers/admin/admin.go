@@ -63,19 +63,18 @@ func (a *Admin) Handle(ctx context.Context, u *api.Update, chat *api.Chat, user 
 		return true, nil
 	}
 
-	isAdmin, err := a.isAdmin(chat.ID, user.ID)
-	if err != nil {
-		entry.WithField("error", err.Error()).Error("can't check admin status")
-		return true, err
-	}
-	entry.Debugf("user is admin: %v", isAdmin)
-
 	language := a.s.GetLanguage(ctx, chat.ID, user)
 
 	if u.Message.IsCommand() {
 		entry.Debugf("processing command: %s", u.Message.Command())
 		switch u.Message.Command() {
 		case "lang":
+			isAdmin, err := a.isAdmin(chat.ID, user.ID)
+			if err != nil {
+				entry.WithField("error", err.Error()).Error("can't check admin status")
+				return true, err
+			}
+			entry.Debugf("user is admin: %v", isAdmin)
 			return a.handleLangCommand(ctx, u.Message, isAdmin, language)
 		case "settings":
 			return false, a.handleSettingsCommand(ctx, u.Message, chat, user)

@@ -55,13 +55,20 @@ func (a *Admin) handleMyChatMember(ctx context.Context, update *api.ChatMemberUp
 
 func (a *Admin) handleSettingsCommand(ctx context.Context, msg *api.Message, chat *api.Chat, user *api.User) error {
 	entry := a.getLogEntry().WithField("command", "settings")
-	if msg == nil || chat == nil {
+	if msg == nil || chat == nil || user == nil {
+		return nil
+	}
+	lang := a.s.GetLanguage(ctx, chat.ID, user)
+	if chat.Type == "private" {
+		reply := api.NewMessage(chat.ID, i18n.Get("Please run /settings in the group first", lang))
+		reply.DisableNotification = true
+		_, _ = a.s.GetBot().Send(reply)
 		return nil
 	}
 	if chat.Type != "group" && chat.Type != "supergroup" {
 		return nil
 	}
-	if msg.SenderChat != nil || user == nil {
+	if msg.SenderChat != nil {
 		_ = a.deleteGroupMessage(ctx, chat.ID, msg.MessageID)
 		return nil
 	}
@@ -74,7 +81,6 @@ func (a *Admin) handleSettingsCommand(ctx context.Context, msg *api.Message, cha
 	stopTyping := a.startTyping(ctx, chat.ID)
 	defer stopTyping()
 
-	lang := a.s.GetLanguage(ctx, chat.ID, user)
 	placeholder, err := a.sendPlaceholder(ctx, chat.ID, lang)
 	if err != nil {
 		a.handleBotMembershipError(ctx, chat.ID, err)

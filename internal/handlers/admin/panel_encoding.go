@@ -18,14 +18,21 @@ func encodeChatID(chatID int64) string {
 	binary.BigEndian.PutUint64(buf, uint64(chatID))
 	encoded := base64.RawURLEncoding.EncodeToString(buf)
 	if negative {
-		return "~" + encoded
+		return "n" + encoded
 	}
-	return encoded
+	return "p" + encoded
 }
 
 func decodeChatID(value string) (int64, error) {
-	negative := strings.HasPrefix(value, "~")
-	if negative {
+	negative := false
+	switch {
+	case strings.HasPrefix(value, "n"):
+		negative = true
+		value = strings.TrimPrefix(value, "n")
+	case strings.HasPrefix(value, "p"):
+		value = strings.TrimPrefix(value, "p")
+	case strings.HasPrefix(value, "~"):
+		negative = true
 		value = strings.TrimPrefix(value, "~")
 	}
 	data, err := base64.RawURLEncoding.DecodeString(value)
