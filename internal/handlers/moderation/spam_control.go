@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	api "github.com/OvyFlash/telegram-bot-api"
@@ -18,17 +19,73 @@ import (
 
 type SpamControl struct {
 	s          bot.Service
+	store      spamStore
 	config     config.SpamControl
 	banService BanService
 	verbose    bool
+	runtimeCtx context.Context
+	cancel     context.CancelFunc
+	wg         sync.WaitGroup
+	mu         sync.Mutex
+	started    bool
+}
+
+type spamStore interface {
+	CreateSpamCase(ctx context.Context, sc *db.SpamCase) (*db.SpamCase, error)
+	UpdateSpamCase(ctx context.Context, sc *db.SpamCase) error
+	GetSpamCase(ctx context.Context, id int64) (*db.SpamCase, error)
+	GetActiveSpamCase(ctx context.Context, chatID int64, userID int64) (*db.SpamCase, error)
+	AddSpamVote(ctx context.Context, vote *db.SpamVote) error
+	GetSpamVotes(ctx context.Context, caseID int64) ([]*db.SpamVote, error)
+	GetMembers(ctx context.Context, chatID int64) ([]int64, error)
 }
 
 func NewSpamControl(s bot.Service, config config.SpamControl, banService BanService, verbose bool) *SpamControl {
 	return &SpamControl{
 		s:          s,
+		store:      s.GetDB(),
 		config:     config,
 		banService: banService,
 		verbose:    verbose,
+	}
+}
+
+func (sc *SpamControl) Start(ctx context.Context) error {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	if sc.started {
+		return nil
+	}
+	sc.runtimeCtx, sc.cancel = context.WithCancel(ctx)
+	sc.started = true
+	return nil
+}
+
+func (sc *SpamControl) Stop(ctx context.Context) error {
+	sc.mu.Lock()
+	if !sc.started {
+		sc.mu.Unlock()
+		return nil
+	}
+	sc.started = false
+	cancel := sc.cancel
+	sc.mu.Unlock()
+
+	if cancel != nil {
+		cancel()
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		sc.wg.Wait()
+	}()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-done:
+		return nil
 	}
 }
 
@@ -41,12 +98,12 @@ func (sc *SpamControl) ProcessSuspectMessage(ctx context.Context, msg *api.Messa
 }
 
 func (sc *SpamControl) getSpamCase(ctx context.Context, msg *api.Message) (*db.SpamCase, error) {
-	spamCase, err := sc.s.GetDB().GetActiveSpamCase(ctx, msg.Chat.ID, msg.From.ID)
+	spamCase, err := sc.store.GetActiveSpamCase(ctx, msg.Chat.ID, msg.From.ID)
 	if err != nil {
 		log.WithField("error", err.Error()).Debug("failed to get active spam case")
 	}
 	if spamCase == nil {
-		spamCase, err = sc.s.GetDB().CreateSpamCase(ctx, &db.SpamCase{
+		spamCase, err = sc.store.CreateSpamCase(ctx, &db.SpamCase{
 			ChatID:      msg.Chat.ID,
 			UserID:      msg.From.ID,
 			MessageText: bot.ExtractContentFromMessage(msg),
@@ -124,7 +181,12 @@ func (sc *SpamControl) preprocessMessage(ctx context.Context, msg *api.Message, 
 			log.WithField("error", err.Error()).Error("failed to send unsuccess reply")
 		}
 		if apiResult.MessageID != 0 {
-			time.AfterFunc(sc.config.SuspectNotificationTimeout, func() {
+			sc.scheduleAfter(sc.config.SuspectNotificationTimeout, func(runCtx context.Context) {
+				select {
+				case <-runCtx.Done():
+					return
+				default:
+				}
 				if _, err := sc.s.GetBot().Request(api.NewDeleteMessage(chat.ID, apiResult.MessageID)); err != nil {
 					log.WithField("error", err.Error()).Error("failed to delete unsuccess reply")
 				}
@@ -155,7 +217,12 @@ func (sc *SpamControl) preprocessMessage(ctx context.Context, msg *api.Message, 
 			} else {
 				spamCase.NotificationMessageID = notification.MessageID
 
-				time.AfterFunc(sc.config.SuspectNotificationTimeout, func() {
+				sc.scheduleAfter(sc.config.SuspectNotificationTimeout, func(runCtx context.Context) {
+					select {
+					case <-runCtx.Done():
+						return
+					default:
+					}
 					if _, err := sc.s.GetBot().Request(api.NewDeleteMessage(msg.Chat.ID, notification.MessageID)); err != nil {
 						log.WithField("error", err.Error()).Error("failed to delete notification")
 					}
@@ -164,13 +231,13 @@ func (sc *SpamControl) preprocessMessage(ctx context.Context, msg *api.Message, 
 		}
 	}
 
-	if err := sc.s.GetDB().UpdateSpamCase(ctx, spamCase); err != nil {
+	if err := sc.store.UpdateSpamCase(ctx, spamCase); err != nil {
 		log.WithField("error", err.Error()).Error("failed to update spam case")
 	}
 
 	if voting {
-		time.AfterFunc(sc.config.VotingTimeoutMinutes, func() {
-			if err := sc.ResolveCase(context.Background(), spamCase.ID); err != nil {
+		sc.scheduleAfter(sc.config.VotingTimeoutMinutes, func(runCtx context.Context) {
+			if err := sc.ResolveCase(runCtx, spamCase.ID); err != nil && !errors.Is(err, context.Canceled) {
 				log.WithField("error", err.Error()).Error("failed to resolve spam case")
 			}
 		})
@@ -199,7 +266,7 @@ func (sc *SpamControl) SendChannelPost(ctx context.Context, msg *api.Message, la
 	}
 	spamCase.ChannelUsername = sc.config.LogChannelUsername
 	spamCase.ChannelPostID = sent.MessageID
-	if err := sc.s.GetDB().UpdateSpamCase(ctx, spamCase); err != nil {
+	if err := sc.store.UpdateSpamCase(ctx, spamCase); err != nil {
 		log.WithField("error", err.Error()).Error("failed to update spam case")
 	}
 
@@ -272,7 +339,7 @@ func (sc *SpamControl) createChannelNotification(msg *api.Message, channelPostLi
 }
 
 func (sc *SpamControl) RecordVote(ctx context.Context, caseID int64, voterID int64, vote bool) (int, int, error) {
-	if err := sc.s.GetDB().AddSpamVote(ctx, &db.SpamVote{
+	if err := sc.store.AddSpamVote(ctx, &db.SpamVote{
 		CaseID:  caseID,
 		VoterID: voterID,
 		Vote:    vote,
@@ -281,7 +348,7 @@ func (sc *SpamControl) RecordVote(ctx context.Context, caseID int64, voterID int
 		return 0, 0, err
 	}
 
-	votes, err := sc.s.GetDB().GetSpamVotes(ctx, caseID)
+	votes, err := sc.store.GetSpamVotes(ctx, caseID)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -310,12 +377,12 @@ func (sc *SpamControl) RecordVote(ctx context.Context, caseID int64, voterID int
 }
 
 func (sc *SpamControl) requiredVoters(ctx context.Context, caseID int64) (int, error) {
-	spamCase, err := sc.s.GetDB().GetSpamCase(ctx, caseID)
+	spamCase, err := sc.store.GetSpamCase(ctx, caseID)
 	if err != nil {
 		return 0, err
 	}
 
-	members, err := sc.s.GetDB().GetMembers(ctx, spamCase.ChatID)
+	members, err := sc.store.GetMembers(ctx, spamCase.ChatID)
 	if err != nil {
 		log.WithField("error", err.Error()).Error("failed to get members count")
 	}
@@ -334,7 +401,7 @@ func (sc *SpamControl) requiredVoters(ctx context.Context, caseID int64) (int, e
 
 func (sc *SpamControl) ResolveCase(ctx context.Context, caseID int64) error {
 	entry := sc.getLogEntry().WithField("method", "resolveCase").WithField("case_id", caseID)
-	spamCase, err := sc.s.GetDB().GetSpamCase(ctx, caseID)
+	spamCase, err := sc.store.GetSpamCase(ctx, caseID)
 	if err != nil {
 		return fmt.Errorf("failed to get case: %w", err)
 	}
@@ -343,7 +410,7 @@ func (sc *SpamControl) ResolveCase(ctx context.Context, caseID int64) error {
 		return nil
 	}
 
-	votes, err := sc.s.GetDB().GetSpamVotes(ctx, caseID)
+	votes, err := sc.store.GetSpamVotes(ctx, caseID)
 	if err != nil {
 		return fmt.Errorf("failed to get votes: %w", err)
 	}
@@ -386,7 +453,7 @@ func (sc *SpamControl) ResolveCase(ctx context.Context, caseID int64) error {
 
 	now := time.Now()
 	spamCase.ResolvedAt = &now
-	if err := sc.s.GetDB().UpdateSpamCase(ctx, spamCase); err != nil {
+	if err := sc.store.UpdateSpamCase(ctx, spamCase); err != nil {
 		return fmt.Errorf("failed to update case: %w", err)
 	}
 	return nil
@@ -394,4 +461,30 @@ func (sc *SpamControl) ResolveCase(ctx context.Context, caseID int64) error {
 
 func (sc *SpamControl) getLogEntry() *log.Entry {
 	return log.WithField("object", "SpamControl")
+}
+
+func (sc *SpamControl) scheduleAfter(delay time.Duration, task func(ctx context.Context)) {
+	runCtx := sc.getRuntimeContext()
+	sc.wg.Add(1)
+	go func() {
+		defer sc.wg.Done()
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+
+		select {
+		case <-runCtx.Done():
+			return
+		case <-timer.C:
+			task(runCtx)
+		}
+	}()
+}
+
+func (sc *SpamControl) getRuntimeContext() context.Context {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	if sc.runtimeCtx != nil {
+		return sc.runtimeCtx
+	}
+	return context.Background()
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -15,22 +16,108 @@ import (
 	"github.com/iamwavecut/ngbot/internal/adapters"
 	"github.com/iamwavecut/ngbot/internal/adapters/llm/gemini"
 	"github.com/iamwavecut/ngbot/internal/adapters/llm/openai"
+	"github.com/iamwavecut/ngbot/internal/bot"
+	"github.com/iamwavecut/ngbot/internal/config"
 	"github.com/iamwavecut/ngbot/internal/db/sqlite"
 	adminHandlers "github.com/iamwavecut/ngbot/internal/handlers/admin"
 	chatHandlers "github.com/iamwavecut/ngbot/internal/handlers/chat"
 	moderationHandlers "github.com/iamwavecut/ngbot/internal/handlers/moderation"
 	"github.com/iamwavecut/ngbot/internal/i18n"
+	"github.com/iamwavecut/ngbot/internal/infra"
+	"github.com/iamwavecut/ngbot/internal/lifecycle"
 
 	api "github.com/OvyFlash/telegram-bot-api"
 	log "github.com/sirupsen/logrus"
-
-	"github.com/iamwavecut/ngbot/internal/bot"
-	"github.com/iamwavecut/ngbot/internal/config"
-	"github.com/iamwavecut/ngbot/internal/infra"
 )
 
+type updateLoopComponent struct {
+	botAPI        *api.BotAPI
+	updateConfig  api.UpdateConfig
+	updateProcess *bot.UpdateProcessor
+	errChan       chan<- error
+
+	cancel context.CancelFunc
+	done   chan struct{}
+}
+
+func newUpdateLoopComponent(botAPI *api.BotAPI, updateConfig api.UpdateConfig, updateProcess *bot.UpdateProcessor, errChan chan<- error) *updateLoopComponent {
+	return &updateLoopComponent{
+		botAPI:        botAPI,
+		updateConfig:  updateConfig,
+		updateProcess: updateProcess,
+		errChan:       errChan,
+	}
+}
+
+func (u *updateLoopComponent) Start(ctx context.Context) error {
+	if u.done != nil {
+		return nil
+	}
+
+	loopCtx, cancel := context.WithCancel(ctx)
+	u.cancel = cancel
+	u.done = make(chan struct{})
+
+	updateChan, updateErrChan := bot.GetUpdatesChans(loopCtx, u.botAPI, u.updateConfig)
+	go func() {
+		defer close(u.done)
+		for {
+			select {
+			case <-loopCtx.Done():
+				return
+			case err, ok := <-updateErrChan:
+				if !ok {
+					return
+				}
+				if err != nil && !errors.Is(err, context.Canceled) {
+					select {
+					case u.errChan <- err:
+					default:
+						log.WithError(err).Error("update loop error dropped")
+					}
+				}
+				return
+			case update, ok := <-updateChan:
+				if !ok {
+					return
+				}
+				if err := u.updateProcess.Process(loopCtx, &update); err != nil && !errors.Is(err, context.Canceled) {
+					log.WithError(err).Error("Failed to process update")
+				}
+			}
+		}
+	}()
+
+	return nil
+}
+
+func (u *updateLoopComponent) Stop(ctx context.Context) error {
+	if u.cancel != nil {
+		u.cancel()
+	}
+	u.botAPI.StopReceivingUpdates()
+
+	if u.done == nil {
+		return nil
+	}
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-u.done:
+		u.done = nil
+		u.cancel = nil
+		return nil
+	}
+}
+
 func main() {
-	cfg := config.Get()
+	cfg, err := config.Load()
+	if err != nil {
+		log.WithField("error", err.Error()).Error("cant load config")
+		os.Exit(1)
+	}
+
 	log.SetFormatter(&config.NbFormatter{})
 	log.SetOutput(os.Stdout)
 	log.SetLevel(log.Level(cfg.LogLevel))
@@ -46,43 +133,101 @@ func main() {
 	tool.Try(api.SetLogger(log.WithField("context", "bot_api")), true)
 	i18n.Init()
 
-	ctx := context.Background()
+	rootCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errChan := make(chan error, 1)
+	runtime, err := buildRuntime(rootCtx, &cfg, errChan)
+	if err != nil {
+		log.WithField("error", err.Error()).Error("Failed to build runtime")
+		os.Exit(1)
+	}
+
+	if err := runtime.Start(rootCtx); err != nil {
+		log.WithField("error", err.Error()).Error("Failed to start runtime")
+		os.Exit(1)
+	}
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	execChanges := infra.MonitorExecutable(rootCtx)
 
-	errChan := make(chan error, 1)
-
-	go runBot(ctx, &cfg, errChan)
-
-	shutdown := false
-	for !shutdown {
-		select {
-		case <-infra.MonitorExecutable():
-			log.Info("Executable file was modified, initiating shutdown...")
-			shutdown = true
-		case sig := <-sigChan:
-			log.Infof("Received signal %v, initiating shutdown...", sig)
-			shutdown = true
-		case err := <-errChan:
-			log.WithField("error", err.Error()).Error("Bot error occurred")
-			shutdown = true
-		}
+	shutdownReason := ""
+	select {
+	case <-execChanges:
+		shutdownReason = "Executable file was modified, initiating shutdown"
+	case sig := <-sigChan:
+		shutdownReason = fmt.Sprintf("Received signal %v, initiating shutdown", sig)
+	case err := <-errChan:
+		shutdownReason = fmt.Sprintf("Runtime error: %v", err)
 	}
+	log.Info(shutdownReason)
 
-	log.Info("Starting graceful shutdown...")
-
-	// Wait for graceful shutdown with timeout
+	cancel()
+	log.Info("Starting graceful shutdown")
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
 
-	select {
-	case <-shutdownCtx.Done():
-		log.Warn("Graceful shutdown timed out, forcing exit")
+	if err := runtime.Stop(shutdownCtx); err != nil {
+		log.WithField("error", err.Error()).Error("Graceful shutdown failed")
 		os.Exit(1)
-	case <-ctx.Done():
-		log.Info("Graceful shutdown completed")
 	}
+
+	log.Info("Graceful shutdown completed")
+}
+
+func buildRuntime(ctx context.Context, cfg *config.Config, errChan chan<- error) (*lifecycle.Runtime, error) {
+	botAPI, err := api.NewBotAPI(cfg.TelegramAPIToken)
+	if err != nil {
+		return nil, fmt.Errorf("initialize bot API: %w", err)
+	}
+	if log.Level(cfg.LogLevel) == log.TraceLevel {
+		botAPI.Debug = true
+	}
+
+	if _, err := botAPI.GetMyCommands(); err != nil {
+		log.WithError(err).Warn("failed to get bot commands")
+	}
+
+	dbClient, err := sqlite.NewSQLiteClient(ctx, cfg.DotPath, "bot.db")
+	if err != nil {
+		return nil, fmt.Errorf("initialize sqlite client: %w", err)
+	}
+
+	service := bot.NewService(ctx, botAPI, dbClient, log.WithField("context", "service"))
+	banService := moderationHandlers.NewBanService(service.GetBot(), service.GetDB())
+	spamControl := moderationHandlers.NewSpamControl(service, cfg.SpamControl, banService, cfg.SpamControl.Verbose)
+
+	gatekeeperHandler := chatHandlers.NewGatekeeper(service, cfg, banService)
+	adminHandler := adminHandlers.NewAdmin(service)
+
+	llmAPI, err := configureLLM(cfg, log.WithField("context", "handlers"))
+	if err != nil {
+		return nil, fmt.Errorf("configure llm: %w", err)
+	}
+	spamDetector := moderationHandlers.NewSpamDetector(llmAPI, log.WithField("context", "spam_detector"))
+
+	reactorHandler := chatHandlers.NewReactor(service, banService, spamControl, spamDetector, chatHandlers.Config{
+		FlaggedEmojis: cfg.Reactor.FlaggedEmojis,
+		OpenAIModel:   cfg.LLM.Model,
+		SpamControl:   cfg.SpamControl,
+	})
+
+	bot.RegisterUpdateHandler("gatekeeper", gatekeeperHandler)
+	bot.RegisterUpdateHandler("admin", adminHandler)
+	bot.RegisterUpdateHandler("reactor", reactorHandler)
+
+	updateLoop := newUpdateLoopComponent(botAPI, configureUpdates(), bot.NewUpdateProcessor(service), errChan)
+
+	runtime := lifecycle.NewRuntime(
+		service,
+		banService,
+		spamControl,
+		gatekeeperHandler,
+		adminHandler,
+		updateLoop,
+	)
+	return runtime, nil
 }
 
 func maskConfiguration(cfg *config.Config) *config.Config {
@@ -97,89 +242,6 @@ func maskConfiguration(cfg *config.Config) *config.Config {
 	maskedConfig.TelegramAPIToken = maskSecret(cfg.TelegramAPIToken)
 	maskedConfig.LLM.APIKey = maskSecret(cfg.LLM.APIKey)
 	return &maskedConfig
-}
-
-func runBot(ctx context.Context, cfg *config.Config, errChan chan<- error) {
-	// Initialize bot API
-	botAPI, err := api.NewBotAPI(cfg.TelegramAPIToken)
-	if err != nil {
-		log.WithField("error", err.Error()).Error("Failed to initialize bot API")
-		errChan <- err
-		return
-	}
-	if log.Level(cfg.LogLevel) == log.TraceLevel {
-		botAPI.Debug = true
-	}
-	defer botAPI.StopReceivingUpdates()
-
-	if _, err := botAPI.GetMyCommands(); err != nil {
-		log.WithError(err).Warn("failed to get bot commands")
-	}
-
-	// commandsScope := api.NewBotCommandScopeAllGroupChats()
-	// setMyCommandsConfig := api.NewSetMyCommandsWithScope(commandsScope, api.BotCommand{
-	// 	Command:     "ban",
-	// 	Description: "Ban user (admin), or start a voting to ban user (all)",
-	// })
-
-	// _, err = botAPI.Request(setMyCommandsConfig)
-	// if err != nil {
-	// 	log.WithField("error", err.Error()).Error("Failed to set my commands")
-	// }
-
-	// Initialize services and handlers
-	service := bot.NewService(ctx, botAPI, sqlite.NewSQLiteClient(ctx, "bot.db"), log.WithField("context", "service"))
-	if err := initializeHandlers(service, cfg, log.WithField("context", "handlers")); err != nil {
-		errChan <- err
-		return
-	}
-
-	// Configure updates
-	updateConfig := configureUpdates()
-	updateProcessor := bot.NewUpdateProcessor(service)
-
-	// Start receiving updates
-	updateChan, updateErrChan := bot.GetUpdatesChans(ctx, botAPI, updateConfig)
-
-	// Process updates
-	for {
-		select {
-		case err := <-updateErrChan:
-			log.WithField("error", err.Error()).Error("Bot API get updates error")
-			errChan <- err
-			return
-		case update := <-updateChan:
-			if err := updateProcessor.Process(ctx, &update); err != nil {
-				log.WithField("error", err.Error()).Error("Failed to process update")
-			}
-		case <-ctx.Done():
-			log.Info("Bot shutdown initiated")
-			return
-		}
-	}
-}
-
-func initializeHandlers(service bot.Service, cfg *config.Config, logger *log.Entry) error {
-	banService := moderationHandlers.NewBanService(
-		service.GetBot(),
-		service.GetDB(),
-	)
-	spamControl := moderationHandlers.NewSpamControl(service, cfg.SpamControl, banService, cfg.SpamControl.Verbose)
-	bot.RegisterUpdateHandler("gatekeeper", chatHandlers.NewGatekeeper(service, cfg, banService))
-	bot.RegisterUpdateHandler("admin", adminHandlers.NewAdmin(service))
-
-	llmAPI, err := configureLLM(cfg, logger)
-	if err != nil {
-		return fmt.Errorf("configure llm: %w", err)
-	}
-	spamDetector := moderationHandlers.NewSpamDetector(llmAPI, logger.WithField("context", "spam_detector"))
-
-	bot.RegisterUpdateHandler("reactor", chatHandlers.NewReactor(service, banService, spamControl, spamDetector, chatHandlers.Config{
-		FlaggedEmojis: cfg.Reactor.FlaggedEmojis,
-		OpenAIModel:   cfg.LLM.Model,
-		SpamControl:   cfg.SpamControl,
-	}))
-	return nil
 }
 
 func configureLLM(cfg *config.Config, logger *log.Entry) (adapters.LLM, error) {

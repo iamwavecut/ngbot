@@ -2,21 +2,52 @@ package handlers
 
 import (
 	"context"
-	"database/sql"
+	"fmt"
 	"strings"
+	"sync"
+	"time"
 
 	api "github.com/OvyFlash/telegram-bot-api"
-	"github.com/iamwavecut/tool"
-	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 
 	"github.com/iamwavecut/ngbot/internal/bot"
+	"github.com/iamwavecut/ngbot/internal/db"
 	"github.com/iamwavecut/ngbot/internal/i18n"
 )
 
 type Admin struct {
 	s         bot.Service
+	store     adminStore
 	languages []string
+	cancel    context.CancelFunc
+	wg        sync.WaitGroup
+	mu        sync.Mutex
+	started   bool
+}
+
+type adminStore interface {
+	SetChatBotMembership(ctx context.Context, membership *db.ChatBotMembership) error
+	GetChatBotMembership(ctx context.Context, chatID int64) (*db.ChatBotMembership, error)
+	UpsertChatManager(ctx context.Context, manager *db.ChatManager) error
+	GetChatManager(ctx context.Context, chatID int64, userID int64) (*db.ChatManager, error)
+
+	CreateAdminPanelSession(ctx context.Context, session *db.AdminPanelSession) (*db.AdminPanelSession, error)
+	GetAdminPanelSession(ctx context.Context, id int64) (*db.AdminPanelSession, error)
+	GetAdminPanelSessionByUserChat(ctx context.Context, userID int64, chatID int64) (*db.AdminPanelSession, error)
+	GetAdminPanelSessionByUserPage(ctx context.Context, userID int64, page string) (*db.AdminPanelSession, error)
+	UpdateAdminPanelSession(ctx context.Context, session *db.AdminPanelSession) error
+	DeleteAdminPanelSession(ctx context.Context, id int64) error
+	GetExpiredAdminPanelSessions(ctx context.Context, before time.Time) ([]*db.AdminPanelSession, error)
+
+	CreateAdminPanelCommand(ctx context.Context, cmd *db.AdminPanelCommand) (*db.AdminPanelCommand, error)
+	GetAdminPanelCommand(ctx context.Context, id int64) (*db.AdminPanelCommand, error)
+	DeleteAdminPanelCommandsBySession(ctx context.Context, sessionID int64) error
+
+	CreateChatSpamExample(ctx context.Context, example *db.ChatSpamExample) (*db.ChatSpamExample, error)
+	GetChatSpamExample(ctx context.Context, id int64) (*db.ChatSpamExample, error)
+	ListChatSpamExamples(ctx context.Context, chatID int64, limit int, offset int) ([]*db.ChatSpamExample, error)
+	CountChatSpamExamples(ctx context.Context, chatID int64) (int, error)
+	DeleteChatSpamExample(ctx context.Context, id int64) error
 }
 
 func NewAdmin(s bot.Service) *Admin {
@@ -24,11 +55,53 @@ func NewAdmin(s bot.Service) *Admin {
 
 	a := &Admin{
 		s:         s,
+		store:     s.GetDB(),
 		languages: i18n.GetLanguagesList(),
 	}
-	a.startPanelCleanup()
 	entry.Debug("created new admin handler")
 	return a
+}
+
+func (a *Admin) Start(ctx context.Context) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.started {
+		return nil
+	}
+
+	runCtx, cancel := context.WithCancel(ctx)
+	a.cancel = cancel
+	a.startPanelCleanup(runCtx)
+	a.started = true
+	return nil
+}
+
+func (a *Admin) Stop(ctx context.Context) error {
+	a.mu.Lock()
+	if !a.started {
+		a.mu.Unlock()
+		return nil
+	}
+	a.started = false
+	cancel := a.cancel
+	a.mu.Unlock()
+
+	if cancel != nil {
+		cancel()
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		a.wg.Wait()
+	}()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-done:
+		return nil
+	}
 }
 
 func (a *Admin) Handle(ctx context.Context, u *api.Update, chat *api.Chat, user *api.User) (proceed bool, err error) {
@@ -130,19 +203,18 @@ func (a *Admin) handleLangCommand(ctx context.Context, msg *api.Message, isAdmin
 		return false, nil
 	}
 
-	settings, err := a.s.GetDB().GetSettings(ctx, msg.Chat.ID)
-	if tool.Try(err) {
-		if errors.Cause(err) != sql.ErrNoRows {
-			entry.WithField("error", err.Error()).Error("can't get chat settings")
-			return true, errors.WithMessage(err, "cant get chat settings")
-		}
+	settings, err := a.s.GetSettings(ctx, msg.Chat.ID)
+	if err != nil {
+		entry.WithField("error", err.Error()).Error("can't get chat settings")
+		return true, err
 	}
-
+	if settings == nil {
+		settings = db.DefaultSettings(msg.Chat.ID)
+	}
 	settings.Language = argument
-	err = a.s.GetDB().SetSettings(ctx, settings)
-	if tool.Try(err) {
+	if err := a.s.SetSettings(ctx, settings); err != nil {
 		entry.WithField("error", err.Error()).Error("can't update chat language")
-		return false, errors.WithMessage(err, "cant update chat language")
+		return false, err
 	}
 
 	entry.Debug("language set successfully")
@@ -176,7 +248,7 @@ func (a *Admin) isAdmin(chatID, userID int64) (bool, error) {
 		},
 	})
 	if err != nil {
-		return false, errors.New("cant get chat member")
+		return false, fmt.Errorf("get chat member: %w", err)
 	}
 
 	return chatMember.IsCreator() || (chatMember.IsAdministrator() && chatMember.CanRestrictMembers), nil

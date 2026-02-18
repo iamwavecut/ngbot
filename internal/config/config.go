@@ -2,6 +2,7 @@ package config
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -50,9 +51,10 @@ type (
 var (
 	once         sync.Once
 	globalConfig = &Config{}
+	globalErr    error
 )
 
-func Get() Config {
+func Load() (Config, error) {
 	once.Do(func() {
 		cfg := &Config{}
 		envcfg := envconfig.Config{
@@ -60,15 +62,25 @@ func Get() Config {
 			Target:   cfg,
 		}
 		if err := envconfig.ProcessWith(context.Background(), &envcfg); err != nil {
-			log.WithField("error", err.Error()).Fatalln("cant load config")
+			globalErr = fmt.Errorf("process env config: %w", err)
+			return
 		}
 		home, err := os.UserHomeDir()
 		if err != nil {
-			log.WithField("error", err.Error()).Fatalln("failed to get user home directory")
+			globalErr = fmt.Errorf("get user home directory: %w", err)
+			return
 		}
 		cfg.DotPath = strings.Replace(cfg.DotPath, "~", home, 1)
 		log.Traceln("loaded config")
 		globalConfig = cfg
 	})
-	return *globalConfig
+	return *globalConfig, globalErr
+}
+
+func Get() Config {
+	cfg, err := Load()
+	if err != nil {
+		log.WithField("error", err.Error()).Error("cant load config")
+	}
+	return cfg
 }

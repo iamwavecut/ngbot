@@ -13,7 +13,7 @@ require (
 	golang.org/x/sync v0.19.0
 	google.golang.org/genai v1.46.0
 	gopkg.in/yaml.v2 v2.4.0
-	modernc.org/sqlite v1.46.0
+	modernc.org/sqlite v1.46.1
 )
 
 require (
@@ -55,6 +55,6 @@ require (
 	github.com/iamwavecut/tool v1.4.1
 	github.com/sashabaranov/go-openai v1.41.2
 	github.com/sethvargo/go-envconfig v1.3.0
-	golang.org/x/exp v0.0.0-20260212183809-81e46e3db34a // indirect
+	golang.org/x/exp v0.0.0-20260218203240-3dfff04db8fa // indirect
 	golang.org/x/sys v0.41.0 // indirect
 )

@@ -2,7 +2,6 @@ package bot
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"sync"
 	"time"
@@ -28,6 +27,9 @@ type service struct {
 	log             *logrus.Entry
 	ctx             context.Context
 	cancel          context.CancelFunc
+	workersWG       sync.WaitGroup
+	startStopMutex  sync.Mutex
+	started         bool
 }
 
 func NewService(ctx context.Context, bot *api.BotAPI, dbClient db.Client, log *logrus.Entry) *service {
@@ -42,24 +44,50 @@ func NewService(ctx context.Context, bot *api.BotAPI, dbClient db.Client, log *l
 		ctx:             ctx,
 		cancel:          cancel,
 	}
+	return s
+}
 
+func (s *service) Start(ctx context.Context) error {
+	s.startStopMutex.Lock()
+	defer s.startStopMutex.Unlock()
+	if s.started {
+		return nil
+	}
+
+	s.ctx, s.cancel = context.WithCancel(ctx)
+
+	s.workersWG.Add(1)
 	go func() {
-		for range time.Tick(24 * time.Hour) {
-			if err := s.CleanupLeftMembers(s.ctx); err != nil {
-				s.getLogEntry().WithField("error", err.Error()).Error("Failed to cleanup left members")
+		defer s.workersWG.Done()
+
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-s.ctx.Done():
+				return
+			case <-ticker.C:
+				if err := s.CleanupLeftMembers(s.ctx); err != nil && !errors.Is(err, context.Canceled) {
+					s.getLogEntry().WithField("error", err.Error()).Error("Failed to cleanup left members")
+				}
 			}
 		}
 	}()
 
+	s.workersWG.Add(1)
 	go func() {
-		ctx, cancel := context.WithTimeout(s.ctx, 30*time.Second)
-		defer cancel()
+		defer s.workersWG.Done()
+		warmupCtx, warmupCancel := context.WithTimeout(s.ctx, 30*time.Second)
+		defer warmupCancel()
 
-		if err := s.warmupCache(ctx); err != nil {
+		if err := s.warmupCache(warmupCtx); err != nil && !errors.Is(err, context.Canceled) {
 			s.log.WithField("errorv", fmt.Sprintf("%+v", err)).Error("Failed to warm up cache")
 		}
 	}()
-	return s
+
+	s.started = true
+	return nil
 }
 
 func (s *service) GetBot() *api.BotAPI {
@@ -205,22 +233,19 @@ func (s *service) GetSettings(ctx context.Context, chatID int64) (*db.Settings, 
 
 	settings, err := s.dbClient.GetSettings(ctx, chatID)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			settings = &db.Settings{
-				ID:                     chatID,
-				Enabled:                true,
-				GatekeeperEnabled:      true,
-				LLMFirstMessageEnabled: true,
-				CommunityVotingEnabled: true,
-				ChallengeTimeout:       (3 * time.Minute).Nanoseconds(),
-				RejectTimeout:          (10 * time.Minute).Nanoseconds(),
-				Language:               "en",
-			}
-			if err := s.SetSettings(ctx, settings); err != nil {
-				return nil, fmt.Errorf("error setting default settings: %w", err)
-			}
-		} else {
+		if !errors.Is(err, db.ErrNotFound) {
 			return nil, fmt.Errorf("error fetching settings from database: %w", err)
+		}
+		settings = db.DefaultSettings(chatID)
+		if err := s.SetSettings(ctx, settings); err != nil {
+			return nil, fmt.Errorf("error setting default settings: %w", err)
+		}
+	}
+
+	if settings == nil {
+		settings = db.DefaultSettings(chatID)
+		if err := s.SetSettings(ctx, settings); err != nil {
+			return nil, fmt.Errorf("error setting default settings: %w", err)
 		}
 	}
 
@@ -300,11 +325,38 @@ func (s *service) getLogEntry() *logrus.Entry {
 }
 
 func (s *service) Shutdown(ctx context.Context) error {
+	s.startStopMutex.Lock()
+	if !s.started {
+		s.startStopMutex.Unlock()
+		return nil
+	}
+	s.started = false
+	s.startStopMutex.Unlock()
+
 	s.cancel()
-	s.dbClient.Close()
+
+	workersDone := make(chan struct{})
+	go func() {
+		defer close(workersDone)
+		s.workersWG.Wait()
+	}()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-workersDone:
+	}
+
+	if err := s.dbClient.Close(); err != nil {
+		return fmt.Errorf("close db client: %w", err)
+	}
 	s.memberCache = nil
 	s.settingsCache = nil
 	return nil
+}
+
+func (s *service) Stop(ctx context.Context) error {
+	return s.Shutdown(ctx)
 }
 
 func (s *service) GetLanguage(ctx context.Context, chatID int64, user *api.User) string {

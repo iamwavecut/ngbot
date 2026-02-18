@@ -1,6 +1,7 @@
 package infra
 
 import (
+	"context"
 	"os"
 	"time"
 
@@ -11,19 +12,40 @@ const (
 	checkExecInterval = 5 * time.Second
 )
 
-func MonitorExecutable() chan struct{} {
+func MonitorExecutable(ctx context.Context) <-chan struct{} {
 	ch := make(chan struct{})
 	go func() {
-		exeFilename, _ := os.Executable()
+		defer close(ch)
+
+		exeFilename, err := os.Executable()
+		if err != nil {
+			log.WithError(err).Warn("cant resolve executable path for monitor")
+			return
+		}
 		log.Debug(exeFilename)
-		stat, _ := os.Stat(exeFilename)
+		stat, err := os.Stat(exeFilename)
+		if err != nil {
+			log.WithError(err).Warn("cant stat executable for monitor")
+			return
+		}
 		originalTime := stat.ModTime()
+
+		ticker := time.NewTicker(checkExecInterval)
+		defer ticker.Stop()
 		for {
-			time.Sleep(checkExecInterval)
-			stat, _ := os.Stat(exeFilename)
-			if !originalTime.Equal(stat.ModTime()) {
-				ch <- struct{}{}
+			select {
+			case <-ctx.Done():
 				return
+			case <-ticker.C:
+				stat, err := os.Stat(exeFilename)
+				if err != nil {
+					log.WithError(err).Warn("cant stat executable for monitor tick")
+					continue
+				}
+				if !originalTime.Equal(stat.ModTime()) {
+					ch <- struct{}{}
+					return
+				}
 			}
 		}
 	}()

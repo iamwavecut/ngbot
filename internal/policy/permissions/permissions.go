@@ -1,8 +1,8 @@
-package handlers
+package permissions
 
 import api "github.com/OvyFlash/telegram-bot-api"
 
-func isManager(member *api.ChatMember) bool {
+func IsManager(member *api.ChatMember) bool {
 	if member == nil {
 		return false
 	}
@@ -12,11 +12,11 @@ func isManager(member *api.ChatMember) bool {
 	return member.IsAdministrator() && (member.CanManageChat || member.CanPromoteMembers)
 }
 
-func isPrivilegedModerator(member *api.ChatMember) bool {
+func IsPrivilegedModerator(member *api.ChatMember) bool {
 	if member == nil {
 		return false
 	}
-	if isManager(member) {
+	if IsManager(member) {
 		return true
 	}
 	return member.IsAdministrator() && member.CanRestrictMembers

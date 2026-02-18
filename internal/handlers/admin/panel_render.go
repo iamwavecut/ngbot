@@ -136,7 +136,7 @@ func (a *Admin) renderLanguageList(ctx context.Context, session *db.AdminPanelSe
 
 func (a *Admin) renderExamplesList(ctx context.Context, session *db.AdminPanelSession, state *panelState) (string, *api.InlineKeyboardMarkup, error) {
 	lang := state.Language
-	totalCount, err := a.s.GetDB().CountChatSpamExamples(ctx, session.ChatID)
+	totalCount, err := a.store.CountChatSpamExamples(ctx, session.ChatID)
 	if err != nil {
 		return "", nil, err
 	}
@@ -144,7 +144,7 @@ func (a *Admin) renderExamplesList(ctx context.Context, session *db.AdminPanelSe
 	state.ListPage = clampPage(state.ListPage, totalPages)
 
 	offset := state.ListPage * panelExamplesPageSize
-	examples, err := a.s.GetDB().ListChatSpamExamples(ctx, session.ChatID, panelExamplesPageSize, offset)
+	examples, err := a.store.ListChatSpamExamples(ctx, session.ChatID, panelExamplesPageSize, offset)
 	if err != nil {
 		return "", nil, err
 	}
@@ -192,7 +192,7 @@ func (a *Admin) renderExamplesList(ctx context.Context, session *db.AdminPanelSe
 
 func (a *Admin) renderExampleDetail(ctx context.Context, session *db.AdminPanelSession, state *panelState) (string, *api.InlineKeyboardMarkup, error) {
 	lang := state.Language
-	example, err := a.s.GetDB().GetChatSpamExample(ctx, state.SelectedExampleID)
+	example, err := a.store.GetChatSpamExample(ctx, state.SelectedExampleID)
 	if err != nil {
 		return "", nil, err
 	}
@@ -235,7 +235,7 @@ func (a *Admin) renderExamplePrompt(ctx context.Context, session *db.AdminPanelS
 
 func (a *Admin) renderConfirmDelete(ctx context.Context, session *db.AdminPanelSession, state *panelState) (string, *api.InlineKeyboardMarkup, error) {
 	lang := state.Language
-	example, err := a.s.GetDB().GetChatSpamExample(ctx, state.SelectedExampleID)
+	example, err := a.store.GetChatSpamExample(ctx, state.SelectedExampleID)
 	if err != nil {
 		return "", nil, err
 	}
@@ -310,7 +310,7 @@ func (a *Admin) createPanelCommand(ctx context.Context, sessionID int64, cmd pan
 	if err != nil {
 		return "", err
 	}
-	created, err := a.s.GetDB().CreateAdminPanelCommand(ctx, &db.AdminPanelCommand{
+	created, err := a.store.CreateAdminPanelCommand(ctx, &db.AdminPanelCommand{
 		SessionID: sessionID,
 		Payload:   payload,
 		CreatedAt: time.Now(),

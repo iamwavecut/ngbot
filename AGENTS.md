@@ -6,6 +6,7 @@ This document serves as the **single source of truth** for all development rules
 
 - [🤖 Agent Development Rules \& Guidelines](#-agent-development-rules--guidelines)
   - [📋 Table of Contents](#-table-of-contents)
+  - [📖 Codebase Overview](#-codebase-overview)
   - [🗣️ Communication \& Response Style](#️-communication--response-style)
   - [🏛️ Architecture \& Design](#️-architecture--design)
     - [Core Philosophy](#core-philosophy)
@@ -35,6 +36,24 @@ This document serves as the **single source of truth** for all development rules
     - [Information Gathering](#information-gathering)
     - [Feedback \& Communication](#feedback--communication)
     - [Agent Workflow Steps](#agent-workflow-steps)
+
+---
+
+## 📖 Codebase Overview
+
+**ngbot** is a Telegram gatekeeper bot with CAPTCHA verification, LLM-powered spam detection, and community voting moderation.
+
+**Stack**: Go 1.25, SQLite, Telegram Bot API, OpenAI/Gemini LLMs
+
+**Structure**:
+- `cmd/ngbot/` - Entry point, runtime wiring
+- `internal/bot/` - Core service, update processor
+- `internal/handlers/` - Admin, Gatekeeper, Reactor, Moderation
+- `internal/db/sqlite/` - Persistence with embedded migrations
+- `internal/adapters/llm/` - OpenAI/Gemini clients
+- `resources/` - i18n, challenges, migrations
+
+For detailed architecture, see [docs/CODEBASE_MAP.md](docs/CODEBASE_MAP.md).
 
 ---
 
