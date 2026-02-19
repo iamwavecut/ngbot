@@ -20,6 +20,11 @@ func (g *Gatekeeper) handleChallenge(ctx context.Context, u *api.Update, chat *a
 	entry := g.getLogEntry().WithField("method", "handleChallenge")
 	entry.Debug("handling challenge")
 
+	if u == nil || u.CallbackQuery == nil || chat == nil || user == nil {
+		entry.Debug("missing callback context")
+		return nil
+	}
+
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -39,22 +44,20 @@ func (g *Gatekeeper) handleChallenge(ctx context.Context, u *api.Update, chat *a
 		entry.WithField("data", s).Debug("parsing callback data")
 		parts := strings.Split(s, ";")
 		if len(parts) != 2 {
-			errInvalidString := errors.New("invalid string to split")
-			entry.WithField("error", errInvalidString.Error()).Error("callback query data is invalid")
-			return 0, "", errInvalidString
+			return 0, "", nil
 		}
 		ID, err := strconv.ParseInt(parts[0], 10, 0)
 		if err != nil {
-			errCantParseUserID := errors.New("cant parse user ID")
-			entry.WithField("error", errCantParseUserID.Error()).Error("callback query data is invalid")
-			return 0, "", errCantParseUserID
+			return 0, "", nil
 		}
 		entry.WithFields(log.Fields{"joinerID": ID, "challengeUUID": parts[1]}).Debug("parsed callback data")
 		return ID, parts[1], nil
 	}(cq.Data)
-	if err != nil {
-		entry.WithField("error", err.Error()).Error("failed to parse callback query data")
-		return err
+	if err != nil || joinerID == 0 || challengeUUID == "" {
+		if err != nil {
+			entry.WithField("error", err.Error()).Debug("failed to parse callback query data")
+		}
+		return nil
 	}
 
 	if user.ID != joinerID {
@@ -65,7 +68,11 @@ func (g *Gatekeeper) handleChallenge(ctx context.Context, u *api.Update, chat *a
 		return nil
 	}
 
-	challenge, err := g.store.GetChallenge(ctx, chat.ID, joinerID)
+	messageID := 0
+	if cq.Message != nil {
+		messageID = cq.Message.MessageID
+	}
+	challenge, err := g.store.GetChallengeByMessage(ctx, chat.ID, joinerID, messageID)
 	if err != nil {
 		entry.WithField("error", err.Error()).Error("failed to fetch challenge")
 		return err
@@ -88,8 +95,20 @@ func (g *Gatekeeper) handleChallenge(ctx context.Context, u *api.Update, chat *a
 		return errors.WithMessage(err, "cant get target chat info")
 	}
 
+	targetSettings, err := g.fetchAndValidateSettings(ctx, challenge.ChatID)
+	if err != nil {
+		entry.WithField("error", err.Error()).Error("failed to fetch target settings")
+		return err
+	}
+	if !targetSettings.GatekeeperEnabled || !targetSettings.GatekeeperCaptchaEnabled {
+		if _, err := b.Request(api.NewCallback(cq.ID, i18n.Get("Gatekeeper is disabled for this chat", g.s.GetLanguage(ctx, challenge.ChatID, user)))); err != nil {
+			entry.WithField("error", err.Error()).Error("cant answer callback query")
+		}
+		return nil
+	}
+
 	language := g.s.GetLanguage(ctx, targetChat.ID, user)
-	rejectDuration, rejectText, err := g.rejectConfig(ctx, targetChat.ID, language, targetChat.Title)
+	rejectDuration, rejectText, err := g.rejectConfigFromSettings(targetSettings, language, targetChat.Title)
 	if err != nil {
 		entry.WithField("error", err.Error()).Error("failed to build reject config")
 		return err
@@ -155,7 +174,7 @@ func (g *Gatekeeper) completeChallenge(ctx context.Context, challenge *db.Challe
 		_ = bot.UnrestrictChatting(ctx, b, challenge.UserID, challenge.ChatID)
 	}
 
-	return g.store.DeleteChallenge(ctx, challenge.CommChatID, challenge.UserID)
+	return g.store.DeleteChallenge(ctx, challenge.CommChatID, challenge.UserID, challenge.ChatID)
 }
 
 func (g *Gatekeeper) failChallenge(ctx context.Context, challenge *db.Challenge, rejectText string, rejectDuration time.Duration) error {
@@ -191,13 +210,39 @@ func (g *Gatekeeper) failChallenge(ctx context.Context, challenge *db.Challenge,
 		}
 	}
 
-	return g.store.DeleteChallenge(ctx, challenge.CommChatID, challenge.UserID)
+	return g.store.DeleteChallenge(ctx, challenge.CommChatID, challenge.UserID, challenge.ChatID)
+}
+
+func (g *Gatekeeper) cleanupChallengeWithoutPenalty(ctx context.Context, challenge *db.Challenge) error {
+	entry := g.getLogEntry().WithField("method", "cleanupChallengeWithoutPenalty")
+	b := g.s.GetBot()
+
+	if challenge.ChallengeMessageID != 0 {
+		if err := bot.DeleteChatMessage(ctx, b, challenge.CommChatID, challenge.ChallengeMessageID); err != nil {
+			entry.WithField("error", err.Error()).Error("cant delete challenge message")
+		}
+	}
+
+	if challenge.CommChatID == challenge.ChatID {
+		if err := bot.UnrestrictChatting(ctx, b, challenge.UserID, challenge.ChatID); err != nil {
+			entry.WithField("error", err.Error()).Error("cant unrestrict user during cleanup")
+		}
+	}
+
+	return g.store.DeleteChallenge(ctx, challenge.CommChatID, challenge.UserID, challenge.ChatID)
 }
 
 func (g *Gatekeeper) rejectConfig(ctx context.Context, chatID int64, language string, title string) (time.Duration, string, error) {
 	settings, err := g.fetchAndValidateSettings(ctx, chatID)
 	if err != nil {
 		return 0, "", err
+	}
+	return g.rejectConfigFromSettings(settings, language, title)
+}
+
+func (g *Gatekeeper) rejectConfigFromSettings(settings *db.Settings, language string, title string) (time.Duration, string, error) {
+	if settings == nil {
+		return 0, "", errors.New("settings are nil")
 	}
 	rejectDuration := settings.GetRejectTimeout()
 	rejectMinutes := int(rejectDuration.Minutes())

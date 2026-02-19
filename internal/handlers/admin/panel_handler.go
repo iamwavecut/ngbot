@@ -293,6 +293,12 @@ func (a *Admin) handlePanelInput(ctx context.Context, msg *api.Message, chat *ap
 		return true, err
 	}
 	if session == nil {
+		session, err = a.store.GetAdminPanelSessionByUserPage(ctx, user.ID, string(panelPageGatekeeperGreetingPrompt))
+		if err != nil {
+			return true, err
+		}
+	}
+	if session == nil {
 		return false, nil
 	}
 
@@ -317,33 +323,54 @@ func (a *Admin) handlePanelInput(ctx context.Context, msg *api.Message, chat *ap
 		return true, a.renderAndUpdatePanel(ctx, session, state, session.MessageID)
 	}
 
-	_, err = a.store.CreateChatSpamExample(ctx, &db.ChatSpamExample{
-		ChatID:          session.ChatID,
-		Text:            text,
-		CreatedByUserID: user.ID,
-		CreatedAt:       time.Now(),
-	})
-	if err != nil {
-		return true, err
-	}
+	switch panelPage(session.Page) {
+	case panelPageExamplePrompt:
+		_, err = a.store.CreateChatSpamExample(ctx, &db.ChatSpamExample{
+			ChatID:          session.ChatID,
+			Text:            text,
+			CreatedByUserID: user.ID,
+			CreatedAt:       time.Now(),
+		})
+		if err != nil {
+			return true, err
+		}
 
-	if session.MessageID != 0 {
-		_ = bot.DeleteChatMessage(ctx, a.s.GetBot(), user.ID, session.MessageID)
-	}
+		if session.MessageID != 0 {
+			_ = bot.DeleteChatMessage(ctx, a.s.GetBot(), user.ID, session.MessageID)
+		}
 
-	state.Page = panelPageExamplesList
-	state.ListPage = 0
-	state.PromptError = ""
-	state.SelectedExampleID = 0
+		state.Page = panelPageExamplesList
+		state.ListPage = 0
+		state.PromptError = ""
+		state.SelectedExampleID = 0
 
-	newMsg, err := a.sendPlaceholder(ctx, user.ID, state.Language)
-	if err != nil {
-		return true, err
-	}
-	session.MessageID = newMsg.MessageID
-	if err := a.savePanelState(ctx, session, state); err != nil {
-		return true, err
-	}
+		newMsg, err := a.sendPlaceholder(ctx, user.ID, state.Language)
+		if err != nil {
+			return true, err
+		}
+		session.MessageID = newMsg.MessageID
+		if err := a.savePanelState(ctx, session, state); err != nil {
+			return true, err
+		}
+		return true, a.renderAndUpdatePanel(ctx, session, state, session.MessageID)
+	case panelPageGatekeeperGreetingPrompt:
+		settings, err := a.s.GetSettings(ctx, session.ChatID)
+		if err != nil {
+			return true, err
+		}
+		settings.GatekeeperGreetingText = text
+		if err := a.s.SetSettings(ctx, settings); err != nil {
+			return true, err
+		}
 
-	return true, a.renderAndUpdatePanel(ctx, session, state, session.MessageID)
+		state.GatekeeperGreetingText = text
+		state.Page = panelPageGatekeeper
+		state.PromptError = ""
+		if err := a.savePanelState(ctx, session, state); err != nil {
+			return true, err
+		}
+		return true, a.renderAndUpdatePanel(ctx, session, state, session.MessageID)
+	default:
+		return false, nil
+	}
 }

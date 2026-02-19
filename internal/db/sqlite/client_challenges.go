@@ -17,8 +17,7 @@ func (c *sqliteClient) CreateChallenge(ctx context.Context, challenge *db.Challe
 		INSERT INTO gatekeeper_challenges (
 			comm_chat_id, user_id, chat_id, success_uuid, join_message_id, challenge_message_id, attempts, created_at, expires_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(comm_chat_id, user_id) DO UPDATE SET
-			chat_id = excluded.chat_id,
+		ON CONFLICT(comm_chat_id, user_id, chat_id) DO UPDATE SET
 			success_uuid = excluded.success_uuid,
 			join_message_id = excluded.join_message_id,
 			challenge_message_id = excluded.challenge_message_id,
@@ -43,7 +42,7 @@ func (c *sqliteClient) CreateChallenge(ctx context.Context, challenge *db.Challe
 	return challenge, nil
 }
 
-func (c *sqliteClient) GetChallenge(ctx context.Context, commChatID, userID int64) (*db.Challenge, error) {
+func (c *sqliteClient) GetChallengeByMessage(ctx context.Context, commChatID, userID int64, challengeMessageID int) (*db.Challenge, error) {
 	c.mutex.RLock()
 	defer c.mutex.RUnlock()
 
@@ -51,8 +50,9 @@ func (c *sqliteClient) GetChallenge(ctx context.Context, commChatID, userID int6
 	err := c.db.GetContext(ctx, &challenge, `
 		SELECT comm_chat_id, user_id, chat_id, success_uuid, join_message_id, challenge_message_id, attempts, created_at, expires_at
 		FROM gatekeeper_challenges
-		WHERE comm_chat_id = ? AND user_id = ?
-	`, commChatID, userID)
+		WHERE comm_chat_id = ? AND user_id = ? AND challenge_message_id = ?
+		LIMIT 1
+	`, commChatID, userID, challengeMessageID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
@@ -68,15 +68,15 @@ func (c *sqliteClient) UpdateChallenge(ctx context.Context, challenge *db.Challe
 
 	query := `
 		UPDATE gatekeeper_challenges
-		SET chat_id = ?,
-			success_uuid = ?,
-			join_message_id = ?,
-			challenge_message_id = ?,
-			attempts = ?,
-			created_at = ?,
-			expires_at = ?
-		WHERE comm_chat_id = ? AND user_id = ?
-	`
+			SET chat_id = ?,
+				success_uuid = ?,
+				join_message_id = ?,
+				challenge_message_id = ?,
+				attempts = ?,
+				created_at = ?,
+				expires_at = ?
+			WHERE comm_chat_id = ? AND user_id = ? AND chat_id = ?
+		`
 	_, err := c.db.ExecContext(ctx, query,
 		challenge.ChatID,
 		challenge.SuccessUUID,
@@ -87,15 +87,16 @@ func (c *sqliteClient) UpdateChallenge(ctx context.Context, challenge *db.Challe
 		challenge.ExpiresAt,
 		challenge.CommChatID,
 		challenge.UserID,
+		challenge.ChatID,
 	)
 	return err
 }
 
-func (c *sqliteClient) DeleteChallenge(ctx context.Context, commChatID, userID int64) error {
+func (c *sqliteClient) DeleteChallenge(ctx context.Context, commChatID, userID, chatID int64) error {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
-	_, err := c.db.ExecContext(ctx, `DELETE FROM gatekeeper_challenges WHERE comm_chat_id = ? AND user_id = ?`, commChatID, userID)
+	_, err := c.db.ExecContext(ctx, `DELETE FROM gatekeeper_challenges WHERE comm_chat_id = ? AND user_id = ? AND chat_id = ?`, commChatID, userID, chatID)
 	return err
 }
 

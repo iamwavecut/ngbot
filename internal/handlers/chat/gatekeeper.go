@@ -27,6 +27,8 @@ graph BusinessFlow
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -82,9 +84,9 @@ type GatekeeperBanChecker interface {
 
 type gatekeeperStore interface {
 	CreateChallenge(ctx context.Context, challenge *db.Challenge) (*db.Challenge, error)
-	GetChallenge(ctx context.Context, commChatID, userID int64) (*db.Challenge, error)
+	GetChallengeByMessage(ctx context.Context, commChatID, userID int64, challengeMessageID int) (*db.Challenge, error)
 	UpdateChallenge(ctx context.Context, challenge *db.Challenge) error
-	DeleteChallenge(ctx context.Context, commChatID, userID int64) error
+	DeleteChallenge(ctx context.Context, commChatID, userID, chatID int64) error
 	GetExpiredChallenges(ctx context.Context, now time.Time) ([]*db.Challenge, error)
 
 	AddChatRecentJoiner(ctx context.Context, joiner *db.RecentJoiner) (*db.RecentJoiner, error)
@@ -264,27 +266,51 @@ func (g *Gatekeeper) Handle(ctx context.Context, u *api.Update, chat *api.Chat, 
 		return true, nil
 	}
 
-	settings, err := g.fetchAndValidateSettings(ctx, chat.ID)
-	if err != nil {
-		return true, err
-	}
-
-	if !settings.GatekeeperEnabled {
-		entry.Debug("gatekeeper is disabled for this chat")
-		return true, nil
-	}
-
 	switch updateType {
 	case updateTypeCallbackQuery:
+		if u.CallbackQuery == nil || !isGatekeeperCallbackData(u.CallbackQuery.Data) {
+			return true, nil
+		}
 		return false, g.handleChallenge(ctx, u, chat, user)
 	case updateTypeChatJoinRequest:
-		return true, g.handleChatJoinRequest(ctx, u)
+		joinChatID := u.ChatJoinRequest.Chat.ID
+		settings, err := g.fetchAndValidateSettings(ctx, joinChatID)
+		if err != nil {
+			return true, err
+		}
+		if !settings.GatekeeperEnabled {
+			entry.Debug("gatekeeper is disabled for this chat")
+			return true, nil
+		}
+		return true, g.handleChatJoinRequest(ctx, u, settings)
 	case updateTypeNewChatMembers:
-		return true, g.handleNewChatMembersV2(ctx, u, chat)
+		settings, err := g.fetchAndValidateSettings(ctx, chat.ID)
+		if err != nil {
+			return true, err
+		}
+		if !settings.GatekeeperEnabled {
+			entry.Debug("gatekeeper is disabled for this chat")
+			return true, nil
+		}
+		return true, g.handleNewChatMembersV2(ctx, u, chat, settings)
 	default:
 		entry.Debug("No specific handler matched, proceeding with default behavior")
 		return true, nil
 	}
+}
+
+func isGatekeeperCallbackData(data string) bool {
+	parts := strings.Split(data, ";")
+	if len(parts) != 2 {
+		return false
+	}
+	if parts[0] == "" || parts[1] == "" {
+		return false
+	}
+	if _, err := strconv.ParseInt(parts[0], 10, 64); err != nil {
+		return false
+	}
+	return true
 }
 
 func (g *Gatekeeper) determineUpdateType(u *api.Update) updateType {

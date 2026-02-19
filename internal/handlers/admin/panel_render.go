@@ -12,6 +12,13 @@ import (
 	"github.com/iamwavecut/ngbot/internal/i18n"
 )
 
+const (
+	panelGreetingPlaceholderUser           = "{user}"
+	panelGreetingPlaceholderChatTitle      = "{chat_title}"
+	panelGreetingPlaceholderChatLinkTitled = "{chat_link_titled}"
+	panelGreetingPlaceholderTimeout        = "{timeout}"
+)
+
 func (a *Admin) renderHome(ctx context.Context, session *db.AdminPanelSession, state *panelState) (string, *api.InlineKeyboardMarkup, error) {
 	lang := state.Language
 	title := i18n.Get("Settings", lang)
@@ -33,8 +40,8 @@ func (a *Admin) renderHome(ctx context.Context, session *db.AdminPanelSession, s
 		return "", nil, err
 	}
 
-	gatekeeperLabel := fmt.Sprintf("%s %s", statusEmoji(state.Features.GatekeeperEnabled), i18n.Get("Gatekeeper", lang))
-	gatekeeperBtn, err := a.commandButton(ctx, session.ID, gatekeeperLabel, panelCommand{Action: panelActionToggleFeature, Feature: panelFeatureGatekeeper})
+	gatekeeperLabel := fmt.Sprintf("%s %s", statusEmoji(state.Features.GatekeeperEffective), i18n.Get("Gatekeeper", lang))
+	gatekeeperBtn, err := a.commandButton(ctx, session.ID, gatekeeperLabel, panelCommand{Action: panelActionOpenGatekeeper})
 	if err != nil {
 		return "", nil, err
 	}
@@ -131,6 +138,152 @@ func (a *Admin) renderLanguageList(ctx context.Context, session *db.AdminPanelSe
 	rows = append(rows, navRow)
 
 	keyboard := api.NewInlineKeyboardMarkup(rows...)
+	return builder.String(), &keyboard, nil
+}
+
+func (a *Admin) renderGatekeeper(ctx context.Context, session *db.AdminPanelSession, state *panelState) (string, *api.InlineKeyboardMarkup, error) {
+	lang := state.Language
+
+	builder := strings.Builder{}
+	builder.WriteString(i18n.Get("Gatekeeper Settings", lang))
+	builder.WriteString("\n\n")
+	builder.WriteString(fmt.Sprintf("%s %s\n", statusEmoji(state.Features.GatekeeperEnabled), i18n.Get("Master Switch", lang)))
+	builder.WriteString(fmt.Sprintf("%s %s\n", statusEmoji(state.Features.GatekeeperCaptchaEnabled), i18n.Get("CAPTCHA", lang)))
+	builder.WriteString(fmt.Sprintf("%s %s\n", statusEmoji(state.Features.GatekeeperGreetingEnabled), i18n.Get("Greeting", lang)))
+	builder.WriteString(fmt.Sprintf("%s: %d\n", i18n.Get("Captcha options", lang), state.GatekeeperCaptchaOptionsCount))
+	builder.WriteString(fmt.Sprintf("%s: %s\n", i18n.Get("Challenge timeout", lang), panelDurationLabel(time.Duration(state.ChallengeTimeout))))
+	builder.WriteString(fmt.Sprintf("%s: %s\n\n", i18n.Get("Reject timeout", lang), panelDurationLabel(time.Duration(state.RejectTimeout))))
+	builder.WriteString(i18n.Get("Greeting Preview", lang))
+	builder.WriteString("\n")
+	preview := renderGreetingPreviewQuote(state)
+	if preview == "" {
+		builder.WriteString("> ")
+		builder.WriteString(i18n.Get("No greeting text configured", lang))
+	} else {
+		builder.WriteString(preview)
+	}
+
+	masterBtn, err := a.commandButton(ctx, session.ID, fmt.Sprintf("%s %s", statusEmoji(state.Features.GatekeeperEnabled), i18n.Get("Master Switch", lang)), panelCommand{Action: panelActionGatekeeperToggleMaster})
+	if err != nil {
+		return "", nil, err
+	}
+	captchaBtn, err := a.commandButton(ctx, session.ID, fmt.Sprintf("%s %s", statusEmoji(state.Features.GatekeeperCaptchaEnabled), i18n.Get("CAPTCHA", lang)), panelCommand{Action: panelActionGatekeeperToggleCaptcha})
+	if err != nil {
+		return "", nil, err
+	}
+	greetingBtn, err := a.commandButton(ctx, session.ID, fmt.Sprintf("%s %s", statusEmoji(state.Features.GatekeeperGreetingEnabled), i18n.Get("Greeting", lang)), panelCommand{Action: panelActionGatekeeperToggleGreeting})
+	if err != nil {
+		return "", nil, err
+	}
+
+	captchaButtons := make([]api.InlineKeyboardButton, 0, len(panelGatekeeperCaptchaOptions))
+	for _, option := range panelGatekeeperCaptchaOptions {
+		label := fmt.Sprintf("%d", option)
+		if option == state.GatekeeperCaptchaOptionsCount {
+			label = "✅ " + label
+		}
+		btn, err := a.commandButton(ctx, session.ID, label, panelCommand{
+			Action: panelActionGatekeeperSetCaptchaSize,
+			Value:  fmt.Sprintf("%d", option),
+		})
+		if err != nil {
+			return "", nil, err
+		}
+		captchaButtons = append(captchaButtons, btn)
+	}
+
+	challengeButtons := make([]api.InlineKeyboardButton, 0, len(panelChallengeTimeoutOptions))
+	for _, option := range panelChallengeTimeoutOptions {
+		label := panelDurationLabel(option)
+		if time.Duration(state.ChallengeTimeout) == option {
+			label = "✅ " + label
+		}
+		btn, err := a.commandButton(ctx, session.ID, label, panelCommand{
+			Action: panelActionGatekeeperSetChallengeTTL,
+			Value:  option.String(),
+		})
+		if err != nil {
+			return "", nil, err
+		}
+		challengeButtons = append(challengeButtons, btn)
+	}
+
+	rejectButtons := make([]api.InlineKeyboardButton, 0, len(panelRejectTimeoutOptions))
+	for _, option := range panelRejectTimeoutOptions {
+		label := panelDurationLabel(option)
+		if time.Duration(state.RejectTimeout) == option {
+			label = "✅ " + label
+		}
+		btn, err := a.commandButton(ctx, session.ID, label, panelCommand{
+			Action: panelActionGatekeeperSetRejectTTL,
+			Value:  option.String(),
+		})
+		if err != nil {
+			return "", nil, err
+		}
+		rejectButtons = append(rejectButtons, btn)
+	}
+
+	editGreetingBtn, err := a.commandButton(ctx, session.ID, i18n.Get("Edit Greeting", lang), panelCommand{Action: panelActionGatekeeperEditGreeting})
+	if err != nil {
+		return "", nil, err
+	}
+	clearGreetingBtn, err := a.commandButton(ctx, session.ID, i18n.Get("Clear Greeting", lang), panelCommand{Action: panelActionGatekeeperClearGreeting})
+	if err != nil {
+		return "", nil, err
+	}
+	backBtn, err := a.commandButton(ctx, session.ID, "↩️", panelCommand{Action: panelActionBack})
+	if err != nil {
+		return "", nil, err
+	}
+
+	rows := [][]api.InlineKeyboardButton{
+		api.NewInlineKeyboardRow(masterBtn),
+		api.NewInlineKeyboardRow(captchaBtn, greetingBtn),
+	}
+	rows = append(rows, chunkButtons(captchaButtons, 3)...)
+	rows = append(rows, chunkButtons(challengeButtons, 3)...)
+	rows = append(rows, chunkButtons(rejectButtons, 3)...)
+	rows = append(rows, api.NewInlineKeyboardRow(editGreetingBtn, clearGreetingBtn))
+	rows = append(rows, api.NewInlineKeyboardRow(backBtn))
+
+	keyboard := api.NewInlineKeyboardMarkup(rows...)
+	return builder.String(), &keyboard, nil
+}
+
+func (a *Admin) renderGatekeeperGreetingPrompt(ctx context.Context, session *db.AdminPanelSession, state *panelState) (string, *api.InlineKeyboardMarkup, error) {
+	lang := state.Language
+
+	builder := strings.Builder{}
+	builder.WriteString(i18n.Get("Edit Greeting", lang))
+	builder.WriteString("\n\n")
+	if state.PromptError != "" {
+		builder.WriteString(state.PromptError)
+		builder.WriteString("\n\n")
+	}
+	builder.WriteString(i18n.Get("Send the greeting text", lang))
+	builder.WriteString("\n\n")
+	builder.WriteString(i18n.Get("Available placeholders:\n{user} - user mention\n{chat_title} - chat title\n{chat_link_titled} - linked chat title or plain title\n{timeout} - challenge timeout", lang))
+	builder.WriteString("\n\n")
+	builder.WriteString(i18n.Get("Greeting Preview", lang))
+	builder.WriteString("\n")
+	preview := renderGreetingPreviewQuote(state)
+	if preview == "" {
+		builder.WriteString("> ")
+		builder.WriteString(i18n.Get("No greeting text configured", lang))
+	} else {
+		builder.WriteString(preview)
+	}
+
+	backBtn, err := a.commandButton(ctx, session.ID, "↩️", panelCommand{Action: panelActionBack})
+	if err != nil {
+		return "", nil, err
+	}
+	clearBtn, err := a.commandButton(ctx, session.ID, i18n.Get("Clear Greeting", lang), panelCommand{Action: panelActionGatekeeperClearGreeting})
+	if err != nil {
+		return "", nil, err
+	}
+	keyboard := api.NewInlineKeyboardMarkup(api.NewInlineKeyboardRow(backBtn, clearBtn))
 	return builder.String(), &keyboard, nil
 }
 
@@ -329,6 +482,45 @@ func jsonMarshalCommand(cmd panelCommand) (string, error) {
 		return "", err
 	}
 	return string(data), nil
+}
+
+func panelDurationLabel(duration time.Duration) string {
+	if duration <= 0 {
+		return "0s"
+	}
+	if duration%time.Minute == 0 {
+		return fmt.Sprintf("%dm", int(duration/time.Minute))
+	}
+	if duration%time.Second == 0 {
+		return fmt.Sprintf("%ds", int(duration/time.Second))
+	}
+	return duration.String()
+}
+
+func renderGreetingPreviewQuote(state *panelState) string {
+	if state == nil {
+		return ""
+	}
+	text := strings.TrimSpace(state.GatekeeperGreetingText)
+	if text == "" {
+		return ""
+	}
+
+	chatTitle := state.ChatTitle
+	if chatTitle == "" {
+		chatTitle = "Chat"
+	}
+
+	text = strings.ReplaceAll(text, panelGreetingPlaceholderUser, fmt.Sprintf("[User](tg://user?id=%d)", state.UserID))
+	text = strings.ReplaceAll(text, panelGreetingPlaceholderChatTitle, chatTitle)
+	text = strings.ReplaceAll(text, panelGreetingPlaceholderChatLinkTitled, chatTitle)
+	text = strings.ReplaceAll(text, panelGreetingPlaceholderTimeout, panelDurationLabel(time.Duration(state.ChallengeTimeout)))
+
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		lines[i] = "> " + line
+	}
+	return strings.Join(lines, "\n")
 }
 
 func chunkButtons(buttons []api.InlineKeyboardButton, perRow int) [][]api.InlineKeyboardButton {

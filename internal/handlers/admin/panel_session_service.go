@@ -27,17 +27,24 @@ func (a *Admin) savePanelState(ctx context.Context, session *db.AdminPanelSessio
 
 func newPanelState(userID int64, chatID int64, chatTitle string, settings *db.Settings) panelState {
 	state := panelState{
-		Page:         panelPageHome,
-		ChatID:       chatID,
-		UserID:       userID,
-		ChatTitle:    chatTitle,
-		Language:     settings.Language,
-		ListPage:     0,
-		LanguagePage: 0,
+		Page:                          panelPageHome,
+		ChatID:                        chatID,
+		UserID:                        userID,
+		ChatTitle:                     chatTitle,
+		Language:                      settings.Language,
+		GatekeeperCaptchaOptionsCount: settings.GatekeeperCaptchaOptionsCount,
+		GatekeeperGreetingText:        settings.GatekeeperGreetingText,
+		ChallengeTimeout:              settings.ChallengeTimeout,
+		RejectTimeout:                 settings.RejectTimeout,
+		ListPage:                      0,
+		LanguagePage:                  0,
 		Features: panelFeatureFlags{
-			GatekeeperEnabled:      settings.GatekeeperEnabled,
-			LLMFirstMessageEnabled: settings.LLMFirstMessageEnabled,
-			CommunityVotingEnabled: settings.CommunityVotingEnabled,
+			GatekeeperEnabled:         settings.GatekeeperEnabled,
+			GatekeeperCaptchaEnabled:  settings.GatekeeperCaptchaEnabled,
+			GatekeeperGreetingEnabled: settings.GatekeeperGreetingEnabled,
+			GatekeeperEffective:       settings.GatekeeperEnabled && (settings.GatekeeperCaptchaEnabled || settings.GatekeeperGreetingEnabled),
+			LLMFirstMessageEnabled:    settings.LLMFirstMessageEnabled,
+			CommunityVotingEnabled:    settings.CommunityVotingEnabled,
 		},
 	}
 	return state

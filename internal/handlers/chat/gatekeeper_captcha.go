@@ -9,6 +9,22 @@ import (
 	"github.com/pborman/uuid"
 )
 
+var allowedCaptchaOptionsCount = map[int]struct{}{
+	3:  {},
+	4:  {},
+	5:  {},
+	6:  {},
+	8:  {},
+	10: {},
+}
+
+func normalizeCaptchaOptionsCount(count int) int {
+	if _, ok := allowedCaptchaOptionsCount[count]; ok {
+		return count
+	}
+	return captchaSize
+}
+
 func (g *Gatekeeper) createCaptchaIndex(lang string) [][2]string {
 	vars := g.challengeVariants(lang)
 	keys := make([]string, 0, len(vars))
@@ -25,7 +41,7 @@ func (g *Gatekeeper) createCaptchaIndex(lang string) [][2]string {
 	return captchaIndex
 }
 
-func (g *Gatekeeper) createCaptchaButtons(userID int64, successUUID string, lang string) ([]api.InlineKeyboardButton, [2]string) {
+func (g *Gatekeeper) createCaptchaButtons(userID int64, successUUID string, lang string, optionsCount int) ([]api.InlineKeyboardButton, [2]string) {
 	captchaIndex := g.createCaptchaIndex(lang)
 	if len(captchaIndex) == 0 {
 		captchaIndex = g.createCaptchaIndex("en")
@@ -37,12 +53,12 @@ func (g *Gatekeeper) createCaptchaButtons(userID int64, successUUID string, lang
 		}, fallback
 	}
 
-	targetSize := captchaSize
+	targetSize := normalizeCaptchaOptionsCount(optionsCount)
 	if len(captchaIndex) < targetSize {
 		targetSize = len(captchaIndex)
 	}
 
-	captchaRandomSet := make([][2]string, 0, captchaSize)
+	captchaRandomSet := make([][2]string, 0, targetSize)
 	usedIDs := make(map[int]struct{}, targetSize)
 	for len(captchaRandomSet) < targetSize {
 		ID := rand.Intn(len(captchaIndex))
@@ -66,11 +82,29 @@ func (g *Gatekeeper) createCaptchaButtons(userID int64, successUUID string, lang
 	return buttons, correctVariant
 }
 
+func captchaKeyboardRows(buttons []api.InlineKeyboardButton) [][]api.InlineKeyboardButton {
+	if len(buttons) == 0 {
+		return nil
+	}
+	switch len(buttons) {
+	case 6, 8, 10:
+		mid := len(buttons) / 2
+		return [][]api.InlineKeyboardButton{
+			api.NewInlineKeyboardRow(buttons[:mid]...),
+			api.NewInlineKeyboardRow(buttons[mid:]...),
+		}
+	default:
+		return [][]api.InlineKeyboardButton{
+			api.NewInlineKeyboardRow(buttons...),
+		}
+	}
+}
+
 func (g *Gatekeeper) challengeVariants(lang string) map[string]string {
-	if variants, ok := g.Variants[lang]; ok && len(variants) >= captchaSize {
+	if variants, ok := g.Variants[lang]; ok && len(variants) > 0 {
 		return variants
 	}
-	if variants, ok := g.Variants["en"]; ok && len(variants) >= captchaSize {
+	if variants, ok := g.Variants["en"]; ok && len(variants) > 0 {
 		return variants
 	}
 	return defaultCaptchaVariants

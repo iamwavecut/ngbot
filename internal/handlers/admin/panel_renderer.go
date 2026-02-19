@@ -43,11 +43,18 @@ func (a *Admin) renderPanel(ctx context.Context, session *db.AdminPanelSession, 
 		return "", nil, err
 	}
 	state.Features = panelFeatureFlags{
-		GatekeeperEnabled:      settings.GatekeeperEnabled,
-		LLMFirstMessageEnabled: settings.LLMFirstMessageEnabled,
-		CommunityVotingEnabled: settings.CommunityVotingEnabled,
+		GatekeeperEnabled:         settings.GatekeeperEnabled,
+		GatekeeperCaptchaEnabled:  settings.GatekeeperCaptchaEnabled,
+		GatekeeperGreetingEnabled: settings.GatekeeperGreetingEnabled,
+		GatekeeperEffective:       settings.GatekeeperEnabled && (settings.GatekeeperCaptchaEnabled || settings.GatekeeperGreetingEnabled),
+		LLMFirstMessageEnabled:    settings.LLMFirstMessageEnabled,
+		CommunityVotingEnabled:    settings.CommunityVotingEnabled,
 	}
 	state.Language = settings.Language
+	state.GatekeeperCaptchaOptionsCount = settings.GatekeeperCaptchaOptionsCount
+	state.GatekeeperGreetingText = settings.GatekeeperGreetingText
+	state.ChallengeTimeout = settings.ChallengeTimeout
+	state.RejectTimeout = settings.RejectTimeout
 
 	if err := a.store.DeleteAdminPanelCommandsBySession(ctx, session.ID); err != nil {
 		return "", nil, err
@@ -56,6 +63,10 @@ func (a *Admin) renderPanel(ctx context.Context, session *db.AdminPanelSession, 
 	switch state.Page {
 	case panelPageLanguageList:
 		return a.renderLanguageList(ctx, session, state)
+	case panelPageGatekeeper:
+		return a.renderGatekeeper(ctx, session, state)
+	case panelPageGatekeeperGreetingPrompt:
+		return a.renderGatekeeperGreetingPrompt(ctx, session, state)
 	case panelPageExamplesList:
 		return a.renderExamplesList(ctx, session, state)
 	case panelPageExampleDetail:

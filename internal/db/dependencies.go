@@ -20,9 +20,9 @@ type Client interface {
 
 	// Gatekeeper challenges
 	CreateChallenge(ctx context.Context, challenge *Challenge) (*Challenge, error)
-	GetChallenge(ctx context.Context, commChatID, userID int64) (*Challenge, error)
+	GetChallengeByMessage(ctx context.Context, commChatID, userID int64, challengeMessageID int) (*Challenge, error)
 	UpdateChallenge(ctx context.Context, challenge *Challenge) error
-	DeleteChallenge(ctx context.Context, commChatID, userID int64) error
+	DeleteChallenge(ctx context.Context, commChatID, userID, chatID int64) error
 	GetExpiredChallenges(ctx context.Context, now time.Time) ([]*Challenge, error)
 
 	// KV store methods

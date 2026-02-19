@@ -59,14 +59,18 @@ func (h *BaseHandler) GetOrCreateSettings(ctx context.Context, chat *api.Chat) (
 	}
 	if settings == nil {
 		settings = &db.Settings{
-			ID:                     chat.ID,
-			Enabled:                true,
-			GatekeeperEnabled:      true,
-			LLMFirstMessageEnabled: true,
-			CommunityVotingEnabled: true,
-			ChallengeTimeout:       defaultChallengeTimeout.Nanoseconds(),
-			RejectTimeout:          defaultRejectTimeout.Nanoseconds(),
-			Language:               "en",
+			ID:                            chat.ID,
+			Enabled:                       true,
+			GatekeeperEnabled:             false,
+			GatekeeperCaptchaEnabled:      false,
+			GatekeeperGreetingEnabled:     false,
+			GatekeeperCaptchaOptionsCount: 5,
+			GatekeeperGreetingText:        "",
+			LLMFirstMessageEnabled:        true,
+			CommunityVotingEnabled:        true,
+			ChallengeTimeout:              defaultChallengeTimeout.Nanoseconds(),
+			RejectTimeout:                 defaultRejectTimeout.Nanoseconds(),
+			Language:                      "en",
 		}
 		if err := h.service.SetSettings(ctx, settings); err != nil {
 			return nil, err

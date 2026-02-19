@@ -8,14 +8,18 @@ import (
 
 type (
 	Settings struct {
-		ID                     int64  `db:"id"`
-		Language               string `db:"language"`
-		Enabled                bool   `db:"enabled"`
-		GatekeeperEnabled      bool   `db:"gatekeeper_enabled"`
-		LLMFirstMessageEnabled bool   `db:"llm_first_message_enabled"`
-		CommunityVotingEnabled bool   `db:"community_voting_enabled"`
-		ChallengeTimeout       int64  `db:"challenge_timeout"`
-		RejectTimeout          int64  `db:"reject_timeout"`
+		ID                            int64  `db:"id"`
+		Language                      string `db:"language"`
+		Enabled                       bool   `db:"enabled"`
+		GatekeeperEnabled             bool   `db:"gatekeeper_enabled"`
+		GatekeeperCaptchaEnabled      bool   `db:"gatekeeper_captcha_enabled"`
+		GatekeeperGreetingEnabled     bool   `db:"gatekeeper_greeting_enabled"`
+		GatekeeperCaptchaOptionsCount int    `db:"gatekeeper_captcha_options_count"`
+		GatekeeperGreetingText        string `db:"gatekeeper_greeting_text"`
+		LLMFirstMessageEnabled        bool   `db:"llm_first_message_enabled"`
+		CommunityVotingEnabled        bool   `db:"community_voting_enabled"`
+		ChallengeTimeout              int64  `db:"challenge_timeout"`
+		RejectTimeout                 int64  `db:"reject_timeout"`
 	}
 
 	SpamCase struct {

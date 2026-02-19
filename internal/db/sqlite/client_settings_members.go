@@ -11,12 +11,21 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+func normalizeGatekeeperCaptchaOptionsCount(count int) int {
+	switch count {
+	case 3, 4, 5, 6, 8, 10:
+		return count
+	default:
+		return 5
+	}
+}
+
 func (c *sqliteClient) GetSettings(ctx context.Context, chatID int64) (*db.Settings, error) {
 	c.mutex.RLock()
 	defer c.mutex.RUnlock()
 
 	res := &db.Settings{}
-	query := "SELECT id, language, enabled, gatekeeper_enabled, llm_first_message_enabled, community_voting_enabled, challenge_timeout, reject_timeout FROM chats WHERE id = ?"
+	query := "SELECT id, language, enabled, gatekeeper_enabled, gatekeeper_captcha_enabled, gatekeeper_greeting_enabled, gatekeeper_captcha_options_count, gatekeeper_greeting_text, llm_first_message_enabled, community_voting_enabled, challenge_timeout, reject_timeout FROM chats WHERE id = ?"
 	err := c.db.QueryRowxContext(ctx, query, chatID).StructScan(res)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -36,7 +45,7 @@ func (c *sqliteClient) GetAllSettings(ctx context.Context) (map[int64]*db.Settin
 	c.mutex.RLock()
 	defer c.mutex.RUnlock()
 
-	query := "SELECT id, language, enabled, gatekeeper_enabled, llm_first_message_enabled, community_voting_enabled, challenge_timeout, reject_timeout FROM chats"
+	query := "SELECT id, language, enabled, gatekeeper_enabled, gatekeeper_captcha_enabled, gatekeeper_greeting_enabled, gatekeeper_captcha_options_count, gatekeeper_greeting_text, llm_first_message_enabled, community_voting_enabled, challenge_timeout, reject_timeout FROM chats"
 	rows, err := c.db.QueryxContext(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query all settings: %w", err)
@@ -64,14 +73,19 @@ func (c *sqliteClient) SetSettings(ctx context.Context, settings *db.Settings) e
 	defer c.mutex.Unlock()
 
 	settings.Enabled = settings.GatekeeperEnabled
+	settings.GatekeeperCaptchaOptionsCount = normalizeGatekeeperCaptchaOptionsCount(settings.GatekeeperCaptchaOptionsCount)
 
 	query := `
-		INSERT INTO chats (id, language, enabled, gatekeeper_enabled, llm_first_message_enabled, community_voting_enabled, challenge_timeout, reject_timeout)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO chats (id, language, enabled, gatekeeper_enabled, gatekeeper_captcha_enabled, gatekeeper_greeting_enabled, gatekeeper_captcha_options_count, gatekeeper_greeting_text, llm_first_message_enabled, community_voting_enabled, challenge_timeout, reject_timeout)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 		language = ?,
 		enabled = ?,
 		gatekeeper_enabled = ?,
+		gatekeeper_captcha_enabled = ?,
+		gatekeeper_greeting_enabled = ?,
+		gatekeeper_captcha_options_count = ?,
+		gatekeeper_greeting_text = ?,
 		llm_first_message_enabled = ?,
 		community_voting_enabled = ?,
 		challenge_timeout = ?,
@@ -82,6 +96,10 @@ func (c *sqliteClient) SetSettings(ctx context.Context, settings *db.Settings) e
 		settings.Language,
 		settings.Enabled,
 		settings.GatekeeperEnabled,
+		settings.GatekeeperCaptchaEnabled,
+		settings.GatekeeperGreetingEnabled,
+		settings.GatekeeperCaptchaOptionsCount,
+		settings.GatekeeperGreetingText,
 		settings.LLMFirstMessageEnabled,
 		settings.CommunityVotingEnabled,
 		settings.ChallengeTimeout,
@@ -89,6 +107,10 @@ func (c *sqliteClient) SetSettings(ctx context.Context, settings *db.Settings) e
 		settings.Language,
 		settings.Enabled,
 		settings.GatekeeperEnabled,
+		settings.GatekeeperCaptchaEnabled,
+		settings.GatekeeperGreetingEnabled,
+		settings.GatekeeperCaptchaOptionsCount,
+		settings.GatekeeperGreetingText,
 		settings.LLMFirstMessageEnabled,
 		settings.CommunityVotingEnabled,
 		settings.ChallengeTimeout,

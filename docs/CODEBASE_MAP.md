@@ -1,7 +1,7 @@
 ---
-last_mapped: 2026-02-19T00:00:00Z
-total_files: 61
-total_tokens: ~86000
+last_mapped: 2026-02-19T18:30:00Z
+total_files: 68
+total_tokens: ~95000
 ---
 
 # ngbot Codebase Map
@@ -10,7 +10,7 @@ total_tokens: ~86000
 
 ## System Overview
 
-**ngbot** is a Telegram chat gatekeeper bot that protects groups from spam and automated bot joins. It provides CAPTCHA-based entry verification, LLM-powered spam detection, and community voting moderation.
+**ngbot** is a Telegram chat gatekeeper bot that protects groups from spam and automated bot joins. It provides CAPTCHA-based entry verification with configurable options, LLM-powered spam detection, and community voting moderation.
 
 ```mermaid
 graph TB
@@ -110,7 +110,8 @@ ngbot/
 │   │   └── sqlite/                # SQLite implementation
 │   │       ├── client.go          # SQLite bootstrap (conn+migrations)
 │   │       ├── client_settings_members.go  # Settings & members CRUD
-│   │       ├── client_challenges.go        # Gatekeeper challenges
+│   │       ├── client_challenges.go        # Gatekeeper challenges (composite PK)
+│   │       ├── client_challenges_test.go   # Parallel join request tests
 │   │       ├── client_spam.go              # Spam/restrictions/banlist
 │   │       ├── client_kv.go                # KV store operations
 │   │       ├── admin_panel.go              # Admin panel sessions
@@ -123,28 +124,30 @@ ngbot/
 │   │       └── openai/            # OpenAI-compatible adapter
 │   ├── handlers/                  # Update handlers (chain of responsibility)
 │   │   ├── dependencies.go        # Compile-time interface verification
-│   │   ├── base/handler.go        # Shared handler utilities
+│   │   ├── base/handler.go        # Shared handler utilities, default settings
 │   │   ├── admin/                 # Admin commands and panel
 │   │   │   ├── admin.go           # Core struct, lifecycle, Handle()
 │   │   │   ├── panel_handler.go   # /settings flow, callback routing
 │   │   │   ├── panel_access_service.go    # Permission checks
-│   │   │   ├── panel_commands.go  # State machine actions
-│   │   │   ├── panel_constants.go # Pagination, timeouts
+│   │   │   ├── panel_commands.go  # State machine actions (gatekeeper submenu)
+│   │   │   ├── panel_constants.go # Pagination, timeouts, captcha options
 │   │   │   ├── panel_encoding.go  # ChatID/MessageID encoding
 │   │   │   ├── panel_lifecycle.go # Session cleanup worker
-│   │   │   ├── panel_render.go    # Render orchestration
+│   │   │   ├── panel_render.go    # Render orchestration, greeting preview
 │   │   │   ├── panel_renderer.go  # UI rendering
 │   │   │   ├── panel_session_service.go    # Session persistence
-│   │   │   └── panel_types.go     # Page/action/command types
+│   │   │   └── panel_types.go     # Page/action/command types (gatekeeper pages)
 │   │   ├── chat/                  # Gatekeeper/Reactor use-cases
 │   │   │   ├── gatekeeper.go      # Orchestrator, lifecycle
-│   │   │   ├── gatekeeper_captcha.go       # Button generation
+│   │   │   ├── gatekeeper_captcha.go       # Button generation, keyboard layout
+│   │   │   ├── gatekeeper_captcha_test.go  # Button generation tests
 │   │   │   ├── gatekeeper_challenge_service.go  # Callback handling
-│   │   │   ├── gatekeeper_join_processor.go     # Join flow
+│   │   │   ├── gatekeeper_join_processor.go     # Join flow, greeting text
 │   │   │   ├── gatekeeper_scheduler.go          # Background workers
 │   │   │   ├── reactor.go         # Orchestrator, pipeline stages
 │   │   │   ├── reactor_command_router.go     # /ban, /testspam, /skipreason
 │   │   │   ├── reactor_message_pipeline.go   # Spam detection pipeline
+│   │   │   ├── reactor_message_pipeline_test.go  # Spam examples tests
 │   │   │   ├── reactor_reaction_moderator.go # Reaction-based moderation
 │   │   │   └── reactor_text_normalizer.go    # Cyrillic homoglyph normalization
 │   │   └── moderation/            # Spam detection, ban service
@@ -152,7 +155,8 @@ ngbot/
 │   │       ├── ban_service_actions.go     # Restrict/ban/unban actions
 │   │       ├── ban_service_fetch.go       # Banlist fetch/retry/cache
 │   │       ├── spam_control.go    # Voting system, scheduler
-│   │       └── spam_detector.go   # LLM-based detection
+│   │       ├── spam_detector.go   # LLM-based detection
+│   │       └── spam_detector_test.go   # LLM prompt construction tests
 │   ├── lifecycle/                 # Runtime component orchestration
 │   │   ├── runtime.go             # Component interface, LIFO stop
 │   │   └── runtime_test.go        # Order verification tests
@@ -161,7 +165,8 @@ ngbot/
 │   │       └── permissions.go     # IsManager, IsPrivilegedModerator
 │   ├── i18n/                      # Internationalization
 │   │   ├── i18n.go                # Translation loading/lookup
-│   │   └── languages.go           # Language name lookup
+│   │   ├── languages.go           # Language name lookup
+│   │   └── translations_consistency_test.go  # AST-based key consistency
 │   └── infra/                     # Infrastructure utilities
 │       ├── filesystem.go          # Working directory management
 │       └── health_check.go        # Executable modification monitor
@@ -170,6 +175,9 @@ ngbot/
 │   ├── i18n/translations.yml      # 30 language translations
 │   ├── gatekeeper/challenges/     # Per-language emoji challenges
 │   └── migrations/                # SQL migration files
+│       ├── 20260219143000-add-gatekeeper-settings.sql
+│       ├── 20260219143100-disable-gatekeeper-for-all-chats.sql
+│       └── 20260219143200-fix-gatekeeper-challenge-primary-key.sql
 ├── go.mod                         # Dependencies
 ├── Dockerfile                     # Multi-stage build
 ├── compose.yaml                   # Docker Compose config
@@ -221,8 +229,8 @@ ngbot/
 
 | Handler | Purpose | Chain Order |
 |---------|---------|-------------|
-| `Admin` | `/lang`, `/settings`, admin panel | 1 (stops on match) |
-| `Gatekeeper` | CAPTCHA challenges for new members | 2 (stops for callbacks) |
+| `Admin` | `/lang`, `/settings`, admin panel with gatekeeper submenu | 1 (stops on match) |
+| `Gatekeeper` | CAPTCHA challenges (configurable options) for new members | 2 (stops for callbacks) |
 | `Reactor` | Spam detection, message processing | 3 (always runs) |
 
 #### Admin Handler Files
@@ -232,25 +240,25 @@ ngbot/
 | `admin.go` | Core struct, lifecycle, `Handle()` dispatcher |
 | `panel_handler.go` | `/settings` flow, deep-linking, callback routing |
 | `panel_access_service.go` | Permission checks, bot membership tracking |
-| `panel_commands.go` | State machine action routing |
-| `panel_constants.go` | Pagination sizes, timeouts, limits |
+| `panel_commands.go` | State machine action routing (gatekeeper toggle, greeting edit) |
+| `panel_constants.go` | Pagination sizes, timeouts, captcha options `[3,4,5,6,8,10]` |
 | `panel_encoding.go` | Binary encoding for chat/message IDs in callbacks |
 | `panel_lifecycle.go` | Background session cleanup worker |
-| `panel_render.go` | Render dispatch and update orchestration |
+| `panel_render.go` | Render dispatch, greeting preview with placeholders |
 | `panel_renderer.go` | UI rendering (text + keyboards) |
 | `panel_session_service.go` | Session persistence, callback parsing |
-| `panel_types.go` | `panelPage`, `panelState`, `panelCommand` types |
+| `panel_types.go` | `panelPage`, `panelState`, `panelCommand` (includes gatekeeper pages) |
 
 #### Gatekeeper Handler Files
 
 | File | Purpose |
 |------|---------|
 | `gatekeeper.go` | Orchestrator, lifecycle, `Handle()` |
-| `gatekeeper_captcha.go` | CAPTCHA button generation, variant selection |
+| `gatekeeper_captcha.go` | CAPTCHA button generation, smart keyboard layout (2 rows for 6+) |
 | `gatekeeper_challenge_service.go` | Challenge callback handling |
-| `gatekeeper_join_processor.go` | Join/request flow processing |
+| `gatekeeper_join_processor.go` | Join/request flow, greeting text with placeholders |
 | `gatekeeper_scheduler.go` | Background workers (spam check, expired challenges) |
-| `gatekeeper_captcha_test.go` | Button generation tests |
+| `gatekeeper_captcha_test.go` | Button generation and keyboard layout tests |
 
 #### Reactor Handler Files
 
@@ -259,6 +267,7 @@ ngbot/
 | `reactor.go` | Orchestrator, pipeline stages, callback handling |
 | `reactor_command_router.go` | `/testspam`, `/skipreason`, `/ban` commands |
 | `reactor_message_pipeline.go` | First-message spam detection pipeline |
+| `reactor_message_pipeline_test.go` | Spam example loading tests |
 | `reactor_reaction_moderator.go` | Reaction-based moderation |
 | `reactor_text_normalizer.go` | Cyrillic homoglyph normalization |
 
@@ -271,6 +280,7 @@ ngbot/
 | `ban_service_fetch.go` | External banlist fetch with retry |
 | `spam_control.go` | Community voting system |
 | `spam_detector.go` | LLM-powered classification |
+| `spam_detector_test.go` | LLM prompt construction tests |
 
 **Dependencies**: `bot`, `db`, `adapters/llm`, `i18n`, `config`, `policy/permissions`
 
@@ -288,7 +298,8 @@ ngbot/
 | `spam_tracking.go` | `SpamReport`, `UserRestriction` |
 | `sqlite/client.go` | SQLite bootstrap, pool, migrations |
 | `sqlite/client_settings_members.go` | Settings & members CRUD |
-| `sqlite/client_challenges.go` | Challenge CRUD |
+| `sqlite/client_challenges.go` | Challenge CRUD (composite PK: comm_chat_id, user_id, chat_id) |
+| `sqlite/client_challenges_test.go` | Parallel join request tests |
 | `sqlite/client_spam.go` | Spam/restrictions/banlist CRUD |
 | `sqlite/client_kv.go` | KV store operations |
 | `sqlite/admin_panel.go` | Admin sessions, spam examples |
@@ -296,10 +307,19 @@ ngbot/
 **Key Entities**:
 | Entity | Purpose |
 |--------|---------|
-| `Settings` | Per-chat configuration |
-| `Challenge` | CAPTCHA state (composite PK: comm_chat_id + user_id) |
+| `Settings` | Per-chat configuration (includes gatekeeper sub-settings) |
+| `Challenge` | CAPTCHA state (composite PK: comm_chat_id + user_id + chat_id) |
 | `SpamCase` | Spam report with voting |
 | `AdminPanelSession` | Admin UI state |
+
+**Settings Entity - Gatekeeper Fields**:
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `GatekeeperEnabled` | bool | false | Master switch |
+| `GatekeeperCaptchaEnabled` | bool | false | CAPTCHA sub-feature |
+| `GatekeeperGreetingEnabled` | bool | false | Greeting sub-feature |
+| `GatekeeperCaptchaOptionsCount` | int | 5 | Options count (3,4,5,6,8,10) |
+| `GatekeeperGreetingText` | string | "" | Custom greeting text |
 
 **Gotchas**:
 - `db.ErrNotFound` used for missing lookups
@@ -307,6 +327,7 @@ ngbot/
 - Connection pool: 42 max open connections
 - Pure-Go SQLite driver (`modernc.org/sqlite`)
 - `sync.RWMutex` protects all operations
+- Challenge PK supports parallel join requests per user across linked chats
 
 ---
 
@@ -350,6 +371,7 @@ type LLM interface {
 |------|---------|
 | `i18n.go` | Translation loading/lookup |
 | `languages.go` | ISO code to name mapping |
+| `translations_consistency_test.go` | AST-based key consistency verification |
 
 **Supported Languages**: be, bg, cs, da, de, el, en, es, et, fi, fr, hu, id, it, ja, ko, lt, lv, nb, nl, pl, pt, ro, ru, sk, sl, sv, tr, uk, zh (30 total)
 
@@ -404,10 +426,16 @@ sequenceDiagram
 
     User->>Group: Joins group
     Group->>Gatekeeper: NewChatMembers update
-    Gatekeeper->>Gatekeeper: Restrict user
-    Gatekeeper->>DB: Create challenge
-    Gatekeeper->>DB: Add RecentJoiner
-    Gatekeeper->>Group: Send CAPTCHA buttons
+    Gatekeeper->>DB: GetSettings()
+
+    alt GatekeeperEnabled AND CaptchaEnabled
+        Gatekeeper->>Gatekeeper: Restrict user
+        Gatekeeper->>DB: Create challenge (composite PK)
+        Gatekeeper->>DB: Add RecentJoiner
+        Gatekeeper->>Group: Send CAPTCHA buttons
+    else GatekeeperEnabled AND GreetingEnabled
+        Gatekeeper->>Group: Send greeting text
+    end
 
     alt Background check (1m interval)
         Gatekeeper->>BanService: CheckBan(userID)
@@ -416,12 +444,12 @@ sequenceDiagram
     end
 
     User->>Gatekeeper: Click button
-    Gatekeeper->>DB: Get challenge
+    Gatekeeper->>DB: GetChallengeByMessage()
 
     alt Correct answer
         Gatekeeper->>Group: Unrestrict user
         Gatekeeper->>Group: Delete challenge message
-        Gatekeeper->>DB: Delete challenge
+        Gatekeeper->>DB: Delete challenge (composite PK)
     else Wrong answer (max 3 attempts)
         Gatekeeper->>Group: Ban user (temp)
         Gatekeeper->>Group: Delete messages
@@ -477,9 +505,12 @@ sequenceDiagram
     User->>Private: Click deep-link
     Admin->>Private: Create AdminPanelSession
     Admin->>Private: Render settings page
-    User->>Private: Click button
-    Admin->>DB: GetAdminPanelCommand()
-    Admin->>Admin: Execute action
+
+    User->>Private: Click Gatekeeper
+    Admin->>Private: Render Gatekeeper submenu
+
+    User->>Private: Toggle/Edit settings
+    Admin->>DB: UpdateSettings()
     Admin->>Private: Update panel message
 ```
 
@@ -524,6 +555,13 @@ sequenceDiagram
 - SQLite with embedded migrations
 - `db:` struct tags for sqlx
 - `sync.RWMutex` for thread safety
+- Composite primary keys for parallel operations
+
+### Testing
+- Table-driven tests beside code (`*_test.go`)
+- Stub/mock interfaces for isolation
+- `t.Parallel()` for concurrent execution
+- AST parsing for static analysis (i18n consistency)
 
 ## Gotchas
 
@@ -539,6 +577,10 @@ sequenceDiagram
 10. **Reaction threshold**: 5 flagged emojis = auto-ban
 11. **Global handler registry**: `registeredHandlers` map is NOT thread-safe
 12. **Log formatter depth**: `runtime.Caller(6)` assumes specific call stack
+13. **Gatekeeper disabled by default**: New chats require explicit enable
+14. **Challenge composite PK**: `(comm_chat_id, user_id, chat_id)` supports parallel joins
+15. **Captcha options validation**: Only `[3, 4, 5, 6, 8, 10]` allowed
+16. **Greeting placeholders**: `{user}`, `{chat_title}`, `{chat_link_titled}`, `{timeout}`
 
 ## Navigation Guide
 
@@ -559,6 +601,7 @@ sequenceDiagram
 1. Add entries to `resources/i18n/translations.yml`
 2. Add challenge file in `resources/gatekeeper/challenges/<lang>.yml`
 3. Add language name in `internal/i18n/languages.go`
+4. Run tests: `go test ./internal/i18n/...` (consistency check)
 
 ### To modify spam detection
 1. **Examples**: Edit `internal/handlers/moderation/spam_detector.go` few-shot examples
@@ -570,6 +613,14 @@ sequenceDiagram
 2. Add entity to `internal/db/entities.go`
 3. Add methods to `internal/db/dependencies.go` interface
 4. Implement in appropriate `internal/db/sqlite/client_*.go`
+5. Add tests in `internal/db/sqlite/*_test.go`
+
+### To modify gatekeeper settings
+1. **UI**: `internal/handlers/admin/panel_render.go` (Gatekeeper submenu)
+2. **Commands**: `internal/handlers/admin/panel_commands.go` (toggle/set actions)
+3. **Types**: `internal/handlers/admin/panel_types.go` (pages, actions, state)
+4. **Defaults**: `internal/handlers/base/handler.go` (DefaultSettings)
+5. **Logic**: `internal/handlers/chat/gatekeeper*.go` (CAPTCHA, greeting)
 
 ## Dependencies
 
@@ -586,3 +637,26 @@ sequenceDiagram
 | `gopkg.in/yaml.v2` | YAML parsing |
 | `github.com/pborman/uuid` | UUID generation |
 | `golang.org/x/sync/errgroup` | Concurrent error handling |
+
+## Recent Changes (2026-02-19)
+
+### Gatekeeper Enhancements
+- **Configurable CAPTCHA options**: 3, 4, 5, 6, 8, or 10 buttons
+- **Custom greeting text**: Template placeholders `{user}`, `{chat_title}`, `{chat_link_titled}`, `{timeout}`
+- **Dual feature toggle**: Independent CAPTCHA and greeting controls
+- **Smart keyboard layout**: 6+ buttons split into 2 rows
+
+### Admin Panel Submenu
+- **Gatekeeper Settings page**: Master switch, sub-feature toggles, timeout settings
+- **Greeting Editor page**: Text input with live preview
+
+### Database Schema Changes
+- **New Settings fields**: `GatekeeperCaptchaEnabled`, `GatekeeperGreetingEnabled`, `GatekeeperCaptchaOptionsCount`, `GatekeeperGreetingText`
+- **Composite primary key**: `gatekeeper_challenges` now uses `(comm_chat_id, user_id, chat_id)` for parallel join support
+- **Default changed**: `GatekeeperEnabled` defaults to `false`
+
+### New Tests
+- `client_challenges_test.go`: Parallel join request verification
+- `reactor_message_pipeline_test.go`: Spam example loading
+- `spam_detector_test.go`: LLM prompt construction
+- `translations_consistency_test.go`: AST-based i18n key consistency

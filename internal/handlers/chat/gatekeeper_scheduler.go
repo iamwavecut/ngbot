@@ -43,11 +43,11 @@ func (g *Gatekeeper) processNewChatMembers(ctx context.Context) error {
 					"chat_id": joiner.ChatID,
 					"reason":  "User not found in chat (left)",
 				}).Info("Marking recent joiner as processed because they are no longer in the chat.")
+				if err := g.store.ProcessRecentJoiner(ctx, joiner.ChatID, joiner.UserID, false); err != nil {
+					entry.WithField("error", err.Error()).Error("failed to process recent joiner")
+				}
 			} else {
 				entry.WithField("error", err.Error()).Error("failed to get chat member")
-			}
-			if err := g.store.ProcessRecentJoiner(ctx, joiner.ChatID, joiner.UserID, false); err != nil {
-				entry.WithField("error", err.Error()).Error("failed to process recent joiner")
 			}
 			continue
 		}
@@ -66,16 +66,18 @@ func (g *Gatekeeper) processNewChatMembers(ctx context.Context) error {
 		banned, err := g.banChecker.CheckBan(ctx, joiner.UserID)
 		if err != nil {
 			entry.WithField("error", err.Error()).Error("failed to check ban")
+			continue
 		}
 		if banned {
 			entry.WithField("userID", joiner.UserID).Info("recent joiner is banned")
-			if err := bot.BanUserFromChat(ctx, g.s.GetBot(), joiner.UserID, joiner.ChatID, 0); err != nil {
-				entry.WithField("error", err.Error()).Error("failed to ban user")
+			banErr := bot.BanUserFromChat(ctx, g.s.GetBot(), joiner.UserID, joiner.ChatID, 0)
+			if banErr != nil {
+				entry.WithField("error", banErr.Error()).Error("failed to ban user")
 			}
 			if g.config.SpamControl.DebugUserID != 0 {
 				errMsg := ""
-				if err != nil {
-					errMsg = err.Error()
+				if banErr != nil {
+					errMsg = banErr.Error()
 				}
 				debugMsg := tool.ExecTemplate(`Banned joiner: {{ .user_name }} ({{ .user_id }}){{ if .error }} {{ .error }}{{end}}`, map[string]any{
 					"user_name": joiner.Username,
@@ -83,6 +85,9 @@ func (g *Gatekeeper) processNewChatMembers(ctx context.Context) error {
 					"error":     errMsg,
 				})
 				_, _ = g.s.GetBot().Send(api.NewMessage(g.config.SpamControl.DebugUserID, debugMsg))
+			}
+			if banErr != nil {
+				continue
 			}
 			if joiner.JoinMessageID != 0 {
 				if err := bot.DeleteChatMessage(ctx, g.s.GetBot(), joiner.ChatID, joiner.JoinMessageID); err != nil {
@@ -113,6 +118,18 @@ func (g *Gatekeeper) processExpiredChallenges(ctx context.Context) error {
 		return err
 	}
 	for _, challenge := range expired {
+		settings, err := g.fetchAndValidateSettings(ctx, challenge.ChatID)
+		if err != nil {
+			entry.WithField("error", err.Error()).Error("failed to load chat settings for challenge")
+			continue
+		}
+		if !settings.GatekeeperEnabled || !settings.GatekeeperCaptchaEnabled {
+			if err := g.cleanupChallengeWithoutPenalty(ctx, challenge); err != nil {
+				entry.WithField("error", err.Error()).Error("failed to cleanup challenge without penalty")
+			}
+			continue
+		}
+
 		var targetChat *api.ChatFullInfo
 		chat, err := g.s.GetBot().GetChat(api.ChatInfoConfig{
 			ChatConfig: api.ChatConfig{
@@ -130,7 +147,7 @@ func (g *Gatekeeper) processExpiredChallenges(ctx context.Context) error {
 		if targetChat != nil {
 			title = targetChat.Title
 		}
-		rejectDuration, rejectText, err := g.rejectConfig(ctx, challenge.ChatID, language, title)
+		rejectDuration, rejectText, err := g.rejectConfigFromSettings(settings, language, title)
 		if err != nil {
 			entry.WithField("error", err.Error()).Error("failed to build reject config")
 			continue
