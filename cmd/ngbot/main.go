@@ -185,8 +185,8 @@ func buildRuntime(ctx context.Context, cfg *config.Config, errChan chan<- error)
 		botAPI.Debug = true
 	}
 
-	if _, err := botAPI.GetMyCommands(); err != nil {
-		log.WithError(err).Warn("failed to get bot commands")
+	if err := announceGroupAdminCommands(botAPI); err != nil {
+		log.WithError(err).Warn("failed to set group admin commands")
 	}
 
 	dbClient, err := sqlite.NewSQLiteClient(ctx, cfg.DotPath, "bot.db")
@@ -275,4 +275,27 @@ func configureUpdates() api.UpdateConfig {
 		"chat_member", "chat_join_request",
 	}
 	return updateConfig
+}
+
+func announceGroupAdminCommands(botAPI *api.BotAPI) error {
+	if _, err := botAPI.Request(api.NewDeleteMyCommands()); err != nil {
+		return fmt.Errorf("delete commands: %w", err)
+	}
+
+	groupAdminCommands := []api.BotCommand{
+		{
+			Command:     "settings",
+			Description: "Bot settings",
+		},
+	}
+
+	groupAdminCommandsSet := api.NewSetMyCommandsWithScope(
+		api.NewBotCommandScopeAllChatAdministrators(),
+		groupAdminCommands...,
+	)
+	if _, err := botAPI.Request(groupAdminCommandsSet); err != nil {
+		return fmt.Errorf("set group admin commands: %w", err)
+	}
+
+	return nil
 }
