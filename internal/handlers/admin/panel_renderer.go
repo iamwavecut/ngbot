@@ -53,6 +53,10 @@ func (a *Admin) renderPanel(ctx context.Context, session *db.AdminPanelSession, 
 	state.Language = settings.Language
 	state.GatekeeperCaptchaOptionsCount = settings.GatekeeperCaptchaOptionsCount
 	state.GatekeeperGreetingText = settings.GatekeeperGreetingText
+	state.CommunityVotingTimeoutOverrideNS = settings.CommunityVotingTimeoutOverrideNS
+	state.CommunityVotingMinVotersOverride = settings.CommunityVotingMinVotersOverride
+	state.CommunityVotingMaxVotersOverride = settings.CommunityVotingMaxVotersOverride
+	state.CommunityVotingMinVotersPercentOverride = settings.CommunityVotingMinVotersPercentOverride
 	state.ChallengeTimeout = settings.ChallengeTimeout
 	state.RejectTimeout = settings.RejectTimeout
 
@@ -65,8 +69,20 @@ func (a *Admin) renderPanel(ctx context.Context, session *db.AdminPanelSession, 
 		return a.renderLanguageList(ctx, session, state)
 	case panelPageGatekeeper:
 		return a.renderGatekeeper(ctx, session, state)
+	case panelPageGatekeeperCaptcha:
+		return a.renderGatekeeperCaptcha(ctx, session, state)
+	case panelPageGatekeeperCaptchaOptions:
+		return a.renderGatekeeperCaptchaOptions(ctx, session, state)
+	case panelPageGatekeeperChallengeTimeout:
+		return a.renderGatekeeperChallengeTimeout(ctx, session, state)
+	case panelPageGatekeeperRejectTimeout:
+		return a.renderGatekeeperRejectTimeout(ctx, session, state)
+	case panelPageGatekeeperGreeting:
+		return a.renderGatekeeperGreeting(ctx, session, state)
 	case panelPageGatekeeperGreetingPrompt:
 		return a.renderGatekeeperGreetingPrompt(ctx, session, state)
+	case panelPageLLM:
+		return a.renderLLM(ctx, session, state)
 	case panelPageExamplesList:
 		return a.renderExamplesList(ctx, session, state)
 	case panelPageExampleDetail:
@@ -75,6 +91,16 @@ func (a *Admin) renderPanel(ctx context.Context, session *db.AdminPanelSession, 
 		return a.renderExamplePrompt(ctx, session, state)
 	case panelPageConfirmDelete:
 		return a.renderConfirmDelete(ctx, session, state)
+	case panelPageVoting:
+		return a.renderVoting(ctx, session, state)
+	case panelPageVotingTimeout:
+		return a.renderVotingTimeout(ctx, session, state)
+	case panelPageVotingMinVoters:
+		return a.renderVotingMinVoters(ctx, session, state)
+	case panelPageVotingMaxVoters:
+		return a.renderVotingMaxVoters(ctx, session, state)
+	case panelPageVotingMinPercent:
+		return a.renderVotingMinPercent(ctx, session, state)
 	case panelPageConfirmClose:
 		return a.renderConfirmClose(ctx, session, state)
 	default:

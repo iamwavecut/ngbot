@@ -364,7 +364,7 @@ func (a *Admin) handlePanelInput(ctx context.Context, msg *api.Message, chat *ap
 		}
 
 		state.GatekeeperGreetingText = text
-		state.Page = panelPageGatekeeper
+		state.Page = panelPageGatekeeperGreeting
 		state.PromptError = ""
 		if err := a.savePanelState(ctx, session, state); err != nil {
 			return true, err

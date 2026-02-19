@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -47,18 +48,13 @@ func (a *Admin) renderHome(ctx context.Context, session *db.AdminPanelSession, s
 	}
 
 	llmLabel := fmt.Sprintf("%s %s", statusEmoji(state.Features.LLMFirstMessageEnabled), i18n.Get("LLM First Message", lang))
-	llmBtn, err := a.commandButton(ctx, session.ID, llmLabel, panelCommand{Action: panelActionToggleFeature, Feature: panelFeatureLLMFirst})
+	llmBtn, err := a.commandButton(ctx, session.ID, llmLabel, panelCommand{Action: panelActionOpenLLM})
 	if err != nil {
 		return "", nil, err
 	}
 
 	votingLabel := fmt.Sprintf("%s %s", statusEmoji(state.Features.CommunityVotingEnabled), i18n.Get("Community Voting", lang))
-	votingBtn, err := a.commandButton(ctx, session.ID, votingLabel, panelCommand{Action: panelActionToggleFeature, Feature: panelFeatureVoting})
-	if err != nil {
-		return "", nil, err
-	}
-
-	examplesBtn, err := a.commandButton(ctx, session.ID, i18n.Get("Spam Examples", lang), panelCommand{Action: panelActionOpenExamples})
+	votingBtn, err := a.commandButton(ctx, session.ID, votingLabel, panelCommand{Action: panelActionOpenVoting})
 	if err != nil {
 		return "", nil, err
 	}
@@ -73,7 +69,6 @@ func (a *Admin) renderHome(ctx context.Context, session *db.AdminPanelSession, s
 		api.NewInlineKeyboardRow(gatekeeperBtn),
 		api.NewInlineKeyboardRow(llmBtn),
 		api.NewInlineKeyboardRow(votingBtn),
-		api.NewInlineKeyboardRow(examplesBtn),
 		api.NewInlineKeyboardRow(closeBtn),
 	)
 
@@ -143,16 +138,170 @@ func (a *Admin) renderLanguageList(ctx context.Context, session *db.AdminPanelSe
 
 func (a *Admin) renderGatekeeper(ctx context.Context, session *db.AdminPanelSession, state *panelState) (string, *api.InlineKeyboardMarkup, error) {
 	lang := state.Language
+	text := fmt.Sprintf(
+		"%s\n\n%s %s",
+		i18n.Get("Gatekeeper Settings", lang),
+		statusEmoji(state.Features.GatekeeperEnabled),
+		i18n.Get("Master Switch", lang),
+	)
+
+	masterBtn, err := a.commandButton(ctx, session.ID, fmt.Sprintf("%s %s", statusEmoji(state.Features.GatekeeperEnabled), i18n.Get("Master Switch", lang)), panelCommand{Action: panelActionGatekeeperToggleMaster})
+	if err != nil {
+		return "", nil, err
+	}
+	captchaBtn, err := a.commandButton(ctx, session.ID, i18n.Get("CAPTCHA Settings", lang), panelCommand{Action: panelActionOpenGatekeeperCaptcha})
+	if err != nil {
+		return "", nil, err
+	}
+	greetingBtn, err := a.commandButton(ctx, session.ID, i18n.Get("Greeting Settings", lang), panelCommand{Action: panelActionOpenGatekeeperGreeting})
+	if err != nil {
+		return "", nil, err
+	}
+	backBtn, err := a.commandButton(ctx, session.ID, "↩️", panelCommand{Action: panelActionBack})
+	if err != nil {
+		return "", nil, err
+	}
+
+	keyboard := api.NewInlineKeyboardMarkup(
+		api.NewInlineKeyboardRow(masterBtn),
+		api.NewInlineKeyboardRow(captchaBtn),
+		api.NewInlineKeyboardRow(greetingBtn),
+		api.NewInlineKeyboardRow(backBtn),
+	)
+	return text, &keyboard, nil
+}
+
+func (a *Admin) renderGatekeeperCaptcha(ctx context.Context, session *db.AdminPanelSession, state *panelState) (string, *api.InlineKeyboardMarkup, error) {
+	lang := state.Language
+	text := fmt.Sprintf(
+		"%s\n\n%s %s\n%s: %d\n%s: %s\n%s: %s",
+		i18n.Get("CAPTCHA Settings", lang),
+		statusEmoji(state.Features.GatekeeperCaptchaEnabled),
+		i18n.Get("CAPTCHA", lang),
+		i18n.Get("Captcha options", lang),
+		state.GatekeeperCaptchaOptionsCount,
+		i18n.Get("Challenge timeout", lang),
+		panelDurationLabel(time.Duration(state.ChallengeTimeout)),
+		i18n.Get("Reject timeout", lang),
+		panelDurationLabel(time.Duration(state.RejectTimeout)),
+	)
+
+	toggleBtn, err := a.commandButton(ctx, session.ID, fmt.Sprintf("%s %s", statusEmoji(state.Features.GatekeeperCaptchaEnabled), i18n.Get("CAPTCHA", lang)), panelCommand{Action: panelActionGatekeeperToggleCaptcha})
+	if err != nil {
+		return "", nil, err
+	}
+	optionsBtn, err := a.commandButton(ctx, session.ID, i18n.Get("Captcha options", lang), panelCommand{Action: panelActionOpenGatekeeperCaptchaOptions})
+	if err != nil {
+		return "", nil, err
+	}
+	challengeBtn, err := a.commandButton(ctx, session.ID, i18n.Get("Challenge timeout", lang), panelCommand{Action: panelActionOpenGatekeeperChallengeTimeout})
+	if err != nil {
+		return "", nil, err
+	}
+	rejectBtn, err := a.commandButton(ctx, session.ID, i18n.Get("Reject timeout", lang), panelCommand{Action: panelActionOpenGatekeeperRejectTimeout})
+	if err != nil {
+		return "", nil, err
+	}
+	backBtn, err := a.commandButton(ctx, session.ID, "↩️", panelCommand{Action: panelActionBack})
+	if err != nil {
+		return "", nil, err
+	}
+
+	keyboard := api.NewInlineKeyboardMarkup(
+		api.NewInlineKeyboardRow(toggleBtn),
+		api.NewInlineKeyboardRow(optionsBtn),
+		api.NewInlineKeyboardRow(challengeBtn),
+		api.NewInlineKeyboardRow(rejectBtn),
+		api.NewInlineKeyboardRow(backBtn),
+	)
+	return text, &keyboard, nil
+}
+
+func (a *Admin) renderGatekeeperCaptchaOptions(ctx context.Context, session *db.AdminPanelSession, state *panelState) (string, *api.InlineKeyboardMarkup, error) {
+	lang := state.Language
+	text := fmt.Sprintf("%s\n\n%s: %d", i18n.Get("Captcha options", lang), i18n.Get("Selected", lang), state.GatekeeperCaptchaOptionsCount)
+
+	buttons := make([]api.InlineKeyboardButton, 0, len(panelGatekeeperCaptchaOptions))
+	for _, option := range panelGatekeeperCaptchaOptions {
+		label := fmt.Sprintf("%d", option)
+		if option == state.GatekeeperCaptchaOptionsCount {
+			label = "✅ " + label
+		}
+		btn, err := a.commandButton(ctx, session.ID, label, panelCommand{Action: panelActionGatekeeperSetCaptchaSize, Value: strconv.Itoa(option)})
+		if err != nil {
+			return "", nil, err
+		}
+		buttons = append(buttons, btn)
+	}
+	rows := chunkButtons(buttons, 3)
+	backBtn, err := a.commandButton(ctx, session.ID, "↩️", panelCommand{Action: panelActionBack})
+	if err != nil {
+		return "", nil, err
+	}
+	rows = append(rows, api.NewInlineKeyboardRow(backBtn))
+	keyboard := api.NewInlineKeyboardMarkup(rows...)
+	return text, &keyboard, nil
+}
+
+func (a *Admin) renderGatekeeperChallengeTimeout(ctx context.Context, session *db.AdminPanelSession, state *panelState) (string, *api.InlineKeyboardMarkup, error) {
+	lang := state.Language
+	text := fmt.Sprintf("%s\n\n%s: %s", i18n.Get("Challenge timeout", lang), i18n.Get("Selected", lang), panelDurationLabel(time.Duration(state.ChallengeTimeout)))
+
+	buttons := make([]api.InlineKeyboardButton, 0, len(panelChallengeTimeoutOptions))
+	for _, option := range panelChallengeTimeoutOptions {
+		label := panelDurationLabel(option)
+		if time.Duration(state.ChallengeTimeout) == option {
+			label = "✅ " + label
+		}
+		btn, err := a.commandButton(ctx, session.ID, label, panelCommand{Action: panelActionGatekeeperSetChallengeTTL, Value: option.String()})
+		if err != nil {
+			return "", nil, err
+		}
+		buttons = append(buttons, btn)
+	}
+	rows := chunkButtons(buttons, 3)
+	backBtn, err := a.commandButton(ctx, session.ID, "↩️", panelCommand{Action: panelActionBack})
+	if err != nil {
+		return "", nil, err
+	}
+	rows = append(rows, api.NewInlineKeyboardRow(backBtn))
+	keyboard := api.NewInlineKeyboardMarkup(rows...)
+	return text, &keyboard, nil
+}
+
+func (a *Admin) renderGatekeeperRejectTimeout(ctx context.Context, session *db.AdminPanelSession, state *panelState) (string, *api.InlineKeyboardMarkup, error) {
+	lang := state.Language
+	text := fmt.Sprintf("%s\n\n%s: %s", i18n.Get("Reject timeout", lang), i18n.Get("Selected", lang), panelDurationLabel(time.Duration(state.RejectTimeout)))
+
+	buttons := make([]api.InlineKeyboardButton, 0, len(panelRejectTimeoutOptions))
+	for _, option := range panelRejectTimeoutOptions {
+		label := panelDurationLabel(option)
+		if time.Duration(state.RejectTimeout) == option {
+			label = "✅ " + label
+		}
+		btn, err := a.commandButton(ctx, session.ID, label, panelCommand{Action: panelActionGatekeeperSetRejectTTL, Value: option.String()})
+		if err != nil {
+			return "", nil, err
+		}
+		buttons = append(buttons, btn)
+	}
+	rows := chunkButtons(buttons, 3)
+	backBtn, err := a.commandButton(ctx, session.ID, "↩️", panelCommand{Action: panelActionBack})
+	if err != nil {
+		return "", nil, err
+	}
+	rows = append(rows, api.NewInlineKeyboardRow(backBtn))
+	keyboard := api.NewInlineKeyboardMarkup(rows...)
+	return text, &keyboard, nil
+}
+
+func (a *Admin) renderGatekeeperGreeting(ctx context.Context, session *db.AdminPanelSession, state *panelState) (string, *api.InlineKeyboardMarkup, error) {
+	lang := state.Language
 
 	builder := strings.Builder{}
-	builder.WriteString(i18n.Get("Gatekeeper Settings", lang))
+	builder.WriteString(i18n.Get("Greeting Settings", lang))
 	builder.WriteString("\n\n")
-	builder.WriteString(fmt.Sprintf("%s %s\n", statusEmoji(state.Features.GatekeeperEnabled), i18n.Get("Master Switch", lang)))
-	builder.WriteString(fmt.Sprintf("%s %s\n", statusEmoji(state.Features.GatekeeperCaptchaEnabled), i18n.Get("CAPTCHA", lang)))
-	builder.WriteString(fmt.Sprintf("%s %s\n", statusEmoji(state.Features.GatekeeperGreetingEnabled), i18n.Get("Greeting", lang)))
-	builder.WriteString(fmt.Sprintf("%s: %d\n", i18n.Get("Captcha options", lang), state.GatekeeperCaptchaOptionsCount))
-	builder.WriteString(fmt.Sprintf("%s: %s\n", i18n.Get("Challenge timeout", lang), panelDurationLabel(time.Duration(state.ChallengeTimeout))))
-	builder.WriteString(fmt.Sprintf("%s: %s\n\n", i18n.Get("Reject timeout", lang), panelDurationLabel(time.Duration(state.RejectTimeout))))
+	builder.WriteString(fmt.Sprintf("%s %s\n\n", statusEmoji(state.Features.GatekeeperGreetingEnabled), i18n.Get("Greeting", lang)))
 	builder.WriteString(i18n.Get("Greeting Preview", lang))
 	builder.WriteString("\n")
 	preview := renderGreetingPreviewQuote(state)
@@ -163,72 +312,15 @@ func (a *Admin) renderGatekeeper(ctx context.Context, session *db.AdminPanelSess
 		builder.WriteString(preview)
 	}
 
-	masterBtn, err := a.commandButton(ctx, session.ID, fmt.Sprintf("%s %s", statusEmoji(state.Features.GatekeeperEnabled), i18n.Get("Master Switch", lang)), panelCommand{Action: panelActionGatekeeperToggleMaster})
+	toggleBtn, err := a.commandButton(ctx, session.ID, fmt.Sprintf("%s %s", statusEmoji(state.Features.GatekeeperGreetingEnabled), i18n.Get("Greeting", lang)), panelCommand{Action: panelActionGatekeeperToggleGreeting})
 	if err != nil {
 		return "", nil, err
 	}
-	captchaBtn, err := a.commandButton(ctx, session.ID, fmt.Sprintf("%s %s", statusEmoji(state.Features.GatekeeperCaptchaEnabled), i18n.Get("CAPTCHA", lang)), panelCommand{Action: panelActionGatekeeperToggleCaptcha})
+	editBtn, err := a.commandButton(ctx, session.ID, i18n.Get("Edit Greeting", lang), panelCommand{Action: panelActionGatekeeperEditGreeting})
 	if err != nil {
 		return "", nil, err
 	}
-	greetingBtn, err := a.commandButton(ctx, session.ID, fmt.Sprintf("%s %s", statusEmoji(state.Features.GatekeeperGreetingEnabled), i18n.Get("Greeting", lang)), panelCommand{Action: panelActionGatekeeperToggleGreeting})
-	if err != nil {
-		return "", nil, err
-	}
-
-	captchaButtons := make([]api.InlineKeyboardButton, 0, len(panelGatekeeperCaptchaOptions))
-	for _, option := range panelGatekeeperCaptchaOptions {
-		label := fmt.Sprintf("%d", option)
-		if option == state.GatekeeperCaptchaOptionsCount {
-			label = "✅ " + label
-		}
-		btn, err := a.commandButton(ctx, session.ID, label, panelCommand{
-			Action: panelActionGatekeeperSetCaptchaSize,
-			Value:  fmt.Sprintf("%d", option),
-		})
-		if err != nil {
-			return "", nil, err
-		}
-		captchaButtons = append(captchaButtons, btn)
-	}
-
-	challengeButtons := make([]api.InlineKeyboardButton, 0, len(panelChallengeTimeoutOptions))
-	for _, option := range panelChallengeTimeoutOptions {
-		label := panelDurationLabel(option)
-		if time.Duration(state.ChallengeTimeout) == option {
-			label = "✅ " + label
-		}
-		btn, err := a.commandButton(ctx, session.ID, label, panelCommand{
-			Action: panelActionGatekeeperSetChallengeTTL,
-			Value:  option.String(),
-		})
-		if err != nil {
-			return "", nil, err
-		}
-		challengeButtons = append(challengeButtons, btn)
-	}
-
-	rejectButtons := make([]api.InlineKeyboardButton, 0, len(panelRejectTimeoutOptions))
-	for _, option := range panelRejectTimeoutOptions {
-		label := panelDurationLabel(option)
-		if time.Duration(state.RejectTimeout) == option {
-			label = "✅ " + label
-		}
-		btn, err := a.commandButton(ctx, session.ID, label, panelCommand{
-			Action: panelActionGatekeeperSetRejectTTL,
-			Value:  option.String(),
-		})
-		if err != nil {
-			return "", nil, err
-		}
-		rejectButtons = append(rejectButtons, btn)
-	}
-
-	editGreetingBtn, err := a.commandButton(ctx, session.ID, i18n.Get("Edit Greeting", lang), panelCommand{Action: panelActionGatekeeperEditGreeting})
-	if err != nil {
-		return "", nil, err
-	}
-	clearGreetingBtn, err := a.commandButton(ctx, session.ID, i18n.Get("Clear Greeting", lang), panelCommand{Action: panelActionGatekeeperClearGreeting})
+	clearBtn, err := a.commandButton(ctx, session.ID, i18n.Get("Clear Greeting", lang), panelCommand{Action: panelActionGatekeeperClearGreeting})
 	if err != nil {
 		return "", nil, err
 	}
@@ -237,17 +329,11 @@ func (a *Admin) renderGatekeeper(ctx context.Context, session *db.AdminPanelSess
 		return "", nil, err
 	}
 
-	rows := [][]api.InlineKeyboardButton{
-		api.NewInlineKeyboardRow(masterBtn),
-		api.NewInlineKeyboardRow(captchaBtn, greetingBtn),
-	}
-	rows = append(rows, chunkButtons(captchaButtons, 3)...)
-	rows = append(rows, chunkButtons(challengeButtons, 3)...)
-	rows = append(rows, chunkButtons(rejectButtons, 3)...)
-	rows = append(rows, api.NewInlineKeyboardRow(editGreetingBtn, clearGreetingBtn))
-	rows = append(rows, api.NewInlineKeyboardRow(backBtn))
-
-	keyboard := api.NewInlineKeyboardMarkup(rows...)
+	keyboard := api.NewInlineKeyboardMarkup(
+		api.NewInlineKeyboardRow(toggleBtn),
+		api.NewInlineKeyboardRow(editBtn, clearBtn),
+		api.NewInlineKeyboardRow(backBtn),
+	)
 	return builder.String(), &keyboard, nil
 }
 
@@ -285,6 +371,37 @@ func (a *Admin) renderGatekeeperGreetingPrompt(ctx context.Context, session *db.
 	}
 	keyboard := api.NewInlineKeyboardMarkup(api.NewInlineKeyboardRow(backBtn, clearBtn))
 	return builder.String(), &keyboard, nil
+}
+
+func (a *Admin) renderLLM(ctx context.Context, session *db.AdminPanelSession, state *panelState) (string, *api.InlineKeyboardMarkup, error) {
+	lang := state.Language
+	text := fmt.Sprintf(
+		"%s\n\n%s %s\n\n%s",
+		i18n.Get("LLM First Message", lang),
+		statusEmoji(state.Features.LLMFirstMessageEnabled),
+		i18n.Get("LLM First Message", lang),
+		fmt.Sprintf(i18n.Get("Prompt examples cap: %d", lang), panelLLMExamplesCap),
+	)
+
+	toggleBtn, err := a.commandButton(ctx, session.ID, fmt.Sprintf("%s %s", statusEmoji(state.Features.LLMFirstMessageEnabled), i18n.Get("LLM First Message", lang)), panelCommand{Action: panelActionToggleFeature, Feature: panelFeatureLLMFirst})
+	if err != nil {
+		return "", nil, err
+	}
+	examplesBtn, err := a.commandButton(ctx, session.ID, i18n.Get("Spam Examples", lang), panelCommand{Action: panelActionOpenExamples})
+	if err != nil {
+		return "", nil, err
+	}
+	backBtn, err := a.commandButton(ctx, session.ID, "↩️", panelCommand{Action: panelActionBack})
+	if err != nil {
+		return "", nil, err
+	}
+
+	keyboard := api.NewInlineKeyboardMarkup(
+		api.NewInlineKeyboardRow(toggleBtn),
+		api.NewInlineKeyboardRow(examplesBtn),
+		api.NewInlineKeyboardRow(backBtn),
+	)
+	return text, &keyboard, nil
 }
 
 func (a *Admin) renderExamplesList(ctx context.Context, session *db.AdminPanelSession, state *panelState) (string, *api.InlineKeyboardMarkup, error) {
@@ -410,6 +527,180 @@ func (a *Admin) renderConfirmDelete(ctx context.Context, session *db.AdminPanelS
 	return text, &keyboard, nil
 }
 
+func (a *Admin) renderVoting(ctx context.Context, session *db.AdminPanelSession, state *panelState) (string, *api.InlineKeyboardMarkup, error) {
+	lang := state.Language
+
+	text := fmt.Sprintf(
+		"%s\n\n%s %s\n%s: %s\n%s: %s\n%s: %s\n%s: %s\n\n%s\n%s",
+		i18n.Get("Community Voting", lang),
+		statusEmoji(state.Features.CommunityVotingEnabled),
+		i18n.Get("Community Voting", lang),
+		i18n.Get("Voting timeout", lang),
+		panelVotingTimeoutStateLabel(lang, state.CommunityVotingTimeoutOverrideNS),
+		i18n.Get("Min voters", lang),
+		panelVotingIntStateLabel(lang, state.CommunityVotingMinVotersOverride, false),
+		i18n.Get("Max voters", lang),
+		panelVotingIntStateLabel(lang, state.CommunityVotingMaxVotersOverride, true),
+		i18n.Get("Min voters %", lang),
+		panelVotingIntStateLabel(lang, state.CommunityVotingMinVotersPercentOverride, false),
+		i18n.Get("Voting policy", lang),
+		i18n.Get("Insufficient votes on timeout => false-positive\nTie => wait one deciding vote", lang),
+	)
+
+	toggleBtn, err := a.commandButton(ctx, session.ID, fmt.Sprintf("%s %s", statusEmoji(state.Features.CommunityVotingEnabled), i18n.Get("Community Voting", lang)), panelCommand{Action: panelActionToggleFeature, Feature: panelFeatureVoting})
+	if err != nil {
+		return "", nil, err
+	}
+	timeoutBtn, err := a.commandButton(ctx, session.ID, i18n.Get("Voting timeout", lang), panelCommand{Action: panelActionOpenVotingTimeout})
+	if err != nil {
+		return "", nil, err
+	}
+	minBtn, err := a.commandButton(ctx, session.ID, i18n.Get("Min voters", lang), panelCommand{Action: panelActionOpenVotingMinVoters})
+	if err != nil {
+		return "", nil, err
+	}
+	maxBtn, err := a.commandButton(ctx, session.ID, i18n.Get("Max voters", lang), panelCommand{Action: panelActionOpenVotingMaxVoters})
+	if err != nil {
+		return "", nil, err
+	}
+	percentBtn, err := a.commandButton(ctx, session.ID, i18n.Get("Min voters %", lang), panelCommand{Action: panelActionOpenVotingMinPercent})
+	if err != nil {
+		return "", nil, err
+	}
+	backBtn, err := a.commandButton(ctx, session.ID, "↩️", panelCommand{Action: panelActionBack})
+	if err != nil {
+		return "", nil, err
+	}
+
+	keyboard := api.NewInlineKeyboardMarkup(
+		api.NewInlineKeyboardRow(toggleBtn),
+		api.NewInlineKeyboardRow(timeoutBtn),
+		api.NewInlineKeyboardRow(minBtn),
+		api.NewInlineKeyboardRow(maxBtn),
+		api.NewInlineKeyboardRow(percentBtn),
+		api.NewInlineKeyboardRow(backBtn),
+	)
+	return text, &keyboard, nil
+}
+
+func (a *Admin) renderVotingTimeout(ctx context.Context, session *db.AdminPanelSession, state *panelState) (string, *api.InlineKeyboardMarkup, error) {
+	lang := state.Language
+	text := fmt.Sprintf("%s\n\n%s: %s", i18n.Get("Voting timeout", lang), i18n.Get("Selected", lang), panelVotingTimeoutStateLabel(lang, state.CommunityVotingTimeoutOverrideNS))
+
+	buttons := make([]api.InlineKeyboardButton, 0, len(panelVotingTimeoutOptions)+1)
+	inheritBtn, err := a.commandButton(ctx, session.ID, panelSelectLabel(state.CommunityVotingTimeoutOverrideNS == int64(db.SettingsOverrideInherit), i18n.Get("Inherit", lang)), panelCommand{Action: panelActionSetVotingTimeout, Value: "inherit"})
+	if err != nil {
+		return "", nil, err
+	}
+	buttons = append(buttons, inheritBtn)
+
+	for _, option := range panelVotingTimeoutOptions {
+		selected := state.CommunityVotingTimeoutOverrideNS != int64(db.SettingsOverrideInherit) && time.Duration(state.CommunityVotingTimeoutOverrideNS) == option
+		label := panelSelectLabel(selected, panelDurationLabel(option))
+		btn, err := a.commandButton(ctx, session.ID, label, panelCommand{Action: panelActionSetVotingTimeout, Value: option.String()})
+		if err != nil {
+			return "", nil, err
+		}
+		buttons = append(buttons, btn)
+	}
+	rows := chunkButtons(buttons, 3)
+	backBtn, err := a.commandButton(ctx, session.ID, "↩️", panelCommand{Action: panelActionBack})
+	if err != nil {
+		return "", nil, err
+	}
+	rows = append(rows, api.NewInlineKeyboardRow(backBtn))
+	keyboard := api.NewInlineKeyboardMarkup(rows...)
+	return text, &keyboard, nil
+}
+
+func (a *Admin) renderVotingMinVoters(ctx context.Context, session *db.AdminPanelSession, state *panelState) (string, *api.InlineKeyboardMarkup, error) {
+	lang := state.Language
+	text := fmt.Sprintf("%s\n\n%s: %s", i18n.Get("Min voters", lang), i18n.Get("Selected", lang), panelVotingIntStateLabel(lang, state.CommunityVotingMinVotersOverride, false))
+
+	buttons := make([]api.InlineKeyboardButton, 0, len(panelVotingMinVotersOptions)+1)
+	inheritBtn, err := a.commandButton(ctx, session.ID, panelSelectLabel(state.CommunityVotingMinVotersOverride == db.SettingsOverrideInherit, i18n.Get("Inherit", lang)), panelCommand{Action: panelActionSetVotingMinVoters, Value: "inherit"})
+	if err != nil {
+		return "", nil, err
+	}
+	buttons = append(buttons, inheritBtn)
+	for _, option := range panelVotingMinVotersOptions {
+		label := panelSelectLabel(state.CommunityVotingMinVotersOverride == option, fmt.Sprintf("%d", option))
+		btn, err := a.commandButton(ctx, session.ID, label, panelCommand{Action: panelActionSetVotingMinVoters, Value: strconv.Itoa(option)})
+		if err != nil {
+			return "", nil, err
+		}
+		buttons = append(buttons, btn)
+	}
+	rows := chunkButtons(buttons, 3)
+	backBtn, err := a.commandButton(ctx, session.ID, "↩️", panelCommand{Action: panelActionBack})
+	if err != nil {
+		return "", nil, err
+	}
+	rows = append(rows, api.NewInlineKeyboardRow(backBtn))
+	keyboard := api.NewInlineKeyboardMarkup(rows...)
+	return text, &keyboard, nil
+}
+
+func (a *Admin) renderVotingMaxVoters(ctx context.Context, session *db.AdminPanelSession, state *panelState) (string, *api.InlineKeyboardMarkup, error) {
+	lang := state.Language
+	text := fmt.Sprintf("%s\n\n%s: %s", i18n.Get("Max voters", lang), i18n.Get("Selected", lang), panelVotingIntStateLabel(lang, state.CommunityVotingMaxVotersOverride, true))
+
+	buttons := make([]api.InlineKeyboardButton, 0, len(panelVotingMaxVotersOptions)+1)
+	inheritBtn, err := a.commandButton(ctx, session.ID, panelSelectLabel(state.CommunityVotingMaxVotersOverride == db.SettingsOverrideInherit, i18n.Get("Inherit", lang)), panelCommand{Action: panelActionSetVotingMaxVoters, Value: "inherit"})
+	if err != nil {
+		return "", nil, err
+	}
+	buttons = append(buttons, inheritBtn)
+	for _, option := range panelVotingMaxVotersOptions {
+		valueLabel := fmt.Sprintf("%d", option)
+		if option == 0 {
+			valueLabel = i18n.Get("No cap", lang)
+		}
+		label := panelSelectLabel(state.CommunityVotingMaxVotersOverride == option, valueLabel)
+		btn, err := a.commandButton(ctx, session.ID, label, panelCommand{Action: panelActionSetVotingMaxVoters, Value: strconv.Itoa(option)})
+		if err != nil {
+			return "", nil, err
+		}
+		buttons = append(buttons, btn)
+	}
+	rows := chunkButtons(buttons, 3)
+	backBtn, err := a.commandButton(ctx, session.ID, "↩️", panelCommand{Action: panelActionBack})
+	if err != nil {
+		return "", nil, err
+	}
+	rows = append(rows, api.NewInlineKeyboardRow(backBtn))
+	keyboard := api.NewInlineKeyboardMarkup(rows...)
+	return text, &keyboard, nil
+}
+
+func (a *Admin) renderVotingMinPercent(ctx context.Context, session *db.AdminPanelSession, state *panelState) (string, *api.InlineKeyboardMarkup, error) {
+	lang := state.Language
+	text := fmt.Sprintf("%s\n\n%s: %s", i18n.Get("Min voters %", lang), i18n.Get("Selected", lang), panelVotingIntStateLabel(lang, state.CommunityVotingMinVotersPercentOverride, false))
+
+	buttons := make([]api.InlineKeyboardButton, 0, len(panelVotingMinVotersPercentOptions)+1)
+	inheritBtn, err := a.commandButton(ctx, session.ID, panelSelectLabel(state.CommunityVotingMinVotersPercentOverride == db.SettingsOverrideInherit, i18n.Get("Inherit", lang)), panelCommand{Action: panelActionSetVotingMinPercent, Value: "inherit"})
+	if err != nil {
+		return "", nil, err
+	}
+	buttons = append(buttons, inheritBtn)
+	for _, option := range panelVotingMinVotersPercentOptions {
+		label := panelSelectLabel(state.CommunityVotingMinVotersPercentOverride == option, fmt.Sprintf("%d%%", option))
+		btn, err := a.commandButton(ctx, session.ID, label, panelCommand{Action: panelActionSetVotingMinPercent, Value: strconv.Itoa(option)})
+		if err != nil {
+			return "", nil, err
+		}
+		buttons = append(buttons, btn)
+	}
+	rows := chunkButtons(buttons, 3)
+	backBtn, err := a.commandButton(ctx, session.ID, "↩️", panelCommand{Action: panelActionBack})
+	if err != nil {
+		return "", nil, err
+	}
+	rows = append(rows, api.NewInlineKeyboardRow(backBtn))
+	keyboard := api.NewInlineKeyboardMarkup(rows...)
+	return text, &keyboard, nil
+}
+
 func (a *Admin) renderConfirmClose(ctx context.Context, session *db.AdminPanelSession, state *panelState) (string, *api.InlineKeyboardMarkup, error) {
 	lang := state.Language
 	text := i18n.Get("Close settings panel?", lang)
@@ -495,6 +786,30 @@ func panelDurationLabel(duration time.Duration) string {
 		return fmt.Sprintf("%ds", int(duration/time.Second))
 	}
 	return duration.String()
+}
+
+func panelVotingTimeoutStateLabel(lang string, overrideNS int64) string {
+	if overrideNS == int64(db.SettingsOverrideInherit) {
+		return i18n.Get("Inherit", lang)
+	}
+	return panelDurationLabel(time.Duration(overrideNS))
+}
+
+func panelVotingIntStateLabel(lang string, value int, zeroNoCap bool) string {
+	if value == db.SettingsOverrideInherit {
+		return i18n.Get("Inherit", lang)
+	}
+	if zeroNoCap && value == 0 {
+		return i18n.Get("No cap", lang)
+	}
+	return fmt.Sprintf("%d", value)
+}
+
+func panelSelectLabel(selected bool, label string) string {
+	if selected {
+		return "✅ " + label
+	}
+	return label
 }
 
 func renderGreetingPreviewQuote(state *panelState) string {

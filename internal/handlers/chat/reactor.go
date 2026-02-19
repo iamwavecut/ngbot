@@ -37,7 +37,7 @@ const (
 	StageContentCheck    MessageProcessingStage = "content_check"
 	StageSpamCheck       MessageProcessingStage = "spam_check"
 	maxLastResults                              = 1000
-	maxSpamExamples                             = 50
+	maxSpamExamples                             = 20
 )
 
 type MessageProcessingActions struct {

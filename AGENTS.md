@@ -94,6 +94,11 @@ For detailed architecture, see [docs/CODEBASE_MAP.md](docs/CODEBASE_MAP.md).
 - LLM APIs (OpenAI-compatible and Gemini).
 - Banlist API (lols.bot).
 
+### Admin Panel UX Rules
+- **Cascading Menus** 🧭: Admin settings must be structured as cascading category menus. Do not place many unrelated controls on a single page.
+- **Leaf Screens** 🌿: Concrete value changes (presets/inputs) must live on leaf screens dedicated to one setting or one logical group.
+- **i18n Completeness** 🌍: Any new admin UI key must be added for all supported locales before merge.
+
 ---
 
 ## 🐹 Go Development Rules

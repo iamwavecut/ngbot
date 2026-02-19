@@ -7,6 +7,7 @@ const (
 	panelLanguagePageSize = 6
 	panelPreviewMaxLen    = 80
 	panelMaxInputLen      = 4096
+	panelLLMExamplesCap   = 20
 )
 
 var (
@@ -21,6 +22,18 @@ var (
 	panelRejectTimeoutOptions = []time.Duration{
 		10 * time.Minute,
 	}
+	panelVotingTimeoutOptions = []time.Duration{
+		1 * time.Minute,
+		2 * time.Minute,
+		3 * time.Minute,
+		5 * time.Minute,
+		10 * time.Minute,
+		15 * time.Minute,
+		30 * time.Minute,
+	}
+	panelVotingMinVotersOptions        = []int{1, 2, 3, 5, 10}
+	panelVotingMaxVotersOptions        = []int{0, 5, 10, 20}
+	panelVotingMinVotersPercentOptions = []int{1, 3, 5, 10, 20}
 )
 
 const (

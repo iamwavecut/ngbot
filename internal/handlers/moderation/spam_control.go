@@ -30,6 +30,13 @@ type SpamControl struct {
 	started    bool
 }
 
+type votingPolicy struct {
+	Timeout             time.Duration
+	MinVoters           int
+	MaxVoters           int
+	MinVotersPercentage float64
+}
+
 type spamStore interface {
 	CreateSpamCase(ctx context.Context, sc *db.SpamCase) (*db.SpamCase, error)
 	UpdateSpamCase(ctx context.Context, sc *db.SpamCase) error
@@ -236,8 +243,9 @@ func (sc *SpamControl) preprocessMessage(ctx context.Context, msg *api.Message, 
 	}
 
 	if voting {
-		sc.scheduleAfter(sc.config.VotingTimeoutMinutes, func(runCtx context.Context) {
-			if err := sc.ResolveCase(runCtx, spamCase.ID); err != nil && !errors.Is(err, context.Canceled) {
+		policy := sc.effectiveVotingPolicy(ctx, chat.ID)
+		sc.scheduleAfter(policy.Timeout, func(runCtx context.Context) {
+			if err := sc.ResolveCase(runCtx, spamCase.ID, true); err != nil && !errors.Is(err, context.Canceled) {
 				log.WithField("error", err.Error()).Error("failed to resolve spam case")
 			}
 		})
@@ -307,7 +315,7 @@ func (sc *SpamControl) createChannelPost(msg *api.Message, caseID int64, lang st
 		line = regexp.MustCompile(`@(\w+)`).ReplaceAllString(line, "@**")
 		textSlice[i] = line
 	}
-	text := fmt.Sprintf(i18n.Get(">%s\n**>%s", lang),
+	text := fmt.Sprintf(">%s\n**>%s",
 		api.EscapeText(api.ModeMarkdownV2, from),
 		strings.Join(textSlice, "\n>"),
 	)
@@ -368,7 +376,7 @@ func (sc *SpamControl) RecordVote(ctx context.Context, caseID int64, voterID int
 		return notSpamVotes, spamVotes, err
 	}
 	if len(votes) >= required {
-		if err := sc.ResolveCase(ctx, caseID); err != nil {
+		if err := sc.ResolveCase(ctx, caseID, false); err != nil {
 			return notSpamVotes, spamVotes, err
 		}
 	}
@@ -381,16 +389,17 @@ func (sc *SpamControl) requiredVoters(ctx context.Context, caseID int64) (int, e
 	if err != nil {
 		return 0, err
 	}
+	policy := sc.effectiveVotingPolicy(ctx, spamCase.ChatID)
 
 	members, err := sc.store.GetMembers(ctx, spamCase.ChatID)
 	if err != nil {
 		log.WithField("error", err.Error()).Error("failed to get members count")
 	}
 
-	minVotersFromPercentage := int(float64(len(members)) * sc.config.MinVotersPercentage / 100)
-	required := max(sc.config.MinVoters, minVotersFromPercentage)
-	if sc.config.MaxVoters > 0 && required > sc.config.MaxVoters {
-		required = sc.config.MaxVoters
+	minVotersFromPercentage := int(float64(len(members)) * policy.MinVotersPercentage / 100)
+	required := max(policy.MinVoters, minVotersFromPercentage)
+	if policy.MaxVoters > 0 && required > policy.MaxVoters {
+		required = policy.MaxVoters
 	}
 	if required < 1 {
 		required = 1
@@ -399,7 +408,7 @@ func (sc *SpamControl) requiredVoters(ctx context.Context, caseID int64) (int, e
 	return required, nil
 }
 
-func (sc *SpamControl) ResolveCase(ctx context.Context, caseID int64) error {
+func (sc *SpamControl) ResolveCase(ctx context.Context, caseID int64, timedOut bool) error {
 	entry := sc.getLogEntry().WithField("method", "resolveCase").WithField("case_id", caseID)
 	spamCase, err := sc.store.GetSpamCase(ctx, caseID)
 	if err != nil {
@@ -420,26 +429,12 @@ func (sc *SpamControl) ResolveCase(ctx context.Context, caseID int64) error {
 		return fmt.Errorf("failed to calculate required voters: %w", err)
 	}
 
-	if len(votes) >= requiredVoters {
-		yesVotes := 0
-		noVotes := 0
-		for _, vote := range votes {
-			if vote.Vote {
-				yesVotes++
-			} else {
-				noVotes++
-			}
-		}
-
-		if noVotes >= yesVotes {
-			spamCase.Status = "spam"
-		} else {
-			spamCase.Status = "false_positive"
-		}
-	} else {
-		entry.WithField("required_voters", requiredVoters).WithField("got_votes", len(votes)).Debug("not enough voters")
-		spamCase.Status = "spam"
+	status, shouldResolve := resolveStatusFromVotes(votes, requiredVoters, timedOut)
+	if !shouldResolve {
+		entry.WithField("required_voters", requiredVoters).WithField("got_votes", len(votes)).Debug("resolution deferred")
+		return nil
 	}
+	spamCase.Status = status
 
 	if spamCase.Status == "spam" {
 		if err := bot.BanUserFromChat(ctx, sc.s.GetBot(), spamCase.UserID, spamCase.ChatID, 0); err != nil {
@@ -457,6 +452,84 @@ func (sc *SpamControl) ResolveCase(ctx context.Context, caseID int64) error {
 		return fmt.Errorf("failed to update case: %w", err)
 	}
 	return nil
+}
+
+func resolveStatusFromVotes(votes []*db.SpamVote, requiredVoters int, timedOut bool) (string, bool) {
+	spamVotes := 0
+	notSpamVotes := 0
+	for _, vote := range votes {
+		if vote.Vote {
+			notSpamVotes++
+		} else {
+			spamVotes++
+		}
+	}
+
+	if len(votes) < requiredVoters {
+		if timedOut {
+			return "false_positive", true
+		}
+		return "", false
+	}
+	if spamVotes == notSpamVotes {
+		return "", false
+	}
+	if spamVotes > notSpamVotes {
+		return "spam", true
+	}
+	return "false_positive", true
+}
+
+func (sc *SpamControl) effectiveVotingPolicy(ctx context.Context, chatID int64) votingPolicy {
+	policy := resolveVotingPolicy(sc.config, nil)
+	settings, err := sc.s.GetSettings(ctx, chatID)
+	if err != nil || settings == nil {
+		return policy
+	}
+	return resolveVotingPolicy(sc.config, settings)
+}
+
+func normalizeVotingPolicy(policy votingPolicy) votingPolicy {
+	if policy.Timeout <= 0 {
+		policy.Timeout = 5 * time.Minute
+	}
+	if policy.MinVoters < 1 {
+		policy.MinVoters = 1
+	}
+	if policy.MaxVoters < 0 {
+		policy.MaxVoters = 0
+	}
+	if policy.MinVotersPercentage < 0 {
+		policy.MinVotersPercentage = 0
+	}
+	return policy
+}
+
+func resolveVotingPolicy(base config.SpamControl, settings *db.Settings) votingPolicy {
+	policy := votingPolicy{
+		Timeout:             base.VotingTimeoutMinutes,
+		MinVoters:           base.MinVoters,
+		MaxVoters:           base.MaxVoters,
+		MinVotersPercentage: base.MinVotersPercentage,
+	}
+
+	if settings == nil {
+		return normalizeVotingPolicy(policy)
+	}
+	if settings.CommunityVotingTimeoutOverrideNS != int64(db.SettingsOverrideInherit) {
+		policy.Timeout = time.Duration(settings.CommunityVotingTimeoutOverrideNS)
+	}
+	if settings.CommunityVotingMinVotersOverride != db.SettingsOverrideInherit {
+		policy.MinVoters = settings.CommunityVotingMinVotersOverride
+	}
+	if settings.CommunityVotingMaxVotersOverride != db.SettingsOverrideInherit {
+		policy.MaxVoters = settings.CommunityVotingMaxVotersOverride
+	}
+	if settings.CommunityVotingMinVotersPercentOverride != db.SettingsOverrideInherit {
+		policy.MinVotersPercentage = float64(settings.CommunityVotingMinVotersPercentOverride)
+	}
+
+	return normalizeVotingPolicy(policy)
 }
 
 func (sc *SpamControl) getLogEntry() *log.Entry {

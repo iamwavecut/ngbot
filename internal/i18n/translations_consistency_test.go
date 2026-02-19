@@ -41,6 +41,59 @@ func TestTranslationsKeysAreUsedAndComplete(t *testing.T) {
 	}
 }
 
+func TestAdminPanelTranslationsAreCompleteForSupportedLocales(t *testing.T) {
+	t.Parallel()
+
+	dict, err := loadTranslationsDict()
+	if err != nil {
+		t.Fatalf("load translations dict: %v", err)
+	}
+
+	keys := []string{
+		"Gatekeeper Settings",
+		"CAPTCHA Settings",
+		"Greeting Settings",
+		"LLM First Message",
+		"Community Voting",
+		"Spam Examples",
+		"Selected",
+		"Prompt examples cap: %d",
+		"Voting timeout",
+		"Min voters",
+		"Max voters",
+		"Min voters %",
+		"Voting policy",
+		"Insufficient votes on timeout => false-positive\nTie => wait one deciding vote",
+		"Inherit",
+		"No cap",
+	}
+
+	locales := make([]string, 0, len(languageNames)-1)
+	for code := range languageNames {
+		if strings.EqualFold(code, "en") {
+			continue
+		}
+		locales = append(locales, strings.ToUpper(code))
+	}
+	sort.Strings(locales)
+
+	for _, key := range keys {
+		translations, ok := dict[key]
+		if !ok {
+			t.Fatalf("missing key in translations: %s", key)
+		}
+		for _, locale := range locales {
+			value, ok := translations[locale]
+			if !ok {
+				t.Fatalf("missing locale %s for key %s", locale, key)
+			}
+			if strings.TrimSpace(value) == "" {
+				t.Fatalf("empty translation for key %s locale %s", key, locale)
+			}
+		}
+	}
+}
+
 func collectUsedI18nKeys() ([]string, error) {
 	root, err := repoRoot()
 	if err != nil {
@@ -107,12 +160,8 @@ func collectUsedI18nKeys() ([]string, error) {
 }
 
 func collectDefinedI18nKeys() ([]string, error) {
-	content, err := resources.FS.ReadFile("i18n/translations.yml")
+	dict, err := loadTranslationsDict()
 	if err != nil {
-		return nil, err
-	}
-	dict := map[string]map[string]string{}
-	if err := yaml.Unmarshal(content, &dict); err != nil {
 		return nil, err
 	}
 
@@ -122,6 +171,18 @@ func collectDefinedI18nKeys() ([]string, error) {
 	}
 	sort.Strings(keys)
 	return keys, nil
+}
+
+func loadTranslationsDict() (map[string]map[string]string, error) {
+	content, err := resources.FS.ReadFile("i18n/translations.yml")
+	if err != nil {
+		return nil, err
+	}
+	dict := map[string]map[string]string{}
+	if err := yaml.Unmarshal(content, &dict); err != nil {
+		return nil, err
+	}
+	return dict, nil
 }
 
 func difference(left, right []string) []string {
