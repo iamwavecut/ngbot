@@ -15,9 +15,14 @@ import (
 )
 
 func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api.Chat, user *api.User, settings *db.Settings) error {
+	var userID int64
+	if user != nil {
+		userID = user.ID
+	}
+
 	entry := r.getLogEntry().WithFields(log.Fields{
 		"chat_id": chat.ID,
-		"user_id": user.ID,
+		"user_id": userID,
 	})
 
 	result := &MessageProcessingResult{
@@ -25,6 +30,14 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 		Stage:   StageInit,
 	}
 	r.storeLastResult(int64(msg.MessageID), result)
+
+	if isLinkedChannelAutoForward(msg) {
+		result.Stage = StageSpamCheck
+		result.Skipped = true
+		result.SkipReason = "Linked channel auto-forward"
+		entry.WithField("sender_chat_id", msg.SenderChat.ID).Debug("Skipping linked channel auto-forward from spam pipeline")
+		return nil
+	}
 
 	isMember, err := r.s.IsMember(ctx, chat.ID, user.ID)
 	if err != nil {
@@ -133,6 +146,19 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 	}
 
 	return nil
+}
+
+func isLinkedChannelAutoForward(msg *api.Message) bool {
+	if msg == nil {
+		return false
+	}
+	if !msg.IsAutomaticForward {
+		return false
+	}
+	if msg.SenderChat == nil {
+		return false
+	}
+	return msg.SenderChat.IsChannel()
 }
 
 func (r *Reactor) checkMessageForSpam(ctx context.Context, chatID int64, content string, user *api.User) (*bool, error) {

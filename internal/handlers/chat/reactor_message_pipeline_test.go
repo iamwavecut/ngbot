@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	api "github.com/OvyFlash/telegram-bot-api"
 	"github.com/iamwavecut/ngbot/internal/db"
 )
 
@@ -56,5 +57,70 @@ func TestLoadSpamExamplesReturnsNilOnStoreError(t *testing.T) {
 	examples := r.loadSpamExamples(context.Background(), 100)
 	if examples != nil {
 		t.Fatalf("expected nil examples on store error, got %v", examples)
+	}
+}
+
+func TestIsLinkedChannelAutoForward(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		msg  *api.Message
+		want bool
+	}{
+		{
+			name: "auto-forward-from-channel",
+			msg: &api.Message{
+				IsAutomaticForward: true,
+				SenderChat: &api.Chat{
+					Type: "channel",
+				},
+			},
+			want: true,
+		},
+		{
+			name: "nil-message",
+			msg:  nil,
+			want: false,
+		},
+		{
+			name: "automatic-forward-without-sender-chat",
+			msg: &api.Message{
+				IsAutomaticForward: true,
+			},
+			want: false,
+		},
+		{
+			name: "sender-chat-is-not-channel",
+			msg: &api.Message{
+				IsAutomaticForward: true,
+				SenderChat: &api.Chat{
+					Type: "supergroup",
+				},
+			},
+			want: false,
+		},
+		{
+			name: "manual-channel-message",
+			msg: &api.Message{
+				IsAutomaticForward: false,
+				SenderChat: &api.Chat{
+					Type: "channel",
+				},
+			},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := isLinkedChannelAutoForward(tt.msg)
+			if got != tt.want {
+				t.Fatalf("isLinkedChannelAutoForward() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
