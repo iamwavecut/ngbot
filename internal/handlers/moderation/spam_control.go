@@ -538,9 +538,7 @@ func (sc *SpamControl) getLogEntry() *log.Entry {
 
 func (sc *SpamControl) scheduleAfter(delay time.Duration, task func(ctx context.Context)) {
 	runCtx := sc.getRuntimeContext()
-	sc.wg.Add(1)
-	go func() {
-		defer sc.wg.Done()
+	sc.wg.Go(func() {
 		timer := time.NewTimer(delay)
 		defer timer.Stop()
 
@@ -550,7 +548,7 @@ func (sc *SpamControl) scheduleAfter(delay time.Duration, task func(ctx context.
 		case <-timer.C:
 			task(runCtx)
 		}
-	}()
+	})
 }
 
 func (sc *SpamControl) getRuntimeContext() context.Context {

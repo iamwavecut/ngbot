@@ -28,7 +28,7 @@ func fetchURLs(ctx context.Context, client *http.Client, urls []string) (map[int
 
 func fetchURLWithRetry(ctx context.Context, client *http.Client, url string) (map[int64]struct{}, error) {
 	var lastErr error
-	for attempt := 0; attempt < banServiceMaxRetries; attempt++ {
+	for attempt := range banServiceMaxRetries {
 		ids, err := fetchURL(ctx, client, url)
 		if err == nil {
 			return ids, nil

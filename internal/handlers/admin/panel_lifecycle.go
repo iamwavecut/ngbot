@@ -8,9 +8,7 @@ import (
 )
 
 func (a *Admin) startPanelCleanup(ctx context.Context) {
-	a.wg.Add(1)
-	go func() {
-		defer a.wg.Done()
+	a.wg.Go(func() {
 		ticker := time.NewTicker(panelCleanupInterval)
 		defer ticker.Stop()
 		for {
@@ -21,7 +19,7 @@ func (a *Admin) startPanelCleanup(ctx context.Context) {
 				a.cleanupExpiredPanels(ctx)
 			}
 		}
-	}()
+	})
 }
 
 func (a *Admin) cleanupExpiredPanels(ctx context.Context) {

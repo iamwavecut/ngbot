@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -184,13 +185,7 @@ func (a *Admin) handleLangCommand(ctx context.Context, msg *api.Message, isAdmin
 	argument := msg.CommandArguments()
 	entry.Debugf("language argument: %s", argument)
 
-	isAllowed := false
-	for _, allowedLanguage := range a.languages {
-		if allowedLanguage == argument {
-			isAllowed = true
-			break
-		}
-	}
+	isAllowed := slices.Contains(a.languages, argument)
 	if !isAllowed {
 		entry.Debug("invalid language argument")
 		msg := api.NewMessage(

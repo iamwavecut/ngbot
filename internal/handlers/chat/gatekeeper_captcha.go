@@ -53,10 +53,7 @@ func (g *Gatekeeper) createCaptchaButtons(userID int64, successUUID string, lang
 		}, fallback
 	}
 
-	targetSize := normalizeCaptchaOptionsCount(optionsCount)
-	if len(captchaIndex) < targetSize {
-		targetSize = len(captchaIndex)
-	}
+	targetSize := min(len(captchaIndex), normalizeCaptchaOptionsCount(optionsCount))
 
 	captchaRandomSet := make([][2]string, 0, targetSize)
 	usedIDs := make(map[int]struct{}, targetSize)

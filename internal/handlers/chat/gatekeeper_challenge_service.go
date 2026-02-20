@@ -245,10 +245,7 @@ func (g *Gatekeeper) rejectConfigFromSettings(settings *db.Settings, language st
 		return 0, "", errors.New("settings are nil")
 	}
 	rejectDuration := settings.GetRejectTimeout()
-	rejectMinutes := int(rejectDuration.Minutes())
-	if rejectMinutes < 1 {
-		rejectMinutes = 1
-	}
+	rejectMinutes := max(int(rejectDuration.Minutes()), 1)
 	rejectText := fmt.Sprintf(
 		i18n.Get("Oops, it looks like you missed the deadline to join \"%s\", but don't worry! You can try again in %s minutes. Keep trying, I believe in you!", language),
 		title,

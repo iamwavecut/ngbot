@@ -166,9 +166,7 @@ func (g *Gatekeeper) Start(ctx context.Context) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	g.workerCancel = cancel
 
-	g.workerWG.Add(1)
-	go func() {
-		defer g.workerWG.Done()
+	g.workerWG.Go(func() {
 		ticker := time.NewTicker(processNewChatMembersInterval)
 		defer ticker.Stop()
 
@@ -182,11 +180,9 @@ func (g *Gatekeeper) Start(ctx context.Context) error {
 				}
 			}
 		}
-	}()
+	})
 
-	g.workerWG.Add(1)
-	go func() {
-		defer g.workerWG.Done()
+	g.workerWG.Go(func() {
 		ticker := time.NewTicker(processExpiredChallengesInterval)
 		defer ticker.Stop()
 
@@ -200,7 +196,7 @@ func (g *Gatekeeper) Start(ctx context.Context) error {
 				}
 			}
 		}
-	}()
+	})
 
 	g.started = true
 	return nil

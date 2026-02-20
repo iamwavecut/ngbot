@@ -3,6 +3,7 @@ package bot
 import (
 	"context"
 	"fmt"
+	"maps"
 	"sync"
 	"time"
 
@@ -56,9 +57,7 @@ func (s *service) Start(ctx context.Context) error {
 
 	s.ctx, s.cancel = context.WithCancel(ctx)
 
-	s.workersWG.Add(1)
-	go func() {
-		defer s.workersWG.Done()
+	s.workersWG.Go(func() {
 
 		ticker := time.NewTicker(24 * time.Hour)
 		defer ticker.Stop()
@@ -73,18 +72,16 @@ func (s *service) Start(ctx context.Context) error {
 				}
 			}
 		}
-	}()
+	})
 
-	s.workersWG.Add(1)
-	go func() {
-		defer s.workersWG.Done()
+	s.workersWG.Go(func() {
 		warmupCtx, warmupCancel := context.WithTimeout(s.ctx, 30*time.Second)
 		defer warmupCancel()
 
 		if err := s.warmupCache(warmupCtx); err != nil && !errors.Is(err, context.Canceled) {
 			s.log.WithField("errorv", fmt.Sprintf("%+v", err)).Error("Failed to warm up cache")
 		}
-	}()
+	})
 
 	s.started = true
 	return nil
@@ -296,9 +293,7 @@ func (s *service) warmupCache(ctx context.Context) error {
 			return fmt.Errorf("failed to warmup settings cache: %w", err)
 		}
 		s.cacheMutex.Lock()
-		for chatID, setting := range settings {
-			s.settingsCache[chatID] = setting
-		}
+		maps.Copy(s.settingsCache, settings)
 		s.cacheMutex.Unlock()
 		return nil
 	})

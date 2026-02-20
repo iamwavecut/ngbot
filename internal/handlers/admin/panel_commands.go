@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"slices"
 	"strconv"
 	"time"
 
@@ -416,21 +417,11 @@ func syncPanelStateFromSettings(state *panelState, settings *db.Settings) {
 }
 
 func containsDuration(candidates []time.Duration, value time.Duration) bool {
-	for _, candidate := range candidates {
-		if candidate == value {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(candidates, value)
 }
 
 func containsInt(candidates []int, value int) bool {
-	for _, candidate := range candidates {
-		if candidate == value {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(candidates, value)
 }
 
 func (a *Admin) setChatLanguage(ctx context.Context, chatID int64, language string) error {

@@ -250,7 +250,7 @@ func (g *Gatekeeper) handleJoin(ctx context.Context, u *api.Update, jus []api.Us
 			randomKey := keys[tool.RandInt(0, len(keys)-1)]
 			nameString := fmt.Sprintf("[%s](tg://user?id=%d)", api.EscapeText(api.ModeMarkdown, bot.GetFullName(&ju)), ju.ID)
 
-			args := []interface{}{nameString}
+			args := []any{nameString}
 			if !isPublic {
 				args = append(args, g.chatLinkTitled(target))
 			}

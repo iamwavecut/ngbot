@@ -20,33 +20,31 @@ func TestKnownBannedConcurrentAccess(t *testing.T) {
 	)
 
 	var wg sync.WaitGroup
-	for w := 0; w < writers; w++ {
+	for w := range writers {
 		wg.Add(1)
 		go func(offset int64) {
 			defer wg.Done()
-			for i := int64(0); i < iterations; i++ {
+			for i := range int64(iterations) {
 				svc.markKnownBanned(offset*iterations + i)
 			}
 		}(int64(w + 1))
 	}
 
-	for r := 0; r < readers; r++ {
+	for r := range readers {
 		wg.Add(1)
 		go func(offset int64) {
 			defer wg.Done()
-			for i := int64(0); i < iterations; i++ {
+			for i := range int64(iterations) {
 				_ = svc.IsKnownBanned(offset*iterations + i)
 			}
 		}(int64(r + 1))
 	}
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for i := int64(0); i < iterations; i++ {
+	wg.Go(func() {
+		for i := range int64(iterations) {
 			svc.setKnownBanned(map[int64]struct{}{i: {}})
 		}
-	}()
+	})
 
 	wg.Wait()
 

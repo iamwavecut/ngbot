@@ -89,17 +89,13 @@ func (s *defaultBanService) Start(ctx context.Context) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	s.runCancel = cancel
 
-	s.workersWg.Add(1)
-	go func() {
-		defer s.workersWg.Done()
+	s.workersWg.Go(func() {
 		if err := s.bootstrap(runCtx); err != nil && !errorsIsCanceled(err) {
 			log.WithError(err).Error("Failed to bootstrap known banned users")
 		}
-	}()
+	})
 
-	s.workersWg.Add(1)
-	go func() {
-		defer s.workersWg.Done()
+	s.workersWg.Go(func() {
 		ticker := time.NewTicker(time.Hour)
 		defer ticker.Stop()
 
@@ -113,7 +109,7 @@ func (s *defaultBanService) Start(ctx context.Context) error {
 				}
 			}
 		}
-	}()
+	})
 
 	s.started = true
 	return nil

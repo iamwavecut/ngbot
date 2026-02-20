@@ -844,10 +844,7 @@ func chunkButtons(buttons []api.InlineKeyboardButton, perRow int) [][]api.Inline
 	}
 	var rows [][]api.InlineKeyboardButton
 	for i := 0; i < len(buttons); i += perRow {
-		end := i + perRow
-		if end > len(buttons) {
-			end = len(buttons)
-		}
+		end := min(i+perRow, len(buttons))
 		rows = append(rows, api.NewInlineKeyboardRow(buttons[i:end]...))
 	}
 	return rows
