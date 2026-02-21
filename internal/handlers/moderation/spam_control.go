@@ -37,6 +37,12 @@ type votingPolicy struct {
 	MinVotersPercentage float64
 }
 
+const (
+	spamCaseStatusPending = "pending"
+	spamCaseStatusSpam    = "spam"
+	errChatAdminRequired  = "CHAT_ADMIN_REQUIRED"
+)
+
 type spamStore interface {
 	CreateSpamCase(ctx context.Context, sc *db.SpamCase) (*db.SpamCase, error)
 	UpdateSpamCase(ctx context.Context, sc *db.SpamCase) error
@@ -115,7 +121,7 @@ func (sc *SpamControl) getSpamCase(ctx context.Context, msg *api.Message) (*db.S
 			UserID:      msg.From.ID,
 			MessageText: bot.ExtractContentFromMessage(msg),
 			CreatedAt:   time.Now(),
-			Status:      "pending",
+			Status:      spamCaseStatusPending,
 		})
 		if err != nil {
 			log.WithField("error", err.Error()).Debug("failed to create spam case")
@@ -151,7 +157,7 @@ func (sc *SpamControl) preprocessMessage(ctx context.Context, msg *api.Message, 
 	if voting {
 		if err := sc.banService.MuteUser(ctx, chat.ID, msg.From.ID); err != nil {
 			if errors.Is(err, ErrNoPrivileges) {
-				result.Error = "CHAT_ADMIN_REQUIRED"
+				result.Error = errChatAdminRequired
 			} else {
 				result.Error = err.Error()
 			}
@@ -161,8 +167,8 @@ func (sc *SpamControl) preprocessMessage(ctx context.Context, msg *api.Message, 
 	} else {
 		if err := bot.BanUserFromChat(ctx, sc.s.GetBot(), msg.From.ID, chat.ID, 0); err != nil {
 			log.WithField("error", err.Error()).WithField("chat_title", chat.Title).WithField("chat_username", chat.UserName).Error("failed to ban user")
-			if strings.Contains(err.Error(), "CHAT_ADMIN_REQUIRED") {
-				result.Error = "CHAT_ADMIN_REQUIRED"
+			if strings.Contains(err.Error(), errChatAdminRequired) {
+				result.Error = errChatAdminRequired
 			} else {
 				result.Error = err.Error()
 			}
@@ -170,11 +176,11 @@ func (sc *SpamControl) preprocessMessage(ctx context.Context, msg *api.Message, 
 			result.UserBanned = true
 		}
 		now := time.Now()
-		spamCase.Status = "spam"
+		spamCase.Status = spamCaseStatusSpam
 		spamCase.ResolvedAt = &now
 	}
 
-	if result.Error == "CHAT_ADMIN_REQUIRED" {
+	if result.Error == errChatAdminRequired {
 		unsuccessReply := api.NewMessage(chat.ID, "I don't have enough rights to ban this user")
 		unsuccessReply.ReplyParameters = api.ReplyParameters{
 			ChatID:                   chat.ID,

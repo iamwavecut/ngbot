@@ -34,6 +34,7 @@ func (a *Admin) renderHome(ctx context.Context, session *db.AdminPanelSession, s
 		i18n.Get("Chat ID", lang),
 		state.ChatID,
 	)
+	body = appendPanelHelp(body, lang, i18n.Get("What this is: main navigation for chat moderation settings. Where used: private admin panel opened from /settings. Value meaning: buttons open categories, and category pages contain actual controls.", lang))
 
 	languageLabelText := fmt.Sprintf("%s: %s", i18n.Get("Language", lang), languageLabel(state.Language))
 	languageBtn, err := a.commandButton(ctx, session.ID, languageLabelText, panelCommand{Action: panelActionOpenLanguage})
@@ -110,6 +111,8 @@ func (a *Admin) renderLanguageList(ctx context.Context, session *db.AdminPanelSe
 			builder.WriteString("\n")
 		}
 	}
+	builder.WriteString("\n\n")
+	builder.WriteString(panelHelpBlock(lang, i18n.Get("What this is: interface language for this chat settings panel and localized bot messages. Where used: admin panel pages and message templates that use chat language. Value meaning: selected language code is saved as chat language.", lang)))
 
 	var buttons []api.InlineKeyboardButton
 	for _, code := range pageLangs {
@@ -144,6 +147,7 @@ func (a *Admin) renderGatekeeper(ctx context.Context, session *db.AdminPanelSess
 		statusEmoji(state.Features.GatekeeperEnabled),
 		i18n.Get("Master Switch", lang),
 	)
+	text = appendPanelHelp(text, lang, i18n.Get("What this is: main anti-raid module for new users. Where used: join flow before users start normal messaging. Value meaning: Master Switch enables or disables gatekeeper features for this chat.", lang))
 
 	masterBtn, err := a.commandButton(ctx, session.ID, fmt.Sprintf("%s %s", statusEmoji(state.Features.GatekeeperEnabled), i18n.Get("Master Switch", lang)), panelCommand{Action: panelActionGatekeeperToggleMaster})
 	if err != nil {
@@ -185,6 +189,7 @@ func (a *Admin) renderGatekeeperCaptcha(ctx context.Context, session *db.AdminPa
 		i18n.Get("Reject timeout", lang),
 		panelDurationLabel(time.Duration(state.RejectTimeout)),
 	)
+	text = appendPanelHelp(text, lang, i18n.Get("What this is: human verification settings for newcomers. Where used: CAPTCHA challenge after joining the chat. Value meaning: toggles and values define challenge complexity and timing.", lang))
 
 	toggleBtn, err := a.commandButton(ctx, session.ID, fmt.Sprintf("%s %s", statusEmoji(state.Features.GatekeeperCaptchaEnabled), i18n.Get("CAPTCHA", lang)), panelCommand{Action: panelActionGatekeeperToggleCaptcha})
 	if err != nil {
@@ -220,6 +225,7 @@ func (a *Admin) renderGatekeeperCaptcha(ctx context.Context, session *db.AdminPa
 func (a *Admin) renderGatekeeperCaptchaOptions(ctx context.Context, session *db.AdminPanelSession, state *panelState) (string, *api.InlineKeyboardMarkup, error) {
 	lang := state.Language
 	text := fmt.Sprintf("%s\n\n%s: %d", i18n.Get("Captcha options", lang), i18n.Get("Selected", lang), state.GatekeeperCaptchaOptionsCount)
+	text = appendPanelHelp(text, lang, i18n.Get("What this is: number of options shown in CAPTCHA challenge. Where used: generated CAPTCHA keyboard for newcomers. Value meaning: larger number can make guessing harder.", lang))
 
 	buttons := make([]api.InlineKeyboardButton, 0, len(panelGatekeeperCaptchaOptions))
 	for _, option := range panelGatekeeperCaptchaOptions {
@@ -246,6 +252,7 @@ func (a *Admin) renderGatekeeperCaptchaOptions(ctx context.Context, session *db.
 func (a *Admin) renderGatekeeperChallengeTimeout(ctx context.Context, session *db.AdminPanelSession, state *panelState) (string, *api.InlineKeyboardMarkup, error) {
 	lang := state.Language
 	text := fmt.Sprintf("%s\n\n%s: %s", i18n.Get("Challenge timeout", lang), i18n.Get("Selected", lang), panelDurationLabel(time.Duration(state.ChallengeTimeout)))
+	text = appendPanelHelp(text, lang, i18n.Get("What this is: time limit to solve CAPTCHA. Where used: active gatekeeper challenge for a joined user. Value meaning: after timeout, unresolved challenge fails.", lang))
 
 	buttons := make([]api.InlineKeyboardButton, 0, len(panelChallengeTimeoutOptions))
 	for _, option := range panelChallengeTimeoutOptions {
@@ -272,6 +279,7 @@ func (a *Admin) renderGatekeeperChallengeTimeout(ctx context.Context, session *d
 func (a *Admin) renderGatekeeperRejectTimeout(ctx context.Context, session *db.AdminPanelSession, state *panelState) (string, *api.InlineKeyboardMarkup, error) {
 	lang := state.Language
 	text := fmt.Sprintf("%s\n\n%s: %s", i18n.Get("Reject timeout", lang), i18n.Get("Selected", lang), panelDurationLabel(time.Duration(state.RejectTimeout)))
+	text = appendPanelHelp(text, lang, i18n.Get("What this is: temporary restriction duration after failed or expired challenge. Where used: gatekeeper reject action. Value meaning: user cannot send messages until timeout ends.", lang))
 
 	buttons := make([]api.InlineKeyboardButton, 0, len(panelRejectTimeoutOptions))
 	for _, option := range panelRejectTimeoutOptions {
@@ -311,6 +319,8 @@ func (a *Admin) renderGatekeeperGreeting(ctx context.Context, session *db.AdminP
 	} else {
 		builder.WriteString(preview)
 	}
+	builder.WriteString("\n\n")
+	builder.WriteString(panelHelpBlock(lang, i18n.Get("What this is: automatic greeting module for approved newcomers. Where used: message sent after successful gatekeeper pass. Value meaning: Master Switch turns greeting on or off.", lang)))
 
 	toggleBtn, err := a.commandButton(ctx, session.ID, fmt.Sprintf("%s %s", statusEmoji(state.Features.GatekeeperGreetingEnabled), i18n.Get("Greeting", lang)), panelCommand{Action: panelActionGatekeeperToggleGreeting})
 	if err != nil {
@@ -360,6 +370,8 @@ func (a *Admin) renderGatekeeperGreetingPrompt(ctx context.Context, session *db.
 	} else {
 		builder.WriteString(preview)
 	}
+	builder.WriteString("\n\n")
+	builder.WriteString(panelHelpBlock(lang, i18n.Get("What this is: greeting text editor with placeholders. Where used: template used by greeting module. Value meaning: saved text is rendered with runtime variables like user and chat title.", lang)))
 
 	backBtn, err := a.commandButton(ctx, session.ID, "↩️", panelCommand{Action: panelActionBack})
 	if err != nil {
@@ -382,6 +394,7 @@ func (a *Admin) renderLLM(ctx context.Context, session *db.AdminPanelSession, st
 		i18n.Get("LLM First Message", lang),
 		fmt.Sprintf(i18n.Get("Prompt examples cap: %d", lang), panelLLMExamplesCap),
 	)
+	text = appendPanelHelp(text, lang, i18n.Get("What this is: LLM-based first-message moderation module. Where used: analysis of a user's first message in chat. Value meaning: Master Switch enables or disables this spam check.", lang))
 
 	toggleBtn, err := a.commandButton(ctx, session.ID, fmt.Sprintf("%s %s", statusEmoji(state.Features.LLMFirstMessageEnabled), i18n.Get("LLM First Message", lang)), panelCommand{Action: panelActionToggleFeature, Feature: panelFeatureLLMFirst})
 	if err != nil {
@@ -432,6 +445,8 @@ func (a *Admin) renderExamplesList(ctx context.Context, session *db.AdminPanelSe
 			builder.WriteString("\n")
 		}
 	}
+	builder.WriteString("\n\n")
+	builder.WriteString(panelHelpBlock(lang, i18n.Get("What this is: list of spam examples used by LLM classifier. Where used: prompt context for first-message moderation. Value meaning: each example improves signal for spam patterns in this chat.", lang)))
 
 	addBtn, err := a.commandButton(ctx, session.ID, i18n.Get("Add Example", lang), panelCommand{Action: panelActionAddExample})
 	if err != nil {
@@ -472,6 +487,7 @@ func (a *Admin) renderExampleDetail(ctx context.Context, session *db.AdminPanelS
 	}
 
 	text := fmt.Sprintf("%s\n\n%s", i18n.Get("Spam Example", lang), example.Text)
+	text = appendPanelHelp(text, lang, i18n.Get("What this is: one saved spam example entry. Where used: spam examples list and delete flow. Value meaning: text is used as a labeled spam sample for moderation.", lang))
 	deleteBtn, err := a.commandButton(ctx, session.ID, i18n.Get("Delete", lang), panelCommand{Action: panelActionOpenDelete})
 	if err != nil {
 		return "", nil, err
@@ -494,6 +510,8 @@ func (a *Admin) renderExamplePrompt(ctx context.Context, session *db.AdminPanelS
 		builder.WriteString("\n\n")
 	}
 	builder.WriteString(i18n.Get("Send the spam example text", lang))
+	builder.WriteString("\n\n")
+	builder.WriteString(panelHelpBlock(lang, i18n.Get("What this is: input mode for adding a new spam example. Where used: admin prompt waiting for message text. Value meaning: next received text is stored as spam example.", lang)))
 
 	backBtn, err := a.commandButton(ctx, session.ID, "↩️", panelCommand{Action: panelActionBack})
 	if err != nil {
@@ -546,6 +564,7 @@ func (a *Admin) renderVoting(ctx context.Context, session *db.AdminPanelSession,
 		i18n.Get("Voting policy", lang),
 		i18n.Get("Insufficient votes on timeout => false-positive\nTie => wait one deciding vote", lang),
 	)
+	text = appendPanelHelp(text, lang, i18n.Get("What this is: community voting moderation module. Where used: suspicious message review by chat members. Value meaning: Master Switch enables or disables voting-based decisions.", lang))
 
 	toggleBtn, err := a.commandButton(ctx, session.ID, fmt.Sprintf("%s %s", statusEmoji(state.Features.CommunityVotingEnabled), i18n.Get("Community Voting", lang)), panelCommand{Action: panelActionToggleFeature, Feature: panelFeatureVoting})
 	if err != nil {
@@ -586,6 +605,7 @@ func (a *Admin) renderVoting(ctx context.Context, session *db.AdminPanelSession,
 func (a *Admin) renderVotingTimeout(ctx context.Context, session *db.AdminPanelSession, state *panelState) (string, *api.InlineKeyboardMarkup, error) {
 	lang := state.Language
 	text := fmt.Sprintf("%s\n\n%s: %s", i18n.Get("Voting timeout", lang), i18n.Get("Selected", lang), panelVotingTimeoutStateLabel(lang, state.CommunityVotingTimeoutOverrideNS))
+	text = appendPanelHelp(text, lang, i18n.Get("What this is: vote collection time window. Where used: active voting case after suspect message is detected. Value meaning: Inherit uses global default, explicit duration overrides it for this chat.", lang))
 
 	buttons := make([]api.InlineKeyboardButton, 0, len(panelVotingTimeoutOptions)+1)
 	inheritBtn, err := a.commandButton(ctx, session.ID, panelSelectLabel(state.CommunityVotingTimeoutOverrideNS == int64(db.SettingsOverrideInherit), i18n.Get("Inherit", lang)), panelCommand{Action: panelActionSetVotingTimeout, Value: "inherit"})
@@ -616,6 +636,7 @@ func (a *Admin) renderVotingTimeout(ctx context.Context, session *db.AdminPanelS
 func (a *Admin) renderVotingMinVoters(ctx context.Context, session *db.AdminPanelSession, state *panelState) (string, *api.InlineKeyboardMarkup, error) {
 	lang := state.Language
 	text := fmt.Sprintf("%s\n\n%s: %s", i18n.Get("Min voters", lang), i18n.Get("Selected", lang), panelVotingIntStateLabel(lang, state.CommunityVotingMinVotersOverride, false))
+	text = appendPanelHelp(text, lang, i18n.Get("What this is: minimum number of voters required for a decision. Where used: resolution step of each voting case. Value meaning: Inherit uses global default, higher number requires more participants.", lang))
 
 	buttons := make([]api.InlineKeyboardButton, 0, len(panelVotingMinVotersOptions)+1)
 	inheritBtn, err := a.commandButton(ctx, session.ID, panelSelectLabel(state.CommunityVotingMinVotersOverride == db.SettingsOverrideInherit, i18n.Get("Inherit", lang)), panelCommand{Action: panelActionSetVotingMinVoters, Value: "inherit"})
@@ -644,6 +665,7 @@ func (a *Admin) renderVotingMinVoters(ctx context.Context, session *db.AdminPane
 func (a *Admin) renderVotingMaxVoters(ctx context.Context, session *db.AdminPanelSession, state *panelState) (string, *api.InlineKeyboardMarkup, error) {
 	lang := state.Language
 	text := fmt.Sprintf("%s\n\n%s: %s", i18n.Get("Max voters", lang), i18n.Get("Selected", lang), panelVotingIntStateLabel(lang, state.CommunityVotingMaxVotersOverride, true))
+	text = appendPanelHelp(text, lang, i18n.Get("What this is: upper cap of voters counted in one case. Where used: community voting resolution logic. Value meaning: 0 means no cap, Inherit uses global default.", lang))
 
 	buttons := make([]api.InlineKeyboardButton, 0, len(panelVotingMaxVotersOptions)+1)
 	inheritBtn, err := a.commandButton(ctx, session.ID, panelSelectLabel(state.CommunityVotingMaxVotersOverride == db.SettingsOverrideInherit, i18n.Get("Inherit", lang)), panelCommand{Action: panelActionSetVotingMaxVoters, Value: "inherit"})
@@ -676,6 +698,7 @@ func (a *Admin) renderVotingMaxVoters(ctx context.Context, session *db.AdminPane
 func (a *Admin) renderVotingMinPercent(ctx context.Context, session *db.AdminPanelSession, state *panelState) (string, *api.InlineKeyboardMarkup, error) {
 	lang := state.Language
 	text := fmt.Sprintf("%s\n\n%s: %s", i18n.Get("Min voters %", lang), i18n.Get("Selected", lang), panelVotingIntStateLabel(lang, state.CommunityVotingMinVotersPercentOverride, false))
+	text = appendPanelHelp(text, lang, i18n.Get("What this is: minimum participation percent required to apply a result. Where used: validation before final voting decision. Value meaning: Inherit uses global default, selected percent is compared with current chat member count.", lang))
 
 	buttons := make([]api.InlineKeyboardButton, 0, len(panelVotingMinVotersPercentOptions)+1)
 	inheritBtn, err := a.commandButton(ctx, session.ID, panelSelectLabel(state.CommunityVotingMinVotersPercentOverride == db.SettingsOverrideInherit, i18n.Get("Inherit", lang)), panelCommand{Action: panelActionSetVotingMinPercent, Value: "inherit"})
@@ -810,6 +833,14 @@ func panelSelectLabel(selected bool, label string) string {
 		return "✅ " + label
 	}
 	return label
+}
+
+func panelHelpBlock(lang string, help string) string {
+	return fmt.Sprintf("%s\n%s", i18n.Get("Help", lang), help)
+}
+
+func appendPanelHelp(base string, lang string, help string) string {
+	return base + "\n\n" + panelHelpBlock(lang, help)
 }
 
 func renderGreetingPreviewQuote(state *panelState) string {
