@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	api "github.com/OvyFlash/telegram-bot-api"
 	"github.com/iamwavecut/ngbot/internal/bot"
@@ -14,6 +15,10 @@ import (
 )
 
 func (r *Reactor) handleCommand(ctx context.Context, msg *api.Message, chat *api.Chat, user *api.User, settings *db.Settings) error {
+	if !commandTargetsCurrentBot(msg, r.s.GetBot().Self.UserName) {
+		return nil
+	}
+
 	switch msg.Command() {
 	case "testspam":
 		return r.testSpamCommand(ctx, msg, chat)
@@ -24,6 +29,27 @@ func (r *Reactor) handleCommand(ctx context.Context, msg *api.Message, chat *api
 	}
 
 	return nil
+}
+
+func commandTargetsCurrentBot(msg *api.Message, botUserName string) bool {
+	if msg == nil || !msg.IsCommand() {
+		return false
+	}
+
+	commandWithAt := msg.CommandWithAt()
+	if commandWithAt == "" {
+		return false
+	}
+
+	_, after, ok := strings.Cut(commandWithAt, "@")
+	if !ok {
+		return true
+	}
+	if botUserName == "" {
+		return false
+	}
+
+	return strings.EqualFold(after, botUserName)
 }
 
 func (r *Reactor) testSpamCommand(ctx context.Context, msg *api.Message, chat *api.Chat) error {
