@@ -298,43 +298,6 @@ func DeclineJoinRequest(ctx context.Context, bot *api.BotAPI, userID int64, chat
 	}
 }
 
-func GetUpdatesChans(ctx context.Context, bot *api.BotAPI, config api.UpdateConfig) (api.UpdatesChannel, chan error) {
-	ch := make(chan api.Update, bot.Buffer)
-	chErr := make(chan error)
-
-	go func() {
-		defer close(ch)
-		defer close(chErr)
-		for {
-			select {
-			case <-ctx.Done():
-				chErr <- ctx.Err()
-				return
-			default:
-				updates, err := bot.GetUpdates(config)
-				if err != nil {
-					chErr <- err
-					return
-				}
-
-				for _, update := range updates {
-					if update.UpdateID >= config.Offset {
-						config.Offset = update.UpdateID + 1
-						select {
-						case ch <- update:
-						case <-ctx.Done():
-							chErr <- ctx.Err()
-							return
-						}
-					}
-				}
-			}
-		}
-	}()
-
-	return ch, chErr
-}
-
 func GetUN(user *api.User) string {
 	if user == nil {
 		return ""

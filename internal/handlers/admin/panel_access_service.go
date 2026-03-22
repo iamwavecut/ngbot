@@ -17,22 +17,22 @@ func (a *Admin) ensureManagerAccess(ctx context.Context, chatID int64, userID in
 	membership, err := a.store.GetChatBotMembership(ctx, chatID)
 	if err == nil && membership != nil && !membership.IsMember {
 		if callbackID != "" {
-			a.answerCallback(ctx, callbackID, i18n.Get("No access", a.s.GetLanguage(ctx, chatID, nil)))
+			a.answerCallback(callbackID, i18n.Get("No access", a.s.GetLanguage(ctx, chatID, nil)))
 		}
 		return fmt.Errorf("bot is not member")
 	}
 
-	member, err := a.getChatMember(ctx, chatID, userID)
+	member, err := a.getChatMember(chatID, userID)
 	if err != nil {
 		a.handleBotMembershipError(ctx, chatID, err)
 		if callbackID != "" {
-			a.answerCallback(ctx, callbackID, i18n.Get("No access", a.s.GetLanguage(ctx, chatID, nil)))
+			a.answerCallback(callbackID, i18n.Get("No access", a.s.GetLanguage(ctx, chatID, nil)))
 		}
 		return err
 	}
 	if !permissions.IsManager(member) {
 		if callbackID != "" {
-			a.answerCallback(ctx, callbackID, i18n.Get("No access", a.s.GetLanguage(ctx, chatID, nil)))
+			a.answerCallback(callbackID, i18n.Get("No access", a.s.GetLanguage(ctx, chatID, nil)))
 		}
 		return fmt.Errorf("no access")
 	}
@@ -61,24 +61,24 @@ func (a *Admin) startTyping(ctx context.Context, chatID int64) func() {
 	}
 }
 
-func (a *Admin) sendPlaceholder(ctx context.Context, chatID int64, language string) (api.Message, error) {
+func (a *Admin) sendPlaceholder(chatID int64, language string) (api.Message, error) {
 	msg := api.NewMessage(chatID, i18n.Get("Please wait...", language))
 	msg.DisableNotification = true
 	return a.s.GetBot().Send(msg)
 }
 
-func (a *Admin) editMessage(ctx context.Context, chatID int64, messageID int, text string, markup *api.InlineKeyboardMarkup) error {
+func (a *Admin) editMessage(chatID int64, messageID int, text string, markup *api.InlineKeyboardMarkup) error {
 	edit := api.NewEditMessageText(chatID, messageID, text)
 	edit.ReplyMarkup = markup
 	_, err := a.s.GetBot().Send(edit)
 	return err
 }
 
-func (a *Admin) answerCallback(ctx context.Context, callbackID string, text string) {
+func (a *Admin) answerCallback(callbackID string, text string) {
 	_, _ = a.s.GetBot().Request(api.NewCallback(callbackID, text))
 }
 
-func (a *Admin) getChatMember(ctx context.Context, chatID int64, userID int64) (*api.ChatMember, error) {
+func (a *Admin) getChatMember(chatID int64, userID int64) (*api.ChatMember, error) {
 	member, err := a.s.GetBot().GetChatMember(api.GetChatMemberConfig{
 		ChatConfigWithUser: api.ChatConfigWithUser{
 			ChatConfig: api.ChatConfig{
@@ -138,35 +138,34 @@ func isBotRemovedError(err error) bool {
 	return strings.Contains(errText, "forbidden") || strings.Contains(errText, "kicked") || strings.Contains(errText, "chat not found")
 }
 
-func (a *Admin) handleGroupDeleteCallback(ctx context.Context, cq *api.CallbackQuery, user *api.User) error {
+func (a *Admin) handleGroupDeleteCallback(ctx context.Context, cq *api.CallbackQuery, user *api.User) {
 	payload := strings.TrimPrefix(cq.Data, "del_")
 	encodedChatID, encodedMessageID, ok := splitDeletePayload(payload)
 	if !ok {
-		return nil
+		return
 	}
 	chatID, err := decodeChatID(encodedChatID)
 	if err != nil {
-		return nil
+		return
 	}
 	commandMessageID, err := decodeMessageID(encodedMessageID)
 	if err != nil {
-		return nil
+		return
 	}
 
-	member, err := a.getChatMember(ctx, chatID, user.ID)
+	member, err := a.getChatMember(chatID, user.ID)
 	if err != nil {
 		a.handleBotMembershipError(ctx, chatID, err)
-		return nil
+		return
 	}
 	if !permissions.IsPrivilegedModerator(member) {
-		a.answerCallback(ctx, cq.ID, i18n.Get("No access", a.s.GetLanguage(ctx, chatID, user)))
-		return nil
+		a.answerCallback(cq.ID, i18n.Get("No access", a.s.GetLanguage(ctx, chatID, user)))
+		return
 	}
 
 	if cq.Message != nil {
 		_ = a.deleteGroupMessage(ctx, chatID, cq.Message.MessageID)
 	}
 	_ = a.deleteGroupMessage(ctx, chatID, commandMessageID)
-	a.answerCallback(ctx, cq.ID, "")
-	return nil
+	a.answerCallback(cq.ID, "")
 }

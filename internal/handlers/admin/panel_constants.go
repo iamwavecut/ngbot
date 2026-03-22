@@ -8,6 +8,8 @@ const (
 	panelPreviewMaxLen    = 80
 	panelMaxInputLen      = 4096
 	panelLLMExamplesCap   = 20
+	panelValueInherit     = "inherit"
+	panelChatTypePrivate  = "private"
 )
 
 var (

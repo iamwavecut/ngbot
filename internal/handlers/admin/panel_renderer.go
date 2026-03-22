@@ -17,7 +17,7 @@ func (a *Admin) renderAndUpdatePanel(ctx context.Context, session *db.AdminPanel
 	if err := a.savePanelState(ctx, session, state); err != nil {
 		return err
 	}
-	if err := a.editMessage(ctx, session.UserID, messageID, text, markup); err != nil {
+	if err := a.editMessage(session.UserID, messageID, text, markup); err != nil {
 		if isMessageNotModifiedError(err) {
 			return nil
 		}

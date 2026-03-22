@@ -106,7 +106,7 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 	}
 
 	result.Stage = StageSpamCheck
-	isSpam, err := r.checkMessageForSpam(ctx, chat.ID, content, user)
+	isSpam, err := r.checkMessageForSpam(ctx, chat.ID, content)
 	if err != nil {
 		return err
 	}
@@ -161,7 +161,7 @@ func isLinkedChannelAutoForward(msg *api.Message) bool {
 	return msg.SenderChat.IsChannel()
 }
 
-func (r *Reactor) checkMessageForSpam(ctx context.Context, chatID int64, content string, user *api.User) (*bool, error) {
+func (r *Reactor) checkMessageForSpam(ctx context.Context, chatID int64, content string) (*bool, error) {
 	words := strings.Fields(content)
 	for i, word := range words {
 		if hasCyrillics(word) {

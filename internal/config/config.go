@@ -19,9 +19,16 @@ type (
 		EnabledHandlers  []string `env:"HANDLERS,default=admin,gatekeeper,reactor"`
 		LogLevel         int      `env:"LOG_LEVEL,default=2"`
 		DotPath          string   `env:"DOT_PATH,default=~/.ngbot"`
+		Telegram         Telegram
 		LLM              LLM
 		Reactor          Reactor
 		SpamControl      SpamControl
+	}
+
+	Telegram struct {
+		PollTimeout    time.Duration `env:"TELEGRAM_POLL_TIMEOUT,default=60s"`
+		RequestTimeout time.Duration `env:"TELEGRAM_REQUEST_TIMEOUT,default=75s"`
+		RecoveryWindow time.Duration `env:"TELEGRAM_RECOVERY_WINDOW,default=10m"`
 	}
 
 	LLM struct {
@@ -71,6 +78,10 @@ func Load() (Config, error) {
 			return
 		}
 		cfg.DotPath = strings.Replace(cfg.DotPath, "~", home, 1)
+		if err := validateConfig(cfg); err != nil {
+			globalErr = err
+			return
+		}
 		log.Traceln("loaded config")
 		globalConfig = cfg
 	})
@@ -83,4 +94,17 @@ func Get() Config {
 		log.WithField("error", err.Error()).Error("cant load config")
 	}
 	return cfg
+}
+
+func validateConfig(cfg *Config) error {
+	if cfg.Telegram.PollTimeout <= 0 {
+		return fmt.Errorf("telegram poll timeout must be positive")
+	}
+	if cfg.Telegram.RequestTimeout <= cfg.Telegram.PollTimeout {
+		return fmt.Errorf("telegram request timeout must be greater than poll timeout")
+	}
+	if cfg.Telegram.RecoveryWindow <= cfg.Telegram.RequestTimeout {
+		return fmt.Errorf("telegram recovery window must be greater than request timeout")
+	}
+	return nil
 }

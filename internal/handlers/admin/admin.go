@@ -121,7 +121,7 @@ func (a *Admin) Handle(ctx context.Context, u *api.Update, chat *api.Chat, user 
 	}
 
 	if u.CallbackQuery != nil {
-		handled, err := a.handlePanelCallback(ctx, u.CallbackQuery, chat, user)
+		handled, err := a.handlePanelCallback(ctx, u.CallbackQuery, user)
 		if err != nil {
 			entry.WithField("error", err.Error()).Error("failed to handle callback")
 			return false, err

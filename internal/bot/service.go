@@ -58,7 +58,6 @@ func (s *service) Start(ctx context.Context) error {
 	s.ctx, s.cancel = context.WithCancel(ctx)
 
 	s.workersWG.Go(func() {
-
 		ticker := time.NewTicker(24 * time.Hour)
 		defer ticker.Stop()
 

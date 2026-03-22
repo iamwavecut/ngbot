@@ -39,24 +39,21 @@ func (g *Gatekeeper) handleChallenge(ctx context.Context, u *api.Update, chat *a
 		"chat": chat.ID,
 	}).Debug("callback query data")
 
-	joinerID, challengeUUID, err := func(s string) (int64, string, error) {
+	joinerID, challengeUUID := func(s string) (int64, string) {
 		entry := g.getLogEntry().WithField("method", "handleChallenge.parseCallbackData")
 		entry.WithField("data", s).Debug("parsing callback data")
 		parts := strings.Split(s, ";")
 		if len(parts) != 2 {
-			return 0, "", nil
+			return 0, ""
 		}
 		ID, err := strconv.ParseInt(parts[0], 10, 0)
 		if err != nil {
-			return 0, "", nil
+			return 0, ""
 		}
 		entry.WithFields(log.Fields{"joinerID": ID, "challengeUUID": parts[1]}).Debug("parsed callback data")
-		return ID, parts[1], nil
+		return ID, parts[1]
 	}(cq.Data)
-	if err != nil || joinerID == 0 || challengeUUID == "" {
-		if err != nil {
-			entry.WithField("error", err.Error()).Debug("failed to parse callback query data")
-		}
+	if joinerID == 0 || challengeUUID == "" {
 		return nil
 	}
 
@@ -230,14 +227,6 @@ func (g *Gatekeeper) cleanupChallengeWithoutPenalty(ctx context.Context, challen
 	}
 
 	return g.store.DeleteChallenge(ctx, challenge.CommChatID, challenge.UserID, challenge.ChatID)
-}
-
-func (g *Gatekeeper) rejectConfig(ctx context.Context, chatID int64, language string, title string) (time.Duration, string, error) {
-	settings, err := g.fetchAndValidateSettings(ctx, chatID)
-	if err != nil {
-		return 0, "", err
-	}
-	return g.rejectConfigFromSettings(settings, language, title)
 }
 
 func (g *Gatekeeper) rejectConfigFromSettings(settings *db.Settings, language string, title string) (time.Duration, string, error) {

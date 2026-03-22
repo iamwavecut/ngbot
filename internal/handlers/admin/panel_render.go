@@ -84,11 +84,9 @@ func (a *Admin) renderLanguageList(ctx context.Context, session *db.AdminPanelSe
 
 	start := state.LanguagePage * panelLanguagePageSize
 	end := minInt(start+panelLanguagePageSize, len(allLanguages))
-	pageLangs := allLanguages
+	pageLangs := []string{}
 	if start < end {
 		pageLangs = allLanguages[start:end]
-	} else {
-		pageLangs = []string{}
 	}
 
 	builder := strings.Builder{}
@@ -608,7 +606,7 @@ func (a *Admin) renderVotingTimeout(ctx context.Context, session *db.AdminPanelS
 	text = appendPanelHelp(text, lang, i18n.Get("What this is: vote collection time window. Where used: active voting case after suspect message is detected. Value meaning: Inherit uses global default, explicit duration overrides it for this chat.", lang))
 
 	buttons := make([]api.InlineKeyboardButton, 0, len(panelVotingTimeoutOptions)+1)
-	inheritBtn, err := a.commandButton(ctx, session.ID, panelSelectLabel(state.CommunityVotingTimeoutOverrideNS == int64(db.SettingsOverrideInherit), i18n.Get("Inherit", lang)), panelCommand{Action: panelActionSetVotingTimeout, Value: "inherit"})
+	inheritBtn, err := a.commandButton(ctx, session.ID, panelSelectLabel(state.CommunityVotingTimeoutOverrideNS == int64(db.SettingsOverrideInherit), i18n.Get("Inherit", lang)), panelCommand{Action: panelActionSetVotingTimeout, Value: panelValueInherit})
 	if err != nil {
 		return "", nil, err
 	}
@@ -639,7 +637,7 @@ func (a *Admin) renderVotingMinVoters(ctx context.Context, session *db.AdminPane
 	text = appendPanelHelp(text, lang, i18n.Get("What this is: minimum number of voters required for a decision. Where used: resolution step of each voting case. Value meaning: Inherit uses global default, higher number requires more participants.", lang))
 
 	buttons := make([]api.InlineKeyboardButton, 0, len(panelVotingMinVotersOptions)+1)
-	inheritBtn, err := a.commandButton(ctx, session.ID, panelSelectLabel(state.CommunityVotingMinVotersOverride == db.SettingsOverrideInherit, i18n.Get("Inherit", lang)), panelCommand{Action: panelActionSetVotingMinVoters, Value: "inherit"})
+	inheritBtn, err := a.commandButton(ctx, session.ID, panelSelectLabel(state.CommunityVotingMinVotersOverride == db.SettingsOverrideInherit, i18n.Get("Inherit", lang)), panelCommand{Action: panelActionSetVotingMinVoters, Value: panelValueInherit})
 	if err != nil {
 		return "", nil, err
 	}
@@ -668,7 +666,7 @@ func (a *Admin) renderVotingMaxVoters(ctx context.Context, session *db.AdminPane
 	text = appendPanelHelp(text, lang, i18n.Get("What this is: upper cap of voters counted in one case. Where used: community voting resolution logic. Value meaning: 0 means no cap, Inherit uses global default.", lang))
 
 	buttons := make([]api.InlineKeyboardButton, 0, len(panelVotingMaxVotersOptions)+1)
-	inheritBtn, err := a.commandButton(ctx, session.ID, panelSelectLabel(state.CommunityVotingMaxVotersOverride == db.SettingsOverrideInherit, i18n.Get("Inherit", lang)), panelCommand{Action: panelActionSetVotingMaxVoters, Value: "inherit"})
+	inheritBtn, err := a.commandButton(ctx, session.ID, panelSelectLabel(state.CommunityVotingMaxVotersOverride == db.SettingsOverrideInherit, i18n.Get("Inherit", lang)), panelCommand{Action: panelActionSetVotingMaxVoters, Value: panelValueInherit})
 	if err != nil {
 		return "", nil, err
 	}
@@ -701,7 +699,7 @@ func (a *Admin) renderVotingMinPercent(ctx context.Context, session *db.AdminPan
 	text = appendPanelHelp(text, lang, i18n.Get("What this is: minimum participation percent required to apply a result. Where used: validation before final voting decision. Value meaning: Inherit uses global default, selected percent is compared with current chat member count.", lang))
 
 	buttons := make([]api.InlineKeyboardButton, 0, len(panelVotingMinVotersPercentOptions)+1)
-	inheritBtn, err := a.commandButton(ctx, session.ID, panelSelectLabel(state.CommunityVotingMinVotersPercentOverride == db.SettingsOverrideInherit, i18n.Get("Inherit", lang)), panelCommand{Action: panelActionSetVotingMinPercent, Value: "inherit"})
+	inheritBtn, err := a.commandButton(ctx, session.ID, panelSelectLabel(state.CommunityVotingMinVotersPercentOverride == db.SettingsOverrideInherit, i18n.Get("Inherit", lang)), panelCommand{Action: panelActionSetVotingMinPercent, Value: panelValueInherit})
 	if err != nil {
 		return "", nil, err
 	}

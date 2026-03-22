@@ -16,9 +16,9 @@ import (
 func (r *Reactor) handleCommand(ctx context.Context, msg *api.Message, chat *api.Chat, user *api.User, settings *db.Settings) error {
 	switch msg.Command() {
 	case "testspam":
-		return r.testSpamCommand(ctx, msg, chat, user)
+		return r.testSpamCommand(ctx, msg, chat)
 	case "skipreason":
-		return r.skipReasonCommand(ctx, msg, chat)
+		return r.skipReasonCommand(msg, chat)
 	case "ban":
 		return r.banCommand(ctx, msg, chat, user, settings)
 	}
@@ -26,10 +26,10 @@ func (r *Reactor) handleCommand(ctx context.Context, msg *api.Message, chat *api
 	return nil
 }
 
-func (r *Reactor) testSpamCommand(ctx context.Context, msg *api.Message, chat *api.Chat, user *api.User) error {
+func (r *Reactor) testSpamCommand(ctx context.Context, msg *api.Message, chat *api.Chat) error {
 	content := msg.CommandArguments()
 
-	isSpam, err := r.checkMessageForSpam(ctx, chat.ID, content, user)
+	isSpam, err := r.checkMessageForSpam(ctx, chat.ID, content)
 	if err != nil {
 		return errors.Wrap(err, "failed to check message for spam")
 	}
@@ -43,7 +43,7 @@ func (r *Reactor) testSpamCommand(ctx context.Context, msg *api.Message, chat *a
 	return nil
 }
 
-func (r *Reactor) skipReasonCommand(ctx context.Context, msg *api.Message, chat *api.Chat) error {
+func (r *Reactor) skipReasonCommand(msg *api.Message, chat *api.Chat) error {
 	if msg.ReplyToMessage == nil {
 		responseMsg := api.NewMessage(chat.ID, "Please reply to a message to see its skip reason")
 		responseMsg.ReplyParameters.MessageID = msg.MessageID

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -33,17 +34,24 @@ import (
 type updateLoopComponent struct {
 	botAPI        *api.BotAPI
 	updateConfig  api.UpdateConfig
+	polling       bot.PollingOptions
 	updateProcess *bot.UpdateProcessor
-	errChan       chan<- error
+	errChan       chan<- shutdownSignal
 
 	cancel context.CancelFunc
 	done   chan struct{}
 }
 
-func newUpdateLoopComponent(botAPI *api.BotAPI, updateConfig api.UpdateConfig, updateProcess *bot.UpdateProcessor, errChan chan<- error) *updateLoopComponent {
+type shutdownSignal struct {
+	message  string
+	exitCode int
+}
+
+func newUpdateLoopComponent(botAPI *api.BotAPI, updateConfig api.UpdateConfig, polling bot.PollingOptions, updateProcess *bot.UpdateProcessor, errChan chan<- shutdownSignal) *updateLoopComponent {
 	return &updateLoopComponent{
 		botAPI:        botAPI,
 		updateConfig:  updateConfig,
+		polling:       polling,
 		updateProcess: updateProcess,
 		errChan:       errChan,
 	}
@@ -58,7 +66,7 @@ func (u *updateLoopComponent) Start(ctx context.Context) error {
 	u.cancel = cancel
 	u.done = make(chan struct{})
 
-	updateChan, updateErrChan := bot.GetUpdatesChans(loopCtx, u.botAPI, u.updateConfig)
+	updateChan, updateErrChan := bot.GetUpdatesChans(loopCtx, u.botAPI, u.updateConfig, u.polling)
 	go func() {
 		defer close(u.done)
 		for {
@@ -71,7 +79,10 @@ func (u *updateLoopComponent) Start(ctx context.Context) error {
 				}
 				if err != nil && !errors.Is(err, context.Canceled) {
 					select {
-					case u.errChan <- err:
+					case u.errChan <- shutdownSignal{
+						message:  formatPollingShutdown(err),
+						exitCode: 1,
+					}:
 					default:
 						log.WithError(err).Error("update loop error dropped")
 					}
@@ -136,8 +147,8 @@ func main() {
 	rootCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	errChan := make(chan error, 1)
-	runtime, err := buildRuntime(rootCtx, &cfg, errChan)
+	shutdownChan := make(chan shutdownSignal, 1)
+	runtime, err := buildRuntime(rootCtx, &cfg, shutdownChan)
 	if err != nil {
 		log.WithField("error", err.Error()).Error("Failed to build runtime")
 		os.Exit(1)
@@ -152,16 +163,15 @@ func main() {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 	execChanges := infra.MonitorExecutable(rootCtx)
 
-	shutdownReason := ""
+	shutdown := shutdownSignal{}
 	select {
 	case <-execChanges:
-		shutdownReason = "Executable file was modified, initiating shutdown"
+		shutdown.message = "Executable file was modified, initiating shutdown"
 	case sig := <-sigChan:
-		shutdownReason = fmt.Sprintf("Received signal %v, initiating shutdown", sig)
-	case err := <-errChan:
-		shutdownReason = fmt.Sprintf("Runtime error: %v", err)
+		shutdown.message = fmt.Sprintf("Received signal %v, initiating shutdown", sig)
+	case shutdown = <-shutdownChan:
 	}
-	log.Info(shutdownReason)
+	log.Info(shutdown.message)
 
 	cancel()
 	log.Info("Starting graceful shutdown")
@@ -174,10 +184,15 @@ func main() {
 	}
 
 	log.Info("Graceful shutdown completed")
+	if shutdown.exitCode != 0 {
+		os.Exit(shutdown.exitCode)
+	}
 }
 
-func buildRuntime(ctx context.Context, cfg *config.Config, errChan chan<- error) (*lifecycle.Runtime, error) {
-	botAPI, err := api.NewBotAPI(cfg.TelegramAPIToken)
+func buildRuntime(ctx context.Context, cfg *config.Config, errChan chan<- shutdownSignal) (*lifecycle.Runtime, error) {
+	botAPI, err := api.NewBotAPIWithClient(cfg.TelegramAPIToken, api.APIEndpoint, &http.Client{
+		Timeout: cfg.Telegram.RequestTimeout,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("initialize bot API: %w", err)
 	}
@@ -217,7 +232,13 @@ func buildRuntime(ctx context.Context, cfg *config.Config, errChan chan<- error)
 	bot.RegisterUpdateHandler("admin", adminHandler)
 	bot.RegisterUpdateHandler("reactor", reactorHandler)
 
-	updateLoop := newUpdateLoopComponent(botAPI, configureUpdates(), bot.NewUpdateProcessor(service), errChan)
+	updateLoop := newUpdateLoopComponent(
+		botAPI,
+		configureUpdates(cfg.Telegram.PollTimeout),
+		bot.NewPollingOptions(cfg.Telegram.RequestTimeout, cfg.Telegram.RecoveryWindow),
+		bot.NewUpdateProcessor(service),
+		errChan,
+	)
 
 	runtime := lifecycle.NewRuntime(
 		service,
@@ -264,9 +285,9 @@ func configureLLM(cfg *config.Config, logger *log.Entry) (adapters.LLM, error) {
 	}
 }
 
-func configureUpdates() api.UpdateConfig {
+func configureUpdates(pollTimeout time.Duration) api.UpdateConfig {
 	updateConfig := api.NewUpdate(0)
-	updateConfig.Timeout = 60
+	updateConfig.Timeout = durationSecondsCeil(pollTimeout)
 	updateConfig.AllowedUpdates = []string{
 		"message", "edited_message", "channel_post", "edited_channel_post",
 		"message_reaction", "message_reaction_count", "inline_query",
@@ -275,6 +296,25 @@ func configureUpdates() api.UpdateConfig {
 		"chat_member", "chat_join_request",
 	}
 	return updateConfig
+}
+
+func durationSecondsCeil(d time.Duration) int {
+	seconds := int(d / time.Second)
+	if d%time.Second != 0 {
+		seconds++
+	}
+	if seconds < 1 {
+		return 1
+	}
+	return seconds
+}
+
+func formatPollingShutdown(err error) string {
+	var pollingErr *bot.PollingRecoveryError
+	if errors.As(err, &pollingErr) {
+		return fmt.Sprintf("Polling recovery exhausted after %s: %v", pollingErr.SinceLastHealthy, pollingErr.Cause)
+	}
+	return fmt.Sprintf("Runtime error: %v", err)
 }
 
 func announceGroupAdminCommands(botAPI *api.BotAPI) error {

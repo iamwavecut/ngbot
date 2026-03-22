@@ -9,6 +9,9 @@ services:
       - NG_HANDLERS
       - NG_LOG_LEVEL
       - NG_DOT_PATH
+      - NG_TELEGRAM_POLL_TIMEOUT
+      - NG_TELEGRAM_REQUEST_TIMEOUT
+      - NG_TELEGRAM_RECOVERY_WINDOW
       - NG_LLM_API_KEY
       - NG_LLM_API_URL
       - NG_LLM_API_MODEL
@@ -24,10 +27,7 @@ services:
     volumes:
       # Set the path to your ngbot directory
       - dotpath:/root/.ngbot:delegated
-    deploy:
-      restart_policy:
-        condition: on-failure
-        delay: 5s
+    restart: unless-stopped
 
 volumes:
   dotpath:

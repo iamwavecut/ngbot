@@ -300,7 +300,7 @@ func (a *Admin) setVotingTimeoutOverride(ctx context.Context, session *db.AdminP
 	if err != nil {
 		return err
 	}
-	if value == "inherit" {
+	if value == panelValueInherit {
 		settings.CommunityVotingTimeoutOverrideNS = int64(db.SettingsOverrideInherit)
 	} else {
 		duration, parseErr := time.ParseDuration(value)
@@ -321,7 +321,7 @@ func (a *Admin) setVotingMinVotersOverride(ctx context.Context, session *db.Admi
 	if err != nil {
 		return err
 	}
-	if value == "inherit" {
+	if value == panelValueInherit {
 		settings.CommunityVotingMinVotersOverride = db.SettingsOverrideInherit
 	} else {
 		parsed, parseErr := strconv.Atoi(value)
@@ -342,7 +342,7 @@ func (a *Admin) setVotingMaxVotersOverride(ctx context.Context, session *db.Admi
 	if err != nil {
 		return err
 	}
-	if value == "inherit" {
+	if value == panelValueInherit {
 		settings.CommunityVotingMaxVotersOverride = db.SettingsOverrideInherit
 	} else {
 		parsed, parseErr := strconv.Atoi(value)
@@ -363,7 +363,7 @@ func (a *Admin) setVotingMinPercentOverride(ctx context.Context, session *db.Adm
 	if err != nil {
 		return err
 	}
-	if value == "inherit" {
+	if value == panelValueInherit {
 		settings.CommunityVotingMinVotersPercentOverride = db.SettingsOverrideInherit
 	} else {
 		parsed, parseErr := strconv.Atoi(value)
