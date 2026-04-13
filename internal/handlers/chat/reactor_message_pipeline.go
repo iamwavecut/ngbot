@@ -14,6 +14,17 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+type firstMessageExternalQuoteHeuristic struct {
+	Triggered        bool
+	HasExternalReply bool
+	HasQuote         bool
+	HasForwardOrigin bool
+	HasViaBot        bool
+	OriginType       string
+	OriginChatID     int64
+	ViaBotID         int64
+}
+
 func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api.Chat, user *api.User, settings *db.Settings) error {
 	var userID int64
 	if user != nil {
@@ -106,6 +117,50 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 	}
 
 	result.Stage = StageSpamCheck
+	heuristic := detectFirstMessageExternalQuoteHeuristic(msg)
+	if heuristic.Triggered {
+		result.SkipReason = "First-message external quote heuristic"
+		result.IsSpam = tool.Ptr(true)
+
+		processingResult, processErr := r.processDetectedSpam(ctx, msg, chat, language, settings)
+		if processErr != nil {
+			entry.WithFields(log.Fields{
+				"error":              processErr.Error(),
+				"has_external_reply": heuristic.HasExternalReply,
+				"has_quote":          heuristic.HasQuote,
+				"has_forward_origin": heuristic.HasForwardOrigin,
+				"has_via_bot":        heuristic.HasViaBot,
+				"origin_type":        heuristic.OriginType,
+				"origin_chat_id":     heuristic.OriginChatID,
+				"via_bot_id":         heuristic.ViaBotID,
+			}).Error("failed to process spam message from external quote heuristic")
+			result.Actions.Error = processErr.Error()
+		} else if processingResult != nil {
+			result.Actions.MessageDeleted = processingResult.MessageDeleted
+			result.Actions.UserBanned = processingResult.UserBanned
+			result.Actions.Error = processingResult.Error
+			if !processingResult.MessageDeleted || !processingResult.UserBanned {
+				result.SkipReason = fmt.Sprintf("First-message external quote heuristic (Actions: message_deleted=%v, user_banned=%v",
+					processingResult.MessageDeleted, processingResult.UserBanned)
+				if processingResult.Error != "" {
+					result.SkipReason += fmt.Sprintf(", error=%s", processingResult.Error)
+				}
+				result.SkipReason += ")"
+			}
+		}
+
+		entry.WithFields(log.Fields{
+			"has_external_reply": heuristic.HasExternalReply,
+			"has_quote":          heuristic.HasQuote,
+			"has_forward_origin": heuristic.HasForwardOrigin,
+			"has_via_bot":        heuristic.HasViaBot,
+			"origin_type":        heuristic.OriginType,
+			"origin_chat_id":     heuristic.OriginChatID,
+			"via_bot_id":         heuristic.ViaBotID,
+		}).Info("Detected spam with first-message external quote heuristic")
+		return nil
+	}
+
 	isSpam, err := r.checkMessageForSpam(ctx, chat.ID, content)
 	if err != nil {
 		return err
@@ -114,13 +169,7 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 
 	if isSpam != nil {
 		if *isSpam {
-			var processingResult *moderation.ProcessingResult
-			var processErr error
-			if settings != nil && !settings.CommunityVotingEnabled {
-				processingResult, processErr = r.spamControl.ProcessBannedMessage(ctx, msg, chat, language)
-			} else {
-				processingResult, processErr = r.spamControl.ProcessSpamMessage(ctx, msg, chat, language)
-			}
+			processingResult, processErr := r.processDetectedSpam(ctx, msg, chat, language, settings)
 			if processErr != nil {
 				entry.WithField("error", processErr.Error()).Error("failed to process spam message")
 				result.Actions.Error = processErr.Error()
@@ -148,6 +197,36 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 	return nil
 }
 
+func detectFirstMessageExternalQuoteHeuristic(msg *api.Message) firstMessageExternalQuoteHeuristic {
+	result := firstMessageExternalQuoteHeuristic{}
+	if msg == nil {
+		return result
+	}
+
+	result.HasQuote = msg.Quote != nil
+	result.HasForwardOrigin = msg.ForwardOrigin != nil
+	result.HasViaBot = msg.ViaBot != nil
+	if msg.ViaBot != nil {
+		result.ViaBotID = msg.ViaBot.ID
+	}
+	if msg.ExternalReply == nil {
+		return result
+	}
+
+	result.HasExternalReply = true
+	result.OriginType = msg.ExternalReply.Origin.Type
+	if msg.ExternalReply.Chat != nil {
+		result.OriginChatID = msg.ExternalReply.Chat.ID
+	}
+
+	if msg.ExternalReply.Chat != nil && msg.ExternalReply.Chat.ID == msg.Chat.ID {
+		return result
+	}
+
+	result.Triggered = true
+	return result
+}
+
 func isLinkedChannelAutoForward(msg *api.Message) bool {
 	if msg == nil {
 		return false
@@ -159,6 +238,13 @@ func isLinkedChannelAutoForward(msg *api.Message) bool {
 		return false
 	}
 	return msg.SenderChat.IsChannel()
+}
+
+func (r *Reactor) processDetectedSpam(ctx context.Context, msg *api.Message, chat *api.Chat, language string, settings *db.Settings) (*moderation.ProcessingResult, error) {
+	if settings != nil && !settings.CommunityVotingEnabled {
+		return r.processBanned(ctx, msg, chat, language)
+	}
+	return r.processSpam(ctx, msg, chat, language)
 }
 
 func (r *Reactor) checkMessageForSpam(ctx context.Context, chatID int64, content string) (*bool, error) {

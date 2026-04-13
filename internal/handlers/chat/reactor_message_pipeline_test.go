@@ -2,113 +2,233 @@ package handlers
 
 import (
 	"context"
-	"errors"
 	"testing"
 
 	api "github.com/OvyFlash/telegram-bot-api"
 	"github.com/iamwavecut/ngbot/internal/db"
+	moderation "github.com/iamwavecut/ngbot/internal/handlers/moderation"
 )
 
-type reactorStoreStub struct {
-	examples []*db.ChatSpamExample
-	err      error
+type testBotService struct {
+	isMember bool
+	language string
 }
 
-func (s *reactorStoreStub) ListChatSpamExamples(_ context.Context, _ int64, _ int, _ int) ([]*db.ChatSpamExample, error) {
-	if s.err != nil {
-		return nil, s.err
+func (s *testBotService) GetBot() *api.BotAPI {
+	return &api.BotAPI{}
+}
+
+func (s *testBotService) GetDB() db.Client {
+	return nil
+}
+
+func (s *testBotService) IsMember(context.Context, int64, int64) (bool, error) {
+	return s.isMember, nil
+}
+
+func (s *testBotService) InsertMember(context.Context, int64, int64) error {
+	return nil
+}
+
+func (s *testBotService) DeleteMember(context.Context, int64, int64) error {
+	return nil
+}
+
+func (s *testBotService) GetSettings(context.Context, int64) (*db.Settings, error) {
+	return nil, nil
+}
+
+func (s *testBotService) SetSettings(context.Context, *db.Settings) error {
+	return nil
+}
+
+func (s *testBotService) GetLanguage(context.Context, int64, *api.User) string {
+	if s.language == "" {
+		return "en"
 	}
-	return s.examples, nil
+	return s.language
 }
 
-func TestLoadSpamExamplesReturnsTrimmedEntries(t *testing.T) {
+type testReactorStore struct{}
+
+func (s *testReactorStore) ListChatSpamExamples(context.Context, int64, int, int) ([]*db.ChatSpamExample, error) {
+	return nil, nil
+}
+
+type testSpamDetector struct {
+	calls int
+}
+
+func (d *testSpamDetector) IsSpam(context.Context, string, []string) (*bool, error) {
+	d.calls++
+	return nil, nil
+}
+
+type testBanService struct{}
+
+func (s *testBanService) Start(context.Context) error                                 { return nil }
+func (s *testBanService) Stop(context.Context) error                                  { return nil }
+func (s *testBanService) CheckBan(context.Context, int64) (bool, error)               { return false, nil }
+func (s *testBanService) MuteUser(context.Context, int64, int64) error                { return nil }
+func (s *testBanService) UnmuteUser(context.Context, int64, int64) error              { return nil }
+func (s *testBanService) BanUserWithMessage(context.Context, int64, int64, int) error { return nil }
+func (s *testBanService) UnbanUser(context.Context, int64, int64) error               { return nil }
+func (s *testBanService) IsRestricted(context.Context, int64, int64) (bool, error)    { return false, nil }
+func (s *testBanService) IsKnownBanned(int64) bool                                    { return false }
+
+func TestHandleMessageExternalQuoteHeuristic(t *testing.T) {
 	t.Parallel()
 
+	service := &testBotService{language: "ru"}
+	detector := &testSpamDetector{}
+	processSpamCalls := 0
 	r := &Reactor{
-		store: &reactorStoreStub{
-			examples: []*db.ChatSpamExample{
-				{Text: " spam one "},
-				{Text: ""},
-				{Text: "   "},
-				{Text: "\nspam two\t"},
-			},
+		s:            service,
+		store:        &testReactorStore{},
+		spamDetector: detector,
+		banService:   &testBanService{},
+		processSpam: func(context.Context, *api.Message, *api.Chat, string) (*moderation.ProcessingResult, error) {
+			processSpamCalls++
+			return &moderation.ProcessingResult{MessageDeleted: true, UserBanned: true}, nil
+		},
+		processBanned: func(context.Context, *api.Message, *api.Chat, string) (*moderation.ProcessingResult, error) {
+			t.Fatal("processBanned should not be called")
+			return nil, nil
+		},
+		lastResults: make(map[int64]*MessageProcessingResult),
+	}
+
+	chat := &api.Chat{ID: 100, Type: "supergroup"}
+	user := &api.User{ID: 200}
+	msg := &api.Message{
+		MessageID: 1,
+		Chat:      *chat,
+		From:      user,
+		Text:      "попробуйте работает",
+		ExternalReply: &api.ExternalReplyInfo{
+			Origin: api.MessageOrigin{Type: api.MessageOriginChannel},
+			Chat:   &api.Chat{ID: 999, Type: "channel"},
+		},
+		Quote: &api.TextQuote{Text: "цитата"},
+	}
+	settings := &db.Settings{LLMFirstMessageEnabled: true, CommunityVotingEnabled: true}
+
+	if err := r.handleMessage(context.Background(), msg, chat, user, settings); err != nil {
+		t.Fatalf("handleMessage returned error: %v", err)
+	}
+
+	if detector.calls != 0 {
+		t.Fatalf("expected LLM detector not to be called, got %d calls", detector.calls)
+	}
+	if processSpamCalls != 1 {
+		t.Fatalf("expected processSpam to be called once, got %d", processSpamCalls)
+	}
+
+	result := r.GetLastProcessingResult(int64(msg.MessageID))
+	if result == nil {
+		t.Fatal("expected processing result")
+	}
+	if result.IsSpam == nil || !*result.IsSpam {
+		t.Fatalf("expected spam result, got %#v", result.IsSpam)
+	}
+	if result.SkipReason != "First-message external quote heuristic" {
+		t.Fatalf("unexpected skip reason: %q", result.SkipReason)
+	}
+}
+
+func TestHandleMessageExternalQuoteHeuristicDoesNotTriggerForNonFirstMessage(t *testing.T) {
+	t.Parallel()
+
+	service := &testBotService{isMember: true}
+	detector := &testSpamDetector{}
+	processSpamCalls := 0
+	r := &Reactor{
+		s:            service,
+		store:        &testReactorStore{},
+		spamDetector: detector,
+		banService:   &testBanService{},
+		processSpam: func(context.Context, *api.Message, *api.Chat, string) (*moderation.ProcessingResult, error) {
+			processSpamCalls++
+			return nil, nil
+		},
+		processBanned: func(context.Context, *api.Message, *api.Chat, string) (*moderation.ProcessingResult, error) {
+			return nil, nil
+		},
+		lastResults: make(map[int64]*MessageProcessingResult),
+	}
+
+	chat := &api.Chat{ID: 100, Type: "supergroup"}
+	user := &api.User{ID: 200}
+	msg := &api.Message{
+		MessageID: 2,
+		Chat:      *chat,
+		From:      user,
+		Text:      "попробуйте работает",
+		ExternalReply: &api.ExternalReplyInfo{
+			Origin: api.MessageOrigin{Type: api.MessageOriginChannel},
+			Chat:   &api.Chat{ID: 999, Type: "channel"},
 		},
 	}
+	settings := &db.Settings{LLMFirstMessageEnabled: true, CommunityVotingEnabled: true}
 
-	examples := r.loadSpamExamples(context.Background(), 100)
-	if len(examples) != 2 {
-		t.Fatalf("expected 2 examples, got %d (%v)", len(examples), examples)
-	}
-	if examples[0] != "spam one" {
-		t.Fatalf("unexpected first example: %q", examples[0])
-	}
-	if examples[1] != "spam two" {
-		t.Fatalf("unexpected second example: %q", examples[1])
-	}
-}
-
-func TestLoadSpamExamplesReturnsNilOnStoreError(t *testing.T) {
-	t.Parallel()
-
-	r := &Reactor{
-		store: &reactorStoreStub{err: errors.New("db failure")},
+	if err := r.handleMessage(context.Background(), msg, chat, user, settings); err != nil {
+		t.Fatalf("handleMessage returned error: %v", err)
 	}
 
-	examples := r.loadSpamExamples(context.Background(), 100)
-	if examples != nil {
-		t.Fatalf("expected nil examples on store error, got %v", examples)
+	if detector.calls != 0 {
+		t.Fatalf("expected LLM detector not to be called, got %d calls", detector.calls)
+	}
+	if processSpamCalls != 0 {
+		t.Fatalf("expected processSpam not to be called, got %d", processSpamCalls)
+	}
+
+	result := r.GetLastProcessingResult(int64(msg.MessageID))
+	if result == nil {
+		t.Fatal("expected processing result")
+	}
+	if result.SkipReason != "User is already a member" {
+		t.Fatalf("unexpected skip reason: %q", result.SkipReason)
 	}
 }
 
-func TestIsLinkedChannelAutoForward(t *testing.T) {
+func TestHandleMessageExternalQuoteHeuristicFallbacks(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name string
 		msg  *api.Message
-		want bool
 	}{
 		{
-			name: "auto-forward-from-channel",
+			name: "local reply only",
 			msg: &api.Message{
-				IsAutomaticForward: true,
-				SenderChat: &api.Chat{
-					Type: "channel",
-				},
+				MessageID:      3,
+				Text:           "обычный ответ",
+				ReplyToMessage: &api.Message{MessageID: 30, Text: "локальное сообщение"},
 			},
-			want: true,
 		},
 		{
-			name: "nil-message",
-			msg:  nil,
-			want: false,
+			name: "quote without external reply",
+			msg: &api.Message{
+				MessageID: 4,
+				Text:      "цитирую",
+				Quote:     &api.TextQuote{Text: "кусок сообщения"},
+			},
 		},
 		{
-			name: "automatic-forward-without-sender-chat",
+			name: "via bot without external reply",
 			msg: &api.Message{
-				IsAutomaticForward: true,
+				MessageID: 5,
+				Text:      "через бота",
+				ViaBot:    &api.User{ID: 77, IsBot: true},
 			},
-			want: false,
 		},
 		{
-			name: "sender-chat-is-not-channel",
+			name: "forward origin without external reply",
 			msg: &api.Message{
-				IsAutomaticForward: true,
-				SenderChat: &api.Chat{
-					Type: "supergroup",
-				},
+				MessageID:     6,
+				Text:          "форвард",
+				ForwardOrigin: &api.MessageOrigin{Type: api.MessageOriginChannel},
 			},
-			want: false,
-		},
-		{
-			name: "manual-channel-message",
-			msg: &api.Message{
-				IsAutomaticForward: false,
-				SenderChat: &api.Chat{
-					Type: "channel",
-				},
-			},
-			want: false,
 		},
 	}
 
@@ -116,10 +236,73 @@ func TestIsLinkedChannelAutoForward(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got := isLinkedChannelAutoForward(tt.msg)
-			if got != tt.want {
-				t.Fatalf("isLinkedChannelAutoForward() = %v, want %v", got, tt.want)
+			service := &testBotService{}
+			detector := &testSpamDetector{}
+			processSpamCalls := 0
+			r := &Reactor{
+				s:            service,
+				store:        &testReactorStore{},
+				spamDetector: detector,
+				banService:   &testBanService{},
+				processSpam: func(context.Context, *api.Message, *api.Chat, string) (*moderation.ProcessingResult, error) {
+					processSpamCalls++
+					return nil, nil
+				},
+				processBanned: func(context.Context, *api.Message, *api.Chat, string) (*moderation.ProcessingResult, error) {
+					return nil, nil
+				},
+				lastResults: make(map[int64]*MessageProcessingResult),
+			}
+
+			chat := &api.Chat{ID: 100, Type: "supergroup"}
+			user := &api.User{ID: 200}
+			msg := tt.msg
+			msg.Chat = *chat
+			msg.From = user
+			settings := &db.Settings{LLMFirstMessageEnabled: true, CommunityVotingEnabled: true}
+
+			if err := r.handleMessage(context.Background(), msg, chat, user, settings); err != nil {
+				t.Fatalf("handleMessage returned error: %v", err)
+			}
+
+			if detector.calls != 1 {
+				t.Fatalf("expected LLM detector to be called once, got %d", detector.calls)
+			}
+			if processSpamCalls != 0 {
+				t.Fatalf("expected processSpam not to be called, got %d", processSpamCalls)
 			}
 		})
+	}
+}
+
+func TestDetectFirstMessageExternalQuoteHeuristic(t *testing.T) {
+	t.Parallel()
+
+	msg := &api.Message{
+		Chat: api.Chat{ID: 100, Type: "supergroup"},
+		ExternalReply: &api.ExternalReplyInfo{
+			Origin: api.MessageOrigin{Type: api.MessageOriginChannel},
+			Chat:   &api.Chat{ID: 999, Type: "channel"},
+		},
+		Quote:         &api.TextQuote{Text: "quote"},
+		ForwardOrigin: &api.MessageOrigin{Type: api.MessageOriginChannel},
+		ViaBot:        &api.User{ID: 55, IsBot: true},
+	}
+
+	result := detectFirstMessageExternalQuoteHeuristic(msg)
+	if !result.Triggered {
+		t.Fatal("expected heuristic to trigger")
+	}
+	if !result.HasExternalReply || !result.HasQuote || !result.HasForwardOrigin || !result.HasViaBot {
+		t.Fatalf("unexpected heuristic flags: %#v", result)
+	}
+	if result.OriginType != api.MessageOriginChannel {
+		t.Fatalf("unexpected origin type: %q", result.OriginType)
+	}
+	if result.OriginChatID != 999 {
+		t.Fatalf("unexpected origin chat id: %d", result.OriginChatID)
+	}
+	if result.ViaBotID != 55 {
+		t.Fatalf("unexpected via bot id: %d", result.ViaBotID)
 	}
 }

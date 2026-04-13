@@ -56,14 +56,16 @@ type MessageProcessingResult struct {
 }
 
 type Reactor struct {
-	s            bot.Service
-	store        reactorStore
-	config       Config
-	spamDetector SpamDetectorInterface
-	banService   moderation.BanService
-	spamControl  *moderation.SpamControl
-	lastResults  map[int64]*MessageProcessingResult
-	resultOrder  []int64
+	s             bot.Service
+	store         reactorStore
+	config        Config
+	spamDetector  SpamDetectorInterface
+	banService    moderation.BanService
+	spamControl   *moderation.SpamControl
+	processSpam   func(ctx context.Context, msg *api.Message, chat *api.Chat, lang string) (*moderation.ProcessingResult, error)
+	processBanned func(ctx context.Context, msg *api.Message, chat *api.Chat, lang string) (*moderation.ProcessingResult, error)
+	lastResults   map[int64]*MessageProcessingResult
+	resultOrder   []int64
 }
 
 type reactorStore interface {
@@ -72,14 +74,16 @@ type reactorStore interface {
 
 func NewReactor(s bot.Service, banService moderation.BanService, spamControl *moderation.SpamControl, spamDetector SpamDetectorInterface, config Config) *Reactor {
 	r := &Reactor{
-		s:            s,
-		store:        s.GetDB(),
-		config:       config,
-		banService:   banService,
-		spamControl:  spamControl,
-		spamDetector: spamDetector,
-		lastResults:  make(map[int64]*MessageProcessingResult),
-		resultOrder:  make([]int64, 0, maxLastResults),
+		s:             s,
+		store:         s.GetDB(),
+		config:        config,
+		banService:    banService,
+		spamControl:   spamControl,
+		spamDetector:  spamDetector,
+		processSpam:   spamControl.ProcessSpamMessage,
+		processBanned: spamControl.ProcessBannedMessage,
+		lastResults:   make(map[int64]*MessageProcessingResult),
+		resultOrder:   make([]int64, 0, maxLastResults),
 	}
 	r.getLogEntry().Debug("created new reactor")
 	return r
