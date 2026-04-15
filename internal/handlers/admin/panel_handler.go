@@ -294,6 +294,12 @@ func (a *Admin) handlePanelInput(ctx context.Context, msg *api.Message, chat *ap
 		return true, err
 	}
 	if session == nil {
+		session, err = a.store.GetAdminPanelSessionByUserPage(ctx, user.ID, string(panelPageIndulgencePrompt))
+		if err != nil {
+			return true, err
+		}
+	}
+	if session == nil {
 		session, err = a.store.GetAdminPanelSessionByUserPage(ctx, user.ID, string(panelPageGatekeeperGreetingPrompt))
 		if err != nil {
 			return true, err
@@ -344,6 +350,51 @@ func (a *Admin) handlePanelInput(ctx context.Context, msg *api.Message, chat *ap
 		state.ListPage = 0
 		state.PromptError = ""
 		state.SelectedExampleID = 0
+
+		newMsg, err := a.sendPlaceholder(user.ID, state.Language)
+		if err != nil {
+			return true, err
+		}
+		session.MessageID = newMsg.MessageID
+		if err := a.savePanelState(ctx, session, state); err != nil {
+			return true, err
+		}
+		return true, a.renderAndUpdatePanel(ctx, session, state, session.MessageID)
+	case panelPageIndulgencePrompt:
+		reference, parseErr := parseNotSpammerReference(text)
+		if parseErr != nil {
+			state.PromptError = i18n.Get("Invalid input", state.Language)
+			if err := a.savePanelState(ctx, session, state); err != nil {
+				return true, err
+			}
+			return true, a.renderAndUpdatePanel(ctx, session, state, session.MessageID)
+		}
+
+		created, err := a.store.CreateChatNotSpammerOverride(ctx, &db.ChatNotSpammerOverride{
+			ChatID:          session.ChatID,
+			MatchType:       reference.MatchType,
+			MatchValue:      reference.MatchValue,
+			CreatedByUserID: user.ID,
+			CreatedAt:       time.Now(),
+		})
+		if err != nil {
+			return true, err
+		}
+
+		if created != nil && created.MatchType == db.NotSpammerMatchTypeUserID {
+			if overrideUserID, ok := parsePositiveUserID(created.MatchValue); ok {
+				a.rehabilitateNotSpammerUser(ctx, session.ChatID, overrideUserID)
+			}
+		}
+
+		if session.MessageID != 0 {
+			_ = bot.DeleteChatMessage(ctx, a.s.GetBot(), user.ID, session.MessageID)
+		}
+
+		state.Page = panelPageIndulgenceList
+		state.ListPage = 0
+		state.PromptError = ""
+		state.SelectedIndulgenceID = 0
 
 		newMsg, err := a.sendPlaceholder(user.ID, state.Language)
 		if err != nil {

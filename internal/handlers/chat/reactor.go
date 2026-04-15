@@ -33,6 +33,7 @@ type MessageProcessingStage string
 const (
 	StageInit            MessageProcessingStage = "init"
 	StageMembershipCheck MessageProcessingStage = "membership_check"
+	StageOverrideCheck   MessageProcessingStage = "override_check"
 	StageBanCheck        MessageProcessingStage = "ban_check"
 	StageContentCheck    MessageProcessingStage = "content_check"
 	StageSpamCheck       MessageProcessingStage = "spam_check"
@@ -70,6 +71,7 @@ type Reactor struct {
 
 type reactorStore interface {
 	ListChatSpamExamples(ctx context.Context, chatID int64, limit int, offset int) ([]*db.ChatSpamExample, error)
+	IsChatNotSpammer(ctx context.Context, chatID int64, userID int64, username string) (bool, error)
 }
 
 func NewReactor(s bot.Service, banService moderation.BanService, spamControl *moderation.SpamControl, spamDetector SpamDetectorInterface, config Config) *Reactor {

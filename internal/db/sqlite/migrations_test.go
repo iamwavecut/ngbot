@@ -46,3 +46,48 @@ func TestSpamCasesIndexesExistAfterMigrations(t *testing.T) {
 		}
 	}
 }
+
+func TestChatNotSpammerOverrideIndexesExistAfterMigrations(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	client, err := NewSQLiteClient(ctx, t.TempDir(), "test.db")
+	if err != nil {
+		t.Fatalf("new sqlite client: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+
+	rows, err := client.db.QueryContext(ctx, "PRAGMA index_list('chat_not_spammer_overrides')")
+	if err != nil {
+		t.Fatalf("query index_list: %v", err)
+	}
+	defer rows.Close()
+
+	indexes := make(map[string]struct{})
+	for rows.Next() {
+		var (
+			seq     int
+			name    string
+			unique  int
+			origin  string
+			partial int
+		)
+		if err := rows.Scan(&seq, &name, &unique, &origin, &partial); err != nil {
+			t.Fatalf("scan index row: %v", err)
+		}
+		indexes[name] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate index rows: %v", err)
+	}
+
+	required := []string{
+		"idx_chat_not_spammer_overrides_scope_match",
+		"idx_chat_not_spammer_overrides_lookup",
+	}
+	for _, name := range required {
+		if _, ok := indexes[name]; !ok {
+			t.Fatalf("required index %q not found", name)
+		}
+	}
+}

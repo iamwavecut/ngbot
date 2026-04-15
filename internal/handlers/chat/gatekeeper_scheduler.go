@@ -63,6 +63,18 @@ func (g *Gatekeeper) processNewChatMembers(ctx context.Context) error {
 			continue
 		}
 
+		isNotSpammer, err := g.store.IsChatNotSpammer(ctx, joiner.ChatID, joiner.UserID, joiner.Username)
+		if err != nil {
+			entry.WithField("error", err.Error()).Error("failed to check manual not-spammer override")
+			continue
+		}
+		if isNotSpammer {
+			if err := g.store.ProcessRecentJoiner(ctx, joiner.ChatID, joiner.UserID, false); err != nil {
+				entry.WithField("error", err.Error()).Error("failed to process recent joiner")
+			}
+			continue
+		}
+
 		banned, err := g.banChecker.CheckBan(ctx, joiner.UserID)
 		if err != nil {
 			entry.WithField("error", err.Error()).Error("failed to check ban")

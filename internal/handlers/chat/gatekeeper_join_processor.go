@@ -62,7 +62,16 @@ func (g *Gatekeeper) handleNewChatMembersV2(ctx context.Context, u *api.Update, 
 	}
 
 	for _, member := range u.Message.NewChatMembers {
-		if g.banChecker.IsKnownBanned(member.ID) {
+		isNotSpammer, err := g.store.IsChatNotSpammer(ctx, chat.ID, member.ID, member.UserName)
+		if err != nil {
+			entry.WithFields(log.Fields{
+				"user_id": member.ID,
+				"error":   err.Error(),
+			}).Error("failed to check manual not-spammer override")
+			continue
+		}
+
+		if !isNotSpammer && g.banChecker.IsKnownBanned(member.ID) {
 			entry.WithFields(log.Fields{
 				"user_id": member.ID,
 				"name":    bot.GetUN(&member),
@@ -78,7 +87,7 @@ func (g *Gatekeeper) handleNewChatMembersV2(ctx context.Context, u *api.Update, 
 			ChatID:        chat.ID,
 			JoinedAt:      time.Now(),
 			JoinMessageID: u.Message.MessageID,
-			Username:      bot.GetUN(&member),
+			Username:      member.UserName,
 			Processed:     false,
 			IsSpammer:     false,
 		}

@@ -67,6 +67,10 @@ func (a *Admin) applyPanelCommand(ctx context.Context, session *db.AdminPanelSes
 		state.Page = panelPageLLM
 	case panelActionOpenExamples:
 		state.Page = panelPageExamplesList
+	case panelActionOpenIndulgence:
+		state.Page = panelPageIndulgenceList
+		state.ListPage = 0
+		state.PromptError = ""
 	case panelActionOpenVoting:
 		state.Page = panelPageVoting
 	case panelActionOpenVotingTimeout:
@@ -117,6 +121,30 @@ func (a *Admin) applyPanelCommand(ctx context.Context, session *db.AdminPanelSes
 	case panelActionSelectExample:
 		state.Page = panelPageExampleDetail
 		state.SelectedExampleID = command.ExampleID
+	case panelActionIndulgencePageNext:
+		state.ListPage++
+	case panelActionIndulgencePagePrev:
+		if state.ListPage > 0 {
+			state.ListPage--
+		}
+	case panelActionAddIndulgence:
+		state.Page = panelPageIndulgencePrompt
+		state.PromptError = ""
+	case panelActionSelectIndulgence:
+		state.Page = panelPageIndulgenceDetail
+		state.SelectedIndulgenceID = command.IndulgenceID
+	case panelActionOpenIndulgenceDelete:
+		state.Page = panelPageIndulgenceConfirmDelete
+	case panelActionDeleteIndulgenceYes:
+		if state.SelectedIndulgenceID != 0 {
+			if err := a.store.DeleteChatNotSpammerOverride(ctx, session.ChatID, state.SelectedIndulgenceID); err != nil {
+				return err
+			}
+		}
+		state.Page = panelPageIndulgenceList
+		state.SelectedIndulgenceID = 0
+	case panelActionDeleteIndulgenceNo:
+		state.Page = panelPageIndulgenceDetail
 	case panelActionOpenDelete:
 		state.Page = panelPageConfirmDelete
 	case panelActionDeleteYes:
@@ -157,6 +185,14 @@ func (a *Admin) applyPanelCommand(ctx context.Context, session *db.AdminPanelSes
 			state.Page = panelPageExamplesList
 		case panelPageConfirmDelete:
 			state.Page = panelPageExampleDetail
+		case panelPageIndulgenceList:
+			state.Page = panelPageHome
+		case panelPageIndulgenceDetail:
+			state.Page = panelPageIndulgenceList
+		case panelPageIndulgencePrompt:
+			state.Page = panelPageIndulgenceList
+		case panelPageIndulgenceConfirmDelete:
+			state.Page = panelPageIndulgenceDetail
 		case panelPageVoting:
 			state.Page = panelPageHome
 		case panelPageVotingTimeout:

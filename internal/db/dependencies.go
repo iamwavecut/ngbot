@@ -78,4 +78,12 @@ type Client interface {
 	ListChatSpamExamples(ctx context.Context, chatID int64, limit int, offset int) ([]*ChatSpamExample, error)
 	CountChatSpamExamples(ctx context.Context, chatID int64) (int, error)
 	DeleteChatSpamExample(ctx context.Context, id int64) error
+
+	// Manual not-spammer overrides
+	CreateChatNotSpammerOverride(ctx context.Context, override *ChatNotSpammerOverride) (*ChatNotSpammerOverride, error)
+	GetChatNotSpammerOverride(ctx context.Context, chatID int64, id int64) (*ChatNotSpammerOverride, error)
+	ListChatNotSpammerOverrides(ctx context.Context, chatID int64, limit int, offset int) ([]*ChatNotSpammerOverride, error)
+	CountChatNotSpammerOverrides(ctx context.Context, chatID int64) (int, error)
+	DeleteChatNotSpammerOverride(ctx context.Context, chatID int64, id int64) error
+	IsChatNotSpammer(ctx context.Context, chatID int64, userID int64, username string) (bool, error)
 }

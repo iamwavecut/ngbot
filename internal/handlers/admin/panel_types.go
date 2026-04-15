@@ -17,6 +17,10 @@ const (
 	panelPageExampleDetail              panelPage = "ExampleDetail"
 	panelPageExamplePrompt              panelPage = "ExamplePrompt"
 	panelPageConfirmDelete              panelPage = "ConfirmDelete"
+	panelPageIndulgenceList             panelPage = "IndulgenceList"
+	panelPageIndulgenceDetail           panelPage = "IndulgenceDetail"
+	panelPageIndulgencePrompt           panelPage = "IndulgencePrompt"
+	panelPageIndulgenceConfirmDelete    panelPage = "IndulgenceConfirmDelete"
 	panelPageVoting                     panelPage = "Voting"
 	panelPageVotingTimeout              panelPage = "VotingTimeout"
 	panelPageVotingMinVoters            panelPage = "VotingMinVoters"
@@ -60,6 +64,14 @@ const (
 	panelActionExamplesPagePrev               = "examples_page_prev"
 	panelActionAddExample                     = "add_example"
 	panelActionSelectExample                  = "select_example"
+	panelActionOpenIndulgence                 = "open_indulgence"
+	panelActionIndulgencePageNext             = "indulgence_page_next"
+	panelActionIndulgencePagePrev             = "indulgence_page_prev"
+	panelActionAddIndulgence                  = "add_indulgence"
+	panelActionSelectIndulgence               = "select_indulgence"
+	panelActionOpenIndulgenceDelete           = "open_indulgence_delete"
+	panelActionDeleteIndulgenceYes            = "delete_indulgence_yes"
+	panelActionDeleteIndulgenceNo             = "delete_indulgence_no"
 	panelActionOpenDelete                     = "open_delete"
 	panelActionDeleteYes                      = "delete_yes"
 	panelActionDeleteNo                       = "delete_no"
@@ -102,13 +114,15 @@ type panelState struct {
 	ListPage                                int               `json:"list_page"`
 	LanguagePage                            int               `json:"language_page"`
 	SelectedExampleID                       int64             `json:"selected_example_id,omitempty"`
+	SelectedIndulgenceID                    int64             `json:"selected_indulgence_id,omitempty"`
 	PromptError                             string            `json:"prompt_error,omitempty"`
 }
 
 type panelCommand struct {
-	Action    string `json:"action"`
-	Feature   string `json:"feature,omitempty"`
-	ExampleID int64  `json:"example_id,omitempty"`
-	Language  string `json:"language,omitempty"`
-	Value     string `json:"value,omitempty"`
+	Action       string `json:"action"`
+	Feature      string `json:"feature,omitempty"`
+	ExampleID    int64  `json:"example_id,omitempty"`
+	IndulgenceID int64  `json:"indulgence_id,omitempty"`
+	Language     string `json:"language,omitempty"`
+	Value        string `json:"value,omitempty"`
 }

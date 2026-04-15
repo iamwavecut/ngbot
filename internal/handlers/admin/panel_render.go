@@ -54,6 +54,15 @@ func (a *Admin) renderHome(ctx context.Context, session *db.AdminPanelSession, s
 		return "", nil, err
 	}
 
+	indulgenceCount, err := a.store.CountChatNotSpammerOverrides(ctx, session.ChatID)
+	if err != nil {
+		return "", nil, err
+	}
+	indulgenceBtn, err := a.commandButton(ctx, session.ID, fmt.Sprintf("%s (%d)", i18n.Get("Indulgence", lang), indulgenceCount), panelCommand{Action: panelActionOpenIndulgence})
+	if err != nil {
+		return "", nil, err
+	}
+
 	votingLabel := fmt.Sprintf("%s %s", statusEmoji(state.Features.CommunityVotingEnabled), i18n.Get("Community Voting", lang))
 	votingBtn, err := a.commandButton(ctx, session.ID, votingLabel, panelCommand{Action: panelActionOpenVoting})
 	if err != nil {
@@ -69,6 +78,7 @@ func (a *Admin) renderHome(ctx context.Context, session *db.AdminPanelSession, s
 		api.NewInlineKeyboardRow(languageBtn),
 		api.NewInlineKeyboardRow(gatekeeperBtn),
 		api.NewInlineKeyboardRow(llmBtn),
+		api.NewInlineKeyboardRow(indulgenceBtn),
 		api.NewInlineKeyboardRow(votingBtn),
 		api.NewInlineKeyboardRow(closeBtn),
 	)
@@ -536,6 +546,135 @@ func (a *Admin) renderConfirmDelete(ctx context.Context, session *db.AdminPanelS
 		return "", nil, err
 	}
 	backBtn, err := a.commandButton(ctx, session.ID, "↩️", panelCommand{Action: panelActionDeleteNo})
+	if err != nil {
+		return "", nil, err
+	}
+	keyboard := api.NewInlineKeyboardMarkup(api.NewInlineKeyboardRow(deleteBtn, backBtn))
+	return text, &keyboard, nil
+}
+
+func (a *Admin) renderIndulgenceList(ctx context.Context, session *db.AdminPanelSession, state *panelState) (string, *api.InlineKeyboardMarkup, error) {
+	lang := state.Language
+	totalCount, err := a.store.CountChatNotSpammerOverrides(ctx, session.ChatID)
+	if err != nil {
+		return "", nil, err
+	}
+	totalPages := pageCount(totalCount, panelExamplesPageSize)
+	state.ListPage = clampPage(state.ListPage, totalPages)
+
+	offset := state.ListPage * panelExamplesPageSize
+	overrides, err := a.store.ListChatNotSpammerOverrides(ctx, session.ChatID, panelExamplesPageSize, offset)
+	if err != nil {
+		return "", nil, err
+	}
+
+	builder := strings.Builder{}
+	builder.WriteString(i18n.Get("Indulgence", lang))
+	builder.WriteString("\n")
+	builder.WriteString(fmt.Sprintf(i18n.Get("Page %d/%d", lang), state.ListPage+1, totalPages))
+	builder.WriteString("\n\n")
+	if len(overrides) == 0 {
+		builder.WriteString(i18n.Get("No indulgence entries yet", lang))
+	} else {
+		for i, override := range overrides {
+			builder.WriteString(fmt.Sprintf("%d. %s", i+1, notSpammerReferenceLabel(override)))
+			builder.WriteString("\n")
+		}
+	}
+	builder.WriteString("\n\n")
+	builder.WriteString(panelHelpBlock(lang, i18n.Get("What this is: list of manual not-spammer overrides for this chat. Where used: admin panel allowlist management. Value meaning: each entry bypasses spam checks for a matching user in this chat.", lang)))
+
+	addBtn, err := a.commandButton(ctx, session.ID, i18n.Get("Add Indulgence", lang), panelCommand{Action: panelActionAddIndulgence})
+	if err != nil {
+		return "", nil, err
+	}
+
+	var overrideButtons []api.InlineKeyboardButton
+	for i, override := range overrides {
+		btn, err := a.commandButton(ctx, session.ID, fmt.Sprintf("%d", i+1), panelCommand{Action: panelActionSelectIndulgence, IndulgenceID: override.ID})
+		if err != nil {
+			return "", nil, err
+		}
+		overrideButtons = append(overrideButtons, btn)
+	}
+
+	rows := [][]api.InlineKeyboardButton{api.NewInlineKeyboardRow(addBtn)}
+	rows = append(rows, chunkButtons(overrideButtons, 2)...)
+	navRow, err := a.navRow(ctx, session.ID, panelActionIndulgencePagePrev, panelActionIndulgencePageNext, state.ListPage > 0, state.ListPage < totalPages-1)
+	if err != nil {
+		return "", nil, err
+	}
+	rows = append(rows, navRow)
+
+	keyboard := api.NewInlineKeyboardMarkup(rows...)
+	return builder.String(), &keyboard, nil
+}
+
+func (a *Admin) renderIndulgenceDetail(ctx context.Context, session *db.AdminPanelSession, state *panelState) (string, *api.InlineKeyboardMarkup, error) {
+	lang := state.Language
+	override, err := a.store.GetChatNotSpammerOverride(ctx, session.ChatID, state.SelectedIndulgenceID)
+	if err != nil {
+		return "", nil, err
+	}
+	if override == nil {
+		state.Page = panelPageIndulgenceList
+		return a.renderIndulgenceList(ctx, session, state)
+	}
+
+	text := fmt.Sprintf("%s\n\n%s", i18n.Get("Indulgence", lang), notSpammerReferenceLabel(override))
+	text = appendPanelHelp(text, lang, i18n.Get("What this is: one manual not-spammer override entry. Where used: allowlist details and delete flow. Value meaning: the saved identifier is treated as not spammer for this chat.", lang))
+
+	deleteBtn, err := a.commandButton(ctx, session.ID, i18n.Get("Delete", lang), panelCommand{Action: panelActionOpenIndulgenceDelete})
+	if err != nil {
+		return "", nil, err
+	}
+	backBtn, err := a.commandButton(ctx, session.ID, "↩️", panelCommand{Action: panelActionBack})
+	if err != nil {
+		return "", nil, err
+	}
+	keyboard := api.NewInlineKeyboardMarkup(api.NewInlineKeyboardRow(deleteBtn, backBtn))
+	return text, &keyboard, nil
+}
+
+func (a *Admin) renderIndulgencePrompt(ctx context.Context, session *db.AdminPanelSession, state *panelState) (string, *api.InlineKeyboardMarkup, error) {
+	lang := state.Language
+	builder := strings.Builder{}
+	builder.WriteString(i18n.Get("Add Indulgence", lang))
+	builder.WriteString("\n\n")
+	if state.PromptError != "" {
+		builder.WriteString(state.PromptError)
+		builder.WriteString("\n\n")
+	}
+	builder.WriteString(i18n.Get("Send username, user ID or profile link", lang))
+	builder.WriteString("\n\n")
+	builder.WriteString(panelHelpBlock(lang, i18n.Get("What this is: input mode for adding a manual not-spammer override. Where used: admin prompt waiting for username, user ID, or profile link. Value meaning: next received text is parsed and stored as an override for this chat.", lang)))
+
+	backBtn, err := a.commandButton(ctx, session.ID, "↩️", panelCommand{Action: panelActionBack})
+	if err != nil {
+		return "", nil, err
+	}
+	keyboard := api.NewInlineKeyboardMarkup(api.NewInlineKeyboardRow(backBtn))
+	return builder.String(), &keyboard, nil
+}
+
+func (a *Admin) renderIndulgenceConfirmDelete(ctx context.Context, session *db.AdminPanelSession, state *panelState) (string, *api.InlineKeyboardMarkup, error) {
+	lang := state.Language
+	override, err := a.store.GetChatNotSpammerOverride(ctx, session.ChatID, state.SelectedIndulgenceID)
+	if err != nil {
+		return "", nil, err
+	}
+
+	preview := ""
+	if override != nil {
+		preview = notSpammerReferenceLabel(override)
+	}
+	text := fmt.Sprintf("%s\n\n%s", i18n.Get("Delete indulgence entry?", lang), preview)
+
+	deleteBtn, err := a.commandButton(ctx, session.ID, i18n.Get("Delete", lang), panelCommand{Action: panelActionDeleteIndulgenceYes})
+	if err != nil {
+		return "", nil, err
+	}
+	backBtn, err := a.commandButton(ctx, session.ID, "↩️", panelCommand{Action: panelActionDeleteIndulgenceNo})
 	if err != nil {
 		return "", nil, err
 	}

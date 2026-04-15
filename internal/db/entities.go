@@ -109,11 +109,22 @@ type (
 		CreatedByUserID int64     `db:"created_by_user_id"`
 		CreatedAt       time.Time `db:"created_at"`
 	}
+
+	ChatNotSpammerOverride struct {
+		ID              int64     `db:"id"`
+		ChatID          int64     `db:"chat_id"`
+		MatchType       string    `db:"match_type"`
+		MatchValue      string    `db:"match_value"`
+		CreatedByUserID int64     `db:"created_by_user_id"`
+		CreatedAt       time.Time `db:"created_at"`
+	}
 )
 
 const (
-	defaultChallengeTimeout = 3 * time.Minute
-	defaultRejectTimeout    = 10 * time.Minute
+	defaultChallengeTimeout     = 3 * time.Minute
+	defaultRejectTimeout        = 10 * time.Minute
+	NotSpammerMatchTypeUserID   = "user_id"
+	NotSpammerMatchTypeUsername = "username"
 )
 
 // GetLanguage Returns chat's set language

@@ -92,6 +92,7 @@ type gatekeeperStore interface {
 	AddChatRecentJoiner(ctx context.Context, joiner *db.RecentJoiner) (*db.RecentJoiner, error)
 	GetUnprocessedRecentJoiners(ctx context.Context) ([]*db.RecentJoiner, error)
 	ProcessRecentJoiner(ctx context.Context, chatID int64, userID int64, isSpammer bool) error
+	IsChatNotSpammer(ctx context.Context, chatID int64, userID int64, username string) (bool, error)
 }
 
 var challengeKeys = []string{

@@ -64,6 +64,19 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 	}
 
 	language := r.s.GetLanguage(ctx, chat.ID, user)
+	result.Stage = StageOverrideCheck
+
+	isNotSpammer, err := r.store.IsChatNotSpammer(ctx, chat.ID, user.ID, user.UserName)
+	if err != nil {
+		entry.WithField("error", err.Error()).Error("Failed to check manual not-spammer override")
+		return fmt.Errorf("failed to check manual not-spammer override: %w", err)
+	}
+	if isNotSpammer {
+		result.Skipped = true
+		result.SkipReason = "User is manually marked as not spammer"
+		return r.insertMemberIfPresent(ctx, chat, user, entry)
+	}
+
 	result.Stage = StageBanCheck
 
 	isBanned, err := r.banService.CheckBan(ctx, user.ID)

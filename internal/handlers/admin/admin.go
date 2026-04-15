@@ -9,6 +9,7 @@ import (
 	"time"
 
 	api "github.com/OvyFlash/telegram-bot-api"
+	moderation "github.com/iamwavecut/ngbot/internal/handlers/moderation"
 	log "github.com/sirupsen/logrus"
 
 	"github.com/iamwavecut/ngbot/internal/bot"
@@ -17,13 +18,14 @@ import (
 )
 
 type Admin struct {
-	s         bot.Service
-	store     adminStore
-	languages []string
-	cancel    context.CancelFunc
-	wg        sync.WaitGroup
-	mu        sync.Mutex
-	started   bool
+	s          bot.Service
+	store      adminStore
+	banService moderation.BanService
+	languages  []string
+	cancel     context.CancelFunc
+	wg         sync.WaitGroup
+	mu         sync.Mutex
+	started    bool
 }
 
 type adminStore interface {
@@ -49,15 +51,25 @@ type adminStore interface {
 	ListChatSpamExamples(ctx context.Context, chatID int64, limit int, offset int) ([]*db.ChatSpamExample, error)
 	CountChatSpamExamples(ctx context.Context, chatID int64) (int, error)
 	DeleteChatSpamExample(ctx context.Context, id int64) error
+
+	CreateChatNotSpammerOverride(ctx context.Context, override *db.ChatNotSpammerOverride) (*db.ChatNotSpammerOverride, error)
+	GetChatNotSpammerOverride(ctx context.Context, chatID int64, id int64) (*db.ChatNotSpammerOverride, error)
+	ListChatNotSpammerOverrides(ctx context.Context, chatID int64, limit int, offset int) ([]*db.ChatNotSpammerOverride, error)
+	CountChatNotSpammerOverrides(ctx context.Context, chatID int64) (int, error)
+	DeleteChatNotSpammerOverride(ctx context.Context, chatID int64, id int64) error
+
+	GetActiveSpamCase(ctx context.Context, chatID int64, userID int64) (*db.SpamCase, error)
+	UpdateSpamCase(ctx context.Context, sc *db.SpamCase) error
 }
 
-func NewAdmin(s bot.Service) *Admin {
+func NewAdmin(s bot.Service, banService moderation.BanService) *Admin {
 	entry := log.WithField("object", "Admin").WithField("method", "NewAdmin")
 
 	a := &Admin{
-		s:         s,
-		store:     s.GetDB(),
-		languages: i18n.GetLanguagesList(),
+		s:          s,
+		store:      s.GetDB(),
+		banService: banService,
+		languages:  i18n.GetLanguagesList(),
 	}
 	entry.Debug("created new admin handler")
 	return a

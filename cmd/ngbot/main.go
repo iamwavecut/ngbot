@@ -214,7 +214,7 @@ func buildRuntime(ctx context.Context, cfg *config.Config, errChan chan<- shutdo
 	spamControl := moderationHandlers.NewSpamControl(service, cfg.SpamControl, banService, cfg.SpamControl.Verbose)
 
 	gatekeeperHandler := chatHandlers.NewGatekeeper(service, cfg, banService)
-	adminHandler := adminHandlers.NewAdmin(service)
+	adminHandler := adminHandlers.NewAdmin(service, banService)
 
 	llmAPI, err := configureLLM(cfg, log.WithField("context", "handlers"))
 	if err != nil {

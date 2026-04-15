@@ -91,6 +91,14 @@ func (a *Admin) renderPanel(ctx context.Context, session *db.AdminPanelSession, 
 		return a.renderExamplePrompt(ctx, session, state)
 	case panelPageConfirmDelete:
 		return a.renderConfirmDelete(ctx, session, state)
+	case panelPageIndulgenceList:
+		return a.renderIndulgenceList(ctx, session, state)
+	case panelPageIndulgenceDetail:
+		return a.renderIndulgenceDetail(ctx, session, state)
+	case panelPageIndulgencePrompt:
+		return a.renderIndulgencePrompt(ctx, session, state)
+	case panelPageIndulgenceConfirmDelete:
+		return a.renderIndulgenceConfirmDelete(ctx, session, state)
 	case panelPageVoting:
 		return a.renderVoting(ctx, session, state)
 	case panelPageVotingTimeout:

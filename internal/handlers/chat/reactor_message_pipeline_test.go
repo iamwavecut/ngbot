@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"net/http"
 	"testing"
 
 	api "github.com/OvyFlash/telegram-bot-api"
@@ -10,11 +11,16 @@ import (
 )
 
 type testBotService struct {
-	isMember bool
-	language string
+	botAPI         *api.BotAPI
+	isMember       bool
+	language       string
+	insertedMember int
 }
 
 func (s *testBotService) GetBot() *api.BotAPI {
+	if s.botAPI != nil {
+		return s.botAPI
+	}
 	return &api.BotAPI{}
 }
 
@@ -27,6 +33,7 @@ func (s *testBotService) IsMember(context.Context, int64, int64) (bool, error) {
 }
 
 func (s *testBotService) InsertMember(context.Context, int64, int64) error {
+	s.insertedMember++
 	return nil
 }
 
@@ -55,6 +62,10 @@ func (s *testReactorStore) ListChatSpamExamples(context.Context, int64, int, int
 	return nil, nil
 }
 
+func (s *testReactorStore) IsChatNotSpammer(context.Context, int64, int64, string) (bool, error) {
+	return false, nil
+}
+
 type testSpamDetector struct {
 	calls int
 }
@@ -64,17 +75,32 @@ func (d *testSpamDetector) IsSpam(context.Context, string, []string) (*bool, err
 	return nil, nil
 }
 
-type testBanService struct{}
+type testBanService struct {
+	checkBanCalls int
+	checkBan      bool
+}
 
-func (s *testBanService) Start(context.Context) error                                 { return nil }
-func (s *testBanService) Stop(context.Context) error                                  { return nil }
-func (s *testBanService) CheckBan(context.Context, int64) (bool, error)               { return false, nil }
+func (s *testBanService) Start(context.Context) error { return nil }
+func (s *testBanService) Stop(context.Context) error  { return nil }
+func (s *testBanService) CheckBan(context.Context, int64) (bool, error) {
+	s.checkBanCalls++
+	return s.checkBan, nil
+}
 func (s *testBanService) MuteUser(context.Context, int64, int64) error                { return nil }
 func (s *testBanService) UnmuteUser(context.Context, int64, int64) error              { return nil }
 func (s *testBanService) BanUserWithMessage(context.Context, int64, int64, int) error { return nil }
 func (s *testBanService) UnbanUser(context.Context, int64, int64) error               { return nil }
 func (s *testBanService) IsRestricted(context.Context, int64, int64) (bool, error)    { return false, nil }
 func (s *testBanService) IsKnownBanned(int64) bool                                    { return false }
+
+type testNotSpammerStore struct {
+	testReactorStore
+	isNotSpammer bool
+}
+
+func (s *testNotSpammerStore) IsChatNotSpammer(context.Context, int64, int64, string) (bool, error) {
+	return s.isNotSpammer, nil
+}
 
 func TestHandleMessageExternalQuoteHeuristic(t *testing.T) {
 	t.Parallel()
@@ -132,6 +158,88 @@ func TestHandleMessageExternalQuoteHeuristic(t *testing.T) {
 		t.Fatalf("expected spam result, got %#v", result.IsSpam)
 	}
 	if result.SkipReason != "First-message external quote heuristic" {
+		t.Fatalf("unexpected skip reason: %q", result.SkipReason)
+	}
+}
+
+func TestHandleMessageNotSpammerOverrideBypassesBanAndLLM(t *testing.T) {
+	t.Parallel()
+
+	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
+		switch method {
+		case "getChatMember":
+			return map[string]any{
+				"user": map[string]any{
+					"id":         200,
+					"is_bot":     false,
+					"first_name": "User",
+				},
+				"status": "member",
+			}
+		default:
+			t.Fatalf("unexpected bot method: %s", method)
+			return nil
+		}
+	})
+
+	service := &testBotService{
+		botAPI:   botAPI,
+		language: "ru",
+	}
+	detector := &testSpamDetector{}
+	banService := &testBanService{}
+	processSpamCalls := 0
+	r := &Reactor{
+		s:            service,
+		store:        &testNotSpammerStore{isNotSpammer: true},
+		spamDetector: detector,
+		banService:   banService,
+		processSpam: func(context.Context, *api.Message, *api.Chat, string) (*moderation.ProcessingResult, error) {
+			processSpamCalls++
+			return nil, nil
+		},
+		processBanned: func(context.Context, *api.Message, *api.Chat, string) (*moderation.ProcessingResult, error) {
+			t.Fatal("processBanned should not be called")
+			return nil, nil
+		},
+		lastResults: make(map[int64]*MessageProcessingResult),
+	}
+
+	chat := &api.Chat{ID: 100, Type: "supergroup"}
+	user := &api.User{ID: 200, UserName: "override_user"}
+	msg := &api.Message{
+		MessageID: 10,
+		Chat:      *chat,
+		From:      user,
+		Text:      "hello there",
+	}
+	settings := &db.Settings{LLMFirstMessageEnabled: true, CommunityVotingEnabled: true}
+
+	if err := r.handleMessage(context.Background(), msg, chat, user, settings); err != nil {
+		t.Fatalf("handleMessage returned error: %v", err)
+	}
+
+	if detector.calls != 0 {
+		t.Fatalf("expected LLM detector not to be called, got %d calls", detector.calls)
+	}
+	if banService.checkBanCalls != 0 {
+		t.Fatalf("expected ban check not to be called, got %d calls", banService.checkBanCalls)
+	}
+	if processSpamCalls != 0 {
+		t.Fatalf("expected processSpam not to be called, got %d calls", processSpamCalls)
+	}
+	if service.insertedMember != 1 {
+		t.Fatalf("expected member insertion, got %d", service.insertedMember)
+	}
+
+	result := r.GetLastProcessingResult(int64(msg.MessageID))
+	if result == nil {
+		t.Fatal("expected processing result")
+	}
+	if result.Stage != StageOverrideCheck {
+		t.Fatalf("unexpected stage: %s", result.Stage)
+	}
+	if result.SkipReason != "User is manually marked as not spammer" {
 		t.Fatalf("unexpected skip reason: %q", result.SkipReason)
 	}
 }
