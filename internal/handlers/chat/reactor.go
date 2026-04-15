@@ -72,6 +72,9 @@ type Reactor struct {
 type reactorStore interface {
 	ListChatSpamExamples(ctx context.Context, chatID int64, limit int, offset int) ([]*db.ChatSpamExample, error)
 	IsChatNotSpammer(ctx context.Context, chatID int64, userID int64, username string) (bool, error)
+	IsChatKnownNonMember(ctx context.Context, chatID int64, userID int64) (bool, error)
+	UpsertChatKnownNonMember(ctx context.Context, record *db.ChatKnownNonMember) error
+	DeleteChatKnownNonMember(ctx context.Context, chatID int64, userID int64) error
 }
 
 func NewReactor(s bot.Service, banService moderation.BanService, spamControl *moderation.SpamControl, spamDetector SpamDetectorInterface, config Config) *Reactor {

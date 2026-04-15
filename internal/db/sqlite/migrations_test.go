@@ -91,3 +91,43 @@ func TestChatNotSpammerOverrideIndexesExistAfterMigrations(t *testing.T) {
 		}
 	}
 }
+
+func TestChatKnownNonMemberPrimaryKeyIndexExistsAfterMigrations(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	client, err := NewSQLiteClient(ctx, t.TempDir(), "test.db")
+	if err != nil {
+		t.Fatalf("new sqlite client: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+
+	rows, err := client.db.QueryContext(ctx, "PRAGMA index_list('chat_known_non_members')")
+	if err != nil {
+		t.Fatalf("query index_list: %v", err)
+	}
+	defer rows.Close()
+
+	foundPrimaryKeyIndex := false
+	for rows.Next() {
+		var (
+			seq     int
+			name    string
+			unique  int
+			origin  string
+			partial int
+		)
+		if err := rows.Scan(&seq, &name, &unique, &origin, &partial); err != nil {
+			t.Fatalf("scan index row: %v", err)
+		}
+		if origin == "pk" {
+			foundPrimaryKeyIndex = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate index rows: %v", err)
+	}
+	if !foundPrimaryKeyIndex {
+		t.Fatal("expected chat_known_non_members primary key index to exist")
+	}
+}

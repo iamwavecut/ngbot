@@ -56,7 +56,11 @@ func (s *testBotService) GetLanguage(context.Context, int64, *api.User) string {
 	return s.language
 }
 
-type testReactorStore struct{}
+type testReactorStore struct {
+	knownNonMember bool
+	upserted       []db.ChatKnownNonMember
+	deleted        [][2]int64
+}
 
 func (s *testReactorStore) ListChatSpamExamples(context.Context, int64, int, int) ([]*db.ChatSpamExample, error) {
 	return nil, nil
@@ -66,13 +70,32 @@ func (s *testReactorStore) IsChatNotSpammer(context.Context, int64, int64, strin
 	return false, nil
 }
 
+func (s *testReactorStore) IsChatKnownNonMember(context.Context, int64, int64) (bool, error) {
+	return s.knownNonMember, nil
+}
+
+func (s *testReactorStore) UpsertChatKnownNonMember(_ context.Context, record *db.ChatKnownNonMember) error {
+	if record != nil {
+		s.upserted = append(s.upserted, *record)
+		s.knownNonMember = true
+	}
+	return nil
+}
+
+func (s *testReactorStore) DeleteChatKnownNonMember(_ context.Context, chatID int64, userID int64) error {
+	s.deleted = append(s.deleted, [2]int64{chatID, userID})
+	s.knownNonMember = false
+	return nil
+}
+
 type testSpamDetector struct {
-	calls int
+	calls  int
+	result *bool
 }
 
 func (d *testSpamDetector) IsSpam(context.Context, string, []string) (*bool, error) {
 	d.calls++
-	return nil, nil
+	return d.result, nil
 }
 
 type testBanService struct {
@@ -100,6 +123,10 @@ type testNotSpammerStore struct {
 
 func (s *testNotSpammerStore) IsChatNotSpammer(context.Context, int64, int64, string) (bool, error) {
 	return s.isNotSpammer, nil
+}
+
+func boolPtr(value bool) *bool {
+	return &value
 }
 
 func TestHandleMessageExternalQuoteHeuristic(t *testing.T) {
@@ -159,6 +186,68 @@ func TestHandleMessageExternalQuoteHeuristic(t *testing.T) {
 	}
 	if result.SkipReason != "First-message external quote heuristic" {
 		t.Fatalf("unexpected skip reason: %q", result.SkipReason)
+	}
+}
+
+func TestHandleMessageCleanLeftUserRememberedAsKnownNonMember(t *testing.T) {
+	t.Parallel()
+
+	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
+		switch method {
+		case "getChatMember":
+			return map[string]any{
+				"user": map[string]any{
+					"id":         200,
+					"is_bot":     false,
+					"first_name": "User",
+				},
+				"status": "left",
+			}
+		default:
+			t.Fatalf("unexpected bot method: %s", method)
+			return nil
+		}
+	})
+
+	service := &testBotService{botAPI: botAPI}
+	store := &testReactorStore{}
+	detector := &testSpamDetector{result: boolPtr(false)}
+	r := &Reactor{
+		s:            service,
+		store:        store,
+		spamDetector: detector,
+		banService:   &testBanService{},
+		processSpam: func(context.Context, *api.Message, *api.Chat, string) (*moderation.ProcessingResult, error) {
+			t.Fatal("processSpam should not be called")
+			return nil, nil
+		},
+		processBanned: func(context.Context, *api.Message, *api.Chat, string) (*moderation.ProcessingResult, error) {
+			t.Fatal("processBanned should not be called")
+			return nil, nil
+		},
+		lastResults: make(map[int64]*MessageProcessingResult),
+	}
+
+	chat := &api.Chat{ID: 100, Type: "supergroup"}
+	user := &api.User{ID: 200}
+	msg := &api.Message{MessageID: 11, Chat: *chat, From: user, Text: "hello there"}
+	settings := &db.Settings{LLMFirstMessageEnabled: true, CommunityVotingEnabled: true}
+
+	if err := r.handleMessage(context.Background(), msg, chat, user, settings); err != nil {
+		t.Fatalf("handleMessage returned error: %v", err)
+	}
+
+	if detector.calls != 1 {
+		t.Fatalf("expected LLM detector to be called once, got %d", detector.calls)
+	}
+	if service.insertedMember != 0 {
+		t.Fatalf("expected member insertion to be skipped, got %d", service.insertedMember)
+	}
+	if len(store.upserted) != 1 {
+		t.Fatalf("expected one known non-member upsert, got %d", len(store.upserted))
+	}
+	if store.upserted[0].ChatID != chat.ID || store.upserted[0].UserID != user.ID {
+		t.Fatalf("unexpected known non-member upsert: %#v", store.upserted[0])
 	}
 }
 
@@ -244,6 +333,84 @@ func TestHandleMessageNotSpammerOverrideBypassesBanAndLLM(t *testing.T) {
 	}
 }
 
+func TestHandleMessageKnownNonMemberBypassesFirstMessageChecks(t *testing.T) {
+	t.Parallel()
+
+	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
+		switch method {
+		case "getChatMember":
+			return map[string]any{
+				"user": map[string]any{
+					"id":         200,
+					"is_bot":     false,
+					"first_name": "User",
+				},
+				"status": "left",
+			}
+		default:
+			t.Fatalf("unexpected bot method: %s", method)
+			return nil
+		}
+	})
+
+	service := &testBotService{botAPI: botAPI}
+	store := &testReactorStore{knownNonMember: true}
+	detector := &testSpamDetector{result: boolPtr(false)}
+	banService := &testBanService{}
+	processSpamCalls := 0
+	r := &Reactor{
+		s:            service,
+		store:        store,
+		spamDetector: detector,
+		banService:   banService,
+		processSpam: func(context.Context, *api.Message, *api.Chat, string) (*moderation.ProcessingResult, error) {
+			processSpamCalls++
+			return nil, nil
+		},
+		processBanned: func(context.Context, *api.Message, *api.Chat, string) (*moderation.ProcessingResult, error) {
+			t.Fatal("processBanned should not be called")
+			return nil, nil
+		},
+		lastResults: make(map[int64]*MessageProcessingResult),
+	}
+
+	chat := &api.Chat{ID: 100, Type: "supergroup"}
+	user := &api.User{ID: 200}
+	msg := &api.Message{
+		MessageID: 12,
+		Chat:      *chat,
+		From:      user,
+		Text:      "reply from guest",
+		ExternalReply: &api.ExternalReplyInfo{
+			Origin: api.MessageOrigin{Type: api.MessageOriginChannel},
+			Chat:   &api.Chat{ID: 999, Type: "channel"},
+		},
+	}
+	settings := &db.Settings{LLMFirstMessageEnabled: true, CommunityVotingEnabled: true}
+
+	if err := r.handleMessage(context.Background(), msg, chat, user, settings); err != nil {
+		t.Fatalf("handleMessage returned error: %v", err)
+	}
+
+	if detector.calls != 0 {
+		t.Fatalf("expected LLM detector not to be called, got %d calls", detector.calls)
+	}
+	if processSpamCalls != 0 {
+		t.Fatalf("expected processSpam not to be called, got %d", processSpamCalls)
+	}
+	if banService.checkBanCalls != 1 {
+		t.Fatalf("expected ban check to run before bypass, got %d calls", banService.checkBanCalls)
+	}
+
+	result := r.GetLastProcessingResult(int64(msg.MessageID))
+	if result == nil {
+		t.Fatal("expected processing result")
+	}
+	if result.SkipReason != "User is a remembered non-member" {
+		t.Fatalf("unexpected skip reason: %q", result.SkipReason)
+	}
+}
+
 func TestHandleMessageExternalQuoteHeuristicDoesNotTriggerForNonFirstMessage(t *testing.T) {
 	t.Parallel()
 
@@ -296,6 +463,62 @@ func TestHandleMessageExternalQuoteHeuristicDoesNotTriggerForNonFirstMessage(t *
 	}
 	if result.SkipReason != "User is already a member" {
 		t.Fatalf("unexpected skip reason: %q", result.SkipReason)
+	}
+}
+
+func TestHandleMessageCleanMemberInsertsMemberInsteadOfKnownNonMember(t *testing.T) {
+	t.Parallel()
+
+	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
+		switch method {
+		case "getChatMember":
+			return map[string]any{
+				"user": map[string]any{
+					"id":         200,
+					"is_bot":     false,
+					"first_name": "User",
+				},
+				"status": "member",
+			}
+		default:
+			t.Fatalf("unexpected bot method: %s", method)
+			return nil
+		}
+	})
+
+	service := &testBotService{botAPI: botAPI}
+	store := &testReactorStore{}
+	detector := &testSpamDetector{result: boolPtr(false)}
+	r := &Reactor{
+		s:            service,
+		store:        store,
+		spamDetector: detector,
+		banService:   &testBanService{},
+		processSpam: func(context.Context, *api.Message, *api.Chat, string) (*moderation.ProcessingResult, error) {
+			t.Fatal("processSpam should not be called")
+			return nil, nil
+		},
+		processBanned: func(context.Context, *api.Message, *api.Chat, string) (*moderation.ProcessingResult, error) {
+			t.Fatal("processBanned should not be called")
+			return nil, nil
+		},
+		lastResults: make(map[int64]*MessageProcessingResult),
+	}
+
+	chat := &api.Chat{ID: 100, Type: "supergroup"}
+	user := &api.User{ID: 200}
+	msg := &api.Message{MessageID: 13, Chat: *chat, From: user, Text: "hello there"}
+	settings := &db.Settings{LLMFirstMessageEnabled: true, CommunityVotingEnabled: true}
+
+	if err := r.handleMessage(context.Background(), msg, chat, user, settings); err != nil {
+		t.Fatalf("handleMessage returned error: %v", err)
+	}
+
+	if service.insertedMember != 1 {
+		t.Fatalf("expected member insertion, got %d", service.insertedMember)
+	}
+	if len(store.upserted) != 0 {
+		t.Fatalf("expected no known non-member upsert, got %d", len(store.upserted))
 	}
 }
 

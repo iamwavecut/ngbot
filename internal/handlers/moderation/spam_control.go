@@ -51,6 +51,7 @@ type spamStore interface {
 	AddSpamVote(ctx context.Context, vote *db.SpamVote) error
 	GetSpamVotes(ctx context.Context, caseID int64) ([]*db.SpamVote, error)
 	GetMembers(ctx context.Context, chatID int64) ([]int64, error)
+	DeleteChatKnownNonMember(ctx context.Context, chatID int64, userID int64) error
 }
 
 func NewSpamControl(s bot.Service, config config.SpamControl, banService BanService, verbose bool) *SpamControl {
@@ -246,6 +247,9 @@ func (sc *SpamControl) preprocessMessage(ctx context.Context, msg *api.Message, 
 
 	if err := sc.store.UpdateSpamCase(ctx, spamCase); err != nil {
 		log.WithField("error", err.Error()).Error("failed to update spam case")
+	}
+	if !voting {
+		sc.clearKnownNonMember(ctx, chat.ID, msg.From.ID)
 	}
 
 	if voting {
@@ -446,6 +450,7 @@ func (sc *SpamControl) ResolveCase(ctx context.Context, caseID int64, timedOut b
 		if err := bot.BanUserFromChat(ctx, sc.s.GetBot(), spamCase.UserID, spamCase.ChatID, 0); err != nil {
 			log.WithField("error", err.Error()).Error("failed to ban user")
 		}
+		sc.clearKnownNonMember(ctx, spamCase.ChatID, spamCase.UserID)
 	} else {
 		if err := sc.banService.UnmuteUser(ctx, spamCase.ChatID, spamCase.UserID); err != nil {
 			log.WithField("error", err.Error()).Error("failed to unmute user")
@@ -540,6 +545,12 @@ func resolveVotingPolicy(base config.SpamControl, settings *db.Settings) votingP
 
 func (sc *SpamControl) getLogEntry() *log.Entry {
 	return log.WithField("object", "SpamControl")
+}
+
+func (sc *SpamControl) clearKnownNonMember(ctx context.Context, chatID int64, userID int64) {
+	if err := sc.store.DeleteChatKnownNonMember(ctx, chatID, userID); err != nil {
+		log.WithField("error", err.Error()).Error("failed to delete known non-member")
+	}
 }
 
 func (sc *SpamControl) scheduleAfter(delay time.Duration, task func(ctx context.Context)) {

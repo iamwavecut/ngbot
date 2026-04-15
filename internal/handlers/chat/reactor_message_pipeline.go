@@ -74,7 +74,7 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 	if isNotSpammer {
 		result.Skipped = true
 		result.SkipReason = "User is manually marked as not spammer"
-		return r.insertMemberIfPresent(ctx, chat, user, entry)
+		return r.rememberAuthorIfPossible(ctx, chat, user, entry)
 	}
 
 	result.Stage = StageBanCheck
@@ -113,11 +113,28 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 		return nil
 	}
 
+	isKnownNonMember, err := r.store.IsChatKnownNonMember(ctx, chat.ID, user.ID)
+	if err != nil {
+		entry.WithField("error", err.Error()).Error("Failed to check known non-member state")
+		return fmt.Errorf("failed to check known non-member state: %w", err)
+	}
+	if isKnownNonMember {
+		skipReason, handled, err := r.handleKnownNonMember(ctx, chat, user, entry)
+		if err != nil {
+			return err
+		}
+		if handled {
+			result.Skipped = true
+			result.SkipReason = skipReason
+			return nil
+		}
+	}
+
 	if settings != nil && !settings.LLMFirstMessageEnabled {
 		result.Stage = StageSpamCheck
 		result.Skipped = true
 		result.SkipReason = "LLM first message check disabled"
-		return r.insertMemberIfPresent(ctx, chat, user, entry)
+		return r.rememberAuthorIfPossible(ctx, chat, user, entry)
 	}
 
 	result.Stage = StageContentCheck
@@ -202,7 +219,7 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 			return nil
 		}
 
-		if err := r.insertMemberIfPresent(ctx, chat, user, entry); err != nil {
+		if err := r.rememberAuthorIfPossible(ctx, chat, user, entry); err != nil {
 			return err
 		}
 	}
@@ -304,7 +321,47 @@ func (r *Reactor) loadSpamExamples(ctx context.Context, chatID int64) []string {
 	return texts
 }
 
-func (r *Reactor) insertMemberIfPresent(ctx context.Context, chat *api.Chat, user *api.User, entry *log.Entry) error {
+func (r *Reactor) handleKnownNonMember(ctx context.Context, chat *api.Chat, user *api.User, entry *log.Entry) (string, bool, error) {
+	chatMember, err := r.s.GetBot().GetChatMember(api.GetChatMemberConfig{
+		ChatConfigWithUser: api.ChatConfigWithUser{
+			ChatConfig: api.ChatConfig{
+				ChatID: chat.ID,
+			},
+			UserID: user.ID,
+		},
+	})
+	if err != nil {
+		entry.WithField("error", err.Error()).Warn("failed to verify known non-member state, trusting stored memory")
+		return "User is a remembered non-member", true, nil
+	}
+
+	if chatMember.WasKicked() {
+		if deleteErr := r.store.DeleteChatKnownNonMember(ctx, chat.ID, user.ID); deleteErr != nil {
+			entry.WithField("error", deleteErr.Error()).Error("failed to delete kicked known non-member")
+		}
+		return "", false, nil
+	}
+
+	if chatMember.HasLeft() {
+		return "User is a remembered non-member", true, nil
+	}
+
+	entry.WithFields(log.Fields{
+		"user_id": user.ID,
+		"chat_id": chat.ID,
+	}).Info("Promoting remembered non-member to member")
+
+	if insertErr := r.s.InsertMember(ctx, chat.ID, user.ID); insertErr != nil {
+		entry.WithField("error", insertErr.Error()).Error("failed to insert promoted member")
+		return "User is a remembered non-member", true, nil
+	}
+	if deleteErr := r.store.DeleteChatKnownNonMember(ctx, chat.ID, user.ID); deleteErr != nil {
+		entry.WithField("error", deleteErr.Error()).Error("failed to delete promoted known non-member")
+	}
+	return "User is already a member", true, nil
+}
+
+func (r *Reactor) rememberAuthorIfPossible(ctx context.Context, chat *api.Chat, user *api.User, entry *log.Entry) error {
 	chatMember, err := r.s.GetBot().GetChatMember(api.GetChatMemberConfig{
 		ChatConfigWithUser: api.ChatConfigWithUser{
 			ChatConfig: api.ChatConfig{
@@ -318,19 +375,40 @@ func (r *Reactor) insertMemberIfPresent(ctx context.Context, chat *api.Chat, use
 		return err
 	}
 
-	if !(chatMember.HasLeft() || chatMember.WasKicked()) {
-		entry.WithFields(log.Fields{
-			"user_id": user.ID,
-			"chat_id": chat.ID,
-		}).Info("Adding user as member after spam check")
-		if insertErr := r.s.InsertMember(ctx, chat.ID, user.ID); insertErr != nil {
-			entry.WithField("error", insertErr.Error()).Error("failed to insert member")
+	if chatMember.WasKicked() {
+		if deleteErr := r.store.DeleteChatKnownNonMember(ctx, chat.ID, user.ID); deleteErr != nil {
+			entry.WithField("error", deleteErr.Error()).Error("failed to delete kicked known non-member")
 		}
-	} else {
 		entry.WithFields(log.Fields{
 			"user_id": user.ID,
 			"chat_id": chat.ID,
-		}).Info("User has left the chat, skipping member insertion")
+		}).Info("User was kicked from the chat, skipping author memory update")
+		return nil
 	}
+
+	if chatMember.HasLeft() {
+		entry.WithFields(log.Fields{
+			"user_id": user.ID,
+			"chat_id": chat.ID,
+		}).Info("Remembering user as known non-member after spam check")
+		if upsertErr := r.store.UpsertChatKnownNonMember(ctx, &db.ChatKnownNonMember{
+			ChatID: chat.ID,
+			UserID: user.ID,
+		}); upsertErr != nil {
+			entry.WithField("error", upsertErr.Error()).Error("failed to upsert known non-member")
+		}
+		return nil
+	}
+
+	entry.WithFields(log.Fields{
+		"user_id": user.ID,
+		"chat_id": chat.ID,
+	}).Info("Adding user as member after spam check")
+	if insertErr := r.s.InsertMember(ctx, chat.ID, user.ID); insertErr != nil {
+		entry.WithField("error", insertErr.Error()).Error("failed to insert member")
+	} else if deleteErr := r.store.DeleteChatKnownNonMember(ctx, chat.ID, user.ID); deleteErr != nil {
+		entry.WithField("error", deleteErr.Error()).Error("failed to delete known non-member after member insert")
+	}
+
 	return nil
 }

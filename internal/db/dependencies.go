@@ -17,6 +17,9 @@ type Client interface {
 	GetMembers(ctx context.Context, chatID int64) ([]int64, error)
 	GetAllMembers(ctx context.Context) (map[int64][]int64, error)
 	IsMember(ctx context.Context, chatID int64, userID int64) (bool, error)
+	IsChatKnownNonMember(ctx context.Context, chatID int64, userID int64) (bool, error)
+	UpsertChatKnownNonMember(ctx context.Context, record *ChatKnownNonMember) error
+	DeleteChatKnownNonMember(ctx context.Context, chatID int64, userID int64) error
 
 	// Gatekeeper challenges
 	CreateChallenge(ctx context.Context, challenge *Challenge) (*Challenge, error)
