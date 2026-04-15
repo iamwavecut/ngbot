@@ -17,7 +17,7 @@ func (c *sqliteClient) CreateChatNotSpammerOverride(ctx context.Context, overrid
 	if override == nil {
 		return nil, fmt.Errorf("override is nil")
 	}
-	if override.ChatID <= 0 {
+	if override.ChatID == 0 {
 		return nil, fmt.Errorf("invalid chat id")
 	}
 

@@ -107,6 +107,35 @@ func TestChatNotSpammerOverrideCreateListCountDelete(t *testing.T) {
 	}
 }
 
+func TestChatNotSpammerOverrideCreateAllowsNegativeTelegramChatID(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	client := newTestSQLiteClient(t)
+
+	override, err := client.CreateChatNotSpammerOverride(ctx, &db.ChatNotSpammerOverride{
+		ChatID:          -1001234567890,
+		MatchType:       db.NotSpammerMatchTypeUserID,
+		MatchValue:      "12345",
+		CreatedByUserID: 10,
+		CreatedAt:       time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("CreateChatNotSpammerOverride: %v", err)
+	}
+	if override == nil || override.ChatID != -1001234567890 {
+		t.Fatalf("unexpected override: %#v", override)
+	}
+
+	matched, err := client.IsChatNotSpammer(ctx, -1001234567890, 12345, "")
+	if err != nil {
+		t.Fatalf("IsChatNotSpammer: %v", err)
+	}
+	if !matched {
+		t.Fatal("expected negative Telegram chat id override to match")
+	}
+}
+
 func TestChatNotSpammerOverrideGlobalLookupSupportsNullAndZero(t *testing.T) {
 	t.Parallel()
 
