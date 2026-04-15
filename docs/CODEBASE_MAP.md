@@ -1,7 +1,7 @@
 ---
-last_mapped: 2026-04-15T12:00:00Z
-total_files: 70
-total_tokens: ~110000
+last_mapped: 2026-04-15T14:00:00Z
+total_files: 78
+total_tokens: ~120000
 ---
 
 # ngbot Codebase Map
@@ -113,6 +113,7 @@ ngbot/
 │   │   ├── entities.go            # Data structures (Settings, Challenge, etc.)
 │   │   ├── settings.go            # DefaultSettings(), ErrNotFound
 │   │   ├── spam_tracking.go       # SpamReport, UserRestriction
+│   │   ├── not_spammer_overrides.go  # Not-spammer override validation/normalization (NEW)
 │   │   └── sqlite/                # SQLite implementation
 │   │       ├── client.go          # SQLite bootstrap (conn+migrations)
 │   │       ├── client_settings_members.go  # Settings & members CRUD
@@ -120,6 +121,8 @@ ngbot/
 │   │       ├── client_challenges_test.go   # Parallel join request tests
 │   │       ├── client_spam.go              # Spam/restrictions/banlist
 │   │       ├── client_kv.go                # KV store operations
+│   │       ├── client_not_spammer_overrides.go  # Not-spammer override CRUD + lookup (NEW)
+│   │       ├── client_not_spammer_overrides_test.go  # Override CRUD + global scope tests (NEW)
 │   │       ├── admin_panel.go              # Admin panel sessions
 │   │       └── migrations_test.go          # Index verification tests
 │   ├── adapters/                  # External service adapters
@@ -143,7 +146,9 @@ ngbot/
 │   │   │   ├── panel_render.go    # Render orchestration, greeting preview
 │   │   │   ├── panel_renderer.go  # UI rendering
 │   │   │   ├── panel_session_service.go    # Session persistence
-│   │   │   └── panel_types.go     # Page/action/command types (gatekeeper pages)
+│   │   │   ├── panel_not_spammer_override.go  # Not-spammer override parsing, rehab (NEW)
+│   │   │   ├── panel_not_spammer_override_test.go  # Reference parsing tests (NEW)
+│   │   │   └── panel_types.go     # Page/action/command types (23 pages, indulgence added)
 │   │   ├── chat/                  # Gatekeeper/Reactor use-cases
 │   │   │   ├── gatekeeper.go      # Orchestrator, lifecycle
 │   │   │   ├── gatekeeper_captcha.go       # Button generation, keyboard layout
@@ -151,13 +156,15 @@ ngbot/
 │   │   │   ├── gatekeeper_challenge_service.go  # Callback handling
 │   │   │   ├── gatekeeper_join_processor.go     # Join flow, greeting text
 │   │   │   ├── gatekeeper_scheduler.go          # Background workers
+│   │   │   ├── gatekeeper_scheduler_test.go     # Scheduler override bypass tests (NEW)
 │   │   │   ├── reactor.go         # Orchestrator, pipeline stages
 │   │   │   ├── reactor_command_router.go     # /ban, /testspam, /skipreason
 │   │   │   ├── reactor_command_router_test.go  # Command targeting tests (NEW)
 │   │   │   ├── reactor_message_pipeline.go   # Spam detection pipeline
-│   │   │   ├── reactor_message_pipeline_test.go  # External quote heuristic tests (NEW)
+│   │   │   ├── reactor_message_pipeline_test.go  # External quote + override bypass tests (NEW)
 │   │   │   ├── reactor_reaction_moderator.go # Reaction-based moderation
-│   │   │   └── reactor_text_normalizer.go    # Cyrillic homoglyph normalization
+│   │   │   ├── reactor_text_normalizer.go    # Cyrillic homoglyph normalization
+│   │   │   └── test_bot_api_test.go          # Shared test BotAPI with httptest.Server (NEW)
 │   │   └── moderation/            # Spam detection, ban service
 │   │       ├── ban_service.go     # Interface, lifecycle, public API
 │   │       ├── ban_service_actions.go     # Restrict/ban/unban actions
@@ -182,9 +189,9 @@ ngbot/
 │       └── health_check.go        # Executable modification monitor
 ├── resources/
 │   ├── embed.go                   # Go embed directive
-│   ├── i18n/translations.yml      # 30 language translations, 94 keys
+│   ├── i18n/translations.yml      # 30 language translations, 102 keys
 │   ├── gatekeeper/challenges/     # Per-language emoji challenges (30 files)
-│   └── migrations/                # 19 SQL migration files
+│   └── migrations/                # 20 SQL migration files
 ├── go.mod                         # Dependencies (Go 1.25)
 ├── Dockerfile                     # Multi-stage build
 ├── compose.yaml.dist              # Docker Compose config
@@ -201,7 +208,7 @@ ngbot/
 |------|---------|-------------|
 | `service.go` | Membership/settings management with TTL caching | `NewService()`, `IsMember()`, `GetSettings()`, worker group for background tasks |
 | `service_test.go` | Service initialization and lifecycle tests | Integration tests with real SQLite |
-| `update_processor.go` | Update dispatch to handlers (chain of responsibility) | `UpdateProcessor`, `RegisterUpdateHandler()`, 19 `MessageType` constants |
+| `update_processor.go` | Update dispatch to handlers (chain of responsibility) | `UpdateProcessor`, `RegisterUpdateHandler()`, 19 `MessageType` constants, `StageOverrideCheck` (NEW) |
 | `polling.go` | Custom long-polling with exponential backoff and recovery window | `GetUpdatesChans()`, `PollingOptions`, `PollingRecoveryError` |
 | `polling_test.go` | Polling recovery, backoff, malformed update tests | Tests for all polling failure modes |
 | `dependencies.go` | Interface contracts | `Service`, `Handler`, `Client` interfaces |
@@ -261,7 +268,9 @@ ngbot/
 | `panel_render.go` | Per-page render methods with contextual help descriptions |
 | `panel_renderer.go` | Render dispatch, settings hydration, message edit/send fallback |
 | `panel_session_service.go` | Session persistence, callback parsing, brute-force split resolution |
-| `panel_types.go` | `panelPage` (19 pages), `panelState`, `panelCommand` types |
+| `panel_not_spammer_override.go` | Input parsing (username/ID/URL), rehabilitation side-effects (NEW) |
+| `panel_not_spammer_override_test.go` | Reference parsing table-driven tests (NEW) |
+| `panel_types.go` | `panelPage` (23 pages), `panelState`, `panelCommand` types |
 
 **Admin Panel Pages** (Cascading Menu Structure):
 
@@ -279,6 +288,12 @@ Home
 │   └── ExamplesList (paginated, 5/page)
 │       ├── ExampleDetail → ConfirmDelete
 │       └── ExamplePrompt (free-text input)
+├── Indulgence (NEW)
+│   ├── IndulgenceList (paginated, shows override count badge)
+│   │   ├── IndulgenceDetail
+│   │   │   └── IndulgenceConfirmDelete
+│   │   └── (numbered selection buttons)
+│   └── IndulgencePrompt (free-text: username, user ID, or profile URL)
 ├── Voting
 │   ├── VotingTimeout (inherit + 1m..30m)
 │   ├── VotingMinVoters (inherit + 1,2,3,5,10)
@@ -302,7 +317,8 @@ Home
 | `gatekeeper_captcha.go` | CAPTCHA button generation, smart keyboard layout (2 rows for 6+) |
 | `gatekeeper_challenge_service.go` | Challenge callback handling, success/fail/cleanup flows |
 | `gatekeeper_join_processor.go` | Join/request flow, greeting text with placeholders |
-| `gatekeeper_scheduler.go` | Background workers (new joiners check, expired challenges) |
+| `gatekeeper_scheduler.go` | Background workers (new joiners check, expired challenges, not-spammer bypass) |
+| `gatekeeper_scheduler_test.go` | Scheduler override bypass tests (NEW) |
 | `gatekeeper_captcha_test.go` | Button generation and keyboard layout tests |
 
 **Gatekeeper Constants**:
@@ -322,6 +338,7 @@ Home
 | `reactor_message_pipeline_test.go` | External quote heuristic tests (NEW) |
 | `reactor_reaction_moderator.go` | Reaction-based moderation (5 flagged emojis = auto-ban) |
 | `reactor_text_normalizer.go` | Cyrillic homoglyph normalization (100+ confusable chars) |
+| `test_bot_api_test.go` | Shared test BotAPI with httptest.Server (NEW) |
 
 **Pipeline Stages** (in order):
 
@@ -329,7 +346,7 @@ Home
 Message arrives
     │
     ▼
-[1] isLinkedChannelAutoForward? → YES → SKIP (NEW)
+[1] isLinkedChannelAutoForward? → YES → SKIP
     │
     NO
     ▼
@@ -337,29 +354,33 @@ Message arrives
     │
     NO
     ▼
-[3] CheckBan → BANNED → ProcessBannedMessage (no voting)
+[3] IsChatNotSpammer? → YES → Insert member, SKIP (NEW)
+    │
+    NO
+    ▼
+[4] CheckBan → BANNED → ProcessBannedMessage (no voting)
     │
     NOT BANNED
     ▼
-[4] LLMFirstMessageEnabled? → NO → Insert member, SKIP
+[5] LLMFirstMessageEnabled? → NO → Insert member, SKIP
     │
     YES
     ▼
-[5] Extract content → EMPTY → SKIP
+[6] Extract content → EMPTY → SKIP
     │
     HAS CONTENT
     ▼
-[6] detectFirstMessageExternalQuoteHeuristic → TRIGGERED → immediate spam (NEW)
+[7] detectFirstMessageExternalQuoteHeuristic → TRIGGERED → immediate spam
     │
     NOT TRIGGERED
     ▼
-[7] normalizeCyrillics (if cyrillic detected)
+[8] normalizeCyrillics (if cyrillic detected)
     │
     ▼
-[8] Load per-chat spam examples (max 20)
+[9] Load per-chat spam examples (max 20)
     │
     ▼
-[9] LLM IsSpam (few-shot: system + ~30 examples + extra + candidate)
+[10] LLM IsSpam (few-shot: system + ~30 examples + extra + candidate)
     │
     ├── SPAM → processSpam (with voting) or processBanned (without)
     └── NOT SPAM → insertMemberIfPresent
@@ -414,6 +435,8 @@ Message arrives
 | `sqlite/client_challenges_test.go` | Parallel join request tests |
 | `sqlite/client_spam.go` | Spam/restrictions/banlist CRUD |
 | `sqlite/client_kv.go` | KV store operations |
+| `sqlite/client_not_spammer_overrides.go` | Not-spammer override CRUD + scoped/global lookup (NEW) |
+| `sqlite/client_not_spammer_overrides_test.go` | Override CRUD + global scope tests (NEW) |
 | `sqlite/admin_panel.go` | Admin sessions, spam examples |
 
 **Key Entities**:
@@ -425,6 +448,7 @@ Message arrives
 | `SpamCase` | Spam report with voting | auto-increment `id` |
 | `AdminPanelSession` | Admin UI state | auto-increment `id` |
 | `ChatSpamExample` | Per-chat spam examples for LLM | auto-increment `id` |
+| `ChatNotSpammerOverride` | Manual not-spammer override (user_id or username) | auto-increment `id` |
 
 **Settings Entity - Gatekeeper Fields**:
 
@@ -447,7 +471,29 @@ Message arrives
 
 > **Note**: Value `-1` (`SettingsOverrideInherit`) means "use global config". `Settings.Enabled` is always forced to equal `GatekeeperEnabled` on save.
 
-**Database Schema** (19 migrations):
+**Not-Spammer Override Entity**:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ID` | int64 | Auto-increment PK |
+| `ChatID` | int64 | Chat scope (`0` = global, rejected by public API) |
+| `MatchType` | string | `"user_id"` or `"username"` |
+| `MatchValue` | string | Normalized: lowercase username (no `@`) or positive int64 string |
+| `CreatedByUserID` | int64 | Admin who created the override |
+| `CreatedAt` | time.Time | Creation timestamp |
+
+**Two-Tier Scoping**: Chat-scoped overrides (`chat_id = <specific>`) take priority over global overrides (`chat_id IS NULL` or `0`). Global overrides can only be inserted directly into DB. Lookup query `IsChatNotSpammer` checks both scopes with `ORDER BY` prioritizing chat-scoped.
+
+**Normalization Functions** (`not_spammer_overrides.go`):
+- `NormalizeChatNotSpammerMatch(matchType, matchValue)` — validates and canonicalizes
+- `NormalizeChatNotSpammerUsername(username)` — trims, strips `@`, lowercases
+
+**Admin Panel Input Parsing** (`panel_not_spammer_override.go`):
+- Accepts: bare `@username`, numeric ID, `t.me/user`, `tg://resolve?domain=user`, `tg://user?id=123456`
+- Rejects: empty, private channel links (`t.me/c/...`), invalid formats
+- Side effect: `rehabilitateNotSpammerUser` resolves active spam case + unmutes + unbans (fire-and-forget)
+
+**Database Schema** (20 migrations):
 
 | Table | PK | Key Relationships |
 |-------|-----|-------------------|
@@ -465,6 +511,7 @@ Message arrives
 | `admin_panel_sessions` | auto `id` | FK → chats CASCADE |
 | `admin_panel_commands` | auto `id` | FK → admin_panel_sessions CASCADE |
 | `chat_spam_examples` | auto `id` | FK → chats CASCADE |
+| `chat_not_spammer_overrides` | auto `id` | Unique: `(match_type, match_value, normalized_scope)`, Index: `(match_type, match_value, normalized_scope, id DESC)` |
 
 **Gotchas**:
 - `db.ErrNotFound` used for missing settings, but `(nil, nil)` for challenges/admin panel, `("", nil)` for KV — inconsistent not-found signaling
@@ -522,7 +569,7 @@ type LLM interface {
 |------|---------|
 | `i18n.go` | Translation loading/lookup (keys ARE the English text) |
 | `languages.go` | ISO code to name mapping |
-| `translations_consistency_test.go` | AST-based key consistency verification (94 keys) |
+| `translations_consistency_test.go` | AST-based key consistency verification (102 keys) |
 
 **Supported Languages** (30 total): be, bg, cs, da, de, el, en, es, et, fi, fr, hu, id, it, ja, ko, lt, lv, nb, nl, pl, pt, ro, ru, sk, sl, sv, tr, uk, zh
 
@@ -628,11 +675,16 @@ sequenceDiagram
     participant DB
 
     User->>Reactor: Send message
-    Reactor->>Reactor: isLinkedChannelAutoForward? (NEW)
+    Reactor->>Reactor: isLinkedChannelAutoForward?
     Reactor->>DB: Check membership
 
     alt Not a member
-        Reactor->>Reactor: detectExternalQuoteHeuristic (NEW)
+        Reactor->>DB: IsChatNotSpammer? (NEW)
+
+        alt Override active
+            Reactor->>DB: InsertMember()
+        else No override
+            Reactor->>Reactor: detectExternalQuoteHeuristic
 
         alt Heuristic triggered
             Reactor->>SpamControl: ProcessSpamMessage()
@@ -792,6 +844,12 @@ flowchart TD
 | 23 | Log formatter depth | `runtime.Caller(6)` assumes specific logrus call stack |
 | 24 | i18n key design | Keys ARE English text (not symbolic identifiers) |
 | 25 | Callback data size limit | 64 bytes; `encodeUint64Min` strips leading zero bytes |
+| 26 | Not-spammer override scoping | Global overrides (`chat_id IS NULL` or `0`) can only be inserted directly into DB, not via admin panel |
+| 27 | Not-spammer rehabilitation | `rehabilitateNotSpammerUser` silently swallows all errors (fire-and-forget) |
+| 28 | Not-spammer bypasses ban check | Override checked *before* ban check — overridden users skip ban DB lookup entirely |
+| 29 | Override idempotency | Creating same override twice returns existing row (no error, no duplicate) |
+| 30 | Negative chat IDs | Telegram supergroup/channel IDs are negative; override system explicitly supports them |
+| 31 | i18n key count updated | 102 top-level keys (was 94); consistency test checks 44 admin panel keys (was ~36) |
 
 ## Navigation Guide
 
@@ -848,6 +906,16 @@ flowchart TD
 3. **Tests**: `polling_test.go` (all failure modes)
 4. **Wiring**: `main.go` (`newUpdateLoopComponent`, `PollingOptions`)
 
+### To modify not-spammer overrides
+1. **UI**: `panel_render.go` (Indulgence submenu pages), `panel_renderer.go` (home button with count badge)
+2. **Commands**: `panel_commands.go` (CRUD actions: add, select, delete, pagination)
+3. **Types**: `panel_types.go` (4 new pages, 8 new actions, `SelectedIndulgenceID` state)
+4. **Parsing**: `panel_not_spammer_override.go` (input normalization, `rehabilitateNotSpammerUser`)
+5. **Pipeline**: `reactor_message_pipeline.go` (`StageOverrideCheck`), `gatekeeper_join_processor.go`, `gatekeeper_scheduler.go`
+6. **DB**: `not_spammer_overrides.go` (validation), `client_not_spammer_overrides.go` (CRUD + `IsChatNotSpammer` lookup)
+7. **Migration**: `resources/migrations/20260415000000-add-chat-not-spammer-overrides.sql`
+8. **i18n**: `translations.yml` (8 new keys: Indulgence, Add/Delete/Help texts)
+
 ## Dependencies
 
 | Package | Version | Purpose |
@@ -869,27 +937,40 @@ flowchart TD
 
 ## Recent Changes (since 2026-02-19)
 
-### Custom Polling with Recovery (NEW)
+### Manual Not-Spammer Override ("Indulgence") (NEW)
+- **Files**: `not_spammer_overrides.go`, `client_not_spammer_overrides.go`, `panel_not_spammer_override.go`, migration
+- **Purpose**: Allow admins to mark users as trusted (not-spammer) via admin panel, bypassing all spam checks
+- **Features**:
+  - Admin panel "Indulgence" submenu with CRUD (add by username, user ID, or profile URL)
+  - Two-tier scoping: chat-specific overrides override global overrides
+  - Automatic rehabilitation: resolves active spam cases, unmutes and unbans the user
+  - Three checkpoint locations: join-time (sync), scheduler (async), message pipeline (sync)
+  - Idempotent upsert: duplicate creates return existing row
+  - Input parsing supports `@username`, numeric ID, `t.me/`, `tg://` URL formats
+- **DB**: New `chat_not_spammer_overrides` table with normalized scope uniqueness index
+- **Pipeline**: New `StageOverrideCheck` inserted between membership check and ban check
+
+### Custom Polling with Recovery
 - **File**: `internal/bot/polling.go`, `polling_test.go`
 - **Purpose**: Replaces library polling with custom long-polling
 - **Features**: Exponential backoff (1s initial, 30s max), recovery window (10m default), malformed update filtering
 - **Error type**: `PollingRecoveryError` with `Cause` and `SinceLastHealthy`
 - **Config**: Three new env vars (`NG_TELEGRAM_POLL_TIMEOUT`, `NG_TELEGRAM_REQUEST_TIMEOUT`, `NG_TELEGRAM_RECOVERY_WINDOW`)
 
-### First-Message External Quote Heuristic (NEW)
+### First-Message External Quote Heuristic
 - **File**: `reactor_message_pipeline.go`, `reactor_message_pipeline_test.go`
 - **Purpose**: Fast-path spam detection without LLM call
 - **Trigger**: First message with `ExternalReply` from a different chat
 - **Bypasses**: LLM entirely, immediately treated as spam
 - **Diagnostic struct**: `firstMessageExternalQuoteHeuristic` with `HasExternalReply`, `HasQuote`, `OriginType`, etc.
 
-### Command Targeting (NEW)
+### Command Targeting
 - **File**: `reactor_command_router.go`, `reactor_command_router_test.go`
 - **Function**: `commandTargetsCurrentBot(msg, botUserName) bool`
 - **Behavior**: Ignores `/ban@otherbot`, accepts `/ban` and `/ban@thisbot`
 - **Edge case**: Empty `botUserName` rejects all named commands
 
-### Auto-Forward Detection (NEW)
+### Auto-Forward Detection
 - **File**: `reactor_message_pipeline.go`
 - **Function**: `isLinkedChannelAutoForward(msg) bool`
 - **Trigger**: `msg.IsAutomaticForward && msg.SenderChat.IsChannel()`
