@@ -271,8 +271,15 @@ func (g *Gatekeeper) startChallenge(ctx context.Context, u *api.Update, user *ap
 	}
 	args = append(args, correctVariant[1])
 	msgText := strings.TrimSpace(fmt.Sprintf(i18n.Get(randomKey, commLang), args...))
+	parseMode := api.ModeMarkdown
 	if isPublic && settings.GatekeeperGreetingEnabled {
-		msgText = composeGatekeeperMessage(g.renderGreetingText(settings, user, target), msgText)
+		greetingText := g.renderGreetingText(settings, user, target)
+		if greetingText != "" && g.greetingParseMode(settings) == api.ModeMarkdownV2 {
+			parseMode = api.ModeMarkdownV2
+			msgText = composeGatekeeperMessage(greetingText, g.renderChallengeTextMarkdownV2(randomKey, commLang, user, correctVariant[1]))
+		} else {
+			msgText = composeGatekeeperMessage(greetingText, msgText)
+		}
 	}
 	if msgText == "" {
 		if err := g.store.DeleteChallenge(ctx, challenge.CommChatID, challenge.UserID, challenge.ChatID); err != nil {
@@ -282,7 +289,7 @@ func (g *Gatekeeper) startChallenge(ctx context.Context, u *api.Update, user *ap
 	}
 
 	msg := api.NewMessage(recipientChatID, msgText)
-	msg.ParseMode = api.ModeMarkdown
+	msg.ParseMode = parseMode
 	msg.DisableNotification = isPublic
 	msg.ReplyMarkup = &markup
 
@@ -328,7 +335,7 @@ func (g *Gatekeeper) sendGreeting(ctx context.Context, recipientChatID int64, ta
 	}
 
 	msg := api.NewMessage(recipientChatID, msgText)
-	msg.ParseMode = api.ModeMarkdown
+	msg.ParseMode = g.greetingParseMode(settings)
 	msg.DisableNotification = disableNotification
 	_, err := g.s.GetBot().Send(msg)
 	if err != nil {
@@ -344,6 +351,20 @@ func (g *Gatekeeper) renderGreetingText(settings *db.Settings, user *api.User, t
 	template := strings.TrimSpace(settings.GatekeeperGreetingText)
 	if template == "" {
 		return ""
+	}
+	if db.IsGatekeeperGreetingMarkdownV2Template(template) {
+		template = db.StripGatekeeperGreetingTemplateSyntax(template)
+		userPlaceholder := markdownV2TextMention(bot.GetFullName(user), user.ID)
+		titlePlaceholder := api.EscapeText(api.ModeMarkdownV2, target.Title)
+		linkPlaceholder := g.chatLinkTitledMarkdownV2(target)
+		timeoutPlaceholder := api.EscapeText(api.ModeMarkdownV2, humanizeDurationShort(settings.GetChallengeTimeout()))
+
+		template = strings.ReplaceAll(template, greetingPlaceholderUser, userPlaceholder)
+		template = strings.ReplaceAll(template, greetingPlaceholderChatTitle, titlePlaceholder)
+		template = strings.ReplaceAll(template, greetingPlaceholderChatLinkTitled, linkPlaceholder)
+		template = strings.ReplaceAll(template, greetingPlaceholderTimeout, timeoutPlaceholder)
+
+		return template
 	}
 
 	userPlaceholder := fmt.Sprintf(
@@ -372,6 +393,51 @@ func (g *Gatekeeper) chatLinkTitled(target *api.Chat) string {
 		return escapedTitle
 	}
 	return fmt.Sprintf("[%s](https://t.me/%s)", escapedTitle, target.UserName)
+}
+
+func (g *Gatekeeper) chatLinkTitledMarkdownV2(target *api.Chat) string {
+	if target == nil {
+		return ""
+	}
+	escapedTitle := api.EscapeText(api.ModeMarkdownV2, target.Title)
+	if target.UserName == "" {
+		return escapedTitle
+	}
+	return fmt.Sprintf("[%s](%s)", escapedTitle, api.EscapeText(api.ModeMarkdownV2, "https://t.me/"+target.UserName))
+}
+
+func (g *Gatekeeper) greetingParseMode(settings *db.Settings) string {
+	if settings != nil && db.IsGatekeeperGreetingMarkdownV2Template(strings.TrimSpace(settings.GatekeeperGreetingText)) {
+		return api.ModeMarkdownV2
+	}
+	return api.ModeMarkdown
+}
+
+func (g *Gatekeeper) renderChallengeTextMarkdownV2(templateKey, language string, user *api.User, variant string) string {
+	if user == nil {
+		return ""
+	}
+
+	template := escapeMarkdownV2FormatTemplate(i18n.Get(templateKey, language))
+	nameString := markdownV2TextMention(bot.GetFullName(user), user.ID)
+	variantString := api.EscapeText(api.ModeMarkdownV2, variant)
+
+	return strings.TrimSpace(fmt.Sprintf(template, nameString, variantString))
+}
+
+func markdownV2TextMention(text string, userID int64) string {
+	return fmt.Sprintf("[%s](%s)",
+		api.EscapeText(api.ModeMarkdownV2, text),
+		api.EscapeText(api.ModeMarkdownV2, fmt.Sprintf("tg://user?id=%d", userID)),
+	)
+}
+
+func escapeMarkdownV2FormatTemplate(template string) string {
+	parts := strings.Split(template, "%s")
+	for i, part := range parts {
+		parts[i] = api.EscapeText(api.ModeMarkdownV2, part)
+	}
+	return strings.Join(parts, "%s")
 }
 
 func humanizeDurationShort(duration time.Duration) string {

@@ -374,6 +374,66 @@ func TestDirectJoinCaptchaIncludesGreetingImmediatelyAndDoesNotRepeatAfterSucces
 	}
 }
 
+func TestDirectJoinCaptchaUsesMarkdownV2ForNormalizedGreetingTemplate(t *testing.T) {
+	t.Parallel()
+
+	recorder := &botRequestRecorder{}
+	groupChat := api.Chat{ID: -100123, Type: "supergroup", Title: "Wave Club", UserName: "waveclub"}
+	user := api.User{ID: 42, FirstName: "Neo"}
+
+	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
+		recorder.record(t, method, r)
+
+		switch method {
+		case "sendMessage":
+			return recorder.nextSendMessageResult()
+		case "restrictChatMember", "deleteMessage":
+			return true
+		default:
+			t.Fatalf("unexpected bot method: %s", method)
+			return nil
+		}
+	})
+
+	settings := &db.Settings{
+		GatekeeperEnabled:             true,
+		GatekeeperCaptchaEnabled:      true,
+		GatekeeperGreetingEnabled:     true,
+		GatekeeperGreetingText:        db.WrapGatekeeperGreetingMarkdownV2Template(`[Read post](https://t\.me/waveclub/42) and greet *{user}*`),
+		GatekeeperCaptchaOptionsCount: 3,
+		ChallengeTimeout:              (3 * time.Minute).Nanoseconds(),
+	}
+	store := newGatekeeperFlowStore()
+	gatekeeper := &Gatekeeper{
+		s:          &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI, language: "en"}, settings: settings},
+		store:      store,
+		config:     &config.Config{},
+		banChecker: &testGatekeeperBanChecker{},
+	}
+
+	update := &api.Update{
+		Message: &api.Message{
+			MessageID:      55,
+			Chat:           groupChat,
+			NewChatMembers: []api.User{user},
+		},
+	}
+	if err := gatekeeper.handleNewChatMembersV2(context.Background(), update, &groupChat, settings); err != nil {
+		t.Fatalf("handleNewChatMembersV2 returned error: %v", err)
+	}
+
+	sendMessages := recorder.byMethod("sendMessage")
+	if len(sendMessages) != 1 {
+		t.Fatalf("expected one group captcha message, got %d", len(sendMessages))
+	}
+	if got := sendMessages[0].form.Get("parse_mode"); got != api.ModeMarkdownV2 {
+		t.Fatalf("unexpected parse mode: got %q want %q", got, api.ModeMarkdownV2)
+	}
+	if !strings.Contains(sendMessages[0].form.Get("text"), `[Read post](https://t\.me/waveclub/42)`) {
+		t.Fatalf("expected normalized markdownv2 link in greeting, got %q", sendMessages[0].form.Get("text"))
+	}
+}
+
 func TestJoinRequestGreetingWithoutCaptchaLeavesManualReviewUntouched(t *testing.T) {
 	t.Parallel()
 

@@ -406,16 +406,25 @@ func (a *Admin) handlePanelInput(ctx context.Context, msg *api.Message, chat *ap
 		}
 		return true, a.renderAndUpdatePanel(ctx, session, state, session.MessageID)
 	case panelPageGatekeeperGreetingPrompt:
+		normalized, normalizeErr := normalizeGreetingTemplateInput(msg)
+		if normalizeErr != nil {
+			state.PromptError = i18n.Get("Invalid input", state.Language)
+			if err := a.savePanelState(ctx, session, state); err != nil {
+				return true, err
+			}
+			return true, a.renderAndUpdatePanel(ctx, session, state, session.MessageID)
+		}
+
 		settings, err := a.s.GetSettings(ctx, session.ChatID)
 		if err != nil {
 			return true, err
 		}
-		settings.GatekeeperGreetingText = text
+		settings.GatekeeperGreetingText = normalized
 		if err := a.saveChatSettings(ctx, settings); err != nil {
 			return true, err
 		}
 
-		state.GatekeeperGreetingText = text
+		state.GatekeeperGreetingText = normalized
 		state.Page = panelPageGatekeeperGreeting
 		state.PromptError = ""
 		if err := a.savePanelState(ctx, session, state); err != nil {

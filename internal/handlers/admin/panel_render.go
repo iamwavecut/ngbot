@@ -1002,7 +1002,7 @@ func renderGreetingPreviewQuote(state *panelState) string {
 	if state == nil {
 		return ""
 	}
-	text := strings.TrimSpace(state.GatekeeperGreetingText)
+	text := strings.TrimSpace(db.StripGatekeeperGreetingTemplateSyntax(state.GatekeeperGreetingText))
 	if text == "" {
 		return ""
 	}
