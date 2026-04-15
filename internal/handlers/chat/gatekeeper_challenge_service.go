@@ -10,6 +10,7 @@ import (
 	api "github.com/OvyFlash/telegram-bot-api"
 	"github.com/iamwavecut/ngbot/internal/bot"
 	"github.com/iamwavecut/ngbot/internal/db"
+	handlersbase "github.com/iamwavecut/ngbot/internal/handlers/base"
 	"github.com/iamwavecut/ngbot/internal/i18n"
 	"github.com/iamwavecut/tool"
 	"github.com/pkg/errors"
@@ -148,6 +149,10 @@ func (g *Gatekeeper) completeChallenge(ctx context.Context, challenge *db.Challe
 	entry := g.getLogEntry().WithField("method", "completeChallenge")
 	b := g.s.GetBot()
 
+	if err := handlersbase.IncrementDailyStat(ctx, g.s.GetDB(), challenge.ChatID, handlersbase.StatChallengePassed); err != nil {
+		entry.WithField("error", err.Error()).Warn("failed to increment passed challenge stat")
+	}
+
 	if challenge.ChallengeMessageID != 0 {
 		if err := bot.DeleteChatMessage(ctx, b, challenge.CommChatID, challenge.ChallengeMessageID); err != nil {
 			entry.WithField("error", err.Error()).Error("cant delete challenge message")
@@ -177,6 +182,10 @@ func (g *Gatekeeper) completeChallenge(ctx context.Context, challenge *db.Challe
 func (g *Gatekeeper) failChallenge(ctx context.Context, challenge *db.Challenge, rejectText string, rejectDuration time.Duration) error {
 	entry := g.getLogEntry().WithField("method", "failChallenge")
 	b := g.s.GetBot()
+
+	if err := handlersbase.IncrementDailyStat(ctx, g.s.GetDB(), challenge.ChatID, handlersbase.StatChallengeFailed); err != nil {
+		entry.WithField("error", err.Error()).Warn("failed to increment failed challenge stat")
+	}
 
 	if challenge.ChallengeMessageID != 0 {
 		if err := bot.DeleteChatMessage(ctx, b, challenge.CommChatID, challenge.ChallengeMessageID); err != nil {

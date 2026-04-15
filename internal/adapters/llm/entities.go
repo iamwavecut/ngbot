@@ -7,8 +7,9 @@ const (
 )
 
 type ChatCompletionMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role      string `json:"role"`
+	Content   string `json:"content"`
+	Cacheable bool   `json:"cacheable,omitempty"`
 }
 
 type ChatCompletionResponse struct {

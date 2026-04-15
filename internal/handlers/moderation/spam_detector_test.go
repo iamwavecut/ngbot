@@ -43,14 +43,29 @@ func TestSpamDetectorIncludesExtraExamplesInPrompt(t *testing.T) {
 	if len(llmStub.lastMessages) < 3 {
 		t.Fatalf("expected prompt to contain extra examples and candidate message, got %d messages", len(llmStub.lastMessages))
 	}
+	if !llmStub.lastMessages[0].Cacheable {
+		t.Fatalf("expected system prompt to be cacheable")
+	}
+	if len(llmStub.lastMessages) < 3 || !llmStub.lastMessages[1].Cacheable || !llmStub.lastMessages[2].Cacheable {
+		t.Fatalf("expected built-in few-shot example prefix to be cacheable")
+	}
 	tail := llmStub.lastMessages[len(llmStub.lastMessages)-3:]
 	if tail[0].Role != "user" || tail[0].Content != extra {
 		t.Fatalf("expected extra example user message, got %#v", tail[0])
 	}
+	if tail[0].Cacheable {
+		t.Fatalf("expected extra example user message to stay live")
+	}
 	if tail[1].Role != "assistant" || tail[1].Content != "1" {
 		t.Fatalf("expected extra example assistant response \"1\", got %#v", tail[1])
 	}
+	if tail[1].Cacheable {
+		t.Fatalf("expected extra example assistant response to stay live")
+	}
 	if tail[2].Role != "user" || tail[2].Content != candidate {
 		t.Fatalf("expected candidate message at tail, got %#v", tail[2])
+	}
+	if tail[2].Cacheable {
+		t.Fatalf("expected candidate message to stay live")
 	}
 }

@@ -27,7 +27,6 @@ var examples = []example{
 		Message:  "Hello, how are you?",
 		Response: 0,
 	},
-	{Message: "Hello, how are you?", Response: 0},
 	{Message: "Хочешь зарабатывать на удалёнке но не знаешь как? Напиши мне и я тебе всё расскажу, от 18 лет. жду всех желающих в лс.", Response: 1},
 	{Message: "Нужны люди! Стабильнный доход, каждую неделю, на удалёнке, от 18 лет, пишите в лс.", Response: 1},
 	{Message: "Ищу людeй, заинтeрeсованных в хoрoшем доп.доходе на удаленке. Не полная занятость, от 21. По вопросам пишите в ЛС", Response: 1},
@@ -86,13 +85,6 @@ WhatsApp +999 599 099 567`, Response: 0},
 	{Message: "Есть несложная занятость! Работаем из дому. Доход от 450 долл. в день. Необходимо полтора-два часа в день. Ставьте «+» в л.с.", Response: 1},
 	{Message: "Здравствуйте. Есть вoзможность дистанционного зaработка.Стaбильность в виде 45 000 рyблей в неделю. Опыт не требуется. Все подробности у меня в личке", Response: 1},
 	{Message: "Удалённая зaнятость, с хорoшей прибылью 550 долларов в день. два часа в день. Ставь плюс мне в личные", Response: 1},
-	{Message: `💚💚💚💚💚💚💚💚
-Ищy нa oбyчeниe людeй c цeлью зapaбoткa. 💼
-*⃣Haпpaвлeниe: Crypto, Тecтнeты, Aиpдpoпы.
-*⃣Пo вpeмeни в cyтки 1-2 чaca, мoжнo paбoтaть co cмapтфoнa. 🤝
-*⃣Дoxoднocть чиcтaя в дeнь paвняeтcя oт 7-9 пpoцeнтoв.
-*⃣БECПЛAТHOE OБУЧEHИE, мoй интepec пpoцeнт oт зapaбoткa. 💶
-Ecли зaинтepecoвaлo пишuте нa мoй aкк >>> @Alex51826.`, Response: 1},
 	{Message: "Нужны люди для сотрудничества. Хорошая прибыль в неделю, от тысячи долларов и выше. Удаленно. За подробностями пишите мне плюс в личные сообщения, от двадцати лет", Response: 1},
 	{Message: `Предлагаю удаленное сотрудничество от $2500 в месяц.  
 
@@ -152,19 +144,22 @@ func (d *spamDetector) IsSpam(ctx context.Context, message string, extraExamples
 
 	messagesChain := []llm.ChatCompletionMessage{
 		{
-			Role:    "system",
-			Content: spamDetectionPrompt,
+			Role:      llm.RoleSystem,
+			Content:   spamDetectionPrompt,
+			Cacheable: true,
 		},
 	}
 
 	for _, item := range examples {
 		messagesChain = append(messagesChain, llm.ChatCompletionMessage{
-			Role:    "user",
-			Content: item.Message,
+			Role:      llm.RoleUser,
+			Content:   item.Message,
+			Cacheable: true,
 		})
 		messagesChain = append(messagesChain, llm.ChatCompletionMessage{
-			Role:    "assistant",
-			Content: strconv.Itoa(item.Response),
+			Role:      llm.RoleAssistant,
+			Content:   strconv.Itoa(item.Response),
+			Cacheable: true,
 		})
 	}
 
@@ -174,17 +169,17 @@ func (d *spamDetector) IsSpam(ctx context.Context, message string, extraExamples
 			continue
 		}
 		messagesChain = append(messagesChain, llm.ChatCompletionMessage{
-			Role:    "user",
+			Role:    llm.RoleUser,
 			Content: text,
 		})
 		messagesChain = append(messagesChain, llm.ChatCompletionMessage{
-			Role:    "assistant",
+			Role:    llm.RoleAssistant,
 			Content: "1",
 		})
 	}
 
 	messagesChain = append(messagesChain, llm.ChatCompletionMessage{
-		Role:    "user",
+		Role:    llm.RoleUser,
 		Content: message,
 	})
 

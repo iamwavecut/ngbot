@@ -19,6 +19,11 @@ func (a *Admin) applyPanelCommand(ctx context.Context, session *db.AdminPanelSes
 	case panelActionOpenLanguage:
 		state.Page = panelPageLanguageList
 		state.LanguagePage = pageForLanguage(state.Language, i18n.GetLanguagesList(), panelLanguagePageSize)
+	case panelActionApplyRecommendedProtection:
+		if err := a.applyRecommendedProtection(ctx, session, state); err != nil {
+			return err
+		}
+		state.Page = panelPageHome
 	case panelActionOpenGatekeeper:
 		state.Page = panelPageGatekeeper
 		state.PromptError = ""
@@ -228,6 +233,19 @@ func (a *Admin) toggleFeature(ctx context.Context, session *db.AdminPanelSession
 	default:
 		return nil
 	}
+	if err := a.s.SetSettings(ctx, settings); err != nil {
+		return err
+	}
+	syncPanelStateFromSettings(state, settings)
+	return nil
+}
+
+func (a *Admin) applyRecommendedProtection(ctx context.Context, session *db.AdminPanelSession, state *panelState) error {
+	settings, err := a.s.GetSettings(ctx, session.ChatID)
+	if err != nil {
+		return err
+	}
+	applyRecommendedProtectionSettings(settings)
 	if err := a.s.SetSettings(ctx, settings); err != nil {
 		return err
 	}

@@ -17,9 +17,9 @@ type API struct {
 
 const (
 	DefaultModel           = "gpt-4o-mini"
-	defaultTemperature     = 0.9
-	defaultTopP            = 0.9
-	defaultMaxOutputTokens = 8192
+	defaultTemperature     = 0.0
+	defaultTopP            = 1.0
+	defaultMaxOutputTokens = 4
 )
 
 func NewOpenAI(apiKey, model, baseURL string, logger *log.Entry) (adapters.LLM, error) {

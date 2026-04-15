@@ -9,6 +9,7 @@ import (
 	api "github.com/OvyFlash/telegram-bot-api"
 	"github.com/iamwavecut/ngbot/internal/bot"
 	"github.com/iamwavecut/ngbot/internal/db"
+	handlersbase "github.com/iamwavecut/ngbot/internal/handlers/base"
 	"github.com/iamwavecut/ngbot/internal/i18n"
 	"github.com/iamwavecut/tool"
 	"github.com/pborman/uuid"
@@ -239,6 +240,9 @@ func (g *Gatekeeper) handleJoin(ctx context.Context, u *api.Update, jus []api.Us
 			if _, err := g.store.CreateChallenge(ctx, challenge); err != nil {
 				entry.WithField("error", err.Error()).Error("failed to create challenge")
 				return err
+			}
+			if err := handlersbase.IncrementDailyStat(ctx, g.s.GetDB(), target.ID, handlersbase.StatChallengeStarted); err != nil {
+				entry.WithField("error", err.Error()).Warn("failed to increment started challenge stat")
 			}
 
 			buttons, correctVariant := g.createCaptchaButtons(ju.ID, challenge.SuccessUUID, commLang, captchaOptionsCount)

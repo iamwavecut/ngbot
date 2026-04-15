@@ -47,15 +47,15 @@ func TestResolveStatusFromVotes(t *testing.T) {
 			wantResolve: false,
 		},
 		{
-			name: "tie after timeout still waits",
+			name: "tie after timeout resolves false positive",
 			votes: []*db.SpamVote{
 				{Vote: true},
 				{Vote: false},
 			},
 			required:    2,
 			timedOut:    true,
-			wantStatus:  "",
-			wantResolve: false,
+			wantStatus:  "false_positive",
+			wantResolve: true,
 		},
 		{
 			name: "spam majority",

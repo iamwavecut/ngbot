@@ -13,6 +13,7 @@ import (
 	"github.com/iamwavecut/ngbot/internal/bot"
 	"github.com/iamwavecut/ngbot/internal/config"
 	"github.com/iamwavecut/ngbot/internal/db"
+	handlersbase "github.com/iamwavecut/ngbot/internal/handlers/base"
 	"github.com/iamwavecut/ngbot/internal/i18n"
 	log "github.com/sirupsen/logrus"
 )
@@ -248,6 +249,11 @@ func (sc *SpamControl) preprocessMessage(ctx context.Context, msg *api.Message, 
 	if err := sc.store.UpdateSpamCase(ctx, spamCase); err != nil {
 		log.WithField("error", err.Error()).Error("failed to update spam case")
 	}
+	if !voting && result.UserBanned {
+		if err := handlersbase.IncrementDailyStat(ctx, sc.s.GetDB(), chat.ID, handlersbase.StatSpamConfirmed); err != nil {
+			log.WithField("error", err.Error()).Warn("failed to increment spam confirmed stat")
+		}
+	}
 	if !voting {
 		sc.clearKnownNonMember(ctx, chat.ID, msg.From.ID)
 	}
@@ -462,6 +468,16 @@ func (sc *SpamControl) ResolveCase(ctx context.Context, caseID int64, timedOut b
 	if err := sc.store.UpdateSpamCase(ctx, spamCase); err != nil {
 		return fmt.Errorf("failed to update case: %w", err)
 	}
+	switch spamCase.Status {
+	case spamCaseStatusSpam:
+		if err := handlersbase.IncrementDailyStat(ctx, sc.s.GetDB(), spamCase.ChatID, handlersbase.StatSpamConfirmed); err != nil {
+			log.WithField("error", err.Error()).Warn("failed to increment spam confirmed stat")
+		}
+	case "false_positive":
+		if err := handlersbase.IncrementDailyStat(ctx, sc.s.GetDB(), spamCase.ChatID, handlersbase.StatFalsePositive); err != nil {
+			log.WithField("error", err.Error()).Warn("failed to increment false positive stat")
+		}
+	}
 	return nil
 }
 
@@ -483,6 +499,9 @@ func resolveStatusFromVotes(votes []*db.SpamVote, requiredVoters int, timedOut b
 		return "", false
 	}
 	if spamVotes == notSpamVotes {
+		if timedOut {
+			return "false_positive", true
+		}
 		return "", false
 	}
 	if spamVotes > notSpamVotes {

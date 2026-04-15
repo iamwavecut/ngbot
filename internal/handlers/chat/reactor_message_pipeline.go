@@ -8,6 +8,7 @@ import (
 	api "github.com/OvyFlash/telegram-bot-api"
 	"github.com/iamwavecut/ngbot/internal/bot"
 	"github.com/iamwavecut/ngbot/internal/db"
+	handlersbase "github.com/iamwavecut/ngbot/internal/handlers/base"
 	moderation "github.com/iamwavecut/ngbot/internal/handlers/moderation"
 	"github.com/iamwavecut/tool"
 	"github.com/pkg/errors"
@@ -151,6 +152,9 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 	if heuristic.Triggered {
 		result.SkipReason = "First-message external quote heuristic"
 		result.IsSpam = tool.Ptr(true)
+		if err := handlersbase.IncrementDailyStat(ctx, r.s.GetDB(), chat.ID, handlersbase.StatHeuristicSpam); err != nil {
+			entry.WithField("error", err.Error()).Warn("failed to increment heuristic spam stat")
+		}
 
 		processingResult, processErr := r.processDetectedSpam(ctx, msg, chat, language, settings)
 		if processErr != nil {
@@ -288,6 +292,11 @@ func (r *Reactor) checkMessageForSpam(ctx context.Context, chatID int64, content
 
 	examples := r.loadSpamExamples(ctx, chatID)
 	isSpam, err := r.spamDetector.IsSpam(ctx, contentAltered, examples)
+	if err == nil {
+		if statErr := handlersbase.IncrementDailyStat(ctx, r.s.GetDB(), chatID, handlersbase.StatLLMChecked); statErr != nil {
+			r.getLogEntry().WithField("error", statErr.Error()).Warn("failed to increment LLM checked stat")
+		}
+	}
 	if r.config.SpamControl.DebugUserID != 0 {
 		debugMsg := tool.ExecTemplate(`
 {{- .content }}

@@ -10,6 +10,7 @@ import (
 
 	api "github.com/OvyFlash/telegram-bot-api"
 	"github.com/iamwavecut/ngbot/internal/db"
+	handlersbase "github.com/iamwavecut/ngbot/internal/handlers/base"
 	"github.com/iamwavecut/ngbot/internal/i18n"
 )
 
@@ -34,6 +35,9 @@ func (a *Admin) renderHome(ctx context.Context, session *db.AdminPanelSession, s
 		i18n.Get("Chat ID", lang),
 		state.ChatID,
 	)
+	if summary, err := handlersbase.LoadStatsSummary(ctx, a.s.GetDB(), session.ChatID, time.Now(), 7); err == nil {
+		body += "\n\n" + handlersbase.FormatStatsSummary(lang, summary)
+	}
 	body = appendPanelHelp(body, lang, i18n.Get("What this is: main navigation for chat moderation settings. Where used: private admin panel opened from /settings. Value meaning: buttons open categories, and category pages contain actual controls.", lang))
 
 	languageLabelText := fmt.Sprintf("%s: %s", i18n.Get("Language", lang), languageLabel(state.Language))
@@ -74,7 +78,15 @@ func (a *Admin) renderHome(ctx context.Context, session *db.AdminPanelSession, s
 		return "", nil, err
 	}
 
-	keyboard := api.NewInlineKeyboardMarkup(
+	rows := make([][]api.InlineKeyboardButton, 0, 7)
+	if !hasRecommendedProtection(state) {
+		recommendedBtn, err := a.commandButton(ctx, session.ID, i18n.Get("Recommended Protection", lang), panelCommand{Action: panelActionApplyRecommendedProtection})
+		if err != nil {
+			return "", nil, err
+		}
+		rows = append(rows, api.NewInlineKeyboardRow(recommendedBtn))
+	}
+	rows = append(rows,
 		api.NewInlineKeyboardRow(languageBtn),
 		api.NewInlineKeyboardRow(gatekeeperBtn),
 		api.NewInlineKeyboardRow(llmBtn),
@@ -82,6 +94,8 @@ func (a *Admin) renderHome(ctx context.Context, session *db.AdminPanelSession, s
 		api.NewInlineKeyboardRow(votingBtn),
 		api.NewInlineKeyboardRow(closeBtn),
 	)
+
+	keyboard := api.NewInlineKeyboardMarkup(rows...)
 
 	return body, &keyboard, nil
 }
@@ -699,7 +713,7 @@ func (a *Admin) renderVoting(ctx context.Context, session *db.AdminPanelSession,
 		i18n.Get("Min voters %", lang),
 		panelVotingIntStateLabel(lang, state.CommunityVotingMinVotersPercentOverride, false),
 		i18n.Get("Voting policy", lang),
-		i18n.Get("Insufficient votes on timeout => false-positive\nTie => wait one deciding vote", lang),
+		i18n.Get("Insufficient votes or tie on timeout => false-positive\nTie before timeout => wait for deciding vote", lang),
 	)
 	text = appendPanelHelp(text, lang, i18n.Get("What this is: community voting moderation module. Where used: suspicious message review by chat members. Value meaning: Master Switch enables or disables voting-based decisions.", lang))
 

@@ -32,6 +32,7 @@ const (
 const (
 	panelActionToggleFeature                  = "toggle_feature"
 	panelActionOpenLanguage                   = "open_language"
+	panelActionApplyRecommendedProtection     = "apply_recommended_protection"
 	panelActionOpenGatekeeper                 = "open_gatekeeper"
 	panelActionOpenLLM                        = "open_llm"
 	panelActionOpenVoting                     = "open_voting"

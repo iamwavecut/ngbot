@@ -4,21 +4,27 @@
 ![Demo](https://user-images.githubusercontent.com/239034/142725561-5fd80514-dae9-4d29-aa19-a7d2ad41e362.png)
 
 ## Join protection
-0. Join-time challenge is disabled as for now, due to being buggy, but will be back as option in the future.
-> 1. Triggered on the events, which introduces new chat members (invite, join, etc). Also works with **join requests**.
-> 2. Restrict newcomer to be read-only.
-> 3. Set up a challenge for the newcomer (join request), which is a simple task as shown on the image above, but yet, unsolvable for the vast majority of automated spam robots.
-> 4. If the newcomer succeeds in choosing the right answer - restrictions gets fully lifted, challenge ends.
-> 5. Otherwise - newcomer gets banned for 10 minutes (There is a "false-positive" chance, rememeber? Most robots aint coming back, anyway).
-> 6. If the newcomer struggles to answer in a set period of time (defaults to 3 minutes) - challenge automatically fails the same way, as in p.5.
-> 7. After the challenge bot cleans up all related messages, only leaving join notification for the newcomers, that made it. There are no traces of unsuccesful joins left, and that is awesome.
+1. Triggered by new chat members and **join requests**.
+2. Restricts the newcomer while verification is active.
+3. Sends a CAPTCHA-style challenge with configurable option count and timeout.
+4. On success, the newcomer is approved/unrestricted and the challenge message is cleaned up.
+5. On failure or timeout, the newcomer is banned for the configured reject timeout.
+6. Optional greeting text can be shown for approved newcomers.
 
 ## Spam protection
-1. Every chat member first message is being checked for spam using two approaches:
- - **Known spammers DB lookup** - checks if the message author is in the known spammers DB.
- - **GPT-powered content analysis** - asks GPT to analyze the message for harmful content.
-2. If the message is considered as spam - newcomer gets kick-banned.
-3. If the message is not considered as spam - user becomes a normal trusted chat member.
+1. Every non-member's first message is checked through multiple fast paths:
+ - **Known spammers DB lookup**
+ - **Manual allowlist ("Indulgence") override**
+ - **External quote heuristic** for obvious cross-chat spam patterns
+ - **LLM-powered binary classification** with built-in and chat-specific spam examples
+2. If the message is considered spam, the user is either immediately banned or sent into community voting, depending on chat settings.
+3. If the message is clean, the user is remembered as a trusted member.
+
+## Admin panel
+1. Run `/settings` in a group where the bot is an admin.
+2. The bot sends a deep-link that opens a private admin panel for that chat.
+3. From there you can configure gatekeeper, LLM first-message moderation, community voting, spam examples, language, and manual not-spammer overrides.
+4. The home screen includes a one-tap `Recommended Protection` preset and a compact 7-day protection summary.
 
 ## Installation
 
@@ -40,6 +46,7 @@ docker compose up -d
 ```
 5. Add your bot to chat and give it **Ban**, **Delete**, and **Invite** permissions.
 6. Optional: Change bot language with `/lang <code>` (e.g., `/lang ru`).
+7. Optional: Open `/settings` as a group admin and apply `Recommended Protection`.
 
 ### Manual Installation
 1. Follow steps 1-3 from Quick Start.
@@ -86,10 +93,9 @@ Don't hesitate to contact me
 ](https://t.me/WaveCut) [![linkedin](https://user-images.githubusercontent.com/239034/142726236-86c526e0-8fc3-4570-bd2d-fc7723d5dc09.png)
 ](https://linkedin.com/in/wavecut)
 
-## TODO
+## Notes
 
-- [ ] Individual chat's settings (behaviours, timeouts, custom welcome messages, etc).
-- [ ] Chat-specific spam filters.
-- [ ] Settings UI in private and/or web.
+- Gemini requests can reuse server-side explicit caching for the static moderation prefix when the provider supports it.
+- Chat-specific settings, spam examples, and the private settings UI are already implemented.
 
-> Feel free to add your requests in issues.
+Feel free to add feature requests in issues.
