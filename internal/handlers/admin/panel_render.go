@@ -79,7 +79,11 @@ func (a *Admin) renderHome(ctx context.Context, session *db.AdminPanelSession, s
 	}
 
 	rows := make([][]api.InlineKeyboardButton, 0, 7)
-	if !hasRecommendedProtection(state) {
+	showRecommendedProtection, err := a.shouldShowRecommendedProtection(ctx, state)
+	if err != nil {
+		return "", nil, err
+	}
+	if showRecommendedProtection {
 		recommendedBtn, err := a.commandButton(ctx, session.ID, i18n.Get("Recommended Protection", lang), panelCommand{Action: panelActionApplyRecommendedProtection})
 		if err != nil {
 			return "", nil, err

@@ -411,7 +411,7 @@ func (a *Admin) handlePanelInput(ctx context.Context, msg *api.Message, chat *ap
 			return true, err
 		}
 		settings.GatekeeperGreetingText = text
-		if err := a.s.SetSettings(ctx, settings); err != nil {
+		if err := a.saveChatSettings(ctx, settings); err != nil {
 			return true, err
 		}
 

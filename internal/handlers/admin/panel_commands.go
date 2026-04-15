@@ -233,7 +233,7 @@ func (a *Admin) toggleFeature(ctx context.Context, session *db.AdminPanelSession
 	default:
 		return nil
 	}
-	if err := a.s.SetSettings(ctx, settings); err != nil {
+	if err := a.saveChatSettings(ctx, settings); err != nil {
 		return err
 	}
 	syncPanelStateFromSettings(state, settings)
@@ -246,7 +246,7 @@ func (a *Admin) applyRecommendedProtection(ctx context.Context, session *db.Admi
 		return err
 	}
 	applyRecommendedProtectionSettings(settings)
-	if err := a.s.SetSettings(ctx, settings); err != nil {
+	if err := a.saveChatSettings(ctx, settings); err != nil {
 		return err
 	}
 	syncPanelStateFromSettings(state, settings)
@@ -259,7 +259,7 @@ func (a *Admin) toggleGatekeeperMaster(ctx context.Context, session *db.AdminPan
 		return err
 	}
 	settings.GatekeeperEnabled = !settings.GatekeeperEnabled
-	if err := a.s.SetSettings(ctx, settings); err != nil {
+	if err := a.saveChatSettings(ctx, settings); err != nil {
 		return err
 	}
 	syncPanelStateFromSettings(state, settings)
@@ -272,7 +272,7 @@ func (a *Admin) toggleGatekeeperCaptcha(ctx context.Context, session *db.AdminPa
 		return err
 	}
 	settings.GatekeeperCaptchaEnabled = !settings.GatekeeperCaptchaEnabled
-	if err := a.s.SetSettings(ctx, settings); err != nil {
+	if err := a.saveChatSettings(ctx, settings); err != nil {
 		return err
 	}
 	syncPanelStateFromSettings(state, settings)
@@ -285,7 +285,7 @@ func (a *Admin) toggleGatekeeperGreeting(ctx context.Context, session *db.AdminP
 		return err
 	}
 	settings.GatekeeperGreetingEnabled = !settings.GatekeeperGreetingEnabled
-	if err := a.s.SetSettings(ctx, settings); err != nil {
+	if err := a.saveChatSettings(ctx, settings); err != nil {
 		return err
 	}
 	syncPanelStateFromSettings(state, settings)
@@ -308,7 +308,7 @@ func (a *Admin) setGatekeeperCaptchaSize(ctx context.Context, session *db.AdminP
 		return err
 	}
 	settings.GatekeeperCaptchaOptionsCount = size
-	if err := a.s.SetSettings(ctx, settings); err != nil {
+	if err := a.saveChatSettings(ctx, settings); err != nil {
 		return err
 	}
 	syncPanelStateFromSettings(state, settings)
@@ -325,7 +325,7 @@ func (a *Admin) setGatekeeperChallengeTimeout(ctx context.Context, session *db.A
 		return err
 	}
 	settings.ChallengeTimeout = duration.Nanoseconds()
-	if err := a.s.SetSettings(ctx, settings); err != nil {
+	if err := a.saveChatSettings(ctx, settings); err != nil {
 		return err
 	}
 	syncPanelStateFromSettings(state, settings)
@@ -342,7 +342,7 @@ func (a *Admin) setGatekeeperRejectTimeout(ctx context.Context, session *db.Admi
 		return err
 	}
 	settings.RejectTimeout = duration.Nanoseconds()
-	if err := a.s.SetSettings(ctx, settings); err != nil {
+	if err := a.saveChatSettings(ctx, settings); err != nil {
 		return err
 	}
 	syncPanelStateFromSettings(state, settings)
@@ -363,7 +363,7 @@ func (a *Admin) setVotingTimeoutOverride(ctx context.Context, session *db.AdminP
 		}
 		settings.CommunityVotingTimeoutOverrideNS = duration.Nanoseconds()
 	}
-	if err := a.s.SetSettings(ctx, settings); err != nil {
+	if err := a.saveChatSettings(ctx, settings); err != nil {
 		return err
 	}
 	syncPanelStateFromSettings(state, settings)
@@ -384,7 +384,7 @@ func (a *Admin) setVotingMinVotersOverride(ctx context.Context, session *db.Admi
 		}
 		settings.CommunityVotingMinVotersOverride = parsed
 	}
-	if err := a.s.SetSettings(ctx, settings); err != nil {
+	if err := a.saveChatSettings(ctx, settings); err != nil {
 		return err
 	}
 	syncPanelStateFromSettings(state, settings)
@@ -405,7 +405,7 @@ func (a *Admin) setVotingMaxVotersOverride(ctx context.Context, session *db.Admi
 		}
 		settings.CommunityVotingMaxVotersOverride = parsed
 	}
-	if err := a.s.SetSettings(ctx, settings); err != nil {
+	if err := a.saveChatSettings(ctx, settings); err != nil {
 		return err
 	}
 	syncPanelStateFromSettings(state, settings)
@@ -426,7 +426,7 @@ func (a *Admin) setVotingMinPercentOverride(ctx context.Context, session *db.Adm
 		}
 		settings.CommunityVotingMinVotersPercentOverride = parsed
 	}
-	if err := a.s.SetSettings(ctx, settings); err != nil {
+	if err := a.saveChatSettings(ctx, settings); err != nil {
 		return err
 	}
 	syncPanelStateFromSettings(state, settings)
@@ -439,7 +439,7 @@ func (a *Admin) clearGatekeeperGreeting(ctx context.Context, session *db.AdminPa
 		return err
 	}
 	settings.GatekeeperGreetingText = ""
-	if err := a.s.SetSettings(ctx, settings); err != nil {
+	if err := a.saveChatSettings(ctx, settings); err != nil {
 		return err
 	}
 	syncPanelStateFromSettings(state, settings)
@@ -478,11 +478,18 @@ func containsInt(candidates []int, value int) bool {
 	return slices.Contains(candidates, value)
 }
 
+func (a *Admin) saveChatSettings(ctx context.Context, settings *db.Settings) error {
+	if err := a.s.SetSettings(ctx, settings); err != nil {
+		return err
+	}
+	return a.markRecommendedProtectionHandled(ctx, settings.ID)
+}
+
 func (a *Admin) setChatLanguage(ctx context.Context, chatID int64, language string) error {
 	settings, err := a.s.GetSettings(ctx, chatID)
 	if err != nil {
 		return err
 	}
 	settings.Language = language
-	return a.s.SetSettings(ctx, settings)
+	return a.saveChatSettings(ctx, settings)
 }

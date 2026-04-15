@@ -219,7 +219,7 @@ func (a *Admin) handleLangCommand(ctx context.Context, msg *api.Message, isAdmin
 		settings = db.DefaultSettings(msg.Chat.ID)
 	}
 	settings.Language = argument
-	if err := a.s.SetSettings(ctx, settings); err != nil {
+	if err := a.saveChatSettings(ctx, settings); err != nil {
 		entry.WithField("error", err.Error()).Error("can't update chat language")
 		return false, err
 	}
