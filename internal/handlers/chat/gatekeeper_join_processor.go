@@ -50,18 +50,6 @@ func (g *Gatekeeper) handleNewChatMembersV2(ctx context.Context, u *api.Update, 
 	default:
 	}
 
-	var comm *api.ChatFullInfo
-	chatInfo, err := g.s.GetBot().GetChat(api.ChatInfoConfig{
-		ChatConfig: api.ChatConfig{
-			ChatID: chat.ID,
-		},
-	})
-	if err != nil {
-		entry.WithField("error", err.Error()).Error("failed to get group chat info for gatekeeper")
-	} else {
-		comm = &chatInfo
-	}
-
 	for _, member := range u.Message.NewChatMembers {
 		isNotSpammer, err := g.store.IsChatNotSpammer(ctx, chat.ID, member.ID, member.UserName)
 		if err != nil {
@@ -99,15 +87,45 @@ func (g *Gatekeeper) handleNewChatMembersV2(ctx context.Context, u *api.Update, 
 		if member.IsBot || (!settings.GatekeeperCaptchaEnabled && !settings.GatekeeperGreetingEnabled) {
 			continue
 		}
-		if comm == nil {
-			entry.WithField("user_id", member.ID).Warn("skipping gatekeeper challenge due to missing chat info")
-			continue
-		}
-		if err := g.handleJoin(ctx, u, []api.User{member}, chat, comm, settings); err != nil {
+
+		challenge, err := g.store.GetChallengeByChatUser(ctx, chat.ID, member.ID)
+		if err != nil {
 			entry.WithFields(log.Fields{
 				"user_id": member.ID,
 				"error":   err.Error(),
-			}).Error("failed to handle gatekeeper flow for new member")
+			}).Error("failed to load existing challenge by chat and user")
+		}
+		if challenge != nil && challenge.Status == db.ChallengeStatusPassedWaitingMemberJoin {
+			if err := g.sendGreeting(ctx, chat.ID, chat, &member, settings, true); err != nil {
+				entry.WithFields(log.Fields{
+					"user_id": member.ID,
+					"error":   err.Error(),
+				}).Error("failed to send gatekeeper greeting after approved join request")
+			}
+			if err := g.store.DeleteChallenge(ctx, challenge.CommChatID, challenge.UserID, challenge.ChatID); err != nil {
+				entry.WithFields(log.Fields{
+					"user_id": member.ID,
+					"error":   err.Error(),
+				}).Error("failed to delete approved join request handoff challenge")
+			}
+			continue
+		}
+
+		switch {
+		case settings.GatekeeperCaptchaEnabled:
+			if err := g.startChallenge(ctx, u, &member, chat, chat.ID, chat.ID, settings); err != nil {
+				entry.WithFields(log.Fields{
+					"user_id": member.ID,
+					"error":   err.Error(),
+				}).Error("failed to handle gatekeeper captcha for new member")
+			}
+		case settings.GatekeeperGreetingEnabled:
+			if err := g.sendGreeting(ctx, chat.ID, chat, &member, settings, true); err != nil {
+				entry.WithFields(log.Fields{
+					"user_id": member.ID,
+					"error":   err.Error(),
+				}).Error("failed to send gatekeeper greeting for new member")
+			}
 		}
 	}
 
@@ -129,7 +147,10 @@ func (g *Gatekeeper) handleChatJoinRequest(ctx context.Context, u *api.Update, s
 		entry.Debug("both gatekeeper subfeatures are disabled")
 		return nil
 	}
-	requiresDM := settings.GatekeeperCaptchaEnabled
+	if !settings.GatekeeperCaptchaEnabled {
+		entry.Debug("captcha is disabled for join requests, leaving request for manual review")
+		return nil
+	}
 
 	select {
 	case <-ctx.Done():
@@ -137,172 +158,146 @@ func (g *Gatekeeper) handleChatJoinRequest(ctx context.Context, u *api.Update, s
 	default:
 	}
 
-	target := &u.ChatJoinRequest.Chat
-	comm, err := g.s.GetBot().GetChat(api.ChatInfoConfig{
+	if _, err := g.s.GetBot().GetChat(api.ChatInfoConfig{
 		ChatConfig: api.ChatConfig{
 			ChatID: u.ChatJoinRequest.UserChatID,
 		},
-	})
-	if err != nil {
-		if requiresDM {
-			entry.WithField("error", err.Error()).Error("failed to get user private chat info")
-			return err
-		}
-		entry.WithField("error", err.Error()).Warn("failed to get user private chat info for standalone greeting")
-		return nil
+	}); err != nil {
+		entry.WithField("error", err.Error()).Error("failed to get user private chat info")
+		return err
 	}
-	if err := g.handleJoin(ctx, u, []api.User{u.ChatJoinRequest.From}, target, &comm, settings); err != nil {
-		if requiresDM {
-			return err
-		}
-		entry.WithField("error", err.Error()).Warn("failed to send standalone greeting for join request")
-		return nil
-	}
-	return nil
+
+	return g.startChallenge(
+		ctx,
+		u,
+		&u.ChatJoinRequest.From,
+		&u.ChatJoinRequest.Chat,
+		u.ChatJoinRequest.UserChatID,
+		u.ChatJoinRequest.UserChatID,
+		settings,
+	)
 }
 
-func (g *Gatekeeper) handleJoin(ctx context.Context, u *api.Update, jus []api.User, target *api.Chat, comm *api.ChatFullInfo, settings *db.Settings) error {
-	entry := g.getLogEntry().WithField("method", "handleJoin")
+func (g *Gatekeeper) startChallenge(ctx context.Context, u *api.Update, user *api.User, target *api.Chat, recipientChatID int64, languageChatID int64, settings *db.Settings) error {
+	entry := g.getLogEntry().WithField("method", "startChallenge")
 
-	if target == nil || comm == nil {
-		return errors.New("target or comm chat is nil")
+	if user == nil || target == nil {
+		return errors.New("user or target chat is nil")
 	}
 	if settings == nil {
 		return errors.New("settings are nil")
 	}
-	if !settings.GatekeeperCaptchaEnabled && !settings.GatekeeperGreetingEnabled {
+	if !settings.GatekeeperCaptchaEnabled || user.IsBot {
 		return nil
 	}
 
 	b := g.s.GetBot()
 	challengeTimeout := settings.GetChallengeTimeout()
 	captchaOptionsCount := normalizeCaptchaOptionsCount(settings.GatekeeperCaptchaOptionsCount)
+	isPublic := recipientChatID == target.ID
 
-	for _, ju := range jus {
-		if ju.IsBot {
-			continue
-		}
-
-		isPublic := comm.Chat.ID == target.ID
-		if settings.GatekeeperCaptchaEnabled && isPublic {
-			if _, err := b.Request(api.RestrictChatMemberConfig{
-				ChatMemberConfig: api.ChatMemberConfig{
-					ChatConfig: api.ChatConfig{
-						ChatID: target.ID,
-					},
-					UserID: ju.ID,
+	if isPublic {
+		if _, err := b.Request(api.RestrictChatMemberConfig{
+			ChatMemberConfig: api.ChatMemberConfig{
+				ChatConfig: api.ChatConfig{
+					ChatID: target.ID,
 				},
-				UntilDate: time.Now().Add(challengeTimeout).Unix(),
-				Permissions: &api.ChatPermissions{
-					CanSendMessages:       false,
-					CanSendAudios:         false,
-					CanSendDocuments:      false,
-					CanSendPhotos:         false,
-					CanSendVideos:         false,
-					CanSendVideoNotes:     false,
-					CanSendVoiceNotes:     false,
-					CanSendPolls:          false,
-					CanSendOtherMessages:  false,
-					CanAddWebPagePreviews: false,
-					CanChangeInfo:         false,
-					CanInviteUsers:        false,
-					CanPinMessages:        false,
-					CanManageTopics:       false,
-				},
-			}); err != nil {
-				entry.WithField("error", err.Error()).Error("failed to restrict user")
-			}
+				UserID: user.ID,
+			},
+			UntilDate: time.Now().Add(challengeTimeout).Unix(),
+			Permissions: &api.ChatPermissions{
+				CanSendMessages:       false,
+				CanSendAudios:         false,
+				CanSendDocuments:      false,
+				CanSendPhotos:         false,
+				CanSendVideos:         false,
+				CanSendVideoNotes:     false,
+				CanSendVoiceNotes:     false,
+				CanSendPolls:          false,
+				CanSendOtherMessages:  false,
+				CanAddWebPagePreviews: false,
+				CanChangeInfo:         false,
+				CanInviteUsers:        false,
+				CanPinMessages:        false,
+				CanManageTopics:       false,
+			},
+		}); err != nil {
+			entry.WithField("error", err.Error()).Error("failed to restrict user")
 		}
+	}
 
-		commLang := g.s.GetLanguage(ctx, comm.Chat.ID, &ju)
-		greetingText := ""
-		if settings.GatekeeperGreetingEnabled {
-			greetingText = strings.TrimSpace(g.renderGreetingText(settings, &ju, target))
+	now := time.Now()
+	challenge := &db.Challenge{
+		CommChatID:  recipientChatID,
+		UserID:      user.ID,
+		ChatID:      target.ID,
+		Status:      db.ChallengeStatusPending,
+		SuccessUUID: uuid.New(),
+		CreatedAt:   now,
+		ExpiresAt:   now.Add(challengeTimeout),
+	}
+	if u != nil && u.Message != nil {
+		challenge.JoinMessageID = u.Message.MessageID
+	}
+	if _, err := g.store.CreateChallenge(ctx, challenge); err != nil {
+		entry.WithField("error", err.Error()).Error("failed to create challenge")
+		return err
+	}
+	if err := handlersbase.IncrementDailyStat(ctx, g.s.GetDB(), target.ID, handlersbase.StatChallengeStarted); err != nil {
+		entry.WithField("error", err.Error()).Warn("failed to increment started challenge stat")
+	}
+
+	commLang := g.s.GetLanguage(ctx, languageChatID, user)
+	buttons, correctVariant := g.createCaptchaButtons(user.ID, challenge.SuccessUUID, commLang, captchaOptionsCount)
+	rows := captchaKeyboardRows(buttons)
+	inlineRows := make([][]api.InlineKeyboardButton, 0, len(rows))
+	for _, row := range rows {
+		inlineRows = append(inlineRows, api.NewInlineKeyboardRow(row...))
+	}
+	markup := api.NewInlineKeyboardMarkup(inlineRows...)
+
+	var keys []string
+	if isPublic {
+		keys = challengeKeys
+	} else {
+		keys = privateChallengeKeys
+	}
+	randomKey := keys[tool.RandInt(0, len(keys)-1)]
+	nameString := fmt.Sprintf("[%s](tg://user?id=%d)", api.EscapeText(api.ModeMarkdown, bot.GetFullName(user)), user.ID)
+
+	args := []any{nameString}
+	if !isPublic {
+		args = append(args, g.chatLinkTitled(target))
+	}
+	args = append(args, correctVariant[1])
+	msgText := strings.TrimSpace(fmt.Sprintf(i18n.Get(randomKey, commLang), args...))
+	if isPublic && settings.GatekeeperGreetingEnabled {
+		msgText = composeGatekeeperMessage(g.renderGreetingText(settings, user, target), msgText)
+	}
+	if msgText == "" {
+		if err := g.store.DeleteChallenge(ctx, challenge.CommChatID, challenge.UserID, challenge.ChatID); err != nil {
+			entry.WithField("error", err.Error()).Error("failed to delete empty challenge")
 		}
+		return nil
+	}
 
-		challengeText := ""
-		var kb *api.InlineKeyboardMarkup
-		var challenge *db.Challenge
+	msg := api.NewMessage(recipientChatID, msgText)
+	msg.ParseMode = api.ModeMarkdown
+	msg.DisableNotification = isPublic
+	msg.ReplyMarkup = &markup
 
-		if settings.GatekeeperCaptchaEnabled {
-			now := time.Now()
-			challenge = &db.Challenge{
-				CommChatID:  comm.Chat.ID,
-				UserID:      ju.ID,
-				ChatID:      target.ID,
-				SuccessUUID: uuid.New(),
-				CreatedAt:   now,
-				ExpiresAt:   now.Add(challengeTimeout),
-			}
-			if u.Message != nil {
-				challenge.JoinMessageID = u.Message.MessageID
-			}
-			if _, err := g.store.CreateChallenge(ctx, challenge); err != nil {
-				entry.WithField("error", err.Error()).Error("failed to create challenge")
-				return err
-			}
-			if err := handlersbase.IncrementDailyStat(ctx, g.s.GetDB(), target.ID, handlersbase.StatChallengeStarted); err != nil {
-				entry.WithField("error", err.Error()).Warn("failed to increment started challenge stat")
-			}
-
-			buttons, correctVariant := g.createCaptchaButtons(ju.ID, challenge.SuccessUUID, commLang, captchaOptionsCount)
-			rows := captchaKeyboardRows(buttons)
-			inlineRows := make([][]api.InlineKeyboardButton, 0, len(rows))
-			for _, row := range rows {
-				inlineRows = append(inlineRows, api.NewInlineKeyboardRow(row...))
-			}
-			markup := api.NewInlineKeyboardMarkup(inlineRows...)
-			kb = &markup
-
-			var keys []string
-			if isPublic {
-				keys = challengeKeys
-			} else {
-				keys = privateChallengeKeys
-			}
-			randomKey := keys[tool.RandInt(0, len(keys)-1)]
-			nameString := fmt.Sprintf("[%s](tg://user?id=%d)", api.EscapeText(api.ModeMarkdown, bot.GetFullName(&ju)), ju.ID)
-
-			args := []any{nameString}
-			if !isPublic {
-				args = append(args, g.chatLinkTitled(target))
-			}
-			args = append(args, correctVariant[1])
-			challengeText = fmt.Sprintf(i18n.Get(randomKey, commLang), args...)
+	sentMsg, err := b.Send(msg)
+	if err != nil {
+		entry.WithField("error", err.Error()).Error("failed to send gatekeeper challenge")
+		if deleteErr := g.store.DeleteChallenge(ctx, challenge.CommChatID, challenge.UserID, challenge.ChatID); deleteErr != nil {
+			entry.WithField("error", deleteErr.Error()).Error("failed to delete unsent challenge")
 		}
+		return errors.WithMessage(err, "cant send gatekeeper message")
+	}
 
-		msgText := composeGatekeeperMessage(greetingText, challengeText)
-		if strings.TrimSpace(msgText) == "" {
-			if challenge != nil {
-				_ = g.store.DeleteChallenge(ctx, challenge.CommChatID, challenge.UserID, challenge.ChatID)
-			}
-			continue
-		}
-
-		msg := api.NewMessage(comm.Chat.ID, msgText)
-		msg.ParseMode = api.ModeMarkdown
-		if isPublic {
-			msg.DisableNotification = true
-		}
-		if kb != nil {
-			msg.ReplyMarkup = kb
-		}
-
-		sentMsg, err := b.Send(msg)
-		if err != nil {
-			entry.WithField("error", err.Error()).Error("failed to send gatekeeper message")
-			if challenge != nil {
-				_ = g.store.DeleteChallenge(ctx, challenge.CommChatID, challenge.UserID, challenge.ChatID)
-			}
-			return errors.WithMessage(err, "cant send gatekeeper message")
-		}
-
-		if challenge != nil {
-			challenge.ChallengeMessageID = sentMsg.MessageID
-			if err := g.store.UpdateChallenge(ctx, challenge); err != nil {
-				entry.WithField("error", err.Error()).Error("failed to update challenge message id")
-			}
-		}
+	challenge.ChallengeMessageID = sentMsg.MessageID
+	if err := g.store.UpdateChallenge(ctx, challenge); err != nil {
+		entry.WithField("error", err.Error()).Error("failed to update challenge message id")
 	}
 
 	return nil
@@ -315,11 +310,31 @@ func composeGatekeeperMessage(greetingText, challengeText string) string {
 	switch {
 	case greetingText != "" && challengeText != "":
 		return greetingText + "\n\n" + challengeText
-	case greetingText != "":
-		return greetingText
-	default:
+	case challengeText != "":
 		return challengeText
+	default:
+		return greetingText
 	}
+}
+
+func (g *Gatekeeper) sendGreeting(ctx context.Context, recipientChatID int64, target *api.Chat, user *api.User, settings *db.Settings, disableNotification bool) error {
+	if target == nil || user == nil || settings == nil || !settings.GatekeeperGreetingEnabled {
+		return nil
+	}
+
+	msgText := strings.TrimSpace(g.renderGreetingText(settings, user, target))
+	if msgText == "" {
+		return nil
+	}
+
+	msg := api.NewMessage(recipientChatID, msgText)
+	msg.ParseMode = api.ModeMarkdown
+	msg.DisableNotification = disableNotification
+	_, err := g.s.GetBot().Send(msg)
+	if err != nil {
+		return errors.WithMessage(err, "cant send greeting")
+	}
+	return nil
 }
 
 func (g *Gatekeeper) renderGreetingText(settings *db.Settings, user *api.User, target *api.Chat) string {

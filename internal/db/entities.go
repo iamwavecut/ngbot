@@ -61,6 +61,7 @@ type (
 		CommChatID         int64     `db:"comm_chat_id"`
 		UserID             int64     `db:"user_id"`
 		ChatID             int64     `db:"chat_id"`
+		Status             string    `db:"status"`
 		SuccessUUID        string    `db:"success_uuid"`
 		JoinMessageID      int       `db:"join_message_id"`
 		ChallengeMessageID int       `db:"challenge_message_id"`
@@ -128,10 +129,12 @@ type (
 )
 
 const (
-	defaultChallengeTimeout     = 3 * time.Minute
-	defaultRejectTimeout        = 10 * time.Minute
-	NotSpammerMatchTypeUserID   = "user_id"
-	NotSpammerMatchTypeUsername = "username"
+	defaultChallengeTimeout                = 3 * time.Minute
+	defaultRejectTimeout                   = 10 * time.Minute
+	NotSpammerMatchTypeUserID              = "user_id"
+	NotSpammerMatchTypeUsername            = "username"
+	ChallengeStatusPending                 = "pending"
+	ChallengeStatusPassedWaitingMemberJoin = "passed_waiting_member_join"
 )
 
 // GetLanguage Returns chat's set language

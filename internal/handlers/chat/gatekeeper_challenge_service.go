@@ -17,6 +17,8 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+const approvedJoinRequestChallengeTTL = 5 * time.Minute
+
 func (g *Gatekeeper) handleChallenge(ctx context.Context, u *api.Update, chat *api.Chat, user *api.User) (err error) {
 	entry := g.getLogEntry().WithField("method", "handleChallenge")
 	entry.Debug("handling challenge")
@@ -157,11 +159,20 @@ func (g *Gatekeeper) completeChallenge(ctx context.Context, challenge *db.Challe
 		if err := bot.DeleteChatMessage(ctx, b, challenge.CommChatID, challenge.ChallengeMessageID); err != nil {
 			entry.WithField("error", err.Error()).Error("cant delete challenge message")
 		}
+		challenge.ChallengeMessageID = 0
 	}
 
 	if challenge.CommChatID != challenge.ChatID {
+		challenge.Status = db.ChallengeStatusPassedWaitingMemberJoin
+		challenge.ExpiresAt = time.Now().Add(approvedJoinRequestChallengeTTL)
+		if err := g.store.UpdateChallenge(ctx, challenge); err != nil {
+			entry.WithField("error", err.Error()).Error("failed to update approved join request challenge")
+			return err
+		}
+
 		if err := bot.ApproveJoinRequest(ctx, b, challenge.UserID, challenge.ChatID); err != nil {
 			entry.WithField("error", err.Error()).Error("cant approve join request")
+			return err
 		}
 		msg := api.NewMessage(
 			challenge.CommChatID,
@@ -172,10 +183,12 @@ func (g *Gatekeeper) completeChallenge(ctx context.Context, challenge *db.Challe
 		)
 		msg.ParseMode = api.ModeMarkdown
 		_ = tool.Err(b.Send(msg))
-	} else {
-		_ = bot.UnrestrictChatting(ctx, b, challenge.UserID, challenge.ChatID)
+		return nil
 	}
 
+	if err := bot.UnrestrictChatting(ctx, b, challenge.UserID, challenge.ChatID); err != nil {
+		entry.WithField("error", err.Error()).Error("cant unrestrict user")
+	}
 	return g.store.DeleteChallenge(ctx, challenge.CommChatID, challenge.UserID, challenge.ChatID)
 }
 

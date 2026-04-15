@@ -23,6 +23,7 @@ func TestChallengesSupportParallelJoinRequestsPerUser(t *testing.T) {
 		CommChatID:         1001,
 		UserID:             777,
 		ChatID:             -100111,
+		Status:             db.ChallengeStatusPending,
 		SuccessUUID:        "uuid-first",
 		ChallengeMessageID: 501,
 		CreatedAt:          now,
@@ -32,6 +33,7 @@ func TestChallengesSupportParallelJoinRequestsPerUser(t *testing.T) {
 		CommChatID:         1001,
 		UserID:             777,
 		ChatID:             -100222,
+		Status:             db.ChallengeStatusPending,
 		SuccessUUID:        "uuid-second",
 		ChallengeMessageID: 502,
 		CreatedAt:          now,
@@ -59,5 +61,88 @@ func TestChallengesSupportParallelJoinRequestsPerUser(t *testing.T) {
 	}
 	if gotSecond == nil || gotSecond.ChatID != second.ChatID {
 		t.Fatalf("unexpected second challenge: %#v", gotSecond)
+	}
+}
+
+func TestChallengeStatusLookupAndExpiryLifecycle(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	client, err := NewSQLiteClient(ctx, t.TempDir(), "test.db")
+	if err != nil {
+		t.Fatalf("new sqlite client: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+
+	now := time.Now()
+	challenge := &db.Challenge{
+		CommChatID:         9001,
+		UserID:             777,
+		ChatID:             -100333,
+		Status:             db.ChallengeStatusPending,
+		SuccessUUID:        "uuid-pending",
+		ChallengeMessageID: 503,
+		CreatedAt:          now,
+		ExpiresAt:          now.Add(5 * time.Minute),
+	}
+
+	if _, err := client.CreateChallenge(ctx, challenge); err != nil {
+		t.Fatalf("create challenge: %v", err)
+	}
+
+	gotByChatUser, err := client.GetChallengeByChatUser(ctx, challenge.ChatID, challenge.UserID)
+	if err != nil {
+		t.Fatalf("get challenge by chat user: %v", err)
+	}
+	if gotByChatUser == nil {
+		t.Fatal("expected challenge lookup by chat user to match")
+	}
+	if gotByChatUser.Status != db.ChallengeStatusPending {
+		t.Fatalf("unexpected challenge status: got %q want %q", gotByChatUser.Status, db.ChallengeStatusPending)
+	}
+
+	challenge.Status = db.ChallengeStatusPassedWaitingMemberJoin
+	challenge.ChallengeMessageID = 0
+	challenge.ExpiresAt = now.Add(5 * time.Minute)
+	if err := client.UpdateChallenge(ctx, challenge); err != nil {
+		t.Fatalf("update challenge: %v", err)
+	}
+
+	gotByChatUser, err = client.GetChallengeByChatUser(ctx, challenge.ChatID, challenge.UserID)
+	if err != nil {
+		t.Fatalf("get updated challenge by chat user: %v", err)
+	}
+	if gotByChatUser == nil {
+		t.Fatal("expected updated challenge lookup by chat user to match")
+	}
+	if gotByChatUser.Status != db.ChallengeStatusPassedWaitingMemberJoin {
+		t.Fatalf("unexpected updated challenge status: got %q want %q", gotByChatUser.Status, db.ChallengeStatusPassedWaitingMemberJoin)
+	}
+
+	gotByMessage, err := client.GetChallengeByMessage(ctx, challenge.CommChatID, challenge.UserID, 503)
+	if err != nil {
+		t.Fatalf("get challenge by message after handoff: %v", err)
+	}
+	if gotByMessage != nil {
+		t.Fatalf("expected passed handoff challenge to be hidden from message lookup, got %#v", gotByMessage)
+	}
+
+	expired, err := client.GetExpiredChallenges(ctx, now.Add(4*time.Minute))
+	if err != nil {
+		t.Fatalf("get expired challenges before ttl: %v", err)
+	}
+	if len(expired) != 0 {
+		t.Fatalf("expected no expired challenges before ttl, got %d", len(expired))
+	}
+
+	expired, err = client.GetExpiredChallenges(ctx, now.Add(6*time.Minute))
+	if err != nil {
+		t.Fatalf("get expired challenges after ttl: %v", err)
+	}
+	if len(expired) != 1 {
+		t.Fatalf("expected one expired challenge after ttl, got %d", len(expired))
+	}
+	if expired[0].Status != db.ChallengeStatusPassedWaitingMemberJoin {
+		t.Fatalf("unexpected expired challenge status: got %q want %q", expired[0].Status, db.ChallengeStatusPassedWaitingMemberJoin)
 	}
 }

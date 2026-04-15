@@ -7,6 +7,7 @@ import (
 
 	api "github.com/OvyFlash/telegram-bot-api"
 	"github.com/iamwavecut/ngbot/internal/bot"
+	"github.com/iamwavecut/ngbot/internal/db"
 	"github.com/iamwavecut/tool"
 	log "github.com/sirupsen/logrus"
 )
@@ -138,6 +139,12 @@ func (g *Gatekeeper) processExpiredChallenges(ctx context.Context) error {
 		if !settings.GatekeeperEnabled || !settings.GatekeeperCaptchaEnabled {
 			if err := g.cleanupChallengeWithoutPenalty(ctx, challenge); err != nil {
 				entry.WithField("error", err.Error()).Error("failed to cleanup challenge without penalty")
+			}
+			continue
+		}
+		if challenge.Status == db.ChallengeStatusPassedWaitingMemberJoin || challenge.CommChatID != challenge.ChatID {
+			if err := g.cleanupChallengeWithoutPenalty(ctx, challenge); err != nil {
+				entry.WithField("error", err.Error()).Error("failed to cleanup non-punitive challenge state")
 			}
 			continue
 		}

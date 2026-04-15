@@ -9,7 +9,7 @@
 3. Sends a CAPTCHA-style challenge with configurable option count and timeout.
 4. On success, the newcomer is approved/unrestricted and the challenge message is cleaned up.
 5. On failure or timeout, the newcomer is banned for the configured reject timeout.
-6. Optional greeting text can be shown for approved newcomers.
+6. Optional greeting text can be shown immediately with the public CAPTCHA for direct joins, or after approval for join-request newcomers.
 
 ## Spam protection
 1. Every non-member's first message is checked through multiple fast paths:

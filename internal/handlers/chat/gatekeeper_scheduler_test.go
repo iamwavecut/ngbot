@@ -30,6 +30,10 @@ func (s *testGatekeeperStore) GetChallengeByMessage(context.Context, int64, int6
 	return nil, nil
 }
 
+func (s *testGatekeeperStore) GetChallengeByChatUser(context.Context, int64, int64) (*db.Challenge, error) {
+	return nil, nil
+}
+
 func (s *testGatekeeperStore) UpdateChallenge(context.Context, *db.Challenge) error {
 	return nil
 }

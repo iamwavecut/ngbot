@@ -65,7 +65,7 @@ func LoadStatsSummary(ctx context.Context, store StatsStore, chatID int64, now t
 		return summary, nil
 	}
 
-	for i := 0; i < days; i++ {
+	for i := range days {
 		day := now.UTC().AddDate(0, 0, -i)
 		var err error
 		summary.ChallengeStarted, err = loadStatValue(ctx, store, StatsKey(chatID, day, StatChallengeStarted), summary.ChallengeStarted)
