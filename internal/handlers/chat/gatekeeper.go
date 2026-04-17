@@ -51,6 +51,7 @@ const (
 	maxChallengeAttempts = 3
 
 	updateTypeCallbackQuery   updateType = "callback_query"
+	updateTypeChatMember      updateType = "chat_member"
 	updateTypeChatJoinRequest updateType = "chat_join_request"
 	updateTypeNewChatMembers  updateType = "new_chat_members"
 	updateTypeIgnore          updateType = "ignore"
@@ -270,6 +271,17 @@ func (g *Gatekeeper) Handle(ctx context.Context, u *api.Update, chat *api.Chat, 
 			return true, nil
 		}
 		return false, g.handleChallenge(ctx, u, chat, user)
+	case updateTypeChatMember:
+		chatMemberChatID := u.ChatMember.Chat.ID
+		settings, err := g.fetchAndValidateSettings(ctx, chatMemberChatID)
+		if err != nil {
+			return true, err
+		}
+		if !settings.GatekeeperEnabled {
+			entry.Debug("gatekeeper is disabled for this chat")
+			return true, nil
+		}
+		return true, g.handleChatMember(ctx, u, settings)
 	case updateTypeChatJoinRequest:
 		joinChatID := u.ChatJoinRequest.Chat.ID
 		settings, err := g.fetchAndValidateSettings(ctx, joinChatID)
@@ -314,6 +326,9 @@ func isGatekeeperCallbackData(data string) bool {
 func (g *Gatekeeper) determineUpdateType(u *api.Update) updateType {
 	if u.CallbackQuery != nil {
 		return updateTypeCallbackQuery
+	}
+	if u.ChatMember != nil {
+		return updateTypeChatMember
 	}
 	if u.ChatJoinRequest != nil {
 		return updateTypeChatJoinRequest

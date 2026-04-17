@@ -51,43 +51,59 @@ func (g *Gatekeeper) handleNewChatMembersV2(ctx context.Context, u *api.Update, 
 	}
 
 	for _, member := range u.Message.NewChatMembers {
-		isNotSpammer, err := g.store.IsChatNotSpammer(ctx, chat.ID, member.ID, member.UserName)
-		if err != nil {
+		if _, err := g.recordRecentJoiner(ctx, chat.ID, &member, u.Message.MessageID); err != nil {
+			entry.WithField("error", err.Error()).Error("failed to save recent joiner")
+		}
+		if err := g.backfillPublicChallengeJoinMessageID(ctx, chat.ID, member.ID, u.Message.MessageID); err != nil {
 			entry.WithFields(log.Fields{
 				"user_id": member.ID,
 				"error":   err.Error(),
-			}).Error("failed to check manual not-spammer override")
-			continue
+			}).Error("failed to backfill join message id for public challenge")
 		}
+	}
 
-		if !isNotSpammer && g.banChecker.IsKnownBanned(member.ID) {
-			entry.WithFields(log.Fields{
-				"user_id": member.ID,
-				"name":    bot.GetUN(&member),
-			}).Info("recent joiner is known banned")
-			if err := g.banChecker.BanUserWithMessage(ctx, chat.ID, member.ID, u.Message.MessageID); err != nil {
-				entry.WithField("error", err.Error()).Error("failed to ban known banned user")
-			}
-			continue
-		}
+	return nil
+}
 
-		recentJoiner := &db.RecentJoiner{
-			UserID:        member.ID,
-			ChatID:        chat.ID,
-			JoinedAt:      time.Now(),
-			JoinMessageID: u.Message.MessageID,
-			Username:      member.UserName,
-			Processed:     false,
-			IsSpammer:     false,
-		}
-		if _, err := g.store.AddChatRecentJoiner(ctx, recentJoiner); err != nil {
-			entry.WithField("error", err.Error()).Error("failed to save recent joiner")
-		}
+func (g *Gatekeeper) handleChatMember(ctx context.Context, u *api.Update, settings *db.Settings) error {
+	entry := g.getLogEntry().WithField("method", "handleChatMember")
 
-		if member.IsBot || (!settings.GatekeeperCaptchaEnabled && !settings.GatekeeperGreetingEnabled) {
-			continue
-		}
+	if u == nil || u.ChatMember == nil {
+		entry.Debug("chat member update is nil")
+		return nil
+	}
+	if settings == nil {
+		entry.Debug("settings are nil")
+		return nil
+	}
+	if !settings.GatekeeperCaptchaEnabled && !settings.GatekeeperGreetingEnabled {
+		entry.Debug("gatekeeper subfeatures are disabled")
+		return nil
+	}
+	if !isChatMemberJoinTransition(u.ChatMember) {
+		entry.Debug("chat member update is not a new join transition")
+		return nil
+	}
 
+	member := u.ChatMember.NewChatMember.User
+	if member == nil {
+		entry.Debug("chat member user is nil")
+		return nil
+	}
+
+	chat := &u.ChatMember.Chat
+	if _, err := g.recordRecentJoiner(ctx, chat.ID, member, 0); err != nil {
+		entry.WithFields(log.Fields{
+			"user_id": member.ID,
+			"error":   err.Error(),
+		}).Error("failed to save recent joiner")
+	}
+
+	if member.IsBot {
+		return nil
+	}
+
+	if u.ChatMember.ViaJoinRequest {
 		challenge, err := g.store.GetChallengeByChatUser(ctx, chat.ID, member.ID)
 		if err != nil {
 			entry.WithFields(log.Fields{
@@ -96,7 +112,7 @@ func (g *Gatekeeper) handleNewChatMembersV2(ctx context.Context, u *api.Update, 
 			}).Error("failed to load existing challenge by chat and user")
 		}
 		if challenge != nil && challenge.Status == db.ChallengeStatusPassedWaitingMemberJoin {
-			if err := g.sendGreeting(ctx, chat.ID, chat, &member, settings, true); err != nil {
+			if err := g.sendGreeting(ctx, chat.ID, chat, member, settings, true); err != nil {
 				entry.WithFields(log.Fields{
 					"user_id": member.ID,
 					"error":   err.Error(),
@@ -108,24 +124,32 @@ func (g *Gatekeeper) handleNewChatMembersV2(ctx context.Context, u *api.Update, 
 					"error":   err.Error(),
 				}).Error("failed to delete approved join request handoff challenge")
 			}
-			continue
+			return nil
 		}
 
-		switch {
-		case settings.GatekeeperCaptchaEnabled:
-			if err := g.startChallenge(ctx, u, &member, chat, chat.ID, chat.ID, settings); err != nil {
-				entry.WithFields(log.Fields{
-					"user_id": member.ID,
-					"error":   err.Error(),
-				}).Error("failed to handle gatekeeper captcha for new member")
-			}
-		case settings.GatekeeperGreetingEnabled:
-			if err := g.sendGreeting(ctx, chat.ID, chat, &member, settings, true); err != nil {
-				entry.WithFields(log.Fields{
-					"user_id": member.ID,
-					"error":   err.Error(),
-				}).Error("failed to send gatekeeper greeting for new member")
-			}
+		if err := g.sendGreeting(ctx, chat.ID, chat, member, settings, true); err != nil {
+			entry.WithFields(log.Fields{
+				"user_id": member.ID,
+				"error":   err.Error(),
+			}).Error("failed to send gatekeeper greeting for approved join request")
+		}
+		return nil
+	}
+
+	switch {
+	case settings.GatekeeperCaptchaEnabled:
+		if err := g.startChallenge(ctx, u, member, chat, chat.ID, chat.ID, settings); err != nil {
+			entry.WithFields(log.Fields{
+				"user_id": member.ID,
+				"error":   err.Error(),
+			}).Error("failed to handle gatekeeper captcha for new member")
+		}
+	case settings.GatekeeperGreetingEnabled:
+		if err := g.sendGreeting(ctx, chat.ID, chat, member, settings, true); err != nil {
+			entry.WithFields(log.Fields{
+				"user_id": member.ID,
+				"error":   err.Error(),
+			}).Error("failed to send gatekeeper greeting for new member")
 		}
 	}
 
@@ -308,6 +332,61 @@ func (g *Gatekeeper) startChallenge(ctx context.Context, u *api.Update, user *ap
 	}
 
 	return nil
+}
+
+func (g *Gatekeeper) recordRecentJoiner(ctx context.Context, chatID int64, user *api.User, joinMessageID int) (*db.RecentJoiner, error) {
+	if user == nil {
+		return nil, nil
+	}
+
+	recentJoiner := &db.RecentJoiner{
+		UserID:        user.ID,
+		ChatID:        chatID,
+		JoinedAt:      time.Now(),
+		JoinMessageID: joinMessageID,
+		Username:      user.UserName,
+		Processed:     false,
+		IsSpammer:     false,
+	}
+	return g.store.AddChatRecentJoiner(ctx, recentJoiner)
+}
+
+func (g *Gatekeeper) backfillPublicChallengeJoinMessageID(ctx context.Context, chatID, userID int64, joinMessageID int) error {
+	if joinMessageID == 0 {
+		return nil
+	}
+
+	challenge, err := g.store.GetChallengeByChatUser(ctx, chatID, userID)
+	if err != nil {
+		return err
+	}
+	if challenge == nil {
+		return nil
+	}
+	if challenge.CommChatID != challenge.ChatID || challenge.Status != db.ChallengeStatusPending || challenge.JoinMessageID != 0 {
+		return nil
+	}
+
+	challenge.JoinMessageID = joinMessageID
+	return g.store.UpdateChallenge(ctx, challenge)
+}
+
+func isChatMemberJoinTransition(update *api.ChatMemberUpdated) bool {
+	if update == nil {
+		return false
+	}
+	return !isCurrentChatMember(update.OldChatMember) && isCurrentChatMember(update.NewChatMember)
+}
+
+func isCurrentChatMember(member api.ChatMember) bool {
+	switch member.Status {
+	case "creator", "administrator", "member":
+		return true
+	case "restricted":
+		return member.IsMember
+	default:
+		return false
+	}
 }
 
 func composeGatekeeperMessage(greetingText, challengeText string) string {

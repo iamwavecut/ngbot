@@ -206,8 +206,17 @@ func (s *sqliteClient) AddChatRecentJoiner(ctx context.Context, joiner *db.Recen
 	query := `
 		INSERT INTO recent_joiners (chat_id, user_id, username, joined_at, join_message_id, processed, is_spammer)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(chat_id, user_id) DO UPDATE SET
+			username = excluded.username,
+			joined_at = excluded.joined_at,
+			join_message_id = CASE
+				WHEN excluded.join_message_id != 0 THEN excluded.join_message_id
+				ELSE recent_joiners.join_message_id
+			END,
+			processed = FALSE,
+			is_spammer = FALSE
 	`
-	result, err := s.db.ExecContext(ctx, query,
+	if _, err := s.db.ExecContext(ctx, query,
 		joiner.ChatID,
 		joiner.UserID,
 		joiner.Username,
@@ -215,15 +224,19 @@ func (s *sqliteClient) AddChatRecentJoiner(ctx context.Context, joiner *db.Recen
 		joiner.JoinMessageID,
 		joiner.Processed,
 		joiner.IsSpammer,
-	)
-	if err != nil {
+	); err != nil {
 		return nil, err
 	}
-	id, err := result.LastInsertId()
-	if err != nil {
+
+	var stored db.RecentJoiner
+	if err := s.db.GetContext(ctx, &stored, `
+		SELECT * FROM recent_joiners
+		WHERE chat_id = ? AND user_id = ?
+		LIMIT 1
+	`, joiner.ChatID, joiner.UserID); err != nil {
 		return nil, err
 	}
-	joiner.ID = id
+	*joiner = stored
 	return joiner, nil
 }
 
