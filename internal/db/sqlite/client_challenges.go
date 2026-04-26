@@ -90,6 +90,27 @@ func (c *sqliteClient) GetChallengeByChatUser(ctx context.Context, chatID, userI
 	return &challenge, nil
 }
 
+func (c *sqliteClient) GetPassedJoinRequestChallengeByChatUser(ctx context.Context, chatID, userID int64) (*db.Challenge, error) {
+	c.mutex.RLock()
+	defer c.mutex.RUnlock()
+
+	var challenge db.Challenge
+	err := c.db.GetContext(ctx, &challenge, `
+		SELECT comm_chat_id, user_id, chat_id, status, success_uuid, join_message_id, challenge_message_id, attempts, created_at, expires_at
+		FROM gatekeeper_challenges
+		WHERE chat_id = ? AND user_id = ? AND comm_chat_id <> chat_id AND status = ?
+		ORDER BY created_at DESC
+		LIMIT 1
+	`, chatID, userID, db.ChallengeStatusPassedWaitingMemberJoin)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get passed join request challenge by chat user: %w", err)
+	}
+	return &challenge, nil
+}
+
 func (c *sqliteClient) UpdateChallenge(ctx context.Context, challenge *db.Challenge) error {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()

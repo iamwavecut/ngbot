@@ -146,3 +146,62 @@ func TestChallengeStatusLookupAndExpiryLifecycle(t *testing.T) {
 		t.Fatalf("unexpected expired challenge status: got %q want %q", expired[0].Status, db.ChallengeStatusPassedWaitingMemberJoin)
 	}
 }
+
+func TestGetPassedJoinRequestChallengeByChatUserIgnoresNewerPublicChallenge(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	client, err := NewSQLiteClient(ctx, t.TempDir(), "test.db")
+	if err != nil {
+		t.Fatalf("new sqlite client: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+
+	now := time.Now()
+	handoff := &db.Challenge{
+		CommChatID:         9001,
+		UserID:             777,
+		ChatID:             -100333,
+		Status:             db.ChallengeStatusPassedWaitingMemberJoin,
+		SuccessUUID:        "uuid-handoff",
+		ChallengeMessageID: 0,
+		CreatedAt:          now,
+		ExpiresAt:          now.Add(5 * time.Minute),
+	}
+	publicChallenge := &db.Challenge{
+		CommChatID:         -100333,
+		UserID:             777,
+		ChatID:             -100333,
+		Status:             db.ChallengeStatusPending,
+		SuccessUUID:        "uuid-public",
+		ChallengeMessageID: 504,
+		CreatedAt:          now.Add(time.Minute),
+		ExpiresAt:          now.Add(5 * time.Minute),
+	}
+
+	if _, err := client.CreateChallenge(ctx, handoff); err != nil {
+		t.Fatalf("create handoff challenge: %v", err)
+	}
+	if _, err := client.CreateChallenge(ctx, publicChallenge); err != nil {
+		t.Fatalf("create public challenge: %v", err)
+	}
+
+	latest, err := client.GetChallengeByChatUser(ctx, handoff.ChatID, handoff.UserID)
+	if err != nil {
+		t.Fatalf("get latest challenge by chat user: %v", err)
+	}
+	if latest == nil || latest.CommChatID != publicChallenge.CommChatID {
+		t.Fatalf("expected latest generic lookup to return public challenge, got %#v", latest)
+	}
+
+	got, err := client.GetPassedJoinRequestChallengeByChatUser(ctx, handoff.ChatID, handoff.UserID)
+	if err != nil {
+		t.Fatalf("get passed join request challenge by chat user: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected handoff challenge lookup to match")
+	}
+	if got.CommChatID != handoff.CommChatID || got.Status != db.ChallengeStatusPassedWaitingMemberJoin {
+		t.Fatalf("unexpected handoff challenge: %#v", got)
+	}
+}

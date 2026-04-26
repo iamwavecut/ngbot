@@ -34,6 +34,10 @@ func (s *testGatekeeperStore) GetChallengeByChatUser(context.Context, int64, int
 	return nil, nil
 }
 
+func (s *testGatekeeperStore) GetPassedJoinRequestChallengeByChatUser(context.Context, int64, int64) (*db.Challenge, error) {
+	return nil, nil
+}
+
 func (s *testGatekeeperStore) UpdateChallenge(context.Context, *db.Challenge) error {
 	return nil
 }

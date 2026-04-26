@@ -103,30 +103,30 @@ func (g *Gatekeeper) handleChatMember(ctx context.Context, u *api.Update, settin
 		return nil
 	}
 
-	if u.ChatMember.ViaJoinRequest {
-		challenge, err := g.store.GetChallengeByChatUser(ctx, chat.ID, member.ID)
-		if err != nil {
+	handoffChallenge, err := g.store.GetPassedJoinRequestChallengeByChatUser(ctx, chat.ID, member.ID)
+	if err != nil {
+		entry.WithFields(log.Fields{
+			"user_id": member.ID,
+			"error":   err.Error(),
+		}).Error("failed to load approved join request handoff challenge")
+	}
+	if handoffChallenge != nil {
+		if err := g.sendGreeting(ctx, chat.ID, chat, member, settings, true); err != nil {
 			entry.WithFields(log.Fields{
 				"user_id": member.ID,
 				"error":   err.Error(),
-			}).Error("failed to load existing challenge by chat and user")
+			}).Error("failed to send gatekeeper greeting after approved join request")
 		}
-		if challenge != nil && challenge.Status == db.ChallengeStatusPassedWaitingMemberJoin {
-			if err := g.sendGreeting(ctx, chat.ID, chat, member, settings, true); err != nil {
-				entry.WithFields(log.Fields{
-					"user_id": member.ID,
-					"error":   err.Error(),
-				}).Error("failed to send gatekeeper greeting after approved join request")
-			}
-			if err := g.store.DeleteChallenge(ctx, challenge.CommChatID, challenge.UserID, challenge.ChatID); err != nil {
-				entry.WithFields(log.Fields{
-					"user_id": member.ID,
-					"error":   err.Error(),
-				}).Error("failed to delete approved join request handoff challenge")
-			}
-			return nil
+		if err := g.store.DeleteChallenge(ctx, handoffChallenge.CommChatID, handoffChallenge.UserID, handoffChallenge.ChatID); err != nil {
+			entry.WithFields(log.Fields{
+				"user_id": member.ID,
+				"error":   err.Error(),
+			}).Error("failed to delete approved join request handoff challenge")
 		}
+		return nil
+	}
 
+	if u.ChatMember.ViaJoinRequest {
 		if err := g.sendGreeting(ctx, chat.ID, chat, member, settings, true); err != nil {
 			entry.WithFields(log.Fields{
 				"user_id": member.ID,

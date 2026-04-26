@@ -106,6 +106,22 @@ func (s *gatekeeperFlowStore) GetChallengeByChatUser(_ context.Context, chatID, 
 	return cloneChallenge(latest), nil
 }
 
+func (s *gatekeeperFlowStore) GetPassedJoinRequestChallengeByChatUser(_ context.Context, chatID, userID int64) (*db.Challenge, error) {
+	var latest *db.Challenge
+	for _, challenge := range s.challenges {
+		if challenge.ChatID != chatID ||
+			challenge.UserID != userID ||
+			challenge.CommChatID == challenge.ChatID ||
+			challenge.Status != db.ChallengeStatusPassedWaitingMemberJoin {
+			continue
+		}
+		if latest == nil || challenge.CreatedAt.After(latest.CreatedAt) {
+			latest = challenge
+		}
+	}
+	return cloneChallenge(latest), nil
+}
+
 func (s *gatekeeperFlowStore) UpdateChallenge(_ context.Context, challenge *db.Challenge) error {
 	s.challenges[s.challengeKey(challenge.CommChatID, challenge.UserID, challenge.ChatID)] = cloneChallenge(challenge)
 	return nil
@@ -377,6 +393,87 @@ func TestJoinRequestCaptchaSuccessHandoffSkipsSecondCaptchaAndSendsGreetingOnce(
 	joiner := store.recentJoiner(t, groupChat.ID, user.ID)
 	if joiner.JoinMessageID != 77 {
 		t.Fatalf("expected recent joiner message id to be backfilled, got %d", joiner.JoinMessageID)
+	}
+}
+
+func TestJoinRequestCaptchaSuccessHandoffSkipsPublicCaptchaWithoutViaJoinRequest(t *testing.T) {
+	t.Parallel()
+
+	recorder := &botRequestRecorder{}
+	groupChat := api.Chat{ID: -100123, Type: "supergroup", Title: "Wave Club", UserName: "waveclub"}
+	user := api.User{ID: 42, FirstName: "Neo"}
+	store := newGatekeeperFlowStore()
+
+	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
+		recorder.record(t, method, r)
+
+		switch method {
+		case "getChat":
+			return map[string]any{
+				"id":         9001,
+				"type":       "private",
+				"first_name": "Neo",
+			}
+		case "approveChatJoinRequest":
+			return true
+		case "sendMessage":
+			return recorder.nextSendMessageResult()
+		case "deleteMessage":
+			return true
+		default:
+			t.Fatalf("unexpected bot method: %s", method)
+			return nil
+		}
+	})
+
+	settings := &db.Settings{
+		GatekeeperEnabled:             true,
+		GatekeeperCaptchaEnabled:      true,
+		GatekeeperGreetingEnabled:     true,
+		GatekeeperGreetingText:        "GREETING {user} to {chat_title}",
+		GatekeeperCaptchaOptionsCount: 3,
+		ChallengeTimeout:              (3 * time.Minute).Nanoseconds(),
+	}
+	gatekeeper := &Gatekeeper{
+		s:          &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI, language: "en"}, settings: settings},
+		store:      store,
+		config:     &config.Config{},
+		banChecker: &testGatekeeperBanChecker{},
+	}
+
+	update := &api.Update{
+		ChatJoinRequest: &api.ChatJoinRequest{
+			Chat:       groupChat,
+			From:       user,
+			UserChatID: 9001,
+		},
+	}
+	if err := gatekeeper.handleChatJoinRequest(context.Background(), update, settings); err != nil {
+		t.Fatalf("handleChatJoinRequest returned error: %v", err)
+	}
+
+	challenge := store.onlyChallenge(t)
+	if err := gatekeeper.completeChallenge(context.Background(), challenge, &api.ChatFullInfo{Chat: groupChat}, "en"); err != nil {
+		t.Fatalf("completeChallenge returned error: %v", err)
+	}
+
+	memberUpdate := newChatMemberJoinUpdate(groupChat, user, user)
+	if err := gatekeeper.handleChatMember(context.Background(), memberUpdate, settings); err != nil {
+		t.Fatalf("handleChatMember returned error: %v", err)
+	}
+
+	sendMessages := recorder.byMethod("sendMessage")
+	if len(sendMessages) != 3 {
+		t.Fatalf("expected DM challenge, DM success, and one group greeting, got %d sends", len(sendMessages))
+	}
+	if got := sendMessages[2].form.Get("chat_id"); got != "-100123" {
+		t.Fatalf("unexpected group greeting chat id: %s", got)
+	}
+	if sendMessages[2].form.Get("reply_markup") != "" {
+		t.Fatal("expected group greeting without captcha buttons")
+	}
+	if len(store.challenges) != 0 {
+		t.Fatalf("expected handoff challenge to be deleted after member join, got %d rows", len(store.challenges))
 	}
 }
 
