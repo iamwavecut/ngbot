@@ -274,12 +274,13 @@ func (s *service) warmupCache(ctx context.Context) error {
 			return fmt.Errorf("failed to warmup member cache: %w", err)
 		}
 		s.cacheMutex.Lock()
+		expTime := time.Now().Add(s.cacheExpiration)
 		for chatID, userIDs := range members {
 			if _, ok := s.memberCache[chatID]; !ok {
 				s.memberCache[chatID] = make(map[int64]time.Time)
 			}
-			for userID := range userIDs {
-				s.memberCache[chatID][int64(userID)] = time.Now().Add(s.cacheExpiration)
+			for _, userID := range userIDs {
+				s.memberCache[chatID][userID] = expTime
 			}
 		}
 		s.cacheMutex.Unlock()
@@ -301,15 +302,19 @@ func (s *service) warmupCache(ctx context.Context) error {
 		return err
 	}
 
+	s.cacheMutex.RLock()
 	membersCount := 0
 	for _, userIDs := range s.memberCache {
 		membersCount += len(userIDs)
 	}
+	membersChats := len(s.memberCache)
+	settingsCount := len(s.settingsCache)
+	s.cacheMutex.RUnlock()
 
 	s.getLogEntry().WithFields(logrus.Fields{
-		"membersChats":  len(s.memberCache),
+		"membersChats":  membersChats,
 		"membersCount":  membersCount,
-		"settingsCount": len(s.settingsCache),
+		"settingsCount": settingsCount,
 	}).Info("Cache warmed up successfully")
 	return nil
 }

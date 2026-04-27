@@ -44,6 +44,8 @@ const (
 	errChatAdminRequired  = "CHAT_ADMIN_REQUIRED"
 )
 
+var ErrCommunityVotingDisabled = errors.New("community voting disabled")
+
 type spamStore interface {
 	CreateSpamCase(ctx context.Context, sc *db.SpamCase) (*db.SpamCase, error)
 	UpdateSpamCase(ctx context.Context, sc *db.SpamCase) error
@@ -314,7 +316,6 @@ func (sc *SpamControl) createInChatNotification(msg *api.Message, caseID int64, 
 		replyMsg.ReplyMarkup = &markup
 	}
 
-	replyMsg.ParseMode = api.ModeMarkdown
 	replyMsg.DisableNotification = true
 	replyMsg.LinkPreviewOptions.IsDisabled = true
 	return replyMsg
@@ -363,6 +364,21 @@ func (sc *SpamControl) createChannelNotification(msg *api.Message, channelPostLi
 }
 
 func (sc *SpamControl) RecordVote(ctx context.Context, caseID int64, voterID int64, vote bool) (int, int, error) {
+	spamCase, err := sc.store.GetSpamCase(ctx, caseID)
+	if err != nil {
+		return 0, 0, err
+	}
+	settings, err := sc.s.GetSettings(ctx, spamCase.ChatID)
+	if err != nil {
+		return 0, 0, err
+	}
+	if settings == nil {
+		settings = db.DefaultSettings(spamCase.ChatID)
+	}
+	if !settings.CommunityVotingEnabled {
+		return 0, 0, ErrCommunityVotingDisabled
+	}
+
 	if err := sc.store.AddSpamVote(ctx, &db.SpamVote{
 		CaseID:  caseID,
 		VoterID: voterID,

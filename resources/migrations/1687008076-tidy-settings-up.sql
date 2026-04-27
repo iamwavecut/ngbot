@@ -8,12 +8,12 @@ ALTER TABLE "chats" RENAME TO "chats_old";
 CREATE TABLE "chats" (
     "id" INTEGER PRIMARY KEY,
     "enabled" BOOLEAN NOT NULL DEFAULT 1,
-    "challenge_timeout" INTEGER NOT NULL DEFAULT 180,
-    "reject_timeout" INTEGER NOT NULL DEFAULT 600,
+    "challenge_timeout" INTEGER NOT NULL DEFAULT 180000000000,
+    "reject_timeout" INTEGER NOT NULL DEFAULT 600000000000,
     "language" TEXT NOT NULL DEFAULT 'en'
 );
 INSERT INTO "chats" ("id", "enabled", "challenge_timeout", "reject_timeout", "language")
-SELECT co.id, true, 180, 600, co.language FROM "chats_old" co;
+SELECT co.id, true, 180000000000, 600000000000, co.language FROM "chats_old" co;
 DROP TABLE IF EXISTS "chats_old";
 
 CREATE TABLE IF NOT EXISTS "chat_members" (

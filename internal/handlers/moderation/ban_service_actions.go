@@ -47,10 +47,8 @@ func (s *defaultBanService) UnmuteUser(ctx context.Context, chatID, userID int64
 			ChatConfig: api.ChatConfig{ChatID: chatID},
 			UserID:     userID,
 		},
-		Permissions: &api.ChatPermissions{},
-		UntilDate:   0,
-
-		UseIndependentChatPermissions: false,
+		Permissions:                   unrestrictedChatPermissions(),
+		UseIndependentChatPermissions: true,
 	}
 
 	if _, err := s.bot.Request(config); err != nil {
@@ -121,4 +119,23 @@ func (s *defaultBanService) IsRestricted(ctx context.Context, chatID, userID int
 		return false, fmt.Errorf("failed to check restrictions: %w", err)
 	}
 	return restriction != nil && restriction.ExpiresAt.After(time.Now()), nil
+}
+
+func unrestrictedChatPermissions() *api.ChatPermissions {
+	return &api.ChatPermissions{
+		CanSendMessages:       true,
+		CanSendAudios:         true,
+		CanSendDocuments:      true,
+		CanSendPhotos:         true,
+		CanSendVideos:         true,
+		CanSendVideoNotes:     true,
+		CanSendVoiceNotes:     true,
+		CanSendPolls:          true,
+		CanSendOtherMessages:  true,
+		CanAddWebPagePreviews: true,
+		CanChangeInfo:         true,
+		CanInviteUsers:        true,
+		CanPinMessages:        true,
+		CanManageTopics:       true,
+	}
 }

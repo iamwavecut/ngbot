@@ -10,7 +10,7 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-func (r *Reactor) handleReaction(ctx context.Context, reactions *api.MessageReactionCountUpdated, chat *api.Chat, user *api.User) (bool, error) {
+func (r *Reactor) handleReaction(ctx context.Context, reactions *api.MessageReactionCountUpdated, chat *api.Chat) (bool, error) {
 	entry := r.getLogEntry().WithFields(log.Fields{
 		"method":    "handleReaction",
 		"messageID": reactions.MessageID,
@@ -28,12 +28,18 @@ func (r *Reactor) handleReaction(ctx context.Context, reactions *api.MessageReac
 
 	if flaggedCount >= 5 {
 		entry.Warn("User reached flag threshold, attempting to ban")
+		result := r.GetLastProcessingResult(int64(reactions.MessageID))
+		if result == nil || result.Message == nil || result.Message.From == nil {
+			entry.Debug("missing original message author for reaction moderation")
+			return true, nil
+		}
+		userID := result.Message.From.ID
 
 		if err := bot.DeleteChatMessage(ctx, r.s.GetBot(), chat.ID, reactions.MessageID); err != nil {
 			entry.WithField("error", err.Error()).WithField("chat_title", chat.Title).Error("Failed to delete message")
 		}
 
-		if err := bot.BanUserFromChat(ctx, r.s.GetBot(), user.ID, chat.ID, 0); err != nil {
+		if err := bot.BanUserFromChat(ctx, r.s.GetBot(), userID, chat.ID, 0); err != nil {
 			entry.WithField("error", err.Error()).WithField("chat_title", chat.Title).Error("Failed to ban user")
 			return true, fmt.Errorf("failed to ban user: %w", err)
 		}
@@ -57,8 +63,12 @@ func (r *Reactor) getEmojiFromReaction(react api.ReactionType) string {
 	emojiStickers, err := r.s.GetBot().GetCustomEmojiStickers(api.GetCustomEmojiStickersConfig{
 		CustomEmojiIDs: []string{react.CustomEmoji},
 	})
-	if err != nil || len(emojiStickers) == 0 {
+	if err != nil {
 		entry.WithField("error", err.Error()).Error("Failed to get custom emoji sticker")
+		return react.Emoji
+	}
+	if len(emojiStickers) == 0 {
+		entry.Debug("custom emoji sticker lookup returned no stickers")
 		return react.Emoji
 	}
 	return emojiStickers[0].Emoji

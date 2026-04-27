@@ -2,12 +2,12 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 
 	api "github.com/OvyFlash/telegram-bot-api"
-	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 
 	"github.com/iamwavecut/ngbot/internal/bot"
@@ -116,15 +116,15 @@ func (r *Reactor) Handle(ctx context.Context, u *api.Update, chat *api.Chat, use
 	}
 
 	if u.CallbackQuery != nil {
-		return r.handleCallbackQuery(ctx, u, chat, user, settings)
+		return r.handleCallbackQuery(ctx, u, chat, user)
 	}
 
 	if u.MessageReactionCount != nil {
-		if chat == nil || user == nil {
-			entry.Debug("missing chat or user for reaction update")
+		if chat == nil {
+			entry.Debug("missing chat for reaction update")
 			return true, nil
 		}
-		return r.handleReaction(ctx, u.MessageReactionCount, chat, user)
+		return r.handleReaction(ctx, u.MessageReactionCount, chat)
 	}
 
 	if u.Message != nil {
@@ -144,24 +144,9 @@ func (r *Reactor) Handle(ctx context.Context, u *api.Update, chat *api.Chat, use
 	return true, nil
 }
 
-func (r *Reactor) handleCallbackQuery(ctx context.Context, u *api.Update, chat *api.Chat, user *api.User, settings *db.Settings) (bool, error) {
+func (r *Reactor) handleCallbackQuery(ctx context.Context, u *api.Update, chat *api.Chat, user *api.User) (bool, error) {
 	entry := r.getLogEntry().WithFields(log.Fields{"method": "handleCallbackQuery"})
 	if !strings.HasPrefix(u.CallbackQuery.Data, "spam_vote:") {
-		return true, nil
-	}
-
-	if settings != nil && !settings.CommunityVotingEnabled {
-		var chatID int64
-		if chat != nil {
-			chatID = chat.ID
-		} else if u.CallbackQuery.Message != nil {
-			chatID = u.CallbackQuery.Message.Chat.ID
-		}
-		language := "en"
-		if chatID != 0 {
-			language = r.s.GetLanguage(ctx, chatID, user)
-		}
-		_, _ = r.s.GetBot().Request(api.NewCallback(u.CallbackQuery.ID, i18n.Get("Community voting is disabled", language)))
 		return true, nil
 	}
 
@@ -179,6 +164,14 @@ func (r *Reactor) handleCallbackQuery(ctx context.Context, u *api.Update, chat *
 
 	notSpamVotes, spamVotes, err := r.spamControl.RecordVote(ctx, caseID, user.ID, vote)
 	if err != nil {
+		if errors.Is(err, moderation.ErrCommunityVotingDisabled) {
+			language := "en"
+			if chat != nil {
+				language = r.s.GetLanguage(ctx, chat.ID, user)
+			}
+			_, _ = r.s.GetBot().Request(api.NewCallback(u.CallbackQuery.ID, i18n.Get("Community voting is disabled", language)))
+			return true, nil
+		}
 		entry.WithField("error", err.Error()).Error("failed to record spam vote")
 		return true, nil
 	}

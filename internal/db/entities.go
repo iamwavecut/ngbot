@@ -131,6 +131,7 @@ type (
 const (
 	defaultChallengeTimeout                = 3 * time.Minute
 	defaultRejectTimeout                   = 10 * time.Minute
+	legacySecondDurationCeiling            = int64(time.Second)
 	NotSpammerMatchTypeUserID              = "user_id"
 	NotSpammerMatchTypeUsername            = "username"
 	ChallengeStatusPending                 = "pending"
@@ -153,9 +154,7 @@ func (cm *Settings) GetChallengeTimeout() time.Duration {
 	if cm == nil {
 		return defaultChallengeTimeout
 	}
-	if cm.ChallengeTimeout == 0 {
-		cm.ChallengeTimeout = defaultChallengeTimeout.Nanoseconds()
-	}
+	cm.ChallengeTimeout = normalizeTimeoutNS(cm.ChallengeTimeout, defaultChallengeTimeout)
 	return time.Duration(cm.ChallengeTimeout)
 }
 
@@ -164,8 +163,16 @@ func (cm *Settings) GetRejectTimeout() time.Duration {
 	if cm == nil {
 		return defaultRejectTimeout
 	}
-	if cm.RejectTimeout == 0 {
-		cm.RejectTimeout = defaultRejectTimeout.Nanoseconds()
-	}
+	cm.RejectTimeout = normalizeTimeoutNS(cm.RejectTimeout, defaultRejectTimeout)
 	return time.Duration(cm.RejectTimeout)
+}
+
+func normalizeTimeoutNS(value int64, fallback time.Duration) int64 {
+	if value == 0 {
+		return fallback.Nanoseconds()
+	}
+	if value > 0 && value < legacySecondDurationCeiling {
+		return (time.Duration(value) * time.Second).Nanoseconds()
+	}
+	return value
 }

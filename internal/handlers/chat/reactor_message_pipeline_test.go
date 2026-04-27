@@ -3,11 +3,17 @@ package handlers
 import (
 	"context"
 	"net/http"
+	"strconv"
 	"testing"
+	"time"
 
 	api "github.com/OvyFlash/telegram-bot-api"
+	botservice "github.com/iamwavecut/ngbot/internal/bot"
+	"github.com/iamwavecut/ngbot/internal/config"
 	"github.com/iamwavecut/ngbot/internal/db"
+	"github.com/iamwavecut/ngbot/internal/db/sqlite"
 	moderation "github.com/iamwavecut/ngbot/internal/handlers/moderation"
+	log "github.com/sirupsen/logrus"
 )
 
 type testBotService struct {
@@ -127,6 +133,188 @@ func (s *testNotSpammerStore) IsChatNotSpammer(context.Context, int64, int64, st
 
 func boolPtr(value bool) *bool {
 	return &value
+}
+
+func TestSpamVoteCallbackUsesSpamCaseChatSettings(t *testing.T) {
+	t.Parallel()
+
+	var callbackAnswered bool
+	var editSent bool
+	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
+		switch method {
+		case "answerCallbackQuery":
+			callbackAnswered = true
+			return true
+		case "editMessageText":
+			editSent = true
+			return map[string]any{
+				"message_id": 400,
+				"date":       0,
+				"chat": map[string]any{
+					"id":   900,
+					"type": "channel",
+				},
+			}
+		default:
+			t.Fatalf("unexpected bot method: %s", method)
+			return nil
+		}
+	})
+
+	ctx := context.Background()
+	dbClient, err := sqlite.NewSQLiteClient(ctx, t.TempDir(), "test.db")
+	if err != nil {
+		t.Fatalf("new sqlite client: %v", err)
+	}
+	t.Cleanup(func() { _ = dbClient.Close() })
+
+	targetSettings := db.DefaultSettings(-100)
+	targetSettings.CommunityVotingEnabled = true
+	if err := dbClient.SetSettings(ctx, targetSettings); err != nil {
+		t.Fatalf("set target settings: %v", err)
+	}
+
+	spamCase, err := dbClient.CreateSpamCase(ctx, &db.SpamCase{
+		ChatID:                -100,
+		UserID:                200,
+		MessageText:           "spam",
+		CreatedAt:             time.Now(),
+		ChannelUsername:       "log_channel",
+		ChannelPostID:         400,
+		NotificationMessageID: 0,
+		Status:                "pending",
+	})
+	if err != nil {
+		t.Fatalf("create spam case: %v", err)
+	}
+
+	service := botservice.NewService(ctx, botAPI, dbClient, log.NewEntry(log.New()))
+	spamControl := moderation.NewSpamControl(service, config.SpamControl{
+		MinVoters:            2,
+		MaxVoters:            10,
+		MinVotersPercentage:  0,
+		VotingTimeoutMinutes: time.Minute,
+	}, &testBanService{}, false)
+	reactor := NewReactor(service, &testBanService{}, spamControl, nil, Config{})
+
+	logChat := &api.Chat{ID: 900, Type: "channel"}
+	voter := &api.User{ID: 300, FirstName: "Voter"}
+	update := &api.Update{
+		CallbackQuery: &api.CallbackQuery{
+			ID:   "callback-id",
+			From: voter,
+			Data: "spam_vote:" + strconv.FormatInt(spamCase.ID, 10) + ":1",
+			Message: &api.Message{
+				MessageID: 400,
+				Chat:      *logChat,
+				ReplyMarkup: &api.InlineKeyboardMarkup{
+					InlineKeyboard: [][]api.InlineKeyboardButton{api.NewInlineKeyboardRow(
+						api.NewInlineKeyboardButtonData("Spam", "spam_vote:1:1"),
+					)},
+				},
+			},
+		},
+	}
+
+	proceed, err := reactor.Handle(ctx, update, logChat, voter)
+	if err != nil {
+		t.Fatalf("handle callback: %v", err)
+	}
+	if !proceed {
+		t.Fatal("expected callback handler to proceed")
+	}
+	if !callbackAnswered || !editSent {
+		t.Fatalf("expected callback answer and edit, got answer=%v edit=%v", callbackAnswered, editSent)
+	}
+
+	votes, err := dbClient.GetSpamVotes(ctx, spamCase.ID)
+	if err != nil {
+		t.Fatalf("get spam votes: %v", err)
+	}
+	if len(votes) != 1 || votes[0].VoterID != voter.ID || votes[0].Vote {
+		t.Fatalf("unexpected votes: %#v", votes)
+	}
+}
+
+func TestReactionCountModeratesStoredMessageAuthor(t *testing.T) {
+	t.Parallel()
+
+	var bannedUserID string
+	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("parse form: %v", err)
+		}
+		switch method {
+		case "deleteMessage":
+			return true
+		case "banChatMember":
+			bannedUserID = r.Form.Get("user_id")
+			return true
+		default:
+			t.Fatalf("unexpected bot method: %s", method)
+			return nil
+		}
+	})
+
+	service := &testBotService{botAPI: botAPI}
+	reactor := &Reactor{
+		s:           service,
+		store:       &testReactorStore{},
+		config:      Config{FlaggedEmojis: []string{"👎"}},
+		banService:  &testBanService{},
+		lastResults: make(map[int64]*MessageProcessingResult),
+		resultOrder: make([]int64, 0, maxLastResults),
+	}
+
+	chat := &api.Chat{ID: -100, Type: "supergroup"}
+	author := &api.User{ID: 200, FirstName: "Author"}
+	reactor.storeLastResult(400, &MessageProcessingResult{
+		Message: &api.Message{
+			MessageID: 400,
+			Chat:      *chat,
+			From:      author,
+			Text:      "message",
+		},
+	})
+
+	update := &api.Update{
+		MessageReactionCount: &api.MessageReactionCountUpdated{
+			Chat:      *chat,
+			MessageID: 400,
+			Reactions: []api.ReactionCount{{
+				Type:       api.ReactionType{Type: "emoji", Emoji: "👎"},
+				TotalCount: 5,
+			}},
+		},
+	}
+
+	proceed, err := reactor.Handle(context.Background(), update, chat, nil)
+	if err != nil {
+		t.Fatalf("handle reaction count: %v", err)
+	}
+	if !proceed {
+		t.Fatal("expected handler to proceed")
+	}
+	if bannedUserID != "200" {
+		t.Fatalf("expected stored message author to be banned, got user_id %q", bannedUserID)
+	}
+}
+
+func TestCustomEmojiLookupFallsBackOnEmptyResponse(t *testing.T) {
+	t.Parallel()
+
+	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
+		if method != "getCustomEmojiStickers" {
+			t.Fatalf("unexpected bot method: %s", method)
+		}
+		return []any{}
+	})
+	reactor := &Reactor{s: &testBotService{botAPI: botAPI}}
+
+	got := reactor.getEmojiFromReaction(api.ReactionType{Type: api.StickerTypeCustomEmoji, CustomEmoji: "custom-id"})
+	if got != "" {
+		t.Fatalf("expected empty fallback emoji, got %q", got)
+	}
 }
 
 func TestHandleMessageExternalQuoteHeuristic(t *testing.T) {

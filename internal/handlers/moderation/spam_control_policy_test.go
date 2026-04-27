@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	api "github.com/OvyFlash/telegram-bot-api"
 	"github.com/iamwavecut/ngbot/internal/config"
 	"github.com/iamwavecut/ngbot/internal/db"
 )
@@ -138,5 +139,28 @@ func TestResolveVotingPolicyWithOverrides(t *testing.T) {
 	}
 	if normalized.MinVotersPercentage != 0 {
 		t.Fatalf("unexpected normalized min voters percent: %v", normalized.MinVotersPercentage)
+	}
+}
+
+func TestCreateInChatNotificationDoesNotEnableMarkdown(t *testing.T) {
+	t.Parallel()
+
+	sc := &SpamControl{}
+	msg := &api.Message{
+		Chat: api.Chat{ID: -100, Type: "supergroup"},
+		From: &api.User{
+			ID:        200,
+			FirstName: "A_B [broken",
+		},
+		Text: "_broken [markdown",
+	}
+
+	chattable := sc.createInChatNotification(msg, 1, "en", true)
+	reply, ok := chattable.(api.MessageConfig)
+	if !ok {
+		t.Fatalf("unexpected notification type: %T", chattable)
+	}
+	if reply.ParseMode != "" {
+		t.Fatalf("expected plain text notification, got parse mode %q", reply.ParseMode)
 	}
 }
