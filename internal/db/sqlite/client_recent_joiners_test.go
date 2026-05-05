@@ -41,7 +41,7 @@ func TestAddChatRecentJoinerUpsertsMessageIDFromZeroToServiceMessage(t *testing.
 		t.Fatalf("add new_chat_members joiner: %v", err)
 	}
 
-	joiner := loadOnlyRecentJoiner(t, ctx, client, 100)
+	joiner := loadOnlyRecentJoiner(t, ctx, client)
 	if joiner.JoinMessageID != 55 {
 		t.Fatalf("expected join message id 55, got %d", joiner.JoinMessageID)
 	}
@@ -83,7 +83,7 @@ func TestAddChatRecentJoinerUpsertKeepsExistingMessageIDWhenNewValueIsZero(t *te
 		t.Fatalf("add chat_member joiner: %v", err)
 	}
 
-	joiner := loadOnlyRecentJoiner(t, ctx, client, 100)
+	joiner := loadOnlyRecentJoiner(t, ctx, client)
 	if joiner.JoinMessageID != 55 {
 		t.Fatalf("expected join message id to stay 55, got %d", joiner.JoinMessageID)
 	}
@@ -116,7 +116,7 @@ func TestAddChatRecentJoinerRejoinResetsProcessedAndSpamFlags(t *testing.T) {
 		t.Fatalf("process recent joiner: %v", err)
 	}
 
-	processedJoiner := loadOnlyRecentJoiner(t, ctx, client, 100)
+	processedJoiner := loadOnlyRecentJoiner(t, ctx, client)
 	if !processedJoiner.Processed || !processedJoiner.IsSpammer {
 		t.Fatalf("expected processed spammer state before rejoin, got %+v", processedJoiner)
 	}
@@ -131,7 +131,7 @@ func TestAddChatRecentJoinerRejoinResetsProcessedAndSpamFlags(t *testing.T) {
 		t.Fatalf("add rejoiner: %v", err)
 	}
 
-	joiner := loadOnlyRecentJoiner(t, ctx, client, 100)
+	joiner := loadOnlyRecentJoiner(t, ctx, client)
 	if joiner.Processed {
 		t.Fatal("expected processed=false after rejoin")
 	}
@@ -143,10 +143,10 @@ func TestAddChatRecentJoinerRejoinResetsProcessedAndSpamFlags(t *testing.T) {
 	}
 }
 
-func loadOnlyRecentJoiner(t *testing.T, ctx context.Context, client *sqliteClient, chatID int64) *db.RecentJoiner {
+func loadOnlyRecentJoiner(t *testing.T, ctx context.Context, client *sqliteClient) *db.RecentJoiner {
 	t.Helper()
 
-	joiners, err := client.GetChatRecentJoiners(ctx, chatID)
+	joiners, err := client.GetChatRecentJoiners(ctx, 100)
 	if err != nil {
 		t.Fatalf("get chat recent joiners: %v", err)
 	}

@@ -14,6 +14,22 @@ import (
 
 var errUnsupportedGreetingFormatting = errors.New("unsupported greeting formatting")
 
+const (
+	greetingEntityBold          = "bold"
+	greetingEntityItalic        = "italic"
+	greetingEntityUnderline     = "underline"
+	greetingEntityStrikethrough = "strikethrough"
+	greetingEntitySpoiler       = "spoiler"
+	greetingEntityCode          = "code"
+	greetingEntityPre           = "pre"
+	greetingEntityTextLink      = "text_link"
+	greetingEntityTextMention   = "text_mention"
+	greetingEntityURL           = "url"
+	greetingEntityMention       = "mention"
+	greetingEntityEmail         = "email"
+	greetingEntityPhoneNumber   = "phone_number"
+)
+
 var panelGreetingPlaceholders = []string{
 	panelGreetingPlaceholderUser,
 	panelGreetingPlaceholderChatTitle,
@@ -264,24 +280,24 @@ func escapeGreetingTemplateSegment(segment string, active []greetingEntitySpan) 
 
 func greetingMarkdownV2OpenMarker(span greetingEntitySpan) (string, error) {
 	switch span.entity.Type {
-	case "bold":
+	case greetingEntityBold:
 		return "*", nil
-	case "italic":
+	case greetingEntityItalic:
 		return "_", nil
-	case "underline":
+	case greetingEntityUnderline:
 		return "__", nil
-	case "strikethrough":
+	case greetingEntityStrikethrough:
 		return "~", nil
-	case "spoiler":
+	case greetingEntitySpoiler:
 		return "||", nil
-	case "code":
+	case greetingEntityCode:
 		return "`", nil
-	case "pre":
+	case greetingEntityPre:
 		if span.entity.Language != "" {
 			return "```" + escapeMarkdownV2CodeLanguage(span.entity.Language) + "\n", nil
 		}
 		return "```\n", nil
-	case "text_link", "text_mention", "url", "mention", "email", "phone_number":
+	case greetingEntityTextLink, greetingEntityTextMention, greetingEntityURL, greetingEntityMention, greetingEntityEmail, greetingEntityPhoneNumber:
 		return "[", nil
 	default:
 		return "", errUnsupportedGreetingFormatting
@@ -290,41 +306,41 @@ func greetingMarkdownV2OpenMarker(span greetingEntitySpan) (string, error) {
 
 func greetingMarkdownV2CloseMarker(span greetingEntitySpan, entityText string) (string, error) {
 	switch span.entity.Type {
-	case "bold":
+	case greetingEntityBold:
 		return "*", nil
-	case "italic":
+	case greetingEntityItalic:
 		return "_", nil
-	case "underline":
+	case greetingEntityUnderline:
 		return "__", nil
-	case "strikethrough":
+	case greetingEntityStrikethrough:
 		return "~", nil
-	case "spoiler":
+	case greetingEntitySpoiler:
 		return "||", nil
-	case "code":
+	case greetingEntityCode:
 		return "`", nil
-	case "pre":
+	case greetingEntityPre:
 		return "\n```", nil
-	case "text_link":
+	case greetingEntityTextLink:
 		if span.entity.URL == "" {
 			return "", errUnsupportedGreetingFormatting
 		}
 		return "](" + escapeMarkdownV2LinkTarget(span.entity.URL) + ")", nil
-	case "text_mention":
+	case greetingEntityTextMention:
 		if span.entity.User == nil {
 			return "", errUnsupportedGreetingFormatting
 		}
 		return "](" + escapeMarkdownV2LinkTarget(fmt.Sprintf("tg://user?id=%d", span.entity.User.ID)) + ")", nil
-	case "url":
+	case greetingEntityURL:
 		return "](" + escapeMarkdownV2LinkTarget(entityText) + ")", nil
-	case "mention":
+	case greetingEntityMention:
 		username := strings.TrimPrefix(entityText, "@")
 		if username == "" {
 			return "", errUnsupportedGreetingFormatting
 		}
 		return "](" + escapeMarkdownV2LinkTarget("https://t.me/"+username) + ")", nil
-	case "email":
+	case greetingEntityEmail:
 		return "](" + escapeMarkdownV2LinkTarget("mailto:"+entityText) + ")", nil
-	case "phone_number":
+	case greetingEntityPhoneNumber:
 		return "](" + escapeMarkdownV2LinkTarget("tel:"+entityText) + ")", nil
 	default:
 		return "", errUnsupportedGreetingFormatting
@@ -351,8 +367,10 @@ func utf16PositionToRuneIndex(boundaries []int, position int) (int, bool) {
 
 func isGreetingEntityTypeSupported(entityType string) bool {
 	switch entityType {
-	case "bold", "italic", "underline", "strikethrough", "spoiler", "code", "pre",
-		"text_link", "text_mention", "url", "mention", "email", "phone_number":
+	case greetingEntityBold, greetingEntityItalic, greetingEntityUnderline, greetingEntityStrikethrough,
+		greetingEntitySpoiler, greetingEntityCode, greetingEntityPre, greetingEntityTextLink,
+		greetingEntityTextMention, greetingEntityURL, greetingEntityMention, greetingEntityEmail,
+		greetingEntityPhoneNumber:
 		return true
 	default:
 		return false
@@ -361,7 +379,8 @@ func isGreetingEntityTypeSupported(entityType string) bool {
 
 func isGreetingPlaceholderEntitySafe(entityType string) bool {
 	switch entityType {
-	case "bold", "italic", "underline", "strikethrough", "spoiler":
+	case greetingEntityBold, greetingEntityItalic, greetingEntityUnderline, greetingEntityStrikethrough,
+		greetingEntitySpoiler:
 		return true
 	default:
 		return false
@@ -370,7 +389,7 @@ func isGreetingPlaceholderEntitySafe(entityType string) bool {
 
 func hasGreetingCodeContext(active []greetingEntitySpan) bool {
 	for _, span := range active {
-		if span.entity.Type == "code" || span.entity.Type == "pre" {
+		if span.entity.Type == greetingEntityCode || span.entity.Type == greetingEntityPre {
 			return true
 		}
 	}
@@ -380,7 +399,8 @@ func hasGreetingCodeContext(active []greetingEntitySpan) bool {
 func hasGreetingNonTextPlaceholderContext(active []greetingEntitySpan) bool {
 	for _, span := range active {
 		switch span.entity.Type {
-		case "code", "pre", "text_link", "text_mention", "url", "mention", "email", "phone_number":
+		case greetingEntityCode, greetingEntityPre, greetingEntityTextLink, greetingEntityTextMention,
+			greetingEntityURL, greetingEntityMention, greetingEntityEmail, greetingEntityPhoneNumber:
 			return true
 		}
 	}

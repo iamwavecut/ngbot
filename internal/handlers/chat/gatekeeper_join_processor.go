@@ -51,7 +51,7 @@ func (g *Gatekeeper) handleNewChatMembersV2(ctx context.Context, u *api.Update, 
 	}
 
 	for _, member := range u.Message.NewChatMembers {
-		if _, err := g.recordRecentJoiner(ctx, chat.ID, &member, u.Message.MessageID); err != nil {
+		if err := g.recordRecentJoiner(ctx, chat.ID, &member, u.Message.MessageID); err != nil {
 			entry.WithField("error", err.Error()).Error("failed to save recent joiner")
 		}
 		if err := g.backfillPublicChallengeJoinMessageID(ctx, chat.ID, member.ID, u.Message.MessageID); err != nil {
@@ -65,34 +65,34 @@ func (g *Gatekeeper) handleNewChatMembersV2(ctx context.Context, u *api.Update, 
 	return nil
 }
 
-func (g *Gatekeeper) handleChatMember(ctx context.Context, u *api.Update, settings *db.Settings) error {
+func (g *Gatekeeper) handleChatMember(ctx context.Context, u *api.Update, settings *db.Settings) {
 	entry := g.getLogEntry().WithField("method", "handleChatMember")
 
 	if u == nil || u.ChatMember == nil {
 		entry.Debug("chat member update is nil")
-		return nil
+		return
 	}
 	if settings == nil {
 		entry.Debug("settings are nil")
-		return nil
+		return
 	}
 	if !settings.GatekeeperCaptchaEnabled && !settings.GatekeeperGreetingEnabled {
 		entry.Debug("gatekeeper subfeatures are disabled")
-		return nil
+		return
 	}
 	if !isChatMemberJoinTransition(u.ChatMember) {
 		entry.Debug("chat member update is not a new join transition")
-		return nil
+		return
 	}
 
 	member := u.ChatMember.NewChatMember.User
 	if member == nil {
 		entry.Debug("chat member user is nil")
-		return nil
+		return
 	}
 
 	chat := &u.ChatMember.Chat
-	if _, err := g.recordRecentJoiner(ctx, chat.ID, member, 0); err != nil {
+	if err := g.recordRecentJoiner(ctx, chat.ID, member, 0); err != nil {
 		entry.WithFields(log.Fields{
 			"user_id": member.ID,
 			"error":   err.Error(),
@@ -100,7 +100,7 @@ func (g *Gatekeeper) handleChatMember(ctx context.Context, u *api.Update, settin
 	}
 
 	if member.IsBot {
-		return nil
+		return
 	}
 
 	handoffChallenge, err := g.store.GetPassedJoinRequestChallengeByChatUser(ctx, chat.ID, member.ID)
@@ -111,7 +111,7 @@ func (g *Gatekeeper) handleChatMember(ctx context.Context, u *api.Update, settin
 		}).Error("failed to load approved join request handoff challenge")
 	}
 	if handoffChallenge != nil {
-		if err := g.sendGreeting(ctx, chat.ID, chat, member, settings, true); err != nil {
+		if err := g.sendGreeting(chat.ID, chat, member, settings, true); err != nil {
 			entry.WithFields(log.Fields{
 				"user_id": member.ID,
 				"error":   err.Error(),
@@ -123,17 +123,17 @@ func (g *Gatekeeper) handleChatMember(ctx context.Context, u *api.Update, settin
 				"error":   err.Error(),
 			}).Error("failed to delete approved join request handoff challenge")
 		}
-		return nil
+		return
 	}
 
 	if u.ChatMember.ViaJoinRequest {
-		if err := g.sendGreeting(ctx, chat.ID, chat, member, settings, true); err != nil {
+		if err := g.sendGreeting(chat.ID, chat, member, settings, true); err != nil {
 			entry.WithFields(log.Fields{
 				"user_id": member.ID,
 				"error":   err.Error(),
 			}).Error("failed to send gatekeeper greeting for approved join request")
 		}
-		return nil
+		return
 	}
 
 	switch {
@@ -145,15 +145,13 @@ func (g *Gatekeeper) handleChatMember(ctx context.Context, u *api.Update, settin
 			}).Error("failed to handle gatekeeper captcha for new member")
 		}
 	case settings.GatekeeperGreetingEnabled:
-		if err := g.sendGreeting(ctx, chat.ID, chat, member, settings, true); err != nil {
+		if err := g.sendGreeting(chat.ID, chat, member, settings, true); err != nil {
 			entry.WithFields(log.Fields{
 				"user_id": member.ID,
 				"error":   err.Error(),
 			}).Error("failed to send gatekeeper greeting for new member")
 		}
 	}
-
-	return nil
 }
 
 func (g *Gatekeeper) handleChatJoinRequest(ctx context.Context, u *api.Update, settings *db.Settings) error {
@@ -334,9 +332,9 @@ func (g *Gatekeeper) startChallenge(ctx context.Context, u *api.Update, user *ap
 	return nil
 }
 
-func (g *Gatekeeper) recordRecentJoiner(ctx context.Context, chatID int64, user *api.User, joinMessageID int) (*db.RecentJoiner, error) {
+func (g *Gatekeeper) recordRecentJoiner(ctx context.Context, chatID int64, user *api.User, joinMessageID int) error {
 	if user == nil {
-		return nil, nil
+		return nil
 	}
 
 	recentJoiner := &db.RecentJoiner{
@@ -348,7 +346,8 @@ func (g *Gatekeeper) recordRecentJoiner(ctx context.Context, chatID int64, user 
 		Processed:     false,
 		IsSpammer:     false,
 	}
-	return g.store.AddChatRecentJoiner(ctx, recentJoiner)
+	_, err := g.store.AddChatRecentJoiner(ctx, recentJoiner)
+	return err
 }
 
 func (g *Gatekeeper) backfillPublicChallengeJoinMessageID(ctx context.Context, chatID, userID int64, joinMessageID int) error {
@@ -403,7 +402,7 @@ func composeGatekeeperMessage(greetingText, challengeText string) string {
 	}
 }
 
-func (g *Gatekeeper) sendGreeting(ctx context.Context, recipientChatID int64, target *api.Chat, user *api.User, settings *db.Settings, disableNotification bool) error {
+func (g *Gatekeeper) sendGreeting(recipientChatID int64, target *api.Chat, user *api.User, settings *db.Settings, disableNotification bool) error {
 	if target == nil || user == nil || settings == nil || !settings.GatekeeperGreetingEnabled {
 		return nil
 	}

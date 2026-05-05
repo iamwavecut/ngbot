@@ -172,9 +172,9 @@ func TestProcessBannedMessageClearsKnownNonMember(t *testing.T) {
 
 	botAPI := newModerationTestBotAPI(t, func(method string, r *http.Request) any {
 		switch method {
-		case "deleteMessage", "banChatMember":
+		case testTelegramMethodDeleteMessage, testTelegramMethodBanChatMember:
 			return true
-		case "sendMessage":
+		case testTelegramMethodSendMessage:
 			return map[string]any{
 				"message_id": 700,
 				"date":       0,
@@ -226,7 +226,7 @@ func TestResolveCaseSpamClearsKnownNonMember(t *testing.T) {
 
 	botAPI := newModerationTestBotAPI(t, func(method string, r *http.Request) any {
 		switch method {
-		case "banChatMember":
+		case testTelegramMethodBanChatMember:
 			return true
 		default:
 			t.Fatalf("unexpected bot method: %s", method)

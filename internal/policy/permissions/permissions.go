@@ -21,3 +21,10 @@ func IsPrivilegedModerator(member *api.ChatMember) bool {
 	}
 	return member.IsAdministrator() && member.CanRestrictMembers
 }
+
+func CanRestrictMembers(member *api.ChatMember) bool {
+	if member == nil {
+		return false
+	}
+	return member.IsCreator() || (member.IsAdministrator() && member.CanRestrictMembers)
+}

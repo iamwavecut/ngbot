@@ -282,7 +282,8 @@ func (g *Gatekeeper) Handle(ctx context.Context, u *api.Update, chat *api.Chat, 
 			entry.Debug("gatekeeper is disabled for this chat")
 			return true, nil
 		}
-		return true, g.handleChatMember(ctx, u, settings)
+		g.handleChatMember(ctx, u, settings)
+		return true, nil
 	case updateTypeChatJoinRequest:
 		joinChatID := u.ChatJoinRequest.Chat.ID
 		settings, err := g.fetchAndValidateSettings(ctx, joinChatID)

@@ -93,7 +93,7 @@ func TestProcessNewChatMembersNotSpammerOverrideBypassesBanCheck(t *testing.T) {
 
 	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
 		switch method {
-		case "getChatMember":
+		case testTelegramMethodGetChatMember:
 			return map[string]any{
 				"user": map[string]any{
 					"id":         200,

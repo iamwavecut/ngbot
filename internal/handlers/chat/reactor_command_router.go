@@ -146,8 +146,8 @@ func (r *Reactor) banCommand(ctx context.Context, msg *api.Message, chat *api.Ch
 	}
 
 	language := r.s.GetLanguage(ctx, chat.ID, user)
-	if permissions.IsPrivilegedModerator(&member) {
-		_, err := r.spamControl.ProcessBannedMessage(ctx, msg.ReplyToMessage, chat, language)
+	if permissions.CanRestrictMembers(&member) {
+		_, err := r.processBanned(ctx, msg.ReplyToMessage, chat, language)
 		if err != nil {
 			entry.WithError(err).Error("Failed to process spam message")
 			return errors.Wrap(err, "failed to process spam message")
@@ -168,7 +168,7 @@ func (r *Reactor) banCommand(ctx context.Context, msg *api.Message, chat *api.Ch
 		return nil
 	}
 
-	if _, err := r.spamControl.ProcessSpamMessage(ctx, msg.ReplyToMessage, chat, language); err != nil {
+	if _, err := r.processSpam(ctx, msg.ReplyToMessage, chat, language); err != nil {
 		entry.WithError(err).Error("Failed to process spam message")
 		return errors.Wrap(err, "failed to process spam message")
 	}

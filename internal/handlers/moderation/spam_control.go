@@ -39,9 +39,11 @@ type votingPolicy struct {
 }
 
 const (
-	spamCaseStatusPending = "pending"
-	spamCaseStatusSpam    = "spam"
-	errChatAdminRequired  = "CHAT_ADMIN_REQUIRED"
+	spamCaseStatusPending       = "pending"
+	spamCaseStatusSpam          = "spam"
+	spamCaseStatusFalsePositive = "false_positive"
+	errChatAdminRequired        = "CHAT_ADMIN_REQUIRED"
+	maxReplyQuoteRunes          = 1024
 )
 
 var ErrCommunityVotingDisabled = errors.New("community voting disabled")
@@ -147,15 +149,52 @@ func (sc *SpamControl) preprocessMessage(ctx context.Context, msg *api.Message, 
 		return result, nil
 	}
 
+	spamCase, err := sc.getSpamCase(ctx, msg)
+	if err != nil {
+		return result, err
+	}
+
+	shouldNotify := spamCase.NotificationMessageID == 0 && spamCase.ChannelPostID == 0
+	if shouldNotify {
+		var notifMsg api.Chattable
+		if sc.config.LogChannelUsername != "" {
+			channelMsg, err := sc.SendChannelPost(ctx, msg, lang, voting)
+			if err != nil {
+				log.WithField("error", err.Error()).Error("failed to send channel post")
+			}
+			if sc.verbose && channelMsg.MessageID != 0 {
+				channelPostLink := fmt.Sprintf("https://t.me/%s/%d", sc.config.LogChannelUsername, channelMsg.MessageID)
+				notifMsg = sc.createChannelNotification(msg, channelPostLink, lang)
+			}
+		} else {
+			notifMsg = sc.createInChatNotification(msg, spamCase.ID, lang, voting)
+		}
+
+		if notifMsg != nil {
+			notification, err := sc.sendNotificationWithQuoteFallback(notifMsg)
+			if err != nil {
+				log.WithField("error", err.Error()).Error("failed to send notification")
+			} else {
+				spamCase.NotificationMessageID = notification.MessageID
+
+				sc.scheduleAfter(sc.config.SuspectNotificationTimeout, func(runCtx context.Context) {
+					select {
+					case <-runCtx.Done():
+						return
+					default:
+					}
+					if _, err := sc.s.GetBot().Request(api.NewDeleteMessage(msg.Chat.ID, notification.MessageID)); err != nil {
+						log.WithField("error", err.Error()).Error("failed to delete notification")
+					}
+				})
+			}
+		}
+	}
+
 	if err := bot.DeleteChatMessage(ctx, sc.s.GetBot(), chat.ID, msg.MessageID); err != nil {
 		log.WithField("error", err.Error()).WithField("chat_title", chat.Title).WithField("chat_username", chat.UserName).Error("failed to delete message")
 	} else {
 		result.MessageDeleted = true
-	}
-
-	spamCase, err := sc.getSpamCase(ctx, msg)
-	if err != nil {
-		return result, err
 	}
 
 	if voting {
@@ -208,43 +247,6 @@ func (sc *SpamControl) preprocessMessage(ctx context.Context, msg *api.Message, 
 					log.WithField("error", err.Error()).Error("failed to delete unsuccess reply")
 				}
 			})
-		}
-	}
-
-	shouldNotify := spamCase.NotificationMessageID == 0 && spamCase.ChannelPostID == 0
-	if shouldNotify {
-		var notifMsg api.Chattable
-		if sc.config.LogChannelUsername != "" {
-			channelMsg, err := sc.SendChannelPost(ctx, msg, lang, voting)
-			if err != nil {
-				log.WithField("error", err.Error()).Error("failed to send channel post")
-			}
-			if sc.verbose && channelMsg.MessageID != 0 {
-				channelPostLink := fmt.Sprintf("https://t.me/%s/%d", sc.config.LogChannelUsername, channelMsg.MessageID)
-				notifMsg = sc.createChannelNotification(msg, channelPostLink, lang)
-			}
-		} else {
-			notifMsg = sc.createInChatNotification(msg, spamCase.ID, lang, voting)
-		}
-
-		if notifMsg != nil {
-			notification, err := sc.s.GetBot().Send(notifMsg)
-			if err != nil {
-				log.WithField("error", err.Error()).Error("failed to send notification")
-			} else {
-				spamCase.NotificationMessageID = notification.MessageID
-
-				sc.scheduleAfter(sc.config.SuspectNotificationTimeout, func(runCtx context.Context) {
-					select {
-					case <-runCtx.Done():
-						return
-					default:
-					}
-					if _, err := sc.s.GetBot().Request(api.NewDeleteMessage(msg.Chat.ID, notification.MessageID)); err != nil {
-						log.WithField("error", err.Error()).Error("failed to delete notification")
-					}
-				})
-			}
 		}
 	}
 
@@ -316,6 +318,8 @@ func (sc *SpamControl) createInChatNotification(msg *api.Message, caseID int64, 
 		replyMsg.ReplyMarkup = &markup
 	}
 
+	replyMsg.MessageThreadID = msg.MessageThreadID
+	replyMsg.ReplyParameters = targetReplyParameters(msg)
 	replyMsg.DisableNotification = true
 	replyMsg.LinkPreviewOptions.IsDisabled = true
 	return replyMsg
@@ -357,10 +361,75 @@ func (sc *SpamControl) createChannelNotification(msg *api.Message, channelPostLi
 	text := fmt.Sprintf(i18n.Get("Message from %s is being reviewed for spam\n\nAppeal here: [link](%s)", lang), from, channelPostLink)
 	notificationMsg := api.NewMessage(msg.Chat.ID, text)
 	notificationMsg.ParseMode = api.ModeMarkdown
+	notificationMsg.MessageThreadID = msg.MessageThreadID
+	notificationMsg.ReplyParameters = targetReplyParameters(msg)
 	notificationMsg.DisableNotification = true
 	notificationMsg.LinkPreviewOptions.IsDisabled = true
 
 	return notificationMsg
+}
+
+func (sc *SpamControl) sendNotificationWithQuoteFallback(notifMsg api.Chattable) (api.Message, error) {
+	notification, err := sc.s.GetBot().Send(notifMsg)
+	if err == nil || !isReplyQuoteRejected(err) {
+		return notification, err
+	}
+	retryMsg, ok := chattableWithoutReplyQuote(notifMsg)
+	if !ok {
+		return notification, err
+	}
+	return sc.s.GetBot().Send(retryMsg)
+}
+
+func isReplyQuoteRejected(err error) bool {
+	if err == nil {
+		return false
+	}
+	errText := strings.ToLower(err.Error())
+	return strings.Contains(errText, "quote")
+}
+
+func chattableWithoutReplyQuote(chattable api.Chattable) (api.Chattable, bool) {
+	switch msg := chattable.(type) {
+	case api.MessageConfig:
+		msg.ReplyParameters.Quote = ""
+		msg.ReplyParameters.QuoteParseMode = ""
+		msg.ReplyParameters.QuoteEntities = nil
+		msg.ReplyParameters.QuotePosition = 0
+		return msg, true
+	default:
+		return nil, false
+	}
+}
+
+func targetReplyParameters(msg *api.Message) api.ReplyParameters {
+	if msg == nil {
+		return api.ReplyParameters{}
+	}
+	return api.ReplyParameters{
+		MessageID:                msg.MessageID,
+		ChatID:                   msg.Chat.ID,
+		AllowSendingWithoutReply: true,
+		Quote:                    targetReplyQuote(msg),
+	}
+}
+
+func targetReplyQuote(msg *api.Message) string {
+	if msg == nil {
+		return ""
+	}
+	quote := strings.TrimSpace(msg.Text)
+	if quote == "" {
+		quote = strings.TrimSpace(msg.Caption)
+	}
+	if quote == "" {
+		return ""
+	}
+	runes := []rune(quote)
+	if len(runes) > maxReplyQuoteRunes {
+		return string(runes[:maxReplyQuoteRunes])
+	}
+	return quote
 }
 
 func (sc *SpamControl) RecordVote(ctx context.Context, caseID int64, voterID int64, vote bool) (int, int, error) {
@@ -489,7 +558,7 @@ func (sc *SpamControl) ResolveCase(ctx context.Context, caseID int64, timedOut b
 		if err := handlersbase.IncrementDailyStat(ctx, sc.s.GetDB(), spamCase.ChatID, handlersbase.StatSpamConfirmed); err != nil {
 			log.WithField("error", err.Error()).Warn("failed to increment spam confirmed stat")
 		}
-	case "false_positive":
+	case spamCaseStatusFalsePositive:
 		if err := handlersbase.IncrementDailyStat(ctx, sc.s.GetDB(), spamCase.ChatID, handlersbase.StatFalsePositive); err != nil {
 			log.WithField("error", err.Error()).Warn("failed to increment false positive stat")
 		}
@@ -510,20 +579,20 @@ func resolveStatusFromVotes(votes []*db.SpamVote, requiredVoters int, timedOut b
 
 	if len(votes) < requiredVoters {
 		if timedOut {
-			return "false_positive", true
+			return spamCaseStatusFalsePositive, true
 		}
 		return "", false
 	}
 	if spamVotes == notSpamVotes {
 		if timedOut {
-			return "false_positive", true
+			return spamCaseStatusFalsePositive, true
 		}
 		return "", false
 	}
 	if spamVotes > notSpamVotes {
-		return "spam", true
+		return spamCaseStatusSpam, true
 	}
-	return "false_positive", true
+	return spamCaseStatusFalsePositive, true
 }
 
 func (sc *SpamControl) effectiveVotingPolicy(ctx context.Context, chatID int64) votingPolicy {

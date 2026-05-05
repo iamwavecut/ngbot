@@ -245,7 +245,7 @@ func TestReactionCountModeratesStoredMessageAuthor(t *testing.T) {
 			t.Fatalf("parse form: %v", err)
 		}
 		switch method {
-		case "deleteMessage":
+		case testTelegramMethodDeleteMessage:
 			return true
 		case "banChatMember":
 			bannedUserID = r.Form.Get("user_id")
@@ -382,7 +382,7 @@ func TestHandleMessageCleanLeftUserRememberedAsKnownNonMember(t *testing.T) {
 
 	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
 		switch method {
-		case "getChatMember":
+		case testTelegramMethodGetChatMember:
 			return map[string]any{
 				"user": map[string]any{
 					"id":         200,
@@ -444,7 +444,7 @@ func TestHandleMessageNotSpammerOverrideBypassesBanAndLLM(t *testing.T) {
 
 	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
 		switch method {
-		case "getChatMember":
+		case testTelegramMethodGetChatMember:
 			return map[string]any{
 				"user": map[string]any{
 					"id":         200,
@@ -526,7 +526,7 @@ func TestHandleMessageKnownNonMemberBypassesFirstMessageChecks(t *testing.T) {
 
 	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
 		switch method {
-		case "getChatMember":
+		case testTelegramMethodGetChatMember:
 			return map[string]any{
 				"user": map[string]any{
 					"id":         200,
@@ -659,7 +659,7 @@ func TestHandleMessageCleanMemberInsertsMemberInsteadOfKnownNonMember(t *testing
 
 	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
 		switch method {
-		case "getChatMember":
+		case testTelegramMethodGetChatMember:
 			return map[string]any{
 				"user": map[string]any{
 					"id":         200,

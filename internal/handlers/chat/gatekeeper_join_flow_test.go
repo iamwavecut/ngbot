@@ -258,7 +258,7 @@ func TestJoinRequestCaptchaSuccessHandoffSkipsSecondCaptchaAndSendsGreetingOnce(
 		recorder.record(t, method, r)
 
 		switch method {
-		case "getChat":
+		case testTelegramMethodGetChat:
 			return map[string]any{
 				"id":         9001,
 				"type":       "private",
@@ -270,9 +270,9 @@ func TestJoinRequestCaptchaSuccessHandoffSkipsSecondCaptchaAndSendsGreetingOnce(
 				t.Fatalf("expected handoff status before approve, got %q", handoffChallenge.Status)
 			}
 			return true
-		case "sendMessage":
+		case testTelegramMethodSendMessage:
 			return recorder.nextSendMessageResult()
-		case "deleteMessage":
+		case testTelegramMethodDeleteMessage:
 			return true
 		default:
 			t.Fatalf("unexpected bot method: %s", method)
@@ -306,7 +306,7 @@ func TestJoinRequestCaptchaSuccessHandoffSkipsSecondCaptchaAndSendsGreetingOnce(
 		t.Fatalf("handleChatJoinRequest returned error: %v", err)
 	}
 
-	requestMessages := recorder.byMethod("sendMessage")
+	requestMessages := recorder.byMethod(testTelegramMethodSendMessage)
 	if len(requestMessages) != 1 {
 		t.Fatalf("expected one DM challenge message, got %d", len(requestMessages))
 	}
@@ -335,7 +335,7 @@ func TestJoinRequestCaptchaSuccessHandoffSkipsSecondCaptchaAndSendsGreetingOnce(
 		t.Fatalf("unexpected handoff challenge status: %q", handoffChallenge.Status)
 	}
 
-	requestMessages = recorder.byMethod("sendMessage")
+	requestMessages = recorder.byMethod(testTelegramMethodSendMessage)
 	if len(requestMessages) != 2 {
 		t.Fatalf("expected DM challenge plus DM success message, got %d sends", len(requestMessages))
 	}
@@ -348,11 +348,9 @@ func TestJoinRequestCaptchaSuccessHandoffSkipsSecondCaptchaAndSendsGreetingOnce(
 
 	memberUpdate := newChatMemberJoinUpdate(groupChat, user, user)
 	memberUpdate.ChatMember.ViaJoinRequest = true
-	if err := gatekeeper.handleChatMember(context.Background(), memberUpdate, settings); err != nil {
-		t.Fatalf("handleChatMember returned error: %v", err)
-	}
+	gatekeeper.handleChatMember(context.Background(), memberUpdate, settings)
 
-	requestMessages = recorder.byMethod("sendMessage")
+	requestMessages = recorder.byMethod(testTelegramMethodSendMessage)
 	if len(requestMessages) != 3 {
 		t.Fatalf("expected DM challenge, DM success, and one group greeting, got %d sends", len(requestMessages))
 	}
@@ -372,8 +370,8 @@ func TestJoinRequestCaptchaSuccessHandoffSkipsSecondCaptchaAndSendsGreetingOnce(
 	if len(recorder.byMethod("approveChatJoinRequest")) != 1 {
 		t.Fatalf("expected one join request approval, got %d", len(recorder.byMethod("approveChatJoinRequest")))
 	}
-	if len(recorder.byMethod("deleteMessage")) != 1 {
-		t.Fatalf("expected one DM challenge cleanup, got %d", len(recorder.byMethod("deleteMessage")))
+	if len(recorder.byMethod(testTelegramMethodDeleteMessage)) != 1 {
+		t.Fatalf("expected one DM challenge cleanup, got %d", len(recorder.byMethod(testTelegramMethodDeleteMessage)))
 	}
 
 	newMemberUpdate := &api.Update{
@@ -387,8 +385,8 @@ func TestJoinRequestCaptchaSuccessHandoffSkipsSecondCaptchaAndSendsGreetingOnce(
 		t.Fatalf("handleNewChatMembersV2 returned error: %v", err)
 	}
 
-	if len(recorder.byMethod("sendMessage")) != 3 {
-		t.Fatalf("expected no extra message after new_chat_members backfill, got %d sends", len(recorder.byMethod("sendMessage")))
+	if len(recorder.byMethod(testTelegramMethodSendMessage)) != 3 {
+		t.Fatalf("expected no extra message after new_chat_members backfill, got %d sends", len(recorder.byMethod(testTelegramMethodSendMessage)))
 	}
 	joiner := store.recentJoiner(t, groupChat.ID, user.ID)
 	if joiner.JoinMessageID != 77 {
@@ -408,7 +406,7 @@ func TestJoinRequestCaptchaSuccessHandoffSkipsPublicCaptchaWithoutViaJoinRequest
 		recorder.record(t, method, r)
 
 		switch method {
-		case "getChat":
+		case testTelegramMethodGetChat:
 			return map[string]any{
 				"id":         9001,
 				"type":       "private",
@@ -416,9 +414,9 @@ func TestJoinRequestCaptchaSuccessHandoffSkipsPublicCaptchaWithoutViaJoinRequest
 			}
 		case "approveChatJoinRequest":
 			return true
-		case "sendMessage":
+		case testTelegramMethodSendMessage:
 			return recorder.nextSendMessageResult()
-		case "deleteMessage":
+		case testTelegramMethodDeleteMessage:
 			return true
 		default:
 			t.Fatalf("unexpected bot method: %s", method)
@@ -458,11 +456,9 @@ func TestJoinRequestCaptchaSuccessHandoffSkipsPublicCaptchaWithoutViaJoinRequest
 	}
 
 	memberUpdate := newChatMemberJoinUpdate(groupChat, user, user)
-	if err := gatekeeper.handleChatMember(context.Background(), memberUpdate, settings); err != nil {
-		t.Fatalf("handleChatMember returned error: %v", err)
-	}
+	gatekeeper.handleChatMember(context.Background(), memberUpdate, settings)
 
-	sendMessages := recorder.byMethod("sendMessage")
+	sendMessages := recorder.byMethod(testTelegramMethodSendMessage)
 	if len(sendMessages) != 3 {
 		t.Fatalf("expected DM challenge, DM success, and one group greeting, got %d sends", len(sendMessages))
 	}
@@ -488,9 +484,9 @@ func TestManualJoinRequestApprovalSkipsPublicCaptchaAndSendsOnlyGreeting(t *test
 		recorder.record(t, method, r)
 
 		switch method {
-		case "sendMessage":
+		case testTelegramMethodSendMessage:
 			return recorder.nextSendMessageResult()
-		case "restrictChatMember", "deleteMessage":
+		case testTelegramMethodRestrictChatMember, testTelegramMethodDeleteMessage:
 			return true
 		default:
 			t.Fatalf("unexpected bot method: %s", method)
@@ -516,11 +512,9 @@ func TestManualJoinRequestApprovalSkipsPublicCaptchaAndSendsOnlyGreeting(t *test
 
 	update := newChatMemberJoinUpdate(groupChat, user, api.User{ID: 777, FirstName: "Admin"})
 	update.ChatMember.ViaJoinRequest = true
-	if err := gatekeeper.handleChatMember(context.Background(), update, settings); err != nil {
-		t.Fatalf("handleChatMember returned error: %v", err)
-	}
+	gatekeeper.handleChatMember(context.Background(), update, settings)
 
-	sendMessages := recorder.byMethod("sendMessage")
+	sendMessages := recorder.byMethod(testTelegramMethodSendMessage)
 	if len(sendMessages) != 1 {
 		t.Fatalf("expected one group greeting, got %d", len(sendMessages))
 	}
@@ -549,8 +543,8 @@ func TestManualJoinRequestApprovalSkipsPublicCaptchaAndSendsOnlyGreeting(t *test
 		t.Fatalf("handleNewChatMembersV2 returned error: %v", err)
 	}
 
-	if len(recorder.byMethod("sendMessage")) != 1 {
-		t.Fatalf("expected no extra message after new_chat_members, got %d sends", len(recorder.byMethod("sendMessage")))
+	if len(recorder.byMethod(testTelegramMethodSendMessage)) != 1 {
+		t.Fatalf("expected no extra message after new_chat_members, got %d sends", len(recorder.byMethod(testTelegramMethodSendMessage)))
 	}
 }
 
@@ -565,9 +559,9 @@ func TestDirectJoinCaptchaIncludesGreetingImmediatelyAndBackfillsJoinMessageID(t
 		recorder.record(t, method, r)
 
 		switch method {
-		case "sendMessage":
+		case testTelegramMethodSendMessage:
 			return recorder.nextSendMessageResult()
-		case "restrictChatMember", "deleteMessage":
+		case testTelegramMethodRestrictChatMember, testTelegramMethodDeleteMessage:
 			return true
 		default:
 			t.Fatalf("unexpected bot method: %s", method)
@@ -592,11 +586,9 @@ func TestDirectJoinCaptchaIncludesGreetingImmediatelyAndBackfillsJoinMessageID(t
 	}
 
 	update := newChatMemberJoinUpdate(groupChat, user, user)
-	if err := gatekeeper.handleChatMember(context.Background(), update, settings); err != nil {
-		t.Fatalf("handleChatMember returned error: %v", err)
-	}
+	gatekeeper.handleChatMember(context.Background(), update, settings)
 
-	sendMessages := recorder.byMethod("sendMessage")
+	sendMessages := recorder.byMethod(testTelegramMethodSendMessage)
 	if len(sendMessages) != 1 {
 		t.Fatalf("expected one group captcha message, got %d", len(sendMessages))
 	}
@@ -626,8 +618,8 @@ func TestDirectJoinCaptchaIncludesGreetingImmediatelyAndBackfillsJoinMessageID(t
 		t.Fatalf("handleNewChatMembersV2 returned error: %v", err)
 	}
 
-	if len(recorder.byMethod("sendMessage")) != 1 {
-		t.Fatalf("expected no extra message during join message backfill, got %d sends", len(recorder.byMethod("sendMessage")))
+	if len(recorder.byMethod(testTelegramMethodSendMessage)) != 1 {
+		t.Fatalf("expected no extra message during join message backfill, got %d sends", len(recorder.byMethod(testTelegramMethodSendMessage)))
 	}
 	challenge = store.onlyChallenge(t)
 	if challenge.JoinMessageID != 55 {
@@ -638,8 +630,8 @@ func TestDirectJoinCaptchaIncludesGreetingImmediatelyAndBackfillsJoinMessageID(t
 		t.Fatalf("completeChallenge returned error: %v", err)
 	}
 
-	if len(recorder.byMethod("sendMessage")) != 1 {
-		t.Fatalf("expected no extra greeting after public challenge success, got %d sends", len(recorder.byMethod("sendMessage")))
+	if len(recorder.byMethod(testTelegramMethodSendMessage)) != 1 {
+		t.Fatalf("expected no extra greeting after public challenge success, got %d sends", len(recorder.byMethod(testTelegramMethodSendMessage)))
 	}
 	if len(store.challenges) != 0 {
 		t.Fatalf("expected direct-join challenge to be deleted after success, got %d rows", len(store.challenges))
@@ -657,9 +649,9 @@ func TestDirectJoinCaptchaUsesMarkdownV2ForNormalizedGreetingTemplate(t *testing
 		recorder.record(t, method, r)
 
 		switch method {
-		case "sendMessage":
+		case testTelegramMethodSendMessage:
 			return recorder.nextSendMessageResult()
-		case "restrictChatMember", "deleteMessage":
+		case testTelegramMethodRestrictChatMember, testTelegramMethodDeleteMessage:
 			return true
 		default:
 			t.Fatalf("unexpected bot method: %s", method)
@@ -684,11 +676,9 @@ func TestDirectJoinCaptchaUsesMarkdownV2ForNormalizedGreetingTemplate(t *testing
 	}
 
 	update := newChatMemberJoinUpdate(groupChat, user, user)
-	if err := gatekeeper.handleChatMember(context.Background(), update, settings); err != nil {
-		t.Fatalf("handleChatMember returned error: %v", err)
-	}
+	gatekeeper.handleChatMember(context.Background(), update, settings)
 
-	sendMessages := recorder.byMethod("sendMessage")
+	sendMessages := recorder.byMethod(testTelegramMethodSendMessage)
 	if len(sendMessages) != 1 {
 		t.Fatalf("expected one group captcha message, got %d", len(sendMessages))
 	}
@@ -745,9 +735,9 @@ func TestNonJoinRequestChatMemberJoinsStillStartPublicCaptcha(t *testing.T) {
 				recorder.record(t, method, r)
 
 				switch method {
-				case "sendMessage":
+				case testTelegramMethodSendMessage:
 					return recorder.nextSendMessageResult()
-				case "restrictChatMember":
+				case testTelegramMethodRestrictChatMember:
 					return true
 				default:
 					t.Fatalf("unexpected bot method: %s", method)
@@ -773,11 +763,9 @@ func TestNonJoinRequestChatMemberJoinsStillStartPublicCaptcha(t *testing.T) {
 
 			update := newChatMemberJoinUpdate(groupChat, user, tc.actor)
 			tc.prepare(update)
-			if err := gatekeeper.handleChatMember(context.Background(), update, settings); err != nil {
-				t.Fatalf("handleChatMember returned error: %v", err)
-			}
+			gatekeeper.handleChatMember(context.Background(), update, settings)
 
-			sendMessages := recorder.byMethod("sendMessage")
+			sendMessages := recorder.byMethod(testTelegramMethodSendMessage)
 			if len(sendMessages) != 1 {
 				t.Fatalf("%s: expected one group captcha message, got %d", tc.description, len(sendMessages))
 			}
@@ -864,7 +852,7 @@ func TestProcessExpiredJoinRequestChallengesCleanupWithoutApproval(t *testing.T)
 				recorder.record(t, method, r)
 
 				switch method {
-				case "deleteMessage":
+				case testTelegramMethodDeleteMessage:
 					return true
 				default:
 					t.Fatalf("unexpected bot method: %s", method)
@@ -898,8 +886,8 @@ func TestProcessExpiredJoinRequestChallengesCleanupWithoutApproval(t *testing.T)
 				t.Fatalf("processExpiredChallenges returned error: %v", err)
 			}
 
-			if len(recorder.byMethod("deleteMessage")) != 1 {
-				t.Fatalf("expected one DM challenge cleanup, got %d", len(recorder.byMethod("deleteMessage")))
+			if len(recorder.byMethod(testTelegramMethodDeleteMessage)) != 1 {
+				t.Fatalf("expected one DM challenge cleanup, got %d", len(recorder.byMethod(testTelegramMethodDeleteMessage)))
 			}
 			if len(recorder.byMethod("approveChatJoinRequest")) != 0 {
 				t.Fatalf("expected no join request approvals, got %d", len(recorder.byMethod("approveChatJoinRequest")))

@@ -26,6 +26,11 @@ type firstMessageExternalQuoteHeuristic struct {
 	ViaBotID         int64
 }
 
+const (
+	messageSkipReasonAlreadyMember       = "User is already a member"
+	messageSkipReasonRememberedNonMember = "User is a remembered non-member"
+)
+
 func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api.Chat, user *api.User, settings *db.Settings) error {
 	var userID int64
 	if user != nil {
@@ -60,7 +65,7 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 	result.Stage = StageMembershipCheck
 	if isMember {
 		result.Skipped = true
-		result.SkipReason = "User is already a member"
+		result.SkipReason = messageSkipReasonAlreadyMember
 		return nil
 	}
 
@@ -120,10 +125,7 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 		return fmt.Errorf("failed to check known non-member state: %w", err)
 	}
 	if isKnownNonMember {
-		skipReason, handled, err := r.handleKnownNonMember(ctx, chat, user, entry)
-		if err != nil {
-			return err
-		}
+		skipReason, handled := r.handleKnownNonMember(ctx, chat, user, entry)
 		if handled {
 			result.Skipped = true
 			result.SkipReason = skipReason
@@ -330,7 +332,7 @@ func (r *Reactor) loadSpamExamples(ctx context.Context, chatID int64) []string {
 	return texts
 }
 
-func (r *Reactor) handleKnownNonMember(ctx context.Context, chat *api.Chat, user *api.User, entry *log.Entry) (string, bool, error) {
+func (r *Reactor) handleKnownNonMember(ctx context.Context, chat *api.Chat, user *api.User, entry *log.Entry) (string, bool) {
 	chatMember, err := r.s.GetBot().GetChatMember(api.GetChatMemberConfig{
 		ChatConfigWithUser: api.ChatConfigWithUser{
 			ChatConfig: api.ChatConfig{
@@ -341,18 +343,18 @@ func (r *Reactor) handleKnownNonMember(ctx context.Context, chat *api.Chat, user
 	})
 	if err != nil {
 		entry.WithField("error", err.Error()).Warn("failed to verify known non-member state, trusting stored memory")
-		return "User is a remembered non-member", true, nil
+		return messageSkipReasonRememberedNonMember, true
 	}
 
 	if chatMember.WasKicked() {
 		if deleteErr := r.store.DeleteChatKnownNonMember(ctx, chat.ID, user.ID); deleteErr != nil {
 			entry.WithField("error", deleteErr.Error()).Error("failed to delete kicked known non-member")
 		}
-		return "", false, nil
+		return "", false
 	}
 
 	if chatMember.HasLeft() {
-		return "User is a remembered non-member", true, nil
+		return messageSkipReasonRememberedNonMember, true
 	}
 
 	entry.WithFields(log.Fields{
@@ -362,12 +364,12 @@ func (r *Reactor) handleKnownNonMember(ctx context.Context, chat *api.Chat, user
 
 	if insertErr := r.s.InsertMember(ctx, chat.ID, user.ID); insertErr != nil {
 		entry.WithField("error", insertErr.Error()).Error("failed to insert promoted member")
-		return "User is a remembered non-member", true, nil
+		return messageSkipReasonRememberedNonMember, true
 	}
 	if deleteErr := r.store.DeleteChatKnownNonMember(ctx, chat.ID, user.ID); deleteErr != nil {
 		entry.WithField("error", deleteErr.Error()).Error("failed to delete promoted known non-member")
 	}
-	return "User is already a member", true, nil
+	return messageSkipReasonAlreadyMember, true
 }
 
 func (r *Reactor) rememberAuthorIfPossible(ctx context.Context, chat *api.Chat, user *api.User, entry *log.Entry) error {
