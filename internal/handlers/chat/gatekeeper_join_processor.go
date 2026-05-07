@@ -39,10 +39,7 @@ func (g *Gatekeeper) handleNewChatMembersV2(ctx context.Context, u *api.Update, 
 		entry.Debug("settings are nil")
 		return nil
 	}
-	if !settings.GatekeeperCaptchaEnabled && !settings.GatekeeperGreetingEnabled {
-		entry.Debug("gatekeeper subfeatures are disabled")
-		return nil
-	}
+	subfeaturesEnabled := settings.GatekeeperCaptchaEnabled || settings.GatekeeperGreetingEnabled
 
 	select {
 	case <-ctx.Done():
@@ -51,8 +48,38 @@ func (g *Gatekeeper) handleNewChatMembersV2(ctx context.Context, u *api.Update, 
 	}
 
 	for _, member := range u.Message.NewChatMembers {
-		if err := g.recordRecentJoiner(ctx, chat.ID, &member, u.Message.MessageID); err != nil {
+		joiner, err := g.recordRecentJoiner(ctx, chat.ID, &member, u.Message.MessageID)
+		if err != nil {
 			entry.WithField("error", err.Error()).Error("failed to save recent joiner")
+		}
+		if member.IsBot {
+			continue
+		}
+		isNotSpammer, err := g.store.IsChatNotSpammer(ctx, chat.ID, member.ID, member.UserName)
+		if err != nil {
+			entry.WithField("error", err.Error()).Error("failed to check manual not-spammer override")
+			continue
+		}
+		if isNotSpammer {
+			continue
+		}
+		banned, err := g.banChecker.CheckBan(ctx, member.ID)
+		if err != nil {
+			entry.WithFields(log.Fields{
+				"user_id": member.ID,
+				"error":   err.Error(),
+			}).Error("failed to check ban for new chat member")
+			continue
+		}
+		if banned {
+			g.processKnownBannedJoinedUser(ctx, chat.ID, member.ID, joinerMessageID(joiner, u.Message.MessageID))
+			if err := g.store.ProcessRecentJoiner(ctx, chat.ID, member.ID, true); err != nil {
+				entry.WithField("error", err.Error()).Error("failed to process banned recent joiner")
+			}
+			continue
+		}
+		if !subfeaturesEnabled {
+			continue
 		}
 		if err := g.backfillPublicChallengeJoinMessageID(ctx, chat.ID, member.ID, u.Message.MessageID); err != nil {
 			entry.WithFields(log.Fields{
@@ -76,10 +103,7 @@ func (g *Gatekeeper) handleChatMember(ctx context.Context, u *api.Update, settin
 		entry.Debug("settings are nil")
 		return
 	}
-	if !settings.GatekeeperCaptchaEnabled && !settings.GatekeeperGreetingEnabled {
-		entry.Debug("gatekeeper subfeatures are disabled")
-		return
-	}
+	subfeaturesEnabled := settings.GatekeeperCaptchaEnabled || settings.GatekeeperGreetingEnabled
 	if !isChatMemberJoinTransition(u.ChatMember) {
 		entry.Debug("chat member update is not a new join transition")
 		return
@@ -92,7 +116,8 @@ func (g *Gatekeeper) handleChatMember(ctx context.Context, u *api.Update, settin
 	}
 
 	chat := &u.ChatMember.Chat
-	if err := g.recordRecentJoiner(ctx, chat.ID, member, 0); err != nil {
+	joiner, err := g.recordRecentJoiner(ctx, chat.ID, member, 0)
+	if err != nil {
 		entry.WithFields(log.Fields{
 			"user_id": member.ID,
 			"error":   err.Error(),
@@ -100,6 +125,42 @@ func (g *Gatekeeper) handleChatMember(ctx context.Context, u *api.Update, settin
 	}
 
 	if member.IsBot {
+		return
+	}
+
+	isNotSpammer, err := g.store.IsChatNotSpammer(ctx, chat.ID, member.ID, member.UserName)
+	if err != nil {
+		entry.WithFields(log.Fields{
+			"user_id": member.ID,
+			"error":   err.Error(),
+		}).Error("failed to check manual not-spammer override")
+		return
+	}
+	if isNotSpammer {
+		return
+	}
+
+	banned, err := g.banChecker.CheckBan(ctx, member.ID)
+	if err != nil {
+		entry.WithFields(log.Fields{
+			"user_id": member.ID,
+			"error":   err.Error(),
+		}).Error("failed to check ban for chat member")
+		return
+	}
+	if banned {
+		g.processKnownBannedJoinedUser(ctx, chat.ID, member.ID, joinerMessageID(joiner, 0))
+		if err := g.store.ProcessRecentJoiner(ctx, chat.ID, member.ID, true); err != nil {
+			entry.WithFields(log.Fields{
+				"user_id": member.ID,
+				"error":   err.Error(),
+			}).Error("failed to process banned recent joiner")
+		}
+		return
+	}
+
+	if !subfeaturesEnabled {
+		entry.Debug("gatekeeper subfeatures are disabled")
 		return
 	}
 
@@ -164,6 +225,25 @@ func (g *Gatekeeper) handleChatJoinRequest(ctx context.Context, u *api.Update, s
 	if settings == nil {
 		entry.Debug("settings are nil")
 		return nil
+	}
+	isNotSpammer, err := g.store.IsChatNotSpammer(ctx, u.ChatJoinRequest.Chat.ID, u.ChatJoinRequest.From.ID, u.ChatJoinRequest.From.UserName)
+	if err != nil {
+		entry.WithField("error", err.Error()).Error("failed to check manual not-spammer override")
+		return nil
+	}
+	if !isNotSpammer {
+		banned, err := g.banChecker.CheckBan(ctx, u.ChatJoinRequest.From.ID)
+		if err != nil {
+			entry.WithFields(log.Fields{
+				"user_id": u.ChatJoinRequest.From.ID,
+				"error":   err.Error(),
+			}).Error("failed to check ban for chat join request")
+			return err
+		}
+		if banned {
+			g.processKnownBannedJoinRequest(ctx, u.ChatJoinRequest)
+			return nil
+		}
 	}
 	if !settings.GatekeeperCaptchaEnabled && !settings.GatekeeperGreetingEnabled {
 		entry.Debug("both gatekeeper subfeatures are disabled")
@@ -332,9 +412,9 @@ func (g *Gatekeeper) startChallenge(ctx context.Context, u *api.Update, user *ap
 	return nil
 }
 
-func (g *Gatekeeper) recordRecentJoiner(ctx context.Context, chatID int64, user *api.User, joinMessageID int) error {
+func (g *Gatekeeper) recordRecentJoiner(ctx context.Context, chatID int64, user *api.User, joinMessageID int) (*db.RecentJoiner, error) {
 	if user == nil {
-		return nil
+		return nil, nil
 	}
 
 	recentJoiner := &db.RecentJoiner{
@@ -346,8 +426,129 @@ func (g *Gatekeeper) recordRecentJoiner(ctx context.Context, chatID int64, user 
 		Processed:     false,
 		IsSpammer:     false,
 	}
-	_, err := g.store.AddChatRecentJoiner(ctx, recentJoiner)
-	return err
+	return g.store.AddChatRecentJoiner(ctx, recentJoiner)
+}
+
+func (g *Gatekeeper) processKnownBannedJoinRequest(ctx context.Context, request *api.ChatJoinRequest) {
+	if request == nil {
+		return
+	}
+
+	entry := g.getLogEntry().WithField("method", "processKnownBannedJoinRequest")
+	chatID := request.Chat.ID
+	userID := request.From.ID
+
+	if err := bot.DeclineJoinRequest(ctx, g.s.GetBot(), userID, chatID); err != nil {
+		entry.WithFields(log.Fields{
+			"user_id": userID,
+			"error":   err.Error(),
+		}).Error("failed to decline banned join request")
+	}
+	if g.banChecker != nil {
+		if err := g.banChecker.BanUserWithMessage(ctx, chatID, userID, 0); err != nil {
+			entry.WithFields(log.Fields{
+				"user_id": userID,
+				"error":   err.Error(),
+			}).Error("failed to ban known banned join requester")
+		}
+	}
+
+	g.cleanupKnownBannedArtifacts(ctx, chatID, userID, 0)
+}
+
+func (g *Gatekeeper) processKnownBannedJoinedUser(ctx context.Context, chatID, userID int64, joinMessageID int) {
+	entry := g.getLogEntry().WithField("method", "processKnownBannedJoinedUser")
+
+	if g.banChecker != nil {
+		if err := g.banChecker.BanUserWithMessage(ctx, chatID, userID, joinMessageID); err != nil {
+			entry.WithFields(log.Fields{
+				"user_id": userID,
+				"error":   err.Error(),
+			}).Error("failed to ban known banned joined user")
+		}
+	}
+
+	g.cleanupKnownBannedArtifacts(ctx, chatID, userID, joinMessageID)
+}
+
+func (g *Gatekeeper) cleanupKnownBannedArtifacts(ctx context.Context, chatID, userID int64, joinMessageID int) {
+	entry := g.getLogEntry().WithField("method", "cleanupKnownBannedArtifacts")
+	deletedJoinMessages := make(map[int]struct{})
+	cleanedChallenges := make(map[string]struct{})
+
+	cleanupChallenge := func(challenge *db.Challenge) {
+		if challenge == nil {
+			return
+		}
+		key := fmt.Sprintf("%d:%d:%d", challenge.CommChatID, challenge.UserID, challenge.ChatID)
+		if _, ok := cleanedChallenges[key]; ok {
+			return
+		}
+		cleanedChallenges[key] = struct{}{}
+
+		if challenge.ChallengeMessageID != 0 {
+			if err := bot.DeleteChatMessage(ctx, g.s.GetBot(), challenge.CommChatID, challenge.ChallengeMessageID); err != nil {
+				entry.WithFields(log.Fields{
+					"user_id":    userID,
+					"message_id": challenge.ChallengeMessageID,
+					"error":      err.Error(),
+				}).Error("failed to delete known banned challenge message")
+			}
+		}
+		if challenge.JoinMessageID != 0 {
+			if err := bot.DeleteChatMessage(ctx, g.s.GetBot(), challenge.ChatID, challenge.JoinMessageID); err != nil {
+				entry.WithFields(log.Fields{
+					"user_id":    userID,
+					"message_id": challenge.JoinMessageID,
+					"error":      err.Error(),
+				}).Error("failed to delete known banned join message")
+			}
+			deletedJoinMessages[challenge.JoinMessageID] = struct{}{}
+		}
+		if err := g.store.DeleteChallenge(ctx, challenge.CommChatID, challenge.UserID, challenge.ChatID); err != nil {
+			entry.WithFields(log.Fields{
+				"user_id": userID,
+				"error":   err.Error(),
+			}).Error("failed to delete known banned challenge row")
+		}
+	}
+
+	handoffChallenge, err := g.store.GetPassedJoinRequestChallengeByChatUser(ctx, chatID, userID)
+	if err != nil {
+		entry.WithFields(log.Fields{
+			"user_id": userID,
+			"error":   err.Error(),
+		}).Error("failed to load known banned handoff challenge")
+	}
+	cleanupChallenge(handoffChallenge)
+
+	challenge, err := g.store.GetChallengeByChatUser(ctx, chatID, userID)
+	if err != nil {
+		entry.WithFields(log.Fields{
+			"user_id": userID,
+			"error":   err.Error(),
+		}).Error("failed to load known banned challenge")
+	}
+	cleanupChallenge(challenge)
+
+	if joinMessageID != 0 {
+		if _, ok := deletedJoinMessages[joinMessageID]; !ok {
+			if err := bot.DeleteChatMessage(ctx, g.s.GetBot(), chatID, joinMessageID); err != nil {
+				entry.WithFields(log.Fields{
+					"user_id":    userID,
+					"message_id": joinMessageID,
+					"error":      err.Error(),
+				}).Error("failed to delete known banned join message")
+			}
+		}
+	}
+}
+
+func joinerMessageID(joiner *db.RecentJoiner, fallback int) int {
+	if joiner != nil && joiner.JoinMessageID != 0 {
+		return joiner.JoinMessageID
+	}
+	return fallback
 }
 
 func (g *Gatekeeper) backfillPublicChallengeJoinMessageID(ctx context.Context, chatID, userID int64, joinMessageID int) error {

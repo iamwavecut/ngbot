@@ -1,9 +1,11 @@
 package handlers
 
 import (
-	"bufio"
 	"context"
+	"encoding/csv"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -22,6 +24,34 @@ func fetchURLs(ctx context.Context, client *http.Client, urls []string) (map[int
 		for userID := range ids {
 			results[userID] = struct{}{}
 		}
+	}
+	return results, nil
+}
+
+func fetchProviderURLs(ctx context.Context, client *http.Client, providers []banlistProvider, urlsForProvider func(banlistProvider) []string) (map[int64]struct{}, error) {
+	results := make(map[int64]struct{})
+	var failures []error
+	successes := 0
+
+	for _, provider := range providers {
+		for _, url := range urlsForProvider(provider) {
+			ids, err := fetchURLWithRetry(ctx, client, url)
+			if err != nil {
+				failures = append(failures, fmt.Errorf("%s %s: %w", provider.name, url, err))
+				continue
+			}
+			successes++
+			for userID := range ids {
+				results[userID] = struct{}{}
+			}
+		}
+	}
+
+	if successes == 0 && len(failures) > 0 {
+		return nil, errors.Join(failures...)
+	}
+	for _, failure := range failures {
+		log.WithError(failure).Warn("failed to fetch external banlist source")
 	}
 	return results, nil
 }
@@ -67,10 +97,26 @@ func fetchURL(ctx context.Context, client *http.Client, url string) (map[int64]s
 	}
 
 	results := make(map[int64]struct{})
-	scanner := bufio.NewScanner(resp.Body)
-	for scanner.Scan() {
-		userIDStr := strings.TrimSpace(scanner.Text())
+	reader := csv.NewReader(resp.Body)
+	reader.FieldsPerRecord = -1
+	reader.TrimLeadingSpace = true
+	for {
+		record, err := reader.Read()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("failed to read CSV response: %w", err)
+		}
+		if len(record) == 0 {
+			continue
+		}
+		userIDStr := strings.TrimSpace(record[0])
 		if userIDStr == "" {
+			continue
+		}
+		switch strings.ToLower(userIDStr) {
+		case "id", "user_id":
 			continue
 		}
 		userID, err := strconv.ParseInt(userIDStr, 10, 64)
@@ -78,9 +124,6 @@ func fetchURL(ctx context.Context, client *http.Client, url string) (map[int64]s
 			return nil, fmt.Errorf("failed to parse user ID: %w", err)
 		}
 		results[userID] = struct{}{}
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("failed to scan response body: %w", err)
 	}
 	return results, nil
 }
@@ -124,7 +167,9 @@ func (s *defaultBanService) updateLastHourlyFetch(ctx context.Context) error {
 }
 
 func (s *defaultBanService) FetchKnownBannedDaily(ctx context.Context) error {
-	results, err := fetchURLs(ctx, s.httpClient, []string{scammersURL, banlistURL})
+	results, err := fetchProviderURLs(ctx, s.httpClient, s.banlistProviders(), func(provider banlistProvider) []string {
+		return provider.dailyURLs
+	})
 	if err != nil {
 		return fmt.Errorf("failed to fetch known banned daily: %w", err)
 	}
@@ -151,7 +196,9 @@ func (s *defaultBanService) FetchKnownBannedDaily(ctx context.Context) error {
 }
 
 func (s *defaultBanService) FetchKnownBanned(ctx context.Context) error {
-	results, err := fetchURLs(ctx, s.httpClient, []string{banlistURLHourly})
+	results, err := fetchProviderURLs(ctx, s.httpClient, s.banlistProviders(), func(provider banlistProvider) []string {
+		return provider.hourlyURLs
+	})
 	if err != nil {
 		return fmt.Errorf("failed to fetch known banned hourly: %w", err)
 	}

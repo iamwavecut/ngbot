@@ -21,6 +21,8 @@ const (
 	banlistURL       = "https://lols.bot/spam/banlist.txt"
 	banlistURLHourly = "https://lols.bot/spam/banlist-1h.txt"
 	scammersURL      = "https://lols.bot/scammers.txt"
+	casExportURL     = "https://api.cas.chat/export.csv"
+	casCheckURL      = "https://api.cas.chat/check?user_id=%d"
 
 	accoutsAPIURLTemplate = "https://api.lols.bot/account?id=%v"
 
@@ -54,10 +56,18 @@ type banStore interface {
 	GetActiveRestriction(ctx context.Context, chatID, userID int64) (*db.UserRestriction, error)
 }
 
+type banlistProvider struct {
+	name       string
+	dailyURLs  []string
+	hourlyURLs []string
+	check      func(ctx context.Context, client *http.Client, userID int64) (bool, error)
+}
+
 type defaultBanService struct {
 	bot        *api.BotAPI
 	db         banStore
 	httpClient *http.Client
+	providers  []banlistProvider
 
 	knownBanned map[int64]struct{}
 	mapMutex    sync.RWMutex
@@ -75,7 +85,28 @@ func NewBanService(bot *api.BotAPI, db banStore) BanService {
 		bot:         bot,
 		db:          db,
 		httpClient:  &http.Client{Timeout: banServiceHTTPTimeout},
+		providers:   defaultBanlistProviders(),
 		knownBanned: map[int64]struct{}{},
+	}
+}
+
+func defaultBanlistProviders() []banlistProvider {
+	return []banlistProvider{
+		{
+			name:       "lols",
+			dailyURLs:  []string{scammersURL, banlistURL},
+			hourlyURLs: []string{banlistURLHourly},
+			check: func(ctx context.Context, client *http.Client, userID int64) (bool, error) {
+				return checkLoLsBan(ctx, client, accoutsAPIURLTemplate, userID)
+			},
+		},
+		{
+			name:      "cas",
+			dailyURLs: []string{casExportURL},
+			check: func(ctx context.Context, client *http.Client, userID int64) (bool, error) {
+				return checkCASBan(ctx, client, casCheckURL, userID)
+			},
+		},
 	}
 }
 
@@ -144,6 +175,10 @@ func (s *defaultBanService) Stop(ctx context.Context) error {
 }
 
 func (s *defaultBanService) bootstrap(ctx context.Context) error {
+	if err := s.loadKnownBannedFromDB(ctx); err != nil {
+		return fmt.Errorf("load known banned from db: %w", err)
+	}
+
 	lastDailyFetch, err := s.getLastDailyFetch(ctx)
 	if err != nil {
 		log.WithError(err).Error("Failed to get last daily fetch time")
@@ -182,18 +217,81 @@ func (s *defaultBanService) IsKnownBanned(userID int64) bool {
 }
 
 func (s *defaultBanService) CheckBan(ctx context.Context, userID int64) (bool, error) {
+	select {
+	case <-ctx.Done():
+		return false, ctx.Err()
+	default:
+	}
+
 	if s.IsKnownBanned(userID) {
 		return true, nil
 	}
 
-	url := fmt.Sprintf(accoutsAPIURLTemplate, userID)
+	providers := s.banlistProviders()
+	checkers := make([]banlistProvider, 0, len(providers))
+	for _, provider := range providers {
+		if provider.check != nil {
+			checkers = append(checkers, provider)
+		}
+	}
+	if len(checkers) == 0 {
+		return false, nil
+	}
+
+	checkCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	type checkResult struct {
+		provider string
+		banned   bool
+		err      error
+	}
+
+	results := make(chan checkResult, len(checkers))
+	for _, provider := range checkers {
+		provider := provider
+		go func() {
+			banned, err := provider.check(checkCtx, s.httpClient, userID)
+			results <- checkResult{
+				provider: provider.name,
+				banned:   banned,
+				err:      err,
+			}
+		}()
+	}
+
+	for range checkers {
+		result := <-results
+		if result.err != nil {
+			if errorsIsCanceled(result.err) && ctx.Err() != nil {
+				return false, ctx.Err()
+			}
+			log.WithFields(log.Fields{
+				"provider": result.provider,
+				"user_id":  userID,
+				"error":    result.err.Error(),
+			}).Warn("external ban check failed open")
+			continue
+		}
+		if result.banned {
+			cancel()
+			s.rememberKnownBanned(ctx, userID)
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
+func checkLoLsBan(ctx context.Context, client *http.Client, urlTemplate string, userID int64) (bool, error) {
+	url := fmt.Sprintf(urlTemplate, userID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return false, fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("accept", "text/plain")
 
-	resp, err := s.httpClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return false, fmt.Errorf("failed to send request: %w", err)
 	}
@@ -215,10 +313,66 @@ func (s *defaultBanService) CheckBan(ctx context.Context, userID int64) (bool, e
 	if err := json.NewDecoder(resp.Body).Decode(&banInfo); err != nil {
 		return false, fmt.Errorf("failed to decode response: %w", err)
 	}
-	if banInfo.Banned {
-		s.markKnownBanned(userID)
-	}
 	return banInfo.Banned, nil
+}
+
+func checkCASBan(ctx context.Context, client *http.Client, urlTemplate string, userID int64) (bool, error) {
+	url := fmt.Sprintf(urlTemplate, userID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return false, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("accept", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return false, fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return false, fmt.Errorf("unexpected status code %d", resp.StatusCode)
+	}
+
+	var banInfo struct {
+		OK bool `json:"ok"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&banInfo); err != nil {
+		return false, fmt.Errorf("failed to decode response: %w", err)
+	}
+	return banInfo.OK, nil
+}
+
+func (s *defaultBanService) banlistProviders() []banlistProvider {
+	if len(s.providers) > 0 {
+		return s.providers
+	}
+	return defaultBanlistProviders()
+}
+
+func (s *defaultBanService) loadKnownBannedFromDB(ctx context.Context) error {
+	if s.db == nil {
+		return nil
+	}
+	fullBanlist, err := s.db.GetBanlist(ctx)
+	if err != nil {
+		return err
+	}
+	s.setKnownBanned(fullBanlist)
+	return nil
+}
+
+func (s *defaultBanService) rememberKnownBanned(ctx context.Context, userID int64) {
+	s.markKnownBanned(userID)
+	if s.db == nil {
+		return
+	}
+	if err := s.db.UpsertBanlist(ctx, []int64{userID}); err != nil {
+		log.WithFields(log.Fields{
+			"user_id": userID,
+			"error":   err.Error(),
+		}).Error("failed to persist online banned user")
+	}
 }
 
 func (s *defaultBanService) setKnownBanned(banned map[int64]struct{}) {

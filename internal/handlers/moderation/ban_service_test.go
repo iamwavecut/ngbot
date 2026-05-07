@@ -1,8 +1,17 @@
 package handlers
 
 import (
+	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"path"
+	"strconv"
 	"sync"
 	"testing"
+	"time"
+
+	"github.com/iamwavecut/ngbot/internal/db"
 )
 
 func TestKnownBannedConcurrentAccess(t *testing.T) {
@@ -68,5 +77,304 @@ func TestSetKnownBannedCopiesInput(t *testing.T) {
 
 	if svc.IsKnownBanned(2) {
 		t.Fatalf("service map should be isolated from caller map")
+	}
+}
+
+func TestFetchURLParsesCASExportCSVWithHeader(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/csv")
+		_, _ = w.Write([]byte("user_id\n123\n456\n"))
+	}))
+	t.Cleanup(server.Close)
+
+	ids, err := fetchURL(context.Background(), server.Client(), server.URL)
+	if err != nil {
+		t.Fatalf("fetch url: %v", err)
+	}
+
+	for _, userID := range []int64{123, 456} {
+		if _, ok := ids[userID]; !ok {
+			t.Fatalf("expected user id %d in fetched ids: %#v", userID, ids)
+		}
+	}
+}
+
+func TestCheckCASBanPositiveAndNotFound(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Query().Get("user_id") {
+		case "123":
+			_, _ = w.Write([]byte(`{"ok":true,"result":{"reasons":[2],"offenses":1}}`))
+		case "456":
+			_, _ = w.Write([]byte(`{"ok":false,"description":"Record not found."}`))
+		default:
+			t.Fatalf("unexpected user id: %s", r.URL.Query().Get("user_id"))
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client := server.Client()
+	banned, err := checkCASBan(context.Background(), client, server.URL+"/check?user_id=%d", 123)
+	if err != nil {
+		t.Fatalf("check cas positive: %v", err)
+	}
+	if !banned {
+		t.Fatal("expected CAS positive response to be banned")
+	}
+
+	banned, err = checkCASBan(context.Background(), client, server.URL+"/check?user_id=%d", 456)
+	if err != nil {
+		t.Fatalf("check cas not found: %v", err)
+	}
+	if banned {
+		t.Fatal("expected CAS not-found response to be clean")
+	}
+}
+
+func TestCheckBanRacesProvidersAndPersistsOnlinePositive(t *testing.T) {
+	t.Parallel()
+
+	store := newRecordingBanStore()
+	svc := &defaultBanService{
+		db:          store,
+		httpClient:  http.DefaultClient,
+		knownBanned: map[int64]struct{}{},
+		providers: []banlistProvider{
+			{
+				name: "slow-clean",
+				check: func(ctx context.Context, _ *http.Client, _ int64) (bool, error) {
+					select {
+					case <-ctx.Done():
+						return false, ctx.Err()
+					case <-time.After(time.Second):
+						return false, nil
+					}
+				},
+			},
+			{
+				name: "fast-positive",
+				check: func(context.Context, *http.Client, int64) (bool, error) {
+					return true, nil
+				},
+			},
+		},
+	}
+
+	banned, err := svc.CheckBan(context.Background(), 789)
+	if err != nil {
+		t.Fatalf("check ban: %v", err)
+	}
+	if !banned {
+		t.Fatal("expected fast positive provider to win")
+	}
+	if !svc.IsKnownBanned(789) {
+		t.Fatal("expected online positive to be stored in memory")
+	}
+	if !store.hasUpserted(789) {
+		t.Fatalf("expected online positive to be persisted, got %#v", store.upserted)
+	}
+}
+
+func TestBootstrapLoadsStoredBanlistBeforeSkippingFetch(t *testing.T) {
+	t.Parallel()
+
+	store := newRecordingBanStore()
+	store.banlist[200] = struct{}{}
+	store.kv[kvKeyLastDailyFetch] = time.Now().Format(time.RFC3339)
+	store.kv[kvKeyLastHourlyFetch] = time.Now().Format(time.RFC3339)
+
+	svc := &defaultBanService{
+		db:          store,
+		httpClient:  http.DefaultClient,
+		knownBanned: map[int64]struct{}{},
+		providers:   defaultBanlistProviders(),
+	}
+
+	if err := svc.bootstrap(context.Background()); err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+	if !svc.IsKnownBanned(200) {
+		t.Fatal("expected stored DB banlist to be loaded into memory")
+	}
+}
+
+func TestFetchKnownBannedDailyAppliesPartialProviderSuccess(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch path.Base(r.URL.Path) {
+		case "ok.txt":
+			_, _ = w.Write([]byte("300\n"))
+		case "fail.txt":
+			http.Error(w, "failed", http.StatusInternalServerError)
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	store := newRecordingBanStore()
+	svc := &defaultBanService{
+		db:          store,
+		httpClient:  server.Client(),
+		knownBanned: map[int64]struct{}{},
+		providers: []banlistProvider{
+			{
+				name:      "ok",
+				dailyURLs: []string{server.URL + "/ok.txt"},
+			},
+			{
+				name:      "fail",
+				dailyURLs: []string{server.URL + "/fail.txt"},
+			},
+		},
+	}
+
+	if err := svc.FetchKnownBannedDaily(context.Background()); err != nil {
+		t.Fatalf("fetch known banned daily: %v", err)
+	}
+	if !store.hasUpserted(300) {
+		t.Fatalf("expected successful provider ID to be persisted, got %#v", store.upserted)
+	}
+	if !svc.IsKnownBanned(300) {
+		t.Fatal("expected successful provider ID to be loaded into memory")
+	}
+}
+
+type recordingBanStore struct {
+	kv       map[string]string
+	banlist  map[int64]struct{}
+	upserted []int64
+}
+
+func newRecordingBanStore() *recordingBanStore {
+	return &recordingBanStore{
+		kv:      make(map[string]string),
+		banlist: make(map[int64]struct{}),
+	}
+}
+
+func (s *recordingBanStore) GetKV(_ context.Context, key string) (string, error) {
+	return s.kv[key], nil
+}
+
+func (s *recordingBanStore) SetKV(_ context.Context, key string, value string) error {
+	s.kv[key] = value
+	return nil
+}
+
+func (s *recordingBanStore) UpsertBanlist(_ context.Context, userIDs []int64) error {
+	s.upserted = append(s.upserted, userIDs...)
+	for _, userID := range userIDs {
+		s.banlist[userID] = struct{}{}
+	}
+	return nil
+}
+
+func (s *recordingBanStore) GetBanlist(context.Context) (map[int64]struct{}, error) {
+	result := make(map[int64]struct{}, len(s.banlist))
+	for userID := range s.banlist {
+		result[userID] = struct{}{}
+	}
+	return result, nil
+}
+
+func (s *recordingBanStore) AddRestriction(context.Context, *db.UserRestriction) error {
+	return nil
+}
+
+func (s *recordingBanStore) RemoveRestriction(context.Context, int64, int64) error {
+	return nil
+}
+
+func (s *recordingBanStore) GetActiveRestriction(context.Context, int64, int64) (*db.UserRestriction, error) {
+	return nil, nil
+}
+
+func (s *recordingBanStore) hasUpserted(userID int64) bool {
+	for _, upserted := range s.upserted {
+		if upserted == userID {
+			return true
+		}
+	}
+	return false
+}
+
+func TestCheckBanFailsOpenOnProviderErrors(t *testing.T) {
+	t.Parallel()
+
+	svc := &defaultBanService{
+		db:          newRecordingBanStore(),
+		httpClient:  http.DefaultClient,
+		knownBanned: map[int64]struct{}{},
+		providers: []banlistProvider{
+			{
+				name: "broken",
+				check: func(context.Context, *http.Client, int64) (bool, error) {
+					return false, errors.New("provider is down")
+				},
+			},
+		},
+	}
+
+	banned, err := svc.CheckBan(context.Background(), 999)
+	if err != nil {
+		t.Fatalf("expected provider errors to fail open, got %v", err)
+	}
+	if banned {
+		t.Fatal("expected provider error to be treated as not banned")
+	}
+}
+
+func TestCheckBanReturnsCallerCancellation(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	svc := &defaultBanService{
+		db:          newRecordingBanStore(),
+		httpClient:  http.DefaultClient,
+		knownBanned: map[int64]struct{}{},
+		providers: []banlistProvider{
+			{
+				name: "slow",
+				check: func(ctx context.Context, _ *http.Client, _ int64) (bool, error) {
+					<-ctx.Done()
+					return false, ctx.Err()
+				},
+			},
+		},
+	}
+
+	banned, err := svc.CheckBan(ctx, 1000)
+	if err == nil {
+		t.Fatal("expected caller cancellation error")
+	}
+	if banned {
+		t.Fatal("expected canceled check to be not banned")
+	}
+}
+
+func TestCheckLoLsBanParsesPositiveResponse(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("id"); got != strconv.FormatInt(1234, 10) {
+			t.Fatalf("unexpected id: %s", got)
+		}
+		_, _ = w.Write([]byte(`{"ok":true,"user_id":1234,"banned":true}`))
+	}))
+	t.Cleanup(server.Close)
+
+	banned, err := checkLoLsBan(context.Background(), server.Client(), server.URL+"/account?id=%d", 1234)
+	if err != nil {
+		t.Fatalf("check lols ban: %v", err)
+	}
+	if !banned {
+		t.Fatal("expected LoLs positive response to be banned")
 	}
 }

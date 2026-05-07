@@ -65,8 +65,9 @@ func (s *gatekeeperTestService) GetSettings(context.Context, int64) (*db.Setting
 }
 
 type gatekeeperFlowStore struct {
-	challenges map[string]*db.Challenge
-	joiners    map[string]*db.RecentJoiner
+	challenges   map[string]*db.Challenge
+	joiners      map[string]*db.RecentJoiner
+	isNotSpammer bool
 }
 
 func newGatekeeperFlowStore() *gatekeeperFlowStore {
@@ -177,7 +178,7 @@ func (s *gatekeeperFlowStore) ProcessRecentJoiner(_ context.Context, chatID int6
 }
 
 func (s *gatekeeperFlowStore) IsChatNotSpammer(context.Context, int64, int64, string) (bool, error) {
-	return false, nil
+	return s.isNotSpammer, nil
 }
 
 func (s *gatekeeperFlowStore) onlyChallenge(t *testing.T) *db.Challenge {
@@ -243,6 +244,230 @@ func newChatMemberJoinUpdate(chat api.Chat, joinedUser api.User, actor api.User)
 				IsMember: true,
 			},
 		},
+	}
+}
+
+func TestBannedChatJoinRequestDeclinesAndBansBeforeCaptcha(t *testing.T) {
+	t.Parallel()
+
+	recorder := &botRequestRecorder{}
+	groupChat := api.Chat{ID: -100123, Type: "supergroup", Title: "Wave Club", UserName: "waveclub"}
+	user := api.User{ID: 42, FirstName: "Neo"}
+	store := newGatekeeperFlowStore()
+
+	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
+		recorder.record(t, method, r)
+
+		switch method {
+		case testTelegramMethodDeclineJoinRequest:
+			return true
+		default:
+			t.Fatalf("unexpected bot method before captcha: %s", method)
+			return nil
+		}
+	})
+
+	settings := &db.Settings{
+		GatekeeperEnabled:             true,
+		GatekeeperCaptchaEnabled:      true,
+		GatekeeperGreetingEnabled:     true,
+		GatekeeperGreetingText:        "GREETING {user} to {chat_title}",
+		GatekeeperCaptchaOptionsCount: 3,
+		ChallengeTimeout:              (3 * time.Minute).Nanoseconds(),
+	}
+	banChecker := &testGatekeeperBanChecker{banned: true}
+	gatekeeper := &Gatekeeper{
+		s:          &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI, language: "en"}, settings: settings},
+		store:      store,
+		config:     &config.Config{},
+		banChecker: banChecker,
+	}
+
+	update := &api.Update{
+		ChatJoinRequest: &api.ChatJoinRequest{
+			Chat:       groupChat,
+			From:       user,
+			UserChatID: 9001,
+		},
+	}
+	if err := gatekeeper.handleChatJoinRequest(context.Background(), update, settings); err != nil {
+		t.Fatalf("handleChatJoinRequest returned error: %v", err)
+	}
+
+	if banChecker.checkBanCalls != 1 {
+		t.Fatalf("expected one ban check, got %d", banChecker.checkBanCalls)
+	}
+	if len(banChecker.bans) != 1 {
+		t.Fatalf("expected one ban, got %d", len(banChecker.bans))
+	}
+	if banChecker.bans[0].chatID != groupChat.ID || banChecker.bans[0].userID != user.ID || banChecker.bans[0].messageID != 0 {
+		t.Fatalf("unexpected ban call: %#v", banChecker.bans[0])
+	}
+	if len(recorder.byMethod(testTelegramMethodDeclineJoinRequest)) != 1 {
+		t.Fatalf("expected one join request decline, got %d", len(recorder.byMethod(testTelegramMethodDeclineJoinRequest)))
+	}
+	if len(recorder.byMethod(testTelegramMethodSendMessage)) != 0 {
+		t.Fatalf("expected no captcha or greeting messages, got %d", len(recorder.byMethod(testTelegramMethodSendMessage)))
+	}
+	if len(store.challenges) != 0 {
+		t.Fatalf("expected no challenge rows, got %d", len(store.challenges))
+	}
+}
+
+func TestBannedChatMemberSkipsCaptchaAndDeletesKnownJoinArtifacts(t *testing.T) {
+	t.Parallel()
+
+	recorder := &botRequestRecorder{}
+	groupChat := api.Chat{ID: -100123, Type: "supergroup", Title: "Wave Club", UserName: "waveclub"}
+	user := api.User{ID: 42, FirstName: "Neo"}
+	store := newGatekeeperFlowStore()
+	store.joiners[store.joinerKey(groupChat.ID, user.ID)] = &db.RecentJoiner{
+		ID:            1,
+		ChatID:        groupChat.ID,
+		UserID:        user.ID,
+		Username:      user.UserName,
+		JoinMessageID: 77,
+		JoinedAt:      time.Now(),
+	}
+	store.challenges[store.challengeKey(groupChat.ID, user.ID, groupChat.ID)] = &db.Challenge{
+		CommChatID:         groupChat.ID,
+		UserID:             user.ID,
+		ChatID:             groupChat.ID,
+		Status:             db.ChallengeStatusPending,
+		JoinMessageID:      77,
+		ChallengeMessageID: 88,
+		CreatedAt:          time.Now(),
+		ExpiresAt:          time.Now().Add(time.Minute),
+	}
+
+	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
+		recorder.record(t, method, r)
+
+		switch method {
+		case testTelegramMethodDeleteMessage:
+			return true
+		default:
+			t.Fatalf("unexpected bot method for banned member: %s", method)
+			return nil
+		}
+	})
+
+	settings := &db.Settings{
+		GatekeeperEnabled:             true,
+		GatekeeperCaptchaEnabled:      true,
+		GatekeeperGreetingEnabled:     true,
+		GatekeeperGreetingText:        "GREETING {user} to {chat_title}",
+		GatekeeperCaptchaOptionsCount: 3,
+		ChallengeTimeout:              (3 * time.Minute).Nanoseconds(),
+	}
+	banChecker := &testGatekeeperBanChecker{banned: true}
+	gatekeeper := &Gatekeeper{
+		s:          &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI, language: "en"}, settings: settings},
+		store:      store,
+		config:     &config.Config{},
+		banChecker: banChecker,
+	}
+
+	memberUpdate := newChatMemberJoinUpdate(groupChat, user, user)
+	gatekeeper.handleChatMember(context.Background(), memberUpdate, settings)
+
+	if banChecker.checkBanCalls != 1 {
+		t.Fatalf("expected one ban check, got %d", banChecker.checkBanCalls)
+	}
+	if len(banChecker.bans) != 1 {
+		t.Fatalf("expected one ban, got %d", len(banChecker.bans))
+	}
+	if banChecker.bans[0].messageID != 77 {
+		t.Fatalf("expected ban to include join message id 77, got %#v", banChecker.bans[0])
+	}
+	if len(recorder.byMethod(testTelegramMethodRestrictChatMember)) != 0 {
+		t.Fatalf("expected no captcha restriction, got %d", len(recorder.byMethod(testTelegramMethodRestrictChatMember)))
+	}
+	if len(recorder.byMethod(testTelegramMethodSendMessage)) != 0 {
+		t.Fatalf("expected no captcha or greeting messages, got %d", len(recorder.byMethod(testTelegramMethodSendMessage)))
+	}
+	deleteMessages := recorder.byMethod(testTelegramMethodDeleteMessage)
+	if len(deleteMessages) != 2 {
+		t.Fatalf("expected challenge and join message cleanup, got %d deletes", len(deleteMessages))
+	}
+	if deleteMessages[0].form.Get("message_id") != "88" || deleteMessages[1].form.Get("message_id") != "77" {
+		t.Fatalf("unexpected delete order/messages: %#v", deleteMessages)
+	}
+	if len(store.challenges) != 0 {
+		t.Fatalf("expected challenge to be deleted, got %d rows", len(store.challenges))
+	}
+	joiner := store.recentJoiner(t, groupChat.ID, user.ID)
+	if !joiner.Processed || !joiner.IsSpammer {
+		t.Fatalf("expected joiner to be processed as spammer, got %#v", joiner)
+	}
+}
+
+func TestBannedNewChatMembersDeletesJoinMessageAndSkipsBackfill(t *testing.T) {
+	t.Parallel()
+
+	recorder := &botRequestRecorder{}
+	groupChat := api.Chat{ID: -100123, Type: "supergroup", Title: "Wave Club", UserName: "waveclub"}
+	user := api.User{ID: 42, FirstName: "Neo"}
+	store := newGatekeeperFlowStore()
+
+	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
+		recorder.record(t, method, r)
+
+		switch method {
+		case testTelegramMethodDeleteMessage:
+			return true
+		default:
+			t.Fatalf("unexpected bot method for banned new member: %s", method)
+			return nil
+		}
+	})
+
+	settings := &db.Settings{
+		GatekeeperEnabled:             true,
+		GatekeeperCaptchaEnabled:      true,
+		GatekeeperGreetingEnabled:     true,
+		GatekeeperGreetingText:        "GREETING {user} to {chat_title}",
+		GatekeeperCaptchaOptionsCount: 3,
+		ChallengeTimeout:              (3 * time.Minute).Nanoseconds(),
+	}
+	banChecker := &testGatekeeperBanChecker{banned: true}
+	gatekeeper := &Gatekeeper{
+		s:          &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI, language: "en"}, settings: settings},
+		store:      store,
+		config:     &config.Config{},
+		banChecker: banChecker,
+	}
+
+	newMemberUpdate := &api.Update{
+		Message: &api.Message{
+			MessageID:      77,
+			Chat:           groupChat,
+			NewChatMembers: []api.User{user},
+		},
+	}
+	if err := gatekeeper.handleNewChatMembersV2(context.Background(), newMemberUpdate, &groupChat, settings); err != nil {
+		t.Fatalf("handleNewChatMembersV2 returned error: %v", err)
+	}
+
+	if banChecker.checkBanCalls != 1 {
+		t.Fatalf("expected one ban check, got %d", banChecker.checkBanCalls)
+	}
+	if len(banChecker.bans) != 1 {
+		t.Fatalf("expected one ban, got %d", len(banChecker.bans))
+	}
+	if banChecker.bans[0].messageID != 77 {
+		t.Fatalf("expected ban to include join message id 77, got %#v", banChecker.bans[0])
+	}
+	deleteMessages := recorder.byMethod(testTelegramMethodDeleteMessage)
+	if len(deleteMessages) != 1 || deleteMessages[0].form.Get("message_id") != "77" {
+		t.Fatalf("expected join message 77 to be deleted, got %#v", deleteMessages)
+	}
+	if len(recorder.byMethod(testTelegramMethodSendMessage)) != 0 {
+		t.Fatalf("expected no captcha or greeting messages, got %d", len(recorder.byMethod(testTelegramMethodSendMessage)))
+	}
+	joiner := store.recentJoiner(t, groupChat.ID, user.ID)
+	if !joiner.Processed || !joiner.IsSpammer {
+		t.Fatalf("expected joiner to be processed as spammer, got %#v", joiner)
 	}
 }
 

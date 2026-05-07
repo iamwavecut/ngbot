@@ -73,18 +73,31 @@ func (s *testGatekeeperStore) IsChatNotSpammer(context.Context, int64, int64, st
 
 type testGatekeeperBanChecker struct {
 	checkBanCalls int
+	banned        bool
+	bans          []testGatekeeperBan
+}
+
+type testGatekeeperBan struct {
+	chatID    int64
+	userID    int64
+	messageID int
 }
 
 func (c *testGatekeeperBanChecker) CheckBan(context.Context, int64) (bool, error) {
 	c.checkBanCalls++
-	return false, nil
+	return c.banned, nil
 }
 
 func (c *testGatekeeperBanChecker) IsKnownBanned(int64) bool {
 	return false
 }
 
-func (c *testGatekeeperBanChecker) BanUserWithMessage(context.Context, int64, int64, int) error {
+func (c *testGatekeeperBanChecker) BanUserWithMessage(_ context.Context, chatID int64, userID int64, messageID int) error {
+	c.bans = append(c.bans, testGatekeeperBan{
+		chatID:    chatID,
+		userID:    userID,
+		messageID: messageID,
+	})
 	return nil
 }
 
