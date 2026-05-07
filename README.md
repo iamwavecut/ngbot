@@ -5,20 +5,21 @@
 
 ## Join protection
 1. Triggered by new chat members and **join requests**.
-2. Restricts the newcomer while verification is active.
-3. Sends a CAPTCHA-style challenge with configurable option count and timeout.
-4. On success, the newcomer is approved/unrestricted and the challenge message is cleaned up.
-5. On failure or timeout, the newcomer is banned for the configured reject timeout.
-6. Optional greeting text can be shown immediately with the public CAPTCHA for direct joins, or after approval for join-request newcomers.
+2. Checks known spammer sources before CAPTCHA or greeting. Known spammers are declined/banned immediately and join artifacts are cleaned up.
+3. Restricts the newcomer while verification is active.
+4. Sends a CAPTCHA-style challenge with configurable option count and timeout.
+5. On success, the newcomer is approved/unrestricted and the challenge message is cleaned up.
+6. On failure or timeout, the newcomer is banned for the configured reject timeout.
+7. Optional greeting text can be shown immediately with the public CAPTCHA for direct joins, or after approval for join-request newcomers.
 
 ## Spam protection
 1. Every non-member's first message is checked through multiple fast paths:
- - **Known spammers DB lookup**
- - **Manual allowlist ("Indulgence") override**
- - **External quote heuristic** for obvious cross-chat spam patterns
- - **LLM-powered binary classification** with built-in and chat-specific spam examples
+   - **Manual allowlist ("Indulgence") override**
+   - **Known spammers lookup** from local imports and online checks against LoLs bot and CAS/Combot
+   - **External quote heuristic** for obvious cross-chat spam patterns
+   - **LLM-powered binary classification** with built-in and chat-specific spam examples
 2. If the message is considered spam, the user is either immediately banned or sent into community voting, depending on chat settings.
-3. If the message is clean, the user is remembered as a trusted member.
+3. If the message is clean, the user is remembered so repeat checks can be reduced where possible.
 
 ## Admin panel
 1. Run `/settings` in a group where the bot is an admin.
@@ -53,7 +54,7 @@ docker compose up -d
 2. Build and run:
 ```bash
 go mod download
-go run .
+go run ./cmd/ngbot
 ```
 
 ## Configuration
@@ -74,6 +75,9 @@ See [.env.example](.env.example) for a quick reference of all available options.
 | | `NG_HANDLERS` | Enabled bot handlers | `admin,gatekeeper,reactor` | Comma-separated list of handlers |
 | | `NG_LOG_LEVEL` | Logging verbosity | `2` | `0`=Panic, `1`=Fatal, `2`=Error, `3`=Warn, `4`=Info, `5`=Debug, `6`=Trace |
 | | `NG_DOT_PATH` | Bot data storage path | `~/.ngbot` | Any valid filesystem path |
+| | `NG_TELEGRAM_POLL_TIMEOUT` | Telegram long poll timeout | `60s` | Any valid duration string |
+| | `NG_TELEGRAM_REQUEST_TIMEOUT` | Telegram HTTP request timeout | `75s` | Must be greater than poll timeout |
+| | `NG_TELEGRAM_RECOVERY_WINDOW` | Maximum degraded polling window before restart | `10m` | Must be greater than request timeout |
 | | `NG_LLM_API_MODEL` | LLM model to use | `gpt-4o-mini` | Any valid OpenAI or Gemini model |
 | | `NG_LLM_API_URL` | OpenAI-compatible API base URL | `https://api.openai.com/v1` | Used when `NG_LLM_API_TYPE=openai` |
 | | `NG_LLM_API_TYPE` | LLM provider | `openai` | `openai`, `gemini` |
@@ -97,5 +101,14 @@ Don't hesitate to contact me
 
 - Gemini requests can reuse server-side explicit caching for the static moderation prefix when the provider supports it.
 - Chat-specific settings, spam examples, and the private settings UI are already implemented.
+
+## Acknowledgements
+
+This bot benefits from public anti-spam data shared with the community by:
+
+- [Combot Anti-Spam (CAS)](https://cas.chat/) for the CAS spammer database and API.
+- [LoLs bot](https://lols.bot/) for spammer lists and account checks.
+
+Thank you to both projects for maintaining and sharing these community safety resources.
 
 Feel free to add feature requests in issues.
