@@ -70,6 +70,8 @@ func (a *Admin) applyPanelCommand(ctx context.Context, session *db.AdminPanelSes
 		}
 	case panelActionOpenLLM:
 		state.Page = panelPageLLM
+	case panelActionOpenReactionModeration:
+		state.Page = panelPageReactionModeration
 	case panelActionOpenExamples:
 		state.Page = panelPageExamplesList
 	case panelActionOpenIndulgence:
@@ -182,6 +184,8 @@ func (a *Admin) applyPanelCommand(ctx context.Context, session *db.AdminPanelSes
 			state.Page = panelPageGatekeeperGreeting
 		case panelPageLLM:
 			state.Page = panelPageHome
+		case panelPageReactionModeration:
+			state.Page = panelPageHome
 		case panelPageExamplesList:
 			state.Page = panelPageLLM
 		case panelPageExampleDetail:
@@ -228,6 +232,8 @@ func (a *Admin) toggleFeature(ctx context.Context, session *db.AdminPanelSession
 	switch feature {
 	case panelFeatureLLMFirst:
 		settings.LLMFirstMessageEnabled = !settings.LLMFirstMessageEnabled
+	case panelFeatureReactions:
+		settings.ReactionModerationEnabled = !settings.ReactionModerationEnabled
 	case panelFeatureVoting:
 		settings.CommunityVotingEnabled = !settings.CommunityVotingEnabled
 	default:
@@ -457,6 +463,7 @@ func syncPanelStateFromSettings(state *panelState, settings *db.Settings) {
 		GatekeeperGreetingEnabled: settings.GatekeeperGreetingEnabled,
 		GatekeeperEffective:       settings.GatekeeperEnabled && (settings.GatekeeperCaptchaEnabled || settings.GatekeeperGreetingEnabled),
 		LLMFirstMessageEnabled:    settings.LLMFirstMessageEnabled,
+		ReactionModerationEnabled: settings.ReactionModerationEnabled,
 		CommunityVotingEnabled:    settings.CommunityVotingEnabled,
 	}
 	state.GatekeeperCaptchaOptionsCount = settings.GatekeeperCaptchaOptionsCount

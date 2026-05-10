@@ -18,6 +18,7 @@ func TestApplyRecommendedProtectionSettings(t *testing.T) {
 	settings.GatekeeperCaptchaEnabled = false
 	settings.GatekeeperGreetingEnabled = true
 	settings.LLMFirstMessageEnabled = false
+	settings.ReactionModerationEnabled = false
 	settings.CommunityVotingEnabled = true
 
 	applyRecommendedProtectionSettings(settings)
@@ -37,6 +38,9 @@ func TestApplyRecommendedProtectionSettings(t *testing.T) {
 	if !settings.LLMFirstMessageEnabled {
 		t.Fatalf("expected LLM first message to be enabled")
 	}
+	if !settings.ReactionModerationEnabled {
+		t.Fatalf("expected reaction moderation to be enabled")
+	}
 	if settings.CommunityVotingEnabled {
 		t.Fatalf("expected community voting to be disabled")
 	}
@@ -51,6 +55,7 @@ func TestHasRecommendedProtection(t *testing.T) {
 			GatekeeperCaptchaEnabled:  true,
 			GatekeeperGreetingEnabled: false,
 			LLMFirstMessageEnabled:    true,
+			ReactionModerationEnabled: true,
 			CommunityVotingEnabled:    false,
 		},
 		ChallengeTimeout: (3 * time.Minute).Nanoseconds(),
@@ -64,6 +69,41 @@ func TestHasRecommendedProtection(t *testing.T) {
 	state.Features.CommunityVotingEnabled = true
 	if hasRecommendedProtection(state) {
 		t.Fatalf("expected recommended protection to be false after enabling voting")
+	}
+}
+
+func TestToggleFeatureTogglesReactionModeration(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	client, err := sqlite.NewSQLiteClient(ctx, t.TempDir(), "test.db")
+	if err != nil {
+		t.Fatalf("new sqlite client: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+
+	settings := db.DefaultSettings(42)
+	if err := client.SetSettings(ctx, settings); err != nil {
+		t.Fatalf("set settings: %v", err)
+	}
+
+	admin := &Admin{s: testAdminService{db: client}}
+	state := newPanelState(7, 42, "chat", settings)
+	session := &db.AdminPanelSession{ChatID: 42}
+
+	if err := admin.toggleFeature(ctx, session, &state, panelFeatureReactions); err != nil {
+		t.Fatalf("toggle reaction moderation: %v", err)
+	}
+
+	got, err := client.GetSettings(ctx, 42)
+	if err != nil {
+		t.Fatalf("get settings: %v", err)
+	}
+	if got.ReactionModerationEnabled {
+		t.Fatal("expected reaction moderation to be disabled after toggle")
+	}
+	if state.Features.ReactionModerationEnabled {
+		t.Fatal("expected panel state to sync disabled reaction moderation")
 	}
 }
 

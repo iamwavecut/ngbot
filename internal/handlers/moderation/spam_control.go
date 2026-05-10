@@ -56,6 +56,8 @@ type spamStore interface {
 	AddSpamVote(ctx context.Context, vote *db.SpamVote) error
 	GetSpamVotes(ctx context.Context, caseID int64) ([]*db.SpamVote, error)
 	GetMembers(ctx context.Context, chatID int64) ([]int64, error)
+	GetChatRecentJoiners(ctx context.Context, chatID int64) ([]*db.RecentJoiner, error)
+	ProcessRecentJoiner(ctx context.Context, chatID int64, userID int64, isSpammer bool) error
 	DeleteChatKnownNonMember(ctx context.Context, chatID int64, userID int64) error
 }
 
@@ -221,6 +223,9 @@ func (sc *SpamControl) preprocessMessage(ctx context.Context, msg *api.Message, 
 		now := time.Now()
 		spamCase.Status = spamCaseStatusSpam
 		spamCase.ResolvedAt = &now
+		if result.UserBanned {
+			sc.cleanupRecentJoinMessage(ctx, chat.ID, msg.From.ID)
+		}
 	}
 
 	if result.Error == errChatAdminRequired {
@@ -540,6 +545,8 @@ func (sc *SpamControl) ResolveCase(ctx context.Context, caseID int64, timedOut b
 	if spamCase.Status == "spam" {
 		if err := bot.BanUserFromChat(ctx, sc.s.GetBot(), spamCase.UserID, spamCase.ChatID, 0); err != nil {
 			log.WithField("error", err.Error()).Error("failed to ban user")
+		} else {
+			sc.cleanupRecentJoinMessage(ctx, spamCase.ChatID, spamCase.UserID)
 		}
 		sc.clearKnownNonMember(ctx, spamCase.ChatID, spamCase.UserID)
 	} else {
@@ -564,6 +571,29 @@ func (sc *SpamControl) ResolveCase(ctx context.Context, caseID int64, timedOut b
 		}
 	}
 	return nil
+}
+
+func (sc *SpamControl) cleanupRecentJoinMessage(ctx context.Context, chatID, userID int64) {
+	joiners, err := sc.store.GetChatRecentJoiners(ctx, chatID)
+	if err != nil {
+		log.WithField("error", err.Error()).WithField("chat_id", chatID).WithField("user_id", userID).Error("failed to get recent joiners for cleanup")
+		return
+	}
+
+	for _, joiner := range joiners {
+		if joiner == nil || joiner.UserID != userID {
+			continue
+		}
+		if joiner.JoinMessageID != 0 {
+			if err := bot.DeleteChatMessage(ctx, sc.s.GetBot(), chatID, joiner.JoinMessageID); err != nil {
+				log.WithField("error", err.Error()).WithField("chat_id", chatID).WithField("user_id", userID).WithField("message_id", joiner.JoinMessageID).Error("failed to delete recent join message")
+			}
+		}
+		if err := sc.store.ProcessRecentJoiner(ctx, chatID, userID, true); err != nil {
+			log.WithField("error", err.Error()).WithField("chat_id", chatID).WithField("user_id", userID).Error("failed to mark recent joiner as spammer")
+		}
+		return
+	}
 }
 
 func resolveStatusFromVotes(votes []*db.SpamVote, requiredVoters int, timedOut bool) (string, bool) {

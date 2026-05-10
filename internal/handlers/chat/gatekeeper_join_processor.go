@@ -52,9 +52,6 @@ func (g *Gatekeeper) handleNewChatMembersV2(ctx context.Context, u *api.Update, 
 		if err != nil {
 			entry.WithField("error", err.Error()).Error("failed to save recent joiner")
 		}
-		if member.IsBot {
-			continue
-		}
 		isNotSpammer, err := g.store.IsChatNotSpammer(ctx, chat.ID, member.ID, member.UserName)
 		if err != nil {
 			entry.WithField("error", err.Error()).Error("failed to check manual not-spammer override")
@@ -76,6 +73,9 @@ func (g *Gatekeeper) handleNewChatMembersV2(ctx context.Context, u *api.Update, 
 			if err := g.store.ProcessRecentJoiner(ctx, chat.ID, member.ID, true); err != nil {
 				entry.WithField("error", err.Error()).Error("failed to process banned recent joiner")
 			}
+			continue
+		}
+		if member.IsBot {
 			continue
 		}
 		if !subfeaturesEnabled {
@@ -124,10 +124,6 @@ func (g *Gatekeeper) handleChatMember(ctx context.Context, u *api.Update, settin
 		}).Error("failed to save recent joiner")
 	}
 
-	if member.IsBot {
-		return
-	}
-
 	isNotSpammer, err := g.store.IsChatNotSpammer(ctx, chat.ID, member.ID, member.UserName)
 	if err != nil {
 		entry.WithFields(log.Fields{
@@ -156,6 +152,10 @@ func (g *Gatekeeper) handleChatMember(ctx context.Context, u *api.Update, settin
 				"error":   err.Error(),
 			}).Error("failed to process banned recent joiner")
 		}
+		return
+	}
+
+	if member.IsBot {
 		return
 	}
 

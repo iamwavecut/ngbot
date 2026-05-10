@@ -471,6 +471,72 @@ func TestBannedNewChatMembersDeletesJoinMessageAndSkipsBackfill(t *testing.T) {
 	}
 }
 
+func TestBannedBotNewChatMembersDeletesJoinMessageAndSkipsCaptcha(t *testing.T) {
+	t.Parallel()
+
+	recorder := &botRequestRecorder{}
+	groupChat := api.Chat{ID: -100123, Type: "group", Title: "Wave Club"}
+	user := api.User{ID: 42, FirstName: "SpamBot", UserName: "spambot", IsBot: true}
+	store := newGatekeeperFlowStore()
+
+	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
+		recorder.record(t, method, r)
+
+		switch method {
+		case testTelegramMethodDeleteMessage:
+			return true
+		default:
+			t.Fatalf("unexpected bot method for banned bot member: %s", method)
+			return nil
+		}
+	})
+
+	settings := &db.Settings{
+		GatekeeperEnabled:             true,
+		GatekeeperCaptchaEnabled:      true,
+		GatekeeperGreetingEnabled:     true,
+		GatekeeperGreetingText:        "GREETING {user} to {chat_title}",
+		GatekeeperCaptchaOptionsCount: 3,
+		ChallengeTimeout:              (3 * time.Minute).Nanoseconds(),
+	}
+	banChecker := &testGatekeeperBanChecker{banned: true}
+	gatekeeper := &Gatekeeper{
+		s:          &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI, language: "en"}, settings: settings},
+		store:      store,
+		config:     &config.Config{},
+		banChecker: banChecker,
+	}
+
+	newMemberUpdate := &api.Update{
+		Message: &api.Message{
+			MessageID:      77,
+			Chat:           groupChat,
+			NewChatMembers: []api.User{user},
+		},
+	}
+	if err := gatekeeper.handleNewChatMembersV2(context.Background(), newMemberUpdate, &groupChat, settings); err != nil {
+		t.Fatalf("handleNewChatMembersV2 returned error: %v", err)
+	}
+
+	if banChecker.checkBanCalls != 1 {
+		t.Fatalf("expected one bot ban check, got %d", banChecker.checkBanCalls)
+	}
+	if len(banChecker.bans) != 1 || banChecker.bans[0].messageID != 77 {
+		t.Fatalf("expected banned bot cleanup to include join message id 77, got %#v", banChecker.bans)
+	}
+	deleteMessages := recorder.byMethod(testTelegramMethodDeleteMessage)
+	if len(deleteMessages) != 1 || deleteMessages[0].form.Get("message_id") != "77" {
+		t.Fatalf("expected join message 77 to be deleted, got %#v", deleteMessages)
+	}
+	if len(recorder.byMethod(testTelegramMethodSendMessage)) != 0 {
+		t.Fatalf("expected no captcha or greeting messages for bot, got %d", len(recorder.byMethod(testTelegramMethodSendMessage)))
+	}
+	joiner := store.recentJoiner(t, groupChat.ID, user.ID)
+	if !joiner.Processed || !joiner.IsSpammer {
+		t.Fatalf("expected bot joiner to be processed as spammer, got %#v", joiner)
+	}
+}
+
 func TestJoinRequestCaptchaSuccessHandoffSkipsSecondCaptchaAndSendsGreetingOnce(t *testing.T) {
 	t.Parallel()
 

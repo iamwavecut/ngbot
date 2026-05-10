@@ -20,6 +20,7 @@ type testBotService struct {
 	botAPI         *api.BotAPI
 	isMember       bool
 	language       string
+	settings       *db.Settings
 	insertedMember int
 }
 
@@ -48,7 +49,7 @@ func (s *testBotService) DeleteMember(context.Context, int64, int64) error {
 }
 
 func (s *testBotService) GetSettings(context.Context, int64) (*db.Settings, error) {
-	return nil, nil
+	return s.settings, nil
 }
 
 func (s *testBotService) SetSettings(context.Context, *db.Settings) error {
@@ -95,12 +96,14 @@ func (s *testReactorStore) DeleteChatKnownNonMember(_ context.Context, chatID in
 }
 
 type testSpamDetector struct {
-	calls  int
-	result *bool
+	calls    int
+	messages []string
+	result   *bool
 }
 
-func (d *testSpamDetector) IsSpam(context.Context, string, []string) (*bool, error) {
+func (d *testSpamDetector) IsSpam(_ context.Context, message string, _ []string) (*bool, error) {
 	d.calls++
+	d.messages = append(d.messages, message)
 	return d.result, nil
 }
 
@@ -236,27 +239,15 @@ func TestSpamVoteCallbackUsesSpamCaseChatSettings(t *testing.T) {
 	}
 }
 
-func TestReactionCountModeratesStoredMessageAuthor(t *testing.T) {
+func TestReactionCountDoesNotModerateStoredMessageAuthor(t *testing.T) {
 	t.Parallel()
 
-	var bannedUserID string
 	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
-		if err := r.ParseForm(); err != nil {
-			t.Fatalf("parse form: %v", err)
-		}
-		switch method {
-		case testTelegramMethodDeleteMessage:
-			return true
-		case "banChatMember":
-			bannedUserID = r.Form.Get("user_id")
-			return true
-		default:
-			t.Fatalf("unexpected bot method: %s", method)
-			return nil
-		}
+		t.Fatalf("unexpected bot method: %s", method)
+		return nil
 	})
 
-	service := &testBotService{botAPI: botAPI}
+	service := &testBotService{botAPI: botAPI, settings: db.DefaultSettings(-100)}
 	reactor := &Reactor{
 		s:           service,
 		store:       &testReactorStore{},
@@ -294,9 +285,6 @@ func TestReactionCountModeratesStoredMessageAuthor(t *testing.T) {
 	}
 	if !proceed {
 		t.Fatal("expected handler to proceed")
-	}
-	if bannedUserID != "200" {
-		t.Fatalf("expected stored message author to be banned, got user_id %q", bannedUserID)
 	}
 }
 

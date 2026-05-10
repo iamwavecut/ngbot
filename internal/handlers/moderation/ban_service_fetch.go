@@ -14,20 +14,6 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-func fetchURLs(ctx context.Context, client *http.Client, urls []string) (map[int64]struct{}, error) {
-	results := make(map[int64]struct{})
-	for _, url := range urls {
-		ids, err := fetchURLWithRetry(ctx, client, url)
-		if err != nil {
-			return nil, err
-		}
-		for userID := range ids {
-			results[userID] = struct{}{}
-		}
-	}
-	return results, nil
-}
-
 func fetchProviderURLs(ctx context.Context, client *http.Client, providers []banlistProvider, urlsForProvider func(banlistProvider) []string) (map[int64]struct{}, error) {
 	results := make(map[int64]struct{})
 	var failures []error

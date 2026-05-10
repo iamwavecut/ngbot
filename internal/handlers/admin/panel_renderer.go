@@ -48,6 +48,7 @@ func (a *Admin) renderPanel(ctx context.Context, session *db.AdminPanelSession, 
 		GatekeeperGreetingEnabled: settings.GatekeeperGreetingEnabled,
 		GatekeeperEffective:       settings.GatekeeperEnabled && (settings.GatekeeperCaptchaEnabled || settings.GatekeeperGreetingEnabled),
 		LLMFirstMessageEnabled:    settings.LLMFirstMessageEnabled,
+		ReactionModerationEnabled: settings.ReactionModerationEnabled,
 		CommunityVotingEnabled:    settings.CommunityVotingEnabled,
 	}
 	state.Language = settings.Language
@@ -83,6 +84,8 @@ func (a *Admin) renderPanel(ctx context.Context, session *db.AdminPanelSession, 
 		return a.renderGatekeeperGreetingPrompt(ctx, session, state)
 	case panelPageLLM:
 		return a.renderLLM(ctx, session, state)
+	case panelPageReactionModeration:
+		return a.renderReactionModeration(ctx, session, state)
 	case panelPageExamplesList:
 		return a.renderExamplesList(ctx, session, state)
 	case panelPageExampleDetail:

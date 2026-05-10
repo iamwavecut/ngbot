@@ -48,6 +48,7 @@ func newPanelState(userID int64, chatID int64, chatTitle string, settings *db.Se
 			GatekeeperGreetingEnabled: settings.GatekeeperGreetingEnabled,
 			GatekeeperEffective:       settings.GatekeeperEnabled && (settings.GatekeeperCaptchaEnabled || settings.GatekeeperGreetingEnabled),
 			LLMFirstMessageEnabled:    settings.LLMFirstMessageEnabled,
+			ReactionModerationEnabled: settings.ReactionModerationEnabled,
 			CommunityVotingEnabled:    settings.CommunityVotingEnabled,
 		},
 	}

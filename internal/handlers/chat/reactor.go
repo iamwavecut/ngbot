@@ -119,12 +119,16 @@ func (r *Reactor) Handle(ctx context.Context, u *api.Update, chat *api.Chat, use
 		return r.handleCallbackQuery(ctx, u, chat, user)
 	}
 
+	if u.MessageReaction != nil {
+		return r.handleMessageReaction(ctx, u.MessageReaction, chat, settings)
+	}
+
 	if u.MessageReactionCount != nil {
 		if chat == nil {
 			entry.Debug("missing chat for reaction update")
 			return true, nil
 		}
-		return r.handleReaction(ctx, u.MessageReactionCount, chat)
+		return r.handleReactionCount(ctx, u.MessageReactionCount, chat, settings)
 	}
 
 	if u.Message != nil {

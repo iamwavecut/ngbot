@@ -3,6 +3,8 @@ package sqlite
 import (
 	"context"
 	"testing"
+
+	"github.com/iamwavecut/ngbot/internal/db"
 )
 
 func TestSpamCasesIndexesExistAfterMigrations(t *testing.T) {
@@ -129,5 +131,29 @@ func TestChatKnownNonMemberPrimaryKeyIndexExistsAfterMigrations(t *testing.T) {
 	}
 	if !foundPrimaryKeyIndex {
 		t.Fatal("expected chat_known_non_members primary key index to exist")
+	}
+}
+
+func TestReactionModerationSettingDefaultsToEnabledAfterMigrations(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	client, err := NewSQLiteClient(ctx, t.TempDir(), "test.db")
+	if err != nil {
+		t.Fatalf("new sqlite client: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+
+	settings := db.DefaultSettings(42)
+	if err := client.SetSettings(ctx, settings); err != nil {
+		t.Fatalf("set settings: %v", err)
+	}
+
+	got, err := client.GetSettings(ctx, 42)
+	if err != nil {
+		t.Fatalf("get settings: %v", err)
+	}
+	if !got.ReactionModerationEnabled {
+		t.Fatal("expected reaction moderation to default to enabled")
 	}
 }

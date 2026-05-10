@@ -58,6 +58,12 @@ func (a *Admin) renderHome(ctx context.Context, session *db.AdminPanelSession, s
 		return "", nil, err
 	}
 
+	reactionLabel := fmt.Sprintf("%s %s", statusEmoji(state.Features.ReactionModerationEnabled), i18n.Get("Reaction Moderation", lang))
+	reactionBtn, err := a.commandButton(ctx, session.ID, reactionLabel, panelCommand{Action: panelActionOpenReactionModeration})
+	if err != nil {
+		return "", nil, err
+	}
+
 	indulgenceCount, err := a.store.CountChatNotSpammerOverrides(ctx, session.ChatID)
 	if err != nil {
 		return "", nil, err
@@ -78,7 +84,7 @@ func (a *Admin) renderHome(ctx context.Context, session *db.AdminPanelSession, s
 		return "", nil, err
 	}
 
-	rows := make([][]api.InlineKeyboardButton, 0, 7)
+	rows := make([][]api.InlineKeyboardButton, 0, 8)
 	showRecommendedProtection, err := a.shouldShowRecommendedProtection(ctx, state)
 	if err != nil {
 		return "", nil, err
@@ -94,6 +100,7 @@ func (a *Admin) renderHome(ctx context.Context, session *db.AdminPanelSession, s
 		api.NewInlineKeyboardRow(languageBtn),
 		api.NewInlineKeyboardRow(gatekeeperBtn),
 		api.NewInlineKeyboardRow(llmBtn),
+		api.NewInlineKeyboardRow(reactionBtn),
 		api.NewInlineKeyboardRow(indulgenceBtn),
 		api.NewInlineKeyboardRow(votingBtn),
 		api.NewInlineKeyboardRow(closeBtn),
@@ -438,6 +445,32 @@ func (a *Admin) renderLLM(ctx context.Context, session *db.AdminPanelSession, st
 	keyboard := api.NewInlineKeyboardMarkup(
 		api.NewInlineKeyboardRow(toggleBtn),
 		api.NewInlineKeyboardRow(examplesBtn),
+		api.NewInlineKeyboardRow(backBtn),
+	)
+	return text, &keyboard, nil
+}
+
+func (a *Admin) renderReactionModeration(ctx context.Context, session *db.AdminPanelSession, state *panelState) (string, *api.InlineKeyboardMarkup, error) {
+	lang := state.Language
+	text := fmt.Sprintf(
+		"%s\n\n%s %s",
+		i18n.Get("Reaction Moderation", lang),
+		statusEmoji(state.Features.ReactionModerationEnabled),
+		i18n.Get("Reaction Moderation", lang),
+	)
+	text = appendPanelHelp(text, lang, i18n.Get("What this is: profile-based reaction moderation module. Where used: analysis of suspicious reaction authors in public chats. Value meaning: Master Switch enables profile spam checks and reaction cleanup.", lang))
+
+	toggleBtn, err := a.commandButton(ctx, session.ID, fmt.Sprintf("%s %s", statusEmoji(state.Features.ReactionModerationEnabled), i18n.Get("Reaction Moderation", lang)), panelCommand{Action: panelActionToggleFeature, Feature: panelFeatureReactions})
+	if err != nil {
+		return "", nil, err
+	}
+	backBtn, err := a.commandButton(ctx, session.ID, "↩️", panelCommand{Action: panelActionBack})
+	if err != nil {
+		return "", nil, err
+	}
+
+	keyboard := api.NewInlineKeyboardMarkup(
+		api.NewInlineKeyboardRow(toggleBtn),
 		api.NewInlineKeyboardRow(backBtn),
 	)
 	return text, &keyboard, nil

@@ -13,6 +13,7 @@ const (
 	panelPageGatekeeperGreeting         panelPage = "GatekeeperGreeting"
 	panelPageGatekeeperGreetingPrompt   panelPage = "GatekeeperGreetingPrompt"
 	panelPageLLM                        panelPage = "LLM"
+	panelPageReactionModeration         panelPage = "ReactionModeration"
 	panelPageExamplesList               panelPage = "ExamplesList"
 	panelPageExampleDetail              panelPage = "ExampleDetail"
 	panelPageExamplePrompt              panelPage = "ExamplePrompt"
@@ -35,6 +36,7 @@ const (
 	panelActionApplyRecommendedProtection     = "apply_recommended_protection"
 	panelActionOpenGatekeeper                 = "open_gatekeeper"
 	panelActionOpenLLM                        = "open_llm"
+	panelActionOpenReactionModeration         = "open_reaction_moderation"
 	panelActionOpenVoting                     = "open_voting"
 	panelActionOpenGatekeeperCaptcha          = "open_gatekeeper_captcha"
 	panelActionOpenGatekeeperGreeting         = "open_gatekeeper_greeting"
@@ -84,6 +86,7 @@ const (
 const (
 	panelFeatureGatekeeper = "gatekeeper"
 	panelFeatureLLMFirst   = "llm_first_message"
+	panelFeatureReactions  = "reaction_moderation"
 	panelFeatureVoting     = "community_voting"
 )
 
@@ -93,6 +96,7 @@ type panelFeatureFlags struct {
 	GatekeeperGreetingEnabled bool `json:"gatekeeper_greeting_enabled"`
 	GatekeeperEffective       bool `json:"gatekeeper_effective"`
 	LLMFirstMessageEnabled    bool `json:"llm_first_message_enabled"`
+	ReactionModerationEnabled bool `json:"reaction_moderation_enabled"`
 	CommunityVotingEnabled    bool `json:"community_voting_enabled"`
 }
 

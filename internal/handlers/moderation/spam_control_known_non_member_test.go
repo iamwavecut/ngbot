@@ -55,6 +55,8 @@ func (s *testModerationService) GetLanguage(context.Context, int64, *api.User) s
 type testModerationStore struct {
 	spamCase              *db.SpamCase
 	votes                 []*db.SpamVote
+	recentJoiners         []*db.RecentJoiner
+	processedJoiners      [][3]int64
 	deletedKnownNonMember [][2]int64
 }
 
@@ -91,6 +93,25 @@ func (s *testModerationStore) GetSpamVotes(context.Context, int64) ([]*db.SpamVo
 
 func (s *testModerationStore) GetMembers(context.Context, int64) ([]int64, error) {
 	return nil, nil
+}
+
+func (s *testModerationStore) GetChatRecentJoiners(_ context.Context, chatID int64) ([]*db.RecentJoiner, error) {
+	joiners := make([]*db.RecentJoiner, 0)
+	for _, joiner := range s.recentJoiners {
+		if joiner.ChatID == chatID {
+			joiners = append(joiners, joiner)
+		}
+	}
+	return joiners, nil
+}
+
+func (s *testModerationStore) ProcessRecentJoiner(_ context.Context, chatID int64, userID int64, isSpammer bool) error {
+	spammer := int64(0)
+	if isSpammer {
+		spammer = 1
+	}
+	s.processedJoiners = append(s.processedJoiners, [3]int64{chatID, userID, spammer})
+	return nil
 }
 
 func (s *testModerationStore) DeleteChatKnownNonMember(_ context.Context, chatID int64, userID int64) error {
@@ -221,12 +242,86 @@ func TestProcessBannedMessageClearsKnownNonMember(t *testing.T) {
 	}
 }
 
+func TestProcessBannedBotMessageDeletesRecentJoinServiceMessage(t *testing.T) {
+	t.Parallel()
+
+	var deletedMessageIDs []string
+	botAPI := newModerationTestBotAPI(t, func(method string, r *http.Request) any {
+		switch method {
+		case testTelegramMethodDeleteMessage:
+			if err := r.ParseForm(); err != nil {
+				t.Fatalf("parse form: %v", err)
+			}
+			deletedMessageIDs = append(deletedMessageIDs, r.Form.Get("message_id"))
+			return true
+		case testTelegramMethodBanChatMember:
+			return true
+		case testTelegramMethodSendMessage:
+			return map[string]any{
+				"message_id": 700,
+				"date":       0,
+				"chat": map[string]any{
+					"id":   -100,
+					"type": "group",
+				},
+			}
+		default:
+			t.Fatalf("unexpected bot method: %s", method)
+			return nil
+		}
+	})
+
+	store := &testModerationStore{
+		recentJoiners: []*db.RecentJoiner{{
+			ChatID:        -100,
+			UserID:        200,
+			Username:      "spam_bot",
+			JoinMessageID: 77,
+			JoinedAt:      time.Now(),
+		}},
+	}
+	sc := &SpamControl{
+		s:          &testModerationService{botAPI: botAPI},
+		store:      store,
+		config:     config.SpamControl{SuspectNotificationTimeout: time.Hour},
+		banService: &testModerationBanService{},
+	}
+
+	msg := &api.Message{
+		MessageID: 40,
+		Chat:      api.Chat{ID: -100, Type: "group"},
+		From:      &api.User{ID: 200, IsBot: true, UserName: "spam_bot"},
+		Text:      "spam message",
+	}
+
+	if _, err := sc.ProcessBannedMessage(context.Background(), msg, &msg.Chat, "en"); err != nil {
+		t.Fatalf("ProcessBannedMessage returned error: %v", err)
+	}
+
+	if len(deletedMessageIDs) != 2 {
+		t.Fatalf("expected spam message and join service message deletes, got %#v", deletedMessageIDs)
+	}
+	if deletedMessageIDs[0] != "40" || deletedMessageIDs[1] != "77" {
+		t.Fatalf("unexpected deleted messages: %#v", deletedMessageIDs)
+	}
+	if len(store.processedJoiners) != 1 || store.processedJoiners[0] != [3]int64{-100, 200, 1} {
+		t.Fatalf("expected spammer recent joiner to be processed, got %#v", store.processedJoiners)
+	}
+}
+
 func TestResolveCaseSpamClearsKnownNonMember(t *testing.T) {
 	t.Parallel()
 
+	var deletedMessageIDs []string
 	botAPI := newModerationTestBotAPI(t, func(method string, r *http.Request) any {
 		switch method {
 		case testTelegramMethodBanChatMember:
+			return true
+		case testTelegramMethodDeleteMessage:
+			if err := r.ParseForm(); err != nil {
+				t.Fatalf("parse form: %v", err)
+			}
+			deletedMessageIDs = append(deletedMessageIDs, r.Form.Get("message_id"))
 			return true
 		default:
 			t.Fatalf("unexpected bot method: %s", method)
@@ -247,6 +342,13 @@ func TestResolveCaseSpamClearsKnownNonMember(t *testing.T) {
 			{Vote: false},
 			{Vote: true},
 		},
+		recentJoiners: []*db.RecentJoiner{{
+			ChatID:        100,
+			UserID:        200,
+			Username:      "guest",
+			JoinMessageID: 77,
+			JoinedAt:      time.Now(),
+		}},
 	}
 	sc := &SpamControl{
 		s:          &testModerationService{botAPI: botAPI},
@@ -264,6 +366,12 @@ func TestResolveCaseSpamClearsKnownNonMember(t *testing.T) {
 	}
 	if got := store.deletedKnownNonMember[0]; got != [2]int64{100, 200} {
 		t.Fatalf("unexpected delete target: %#v", got)
+	}
+	if len(deletedMessageIDs) != 1 || deletedMessageIDs[0] != "77" {
+		t.Fatalf("expected join service message 77 to be deleted, got %#v", deletedMessageIDs)
+	}
+	if len(store.processedJoiners) != 1 || store.processedJoiners[0] != [3]int64{100, 200, 1} {
+		t.Fatalf("expected spammer recent joiner to be processed, got %#v", store.processedJoiners)
 	}
 	if store.spamCase == nil || store.spamCase.Status != spamCaseStatusSpam {
 		t.Fatalf("expected spam case to be resolved as spam, got %#v", store.spamCase)
