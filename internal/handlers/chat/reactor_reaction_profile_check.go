@@ -3,7 +3,6 @@ package handlers
 import (
 	"context"
 	"fmt"
-	"slices"
 	"strings"
 
 	api "github.com/OvyFlash/telegram-bot-api"
@@ -22,11 +21,11 @@ func (r *Reactor) handleMessageReaction(ctx context.Context, reaction *api.Messa
 		"chat_title": chat.Title,
 	})
 
-	if settings != nil && !settings.ReactionModerationEnabled {
-		entry.Debug("reaction moderation is disabled")
+	if settings != nil && !settings.ReactionProfileCheckEnabled {
+		entry.Debug("reaction profile check is disabled")
 		return true, nil
 	}
-	if !r.hasNewFlaggedReaction(reaction) {
+	if len(reaction.NewReaction) == 0 {
 		return true, nil
 	}
 
@@ -46,51 +45,6 @@ func (r *Reactor) handleMessageReaction(ctx context.Context, reaction *api.Messa
 	return true, nil
 }
 
-func (r *Reactor) handleReactionCount(_ context.Context, reactions *api.MessageReactionCountUpdated, _ *api.Chat, settings *db.Settings) (bool, error) {
-	entry := r.getLogEntry().WithFields(log.Fields{
-		"method":    "handleReactionCount",
-		"messageID": reactions.MessageID,
-	})
-	if settings != nil && !settings.ReactionModerationEnabled {
-		entry.Debug("reaction moderation is disabled")
-		return true, nil
-	}
-
-	flaggedCount := 0
-	for _, react := range reactions.Reactions {
-		emoji := r.getEmojiFromReaction(react.Type)
-		if slices.Contains(r.config.FlaggedEmojis, emoji) {
-			flaggedCount += react.TotalCount
-		}
-	}
-
-	entry.WithField("flaggedCount", flaggedCount).Debug("Counted flagged reactions")
-	return true, nil
-}
-
-func (r *Reactor) hasNewFlaggedReaction(reaction *api.MessageReactionUpdated) bool {
-	if reaction == nil {
-		return false
-	}
-	oldFlagged := map[string]struct{}{}
-	for _, react := range reaction.OldReaction {
-		emoji := r.getEmojiFromReaction(react)
-		if slices.Contains(r.config.FlaggedEmojis, emoji) {
-			oldFlagged[emoji] = struct{}{}
-		}
-	}
-	for _, react := range reaction.NewReaction {
-		emoji := r.getEmojiFromReaction(react)
-		if !slices.Contains(r.config.FlaggedEmojis, emoji) {
-			continue
-		}
-		if _, ok := oldFlagged[emoji]; !ok {
-			return true
-		}
-	}
-	return false
-}
-
 func (r *Reactor) moderateReactionUser(ctx context.Context, reaction *api.MessageReactionUpdated, chat *api.Chat, user *api.User, entry *log.Entry) error {
 	entry = entry.WithFields(log.Fields{
 		"actor_type": "user",
@@ -103,7 +57,16 @@ func (r *Reactor) moderateReactionUser(ctx context.Context, reaction *api.Messag
 		return fmt.Errorf("check reaction user membership: %w", err)
 	}
 	if isMember {
-		entry.Debug("skipping reaction moderation for known member")
+		entry.Debug("skipping reaction profile check for known member")
+		return nil
+	}
+
+	isKnownNonMember, err := r.store.IsChatKnownNonMember(ctx, chat.ID, user.ID)
+	if err != nil {
+		return fmt.Errorf("check reaction user known non-member state: %w", err)
+	}
+	if isKnownNonMember {
+		entry.Debug("skipping reaction profile check for remembered non-member")
 		return nil
 	}
 
@@ -117,7 +80,7 @@ func (r *Reactor) moderateReactionUser(ctx context.Context, reaction *api.Messag
 		if insertErr := r.s.InsertMember(ctx, chat.ID, user.ID); insertErr != nil {
 			entry.WithError(insertErr).Warn("failed to remember reaction user as member")
 		}
-		entry.Debug("skipping reaction moderation for Telegram-confirmed member")
+		entry.Debug("skipping reaction profile check for Telegram-confirmed member")
 		return nil
 	}
 	if err != nil {
@@ -142,7 +105,17 @@ func (r *Reactor) moderateReactionUser(ctx context.Context, reaction *api.Messag
 	if err != nil {
 		return fmt.Errorf("check reaction user profile spam: %w", err)
 	}
-	if isSpam == nil || !*isSpam {
+	if isSpam == nil {
+		entry.Debug("reaction user profile spam check returned no decision")
+		return nil
+	}
+	if !*isSpam {
+		if upsertErr := r.store.UpsertChatKnownNonMember(ctx, &db.ChatKnownNonMember{
+			ChatID: chat.ID,
+			UserID: user.ID,
+		}); upsertErr != nil {
+			entry.WithError(upsertErr).Warn("failed to remember clean reaction user as non-member")
+		}
 		entry.Debug("reaction user profile is not spam")
 		return nil
 	}
@@ -296,27 +269,4 @@ func chatProfileText(info api.ChatFullInfo) []string {
 		}
 	}
 	return parts
-}
-
-func (r *Reactor) getEmojiFromReaction(react api.ReactionType) string {
-	entry := r.getLogEntry().WithFields(log.Fields{
-		"method": "getEmojiFromReaction",
-	})
-
-	if !react.IsCustomEmoji() {
-		return react.Emoji
-	}
-
-	emojiStickers, err := r.s.GetBot().GetCustomEmojiStickers(api.GetCustomEmojiStickersConfig{
-		CustomEmojiIDs: []string{react.CustomEmoji},
-	})
-	if err != nil {
-		entry.WithField("error", err.Error()).Error("Failed to get custom emoji sticker")
-		return react.Emoji
-	}
-	if len(emojiStickers) == 0 {
-		entry.Debug("custom emoji sticker lookup returned no stickers")
-		return react.Emoji
-	}
-	return emojiStickers[0].Emoji
 }

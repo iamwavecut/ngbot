@@ -21,7 +21,6 @@ type (
 		DotPath          string   `env:"DOT_PATH,default=~/.ngbot"`
 		Telegram         Telegram
 		LLM              LLM
-		Reactor          Reactor
 		SpamControl      SpamControl
 	}
 
@@ -36,10 +35,6 @@ type (
 		Model   string `env:"LLM_API_MODEL,default=gpt-4o-mini"`
 		BaseURL string `env:"LLM_API_URL,default=https://api.openai.com/v1"`
 		Type    string `env:"LLM_API_TYPE,default=openai"`
-	}
-
-	Reactor struct {
-		FlaggedEmojis []string `env:"FLAGGED_EMOJIS,default=👎,💩"`
 	}
 
 	SpamControl struct {

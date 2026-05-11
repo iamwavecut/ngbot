@@ -18,7 +18,7 @@ func TestApplyRecommendedProtectionSettings(t *testing.T) {
 	settings.GatekeeperCaptchaEnabled = false
 	settings.GatekeeperGreetingEnabled = true
 	settings.LLMFirstMessageEnabled = false
-	settings.ReactionModerationEnabled = false
+	settings.ReactionProfileCheckEnabled = false
 	settings.CommunityVotingEnabled = true
 
 	applyRecommendedProtectionSettings(settings)
@@ -38,8 +38,8 @@ func TestApplyRecommendedProtectionSettings(t *testing.T) {
 	if !settings.LLMFirstMessageEnabled {
 		t.Fatalf("expected LLM first message to be enabled")
 	}
-	if !settings.ReactionModerationEnabled {
-		t.Fatalf("expected reaction moderation to be enabled")
+	if !settings.ReactionProfileCheckEnabled {
+		t.Fatalf("expected reaction profile check to be enabled")
 	}
 	if settings.CommunityVotingEnabled {
 		t.Fatalf("expected community voting to be disabled")
@@ -51,12 +51,12 @@ func TestHasRecommendedProtection(t *testing.T) {
 
 	state := &panelState{
 		Features: panelFeatureFlags{
-			GatekeeperEnabled:         true,
-			GatekeeperCaptchaEnabled:  true,
-			GatekeeperGreetingEnabled: false,
-			LLMFirstMessageEnabled:    true,
-			ReactionModerationEnabled: true,
-			CommunityVotingEnabled:    false,
+			GatekeeperEnabled:           true,
+			GatekeeperCaptchaEnabled:    true,
+			GatekeeperGreetingEnabled:   false,
+			LLMFirstMessageEnabled:      true,
+			ReactionProfileCheckEnabled: true,
+			CommunityVotingEnabled:      false,
 		},
 		ChallengeTimeout: (3 * time.Minute).Nanoseconds(),
 		RejectTimeout:    (10 * time.Minute).Nanoseconds(),
@@ -72,7 +72,7 @@ func TestHasRecommendedProtection(t *testing.T) {
 	}
 }
 
-func TestToggleFeatureTogglesReactionModeration(t *testing.T) {
+func TestToggleFeatureTogglesReactionProfileCheck(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -91,19 +91,47 @@ func TestToggleFeatureTogglesReactionModeration(t *testing.T) {
 	state := newPanelState(7, 42, "chat", settings)
 	session := &db.AdminPanelSession{ChatID: 42}
 
-	if err := admin.toggleFeature(ctx, session, &state, panelFeatureReactions); err != nil {
-		t.Fatalf("toggle reaction moderation: %v", err)
+	if err := admin.toggleFeature(ctx, session, &state, panelFeatureReactionProfileCheck); err != nil {
+		t.Fatalf("toggle reaction profile check: %v", err)
 	}
 
 	got, err := client.GetSettings(ctx, 42)
 	if err != nil {
 		t.Fatalf("get settings: %v", err)
 	}
-	if got.ReactionModerationEnabled {
-		t.Fatal("expected reaction moderation to be disabled after toggle")
+	if got.ReactionProfileCheckEnabled {
+		t.Fatal("expected reaction profile check to be disabled after toggle")
 	}
-	if state.Features.ReactionModerationEnabled {
-		t.Fatal("expected panel state to sync disabled reaction moderation")
+	if state.Features.ReactionProfileCheckEnabled {
+		t.Fatal("expected panel state to sync disabled reaction profile check")
+	}
+}
+
+func TestRenderPanelFallsBackUnknownPageToHome(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	client, err := sqlite.NewSQLiteClient(ctx, t.TempDir(), "test.db")
+	if err != nil {
+		t.Fatalf("new sqlite client: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+
+	settings := db.DefaultSettings(42)
+	if err := client.SetSettings(ctx, settings); err != nil {
+		t.Fatalf("set settings: %v", err)
+	}
+
+	admin := &Admin{s: testAdminService{db: client}, store: client}
+	state := newPanelState(7, 42, "chat", settings)
+	state.Page = panelPage("ReactionModeration")
+	session := &db.AdminPanelSession{ID: 1, ChatID: 42}
+
+	if _, _, err := admin.renderPanel(ctx, session, &state); err != nil {
+		t.Fatalf("render panel: %v", err)
+	}
+	if state.Page != panelPageHome {
+		t.Fatalf("expected unknown page to normalize to home, got %q", state.Page)
 	}
 }
 

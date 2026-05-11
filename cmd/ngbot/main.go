@@ -223,9 +223,7 @@ func buildRuntime(ctx context.Context, cfg *config.Config, errChan chan<- shutdo
 	spamDetector := moderationHandlers.NewSpamDetector(llmAPI, log.WithField("context", "spam_detector"))
 
 	reactorHandler := chatHandlers.NewReactor(service, banService, spamControl, spamDetector, chatHandlers.Config{
-		FlaggedEmojis: cfg.Reactor.FlaggedEmojis,
-		OpenAIModel:   cfg.LLM.Model,
-		SpamControl:   cfg.SpamControl,
+		SpamControl: cfg.SpamControl,
 	})
 
 	bot.RegisterUpdateHandler("gatekeeper", gatekeeperHandler)
@@ -290,7 +288,7 @@ func configureUpdates(pollTimeout time.Duration) api.UpdateConfig {
 	updateConfig.Timeout = durationSecondsCeil(pollTimeout)
 	updateConfig.AllowedUpdates = []string{
 		"message", "edited_message", "channel_post", "edited_channel_post",
-		"message_reaction", "message_reaction_count", "inline_query",
+		"message_reaction", "inline_query",
 		"chosen_inline_result", "callback_query", "shipping_query",
 		"pre_checkout_query", "poll", "poll_answer", "my_chat_member",
 		"chat_member", "chat_join_request",

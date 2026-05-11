@@ -43,13 +43,13 @@ func (a *Admin) renderPanel(ctx context.Context, session *db.AdminPanelSession, 
 		return "", nil, err
 	}
 	state.Features = panelFeatureFlags{
-		GatekeeperEnabled:         settings.GatekeeperEnabled,
-		GatekeeperCaptchaEnabled:  settings.GatekeeperCaptchaEnabled,
-		GatekeeperGreetingEnabled: settings.GatekeeperGreetingEnabled,
-		GatekeeperEffective:       settings.GatekeeperEnabled && (settings.GatekeeperCaptchaEnabled || settings.GatekeeperGreetingEnabled),
-		LLMFirstMessageEnabled:    settings.LLMFirstMessageEnabled,
-		ReactionModerationEnabled: settings.ReactionModerationEnabled,
-		CommunityVotingEnabled:    settings.CommunityVotingEnabled,
+		GatekeeperEnabled:           settings.GatekeeperEnabled,
+		GatekeeperCaptchaEnabled:    settings.GatekeeperCaptchaEnabled,
+		GatekeeperGreetingEnabled:   settings.GatekeeperGreetingEnabled,
+		GatekeeperEffective:         settings.GatekeeperEnabled && (settings.GatekeeperCaptchaEnabled || settings.GatekeeperGreetingEnabled),
+		LLMFirstMessageEnabled:      settings.LLMFirstMessageEnabled,
+		ReactionProfileCheckEnabled: settings.ReactionProfileCheckEnabled,
+		CommunityVotingEnabled:      settings.CommunityVotingEnabled,
 	}
 	state.Language = settings.Language
 	state.GatekeeperCaptchaOptionsCount = settings.GatekeeperCaptchaOptionsCount
@@ -84,8 +84,8 @@ func (a *Admin) renderPanel(ctx context.Context, session *db.AdminPanelSession, 
 		return a.renderGatekeeperGreetingPrompt(ctx, session, state)
 	case panelPageLLM:
 		return a.renderLLM(ctx, session, state)
-	case panelPageReactionModeration:
-		return a.renderReactionModeration(ctx, session, state)
+	case panelPageReactionProfileCheck:
+		return a.renderReactionProfileCheck(ctx, session, state)
 	case panelPageExamplesList:
 		return a.renderExamplesList(ctx, session, state)
 	case panelPageExampleDetail:
@@ -115,6 +115,7 @@ func (a *Admin) renderPanel(ctx context.Context, session *db.AdminPanelSession, 
 	case panelPageConfirmClose:
 		return a.renderConfirmClose(ctx, session, state)
 	default:
+		state.Page = panelPageHome
 		return a.renderHome(ctx, session, state)
 	}
 }

@@ -118,8 +118,6 @@ func (up *UpdateProcessor) Process(ctx context.Context, u *api.Update) error {
 				chat = &u.ChatMember.Chat
 			case u.MessageReaction != nil:
 				chat = &u.MessageReaction.Chat
-			case u.MessageReactionCount != nil:
-				chat = &u.MessageReactionCount.Chat
 			}
 		}
 

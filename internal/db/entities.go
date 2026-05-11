@@ -17,7 +17,7 @@ type (
 		GatekeeperCaptchaOptionsCount           int    `db:"gatekeeper_captcha_options_count"`
 		GatekeeperGreetingText                  string `db:"gatekeeper_greeting_text"`
 		LLMFirstMessageEnabled                  bool   `db:"llm_first_message_enabled"`
-		ReactionModerationEnabled               bool   `db:"reaction_moderation_enabled"`
+		ReactionProfileCheckEnabled             bool   `db:"reaction_profile_check_enabled"`
 		CommunityVotingEnabled                  bool   `db:"community_voting_enabled"`
 		CommunityVotingTimeoutOverrideNS        int64  `db:"community_voting_timeout_override_ns"`
 		CommunityVotingMinVotersOverride        int    `db:"community_voting_min_voters_override"`

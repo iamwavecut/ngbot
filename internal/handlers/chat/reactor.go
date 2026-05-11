@@ -22,10 +22,7 @@ type SpamDetectorInterface interface {
 }
 
 type Config struct {
-	FlaggedEmojis   []string
-	CheckUserAPIURL string
-	OpenAIModel     string
-	SpamControl     config.SpamControl
+	SpamControl config.SpamControl
 }
 
 type MessageProcessingStage string
@@ -121,14 +118,6 @@ func (r *Reactor) Handle(ctx context.Context, u *api.Update, chat *api.Chat, use
 
 	if u.MessageReaction != nil {
 		return r.handleMessageReaction(ctx, u.MessageReaction, chat, settings)
-	}
-
-	if u.MessageReactionCount != nil {
-		if chat == nil {
-			entry.Debug("missing chat for reaction update")
-			return true, nil
-		}
-		return r.handleReactionCount(ctx, u.MessageReactionCount, chat, settings)
 	}
 
 	if u.Message != nil {

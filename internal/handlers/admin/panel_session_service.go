@@ -43,13 +43,13 @@ func newPanelState(userID int64, chatID int64, chatTitle string, settings *db.Se
 		ListPage:                                0,
 		LanguagePage:                            0,
 		Features: panelFeatureFlags{
-			GatekeeperEnabled:         settings.GatekeeperEnabled,
-			GatekeeperCaptchaEnabled:  settings.GatekeeperCaptchaEnabled,
-			GatekeeperGreetingEnabled: settings.GatekeeperGreetingEnabled,
-			GatekeeperEffective:       settings.GatekeeperEnabled && (settings.GatekeeperCaptchaEnabled || settings.GatekeeperGreetingEnabled),
-			LLMFirstMessageEnabled:    settings.LLMFirstMessageEnabled,
-			ReactionModerationEnabled: settings.ReactionModerationEnabled,
-			CommunityVotingEnabled:    settings.CommunityVotingEnabled,
+			GatekeeperEnabled:           settings.GatekeeperEnabled,
+			GatekeeperCaptchaEnabled:    settings.GatekeeperCaptchaEnabled,
+			GatekeeperGreetingEnabled:   settings.GatekeeperGreetingEnabled,
+			GatekeeperEffective:         settings.GatekeeperEnabled && (settings.GatekeeperCaptchaEnabled || settings.GatekeeperGreetingEnabled),
+			LLMFirstMessageEnabled:      settings.LLMFirstMessageEnabled,
+			ReactionProfileCheckEnabled: settings.ReactionProfileCheckEnabled,
+			CommunityVotingEnabled:      settings.CommunityVotingEnabled,
 		},
 	}
 	return state

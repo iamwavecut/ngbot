@@ -75,7 +75,6 @@ func TestHandleMessageReactionModeratesUnknownUserProfileSpam(t *testing.T) {
 	reactor := &Reactor{
 		s:            &testBotService{botAPI: botAPI, settings: settings},
 		store:        &testReactorStore{},
-		config:       Config{FlaggedEmojis: []string{"👎"}},
 		spamDetector: detector,
 		banService:   &testBanService{},
 		lastResults:  make(map[int64]*MessageProcessingResult),
@@ -89,7 +88,7 @@ func TestHandleMessageReactionModeratesUnknownUserProfileSpam(t *testing.T) {
 			User:      user,
 			NewReaction: []api.ReactionType{{
 				Type:  api.ReactionTypeEmoji,
-				Emoji: "👎",
+				Emoji: "❤",
 			}},
 		},
 	}
@@ -112,6 +111,74 @@ func TestHandleMessageReactionModeratesUnknownUserProfileSpam(t *testing.T) {
 	}
 	if bannedUserID != "777" {
 		t.Fatalf("expected user 777 to be banned, got %q", bannedUserID)
+	}
+}
+
+func TestHandleMessageReactionRemembersUnknownUserProfileNotSpam(t *testing.T) {
+	t.Parallel()
+
+	chat := &api.Chat{ID: -100123, Type: "supergroup", Title: "Wave Club"}
+	settings := db.DefaultSettings(chat.ID)
+	user := &api.User{ID: 777, FirstName: "Clean", UserName: "cleanworker"}
+	detector := &testSpamDetector{result: boolPtr(false)}
+	store := &testReactorStore{}
+
+	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("parse form: %v", err)
+		}
+
+		switch method {
+		case testTelegramMethodGetChatMember:
+			return testChatMemberResponse("left", false, false, false)
+		case testTelegramMethodGetChat:
+			return map[string]any{
+				"id":         777,
+				"type":       "private",
+				"first_name": "Clean",
+				"username":   "cleanworker",
+				"bio":        "Local neighbor and regular reader",
+			}
+		case "getUserPersonalChatMessages":
+			return []any{}
+		default:
+			t.Fatalf("unexpected bot method: %s", method)
+		}
+		return nil
+	})
+
+	reactor := &Reactor{
+		s:            &testBotService{botAPI: botAPI, settings: settings},
+		store:        store,
+		spamDetector: detector,
+		banService:   &testBanService{},
+		lastResults:  make(map[int64]*MessageProcessingResult),
+		resultOrder:  make([]int64, 0, maxLastResults),
+	}
+
+	update := &api.Update{
+		MessageReaction: &api.MessageReactionUpdated{
+			Chat:      *chat,
+			MessageID: 42,
+			User:      user,
+			NewReaction: []api.ReactionType{{
+				Type:  api.ReactionTypeEmoji,
+				Emoji: "👍",
+			}},
+		},
+	}
+
+	if _, err := reactor.Handle(context.Background(), update, chat, user); err != nil {
+		t.Fatalf("handle reaction: %v", err)
+	}
+	if detector.calls != 1 {
+		t.Fatalf("expected one profile spam check, got %d", detector.calls)
+	}
+	if len(store.upserted) != 1 {
+		t.Fatalf("expected clean non-member to be remembered once, got %#v", store.upserted)
+	}
+	if store.upserted[0].ChatID != chat.ID || store.upserted[0].UserID != user.ID {
+		t.Fatalf("unexpected known non-member record: %#v", store.upserted[0])
 	}
 }
 
@@ -138,7 +205,6 @@ func TestHandleMessageReactionSkipsKnownMemberAfterTelegramMembershipCheck(t *te
 	reactor := &Reactor{
 		s:            service,
 		store:        &testReactorStore{},
-		config:       Config{FlaggedEmojis: []string{"👎"}},
 		spamDetector: detector,
 		banService:   &testBanService{},
 		lastResults:  make(map[int64]*MessageProcessingResult),
@@ -152,7 +218,7 @@ func TestHandleMessageReactionSkipsKnownMemberAfterTelegramMembershipCheck(t *te
 			User:      user,
 			NewReaction: []api.ReactionType{{
 				Type:  api.ReactionTypeEmoji,
-				Emoji: "👎",
+				Emoji: "👍",
 			}},
 		},
 	}
@@ -165,6 +231,43 @@ func TestHandleMessageReactionSkipsKnownMemberAfterTelegramMembershipCheck(t *te
 	}
 	if service.insertedMember != 1 {
 		t.Fatalf("expected member to be remembered after Telegram check, got %d inserts", service.insertedMember)
+	}
+}
+
+func TestHandleMessageReactionSkipsRememberedNonMember(t *testing.T) {
+	t.Parallel()
+
+	chat := &api.Chat{ID: -100123, Type: "supergroup", Title: "Wave Club"}
+	settings := db.DefaultSettings(chat.ID)
+	user := &api.User{ID: 777, FirstName: "Known", UserName: "knownreader"}
+	detector := &testSpamDetector{result: boolPtr(true)}
+
+	reactor := &Reactor{
+		s:            &testBotService{settings: settings},
+		store:        &testReactorStore{knownNonMember: true},
+		spamDetector: detector,
+		banService:   &testBanService{},
+		lastResults:  make(map[int64]*MessageProcessingResult),
+		resultOrder:  make([]int64, 0, maxLastResults),
+	}
+
+	update := &api.Update{
+		MessageReaction: &api.MessageReactionUpdated{
+			Chat:      *chat,
+			MessageID: 42,
+			User:      user,
+			NewReaction: []api.ReactionType{{
+				Type:  api.ReactionTypeEmoji,
+				Emoji: "👍",
+			}},
+		},
+	}
+
+	if _, err := reactor.Handle(context.Background(), update, chat, user); err != nil {
+		t.Fatalf("handle reaction: %v", err)
+	}
+	if detector.calls != 0 {
+		t.Fatalf("expected remembered non-member to bypass profile spam check, got %d calls", detector.calls)
 	}
 }
 
@@ -220,7 +323,6 @@ func TestHandleMessageReactionModeratesActorChatProfileSpam(t *testing.T) {
 	reactor := &Reactor{
 		s:            &testBotService{botAPI: botAPI, settings: settings},
 		store:        &testReactorStore{},
-		config:       Config{FlaggedEmojis: []string{"👎"}},
 		spamDetector: detector,
 		banService:   &testBanService{},
 		lastResults:  make(map[int64]*MessageProcessingResult),
@@ -234,7 +336,7 @@ func TestHandleMessageReactionModeratesActorChatProfileSpam(t *testing.T) {
 			ActorChat: actorChat,
 			NewReaction: []api.ReactionType{{
 				Type:  api.ReactionTypeEmoji,
-				Emoji: "👎",
+				Emoji: "👍",
 			}},
 		},
 	}
@@ -256,19 +358,18 @@ func TestHandleMessageReactionModeratesActorChatProfileSpam(t *testing.T) {
 	}
 }
 
-func TestHandleMessageReactionSkipsWhenReactionModerationDisabled(t *testing.T) {
+func TestHandleMessageReactionSkipsWhenReactionProfileCheckDisabled(t *testing.T) {
 	t.Parallel()
 
 	chat := &api.Chat{ID: -100123, Type: "supergroup", Title: "Wave Club"}
 	settings := db.DefaultSettings(chat.ID)
-	settings.ReactionModerationEnabled = false
+	settings.ReactionProfileCheckEnabled = false
 	user := &api.User{ID: 777, FirstName: "Bad", UserName: "badworker"}
 	detector := &testSpamDetector{result: boolPtr(true)}
 
 	reactor := &Reactor{
 		s:            &testBotService{settings: settings},
 		store:        &testReactorStore{},
-		config:       Config{FlaggedEmojis: []string{"👎"}},
 		spamDetector: detector,
 		banService:   &testBanService{},
 		lastResults:  make(map[int64]*MessageProcessingResult),
@@ -282,7 +383,7 @@ func TestHandleMessageReactionSkipsWhenReactionModerationDisabled(t *testing.T) 
 			User:      user,
 			NewReaction: []api.ReactionType{{
 				Type:  api.ReactionTypeEmoji,
-				Emoji: "👎",
+				Emoji: "👍",
 			}},
 		},
 	}
@@ -291,51 +392,45 @@ func TestHandleMessageReactionSkipsWhenReactionModerationDisabled(t *testing.T) 
 		t.Fatalf("handle reaction: %v", err)
 	}
 	if detector.calls != 0 {
-		t.Fatalf("expected disabled reaction moderation to bypass detector, got %d calls", detector.calls)
+		t.Fatalf("expected disabled reaction profile check to bypass detector, got %d calls", detector.calls)
 	}
 }
 
-func TestHandleReactionCountDoesNotBanOriginalMessageAuthor(t *testing.T) {
+func TestHandleMessageReactionSkipsReactionRemoval(t *testing.T) {
 	t.Parallel()
 
 	chat := &api.Chat{ID: -100123, Type: "supergroup", Title: "Wave Club"}
 	settings := db.DefaultSettings(chat.ID)
-
-	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
-		t.Fatalf("unexpected bot method for reaction count: %s", method)
-		return nil
-	})
+	user := &api.User{ID: 777, FirstName: "Bad", UserName: "badworker"}
+	detector := &testSpamDetector{result: boolPtr(true)}
 
 	reactor := &Reactor{
-		s:           &testBotService{botAPI: botAPI, settings: settings},
-		store:       &testReactorStore{},
-		config:      Config{FlaggedEmojis: []string{"👎"}},
-		banService:  &testBanService{},
-		lastResults: make(map[int64]*MessageProcessingResult),
-		resultOrder: make([]int64, 0, maxLastResults),
+		s:            &testBotService{settings: settings},
+		store:        &testReactorStore{},
+		spamDetector: detector,
+		banService:   &testBanService{},
+		lastResults:  make(map[int64]*MessageProcessingResult),
+		resultOrder:  make([]int64, 0, maxLastResults),
 	}
-	reactor.storeLastResult(400, &MessageProcessingResult{
-		Message: &api.Message{
-			MessageID: 400,
-			Chat:      *chat,
-			From:      &api.User{ID: 200, FirstName: "Author"},
-			Text:      "message",
-		},
-	})
 
 	update := &api.Update{
-		MessageReactionCount: &api.MessageReactionCountUpdated{
+		MessageReaction: &api.MessageReactionUpdated{
 			Chat:      *chat,
-			MessageID: 400,
-			Reactions: []api.ReactionCount{{
-				Type:       api.ReactionType{Type: api.ReactionTypeEmoji, Emoji: "👎"},
-				TotalCount: 5,
+			MessageID: 42,
+			User:      user,
+			OldReaction: []api.ReactionType{{
+				Type:  api.ReactionTypeEmoji,
+				Emoji: "👍",
 			}},
+			NewReaction: nil,
 		},
 	}
 
 	if _, err := reactor.Handle(context.Background(), update, chat, nil); err != nil {
-		t.Fatalf("handle reaction count: %v", err)
+		t.Fatalf("handle reaction: %v", err)
+	}
+	if detector.calls != 0 {
+		t.Fatalf("expected reaction removal to bypass detector, got %d calls", detector.calls)
 	}
 }
 

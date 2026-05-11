@@ -58,8 +58,8 @@ func (a *Admin) renderHome(ctx context.Context, session *db.AdminPanelSession, s
 		return "", nil, err
 	}
 
-	reactionLabel := fmt.Sprintf("%s %s", statusEmoji(state.Features.ReactionModerationEnabled), i18n.Get("Reaction Moderation", lang))
-	reactionBtn, err := a.commandButton(ctx, session.ID, reactionLabel, panelCommand{Action: panelActionOpenReactionModeration})
+	reactionLabel := fmt.Sprintf("%s %s", statusEmoji(state.Features.ReactionProfileCheckEnabled), i18n.Get("Reaction Profile Check", lang))
+	reactionBtn, err := a.commandButton(ctx, session.ID, reactionLabel, panelCommand{Action: panelActionOpenReactionProfileCheck})
 	if err != nil {
 		return "", nil, err
 	}
@@ -450,17 +450,17 @@ func (a *Admin) renderLLM(ctx context.Context, session *db.AdminPanelSession, st
 	return text, &keyboard, nil
 }
 
-func (a *Admin) renderReactionModeration(ctx context.Context, session *db.AdminPanelSession, state *panelState) (string, *api.InlineKeyboardMarkup, error) {
+func (a *Admin) renderReactionProfileCheck(ctx context.Context, session *db.AdminPanelSession, state *panelState) (string, *api.InlineKeyboardMarkup, error) {
 	lang := state.Language
 	text := fmt.Sprintf(
 		"%s\n\n%s %s",
-		i18n.Get("Reaction Moderation", lang),
-		statusEmoji(state.Features.ReactionModerationEnabled),
-		i18n.Get("Reaction Moderation", lang),
+		i18n.Get("Reaction Profile Check", lang),
+		statusEmoji(state.Features.ReactionProfileCheckEnabled),
+		i18n.Get("Reaction Profile Check", lang),
 	)
-	text = appendPanelHelp(text, lang, i18n.Get("What this is: profile-based reaction moderation module. Where used: analysis of suspicious reaction authors in public chats. Value meaning: Master Switch enables profile spam checks and reaction cleanup.", lang))
+	text = appendPanelHelp(text, lang, i18n.Get("What this is: reaction profile check module. Where used: analysis of suspicious reaction authors in public chats before they send a first message. Value meaning: Master Switch enables profile spam checks and reaction cleanup.", lang))
 
-	toggleBtn, err := a.commandButton(ctx, session.ID, fmt.Sprintf("%s %s", statusEmoji(state.Features.ReactionModerationEnabled), i18n.Get("Reaction Moderation", lang)), panelCommand{Action: panelActionToggleFeature, Feature: panelFeatureReactions})
+	toggleBtn, err := a.commandButton(ctx, session.ID, fmt.Sprintf("%s %s", statusEmoji(state.Features.ReactionProfileCheckEnabled), i18n.Get("Reaction Profile Check", lang)), panelCommand{Action: panelActionToggleFeature, Feature: panelFeatureReactionProfileCheck})
 	if err != nil {
 		return "", nil, err
 	}

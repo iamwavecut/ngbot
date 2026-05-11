@@ -2,9 +2,14 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/iamwavecut/ngbot/internal/db"
+	"github.com/iamwavecut/ngbot/resources"
+	migrate "github.com/rubenv/sql-migrate"
 )
 
 func TestSpamCasesIndexesExistAfterMigrations(t *testing.T) {
@@ -134,7 +139,7 @@ func TestChatKnownNonMemberPrimaryKeyIndexExistsAfterMigrations(t *testing.T) {
 	}
 }
 
-func TestReactionModerationSettingDefaultsToEnabledAfterMigrations(t *testing.T) {
+func TestReactionProfileCheckSettingDefaultsToEnabledAfterMigrations(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -153,7 +158,88 @@ func TestReactionModerationSettingDefaultsToEnabledAfterMigrations(t *testing.T)
 	if err != nil {
 		t.Fatalf("get settings: %v", err)
 	}
-	if !got.ReactionModerationEnabled {
-		t.Fatal("expected reaction moderation to default to enabled")
+	if !got.ReactionProfileCheckEnabled {
+		t.Fatal("expected reaction profile check to default to enabled")
 	}
+}
+
+func TestReactionProfileCheckMigrationPreservesReactionModerationValues(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	sqlDB, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
+
+	source := &migrate.EmbedFileSystemMigrationSource{
+		FileSystem: resources.FS,
+		Root:       "migrations",
+	}
+	migrationCount := countSQLMigrations(t)
+	if _, err := migrate.ExecMax(sqlDB, "sqlite3", source, migrate.Up, migrationCount-1); err != nil {
+		t.Fatalf("execute pre-rename migrations: %v", err)
+	}
+
+	if _, err := sqlDB.ExecContext(ctx, `
+		INSERT INTO chats (id, reaction_moderation_enabled)
+		VALUES (100, 0), (101, 1)
+	`); err != nil {
+		t.Fatalf("insert old reaction moderation values: %v", err)
+	}
+
+	if _, err := migrate.Exec(sqlDB, "sqlite3", source, migrate.Up); err != nil {
+		t.Fatalf("execute rename migration: %v", err)
+	}
+
+	rows, err := sqlDB.QueryContext(ctx, `
+		SELECT id, reaction_profile_check_enabled
+		FROM chats
+		WHERE id IN (100, 101)
+		ORDER BY id
+	`)
+	if err != nil {
+		t.Fatalf("query migrated values: %v", err)
+	}
+	defer rows.Close()
+
+	got := map[int64]bool{}
+	for rows.Next() {
+		var id int64
+		var enabled bool
+		if err := rows.Scan(&id, &enabled); err != nil {
+			t.Fatalf("scan migrated value: %v", err)
+		}
+		got[id] = enabled
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate migrated values: %v", err)
+	}
+	if got[100] {
+		t.Fatalf("expected disabled old value to stay disabled, got %#v", got)
+	}
+	if !got[101] {
+		t.Fatalf("expected enabled old value to stay enabled, got %#v", got)
+	}
+}
+
+func countSQLMigrations(t *testing.T) int {
+	t.Helper()
+
+	entries, err := resources.FS.ReadDir("migrations")
+	if err != nil {
+		t.Fatalf("read migrations: %v", err)
+	}
+	count := 0
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".sql") {
+			count++
+		}
+	}
+	if count == 0 {
+		t.Fatal("expected at least one migration")
+	}
+	return count
 }

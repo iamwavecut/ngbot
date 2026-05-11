@@ -21,7 +21,7 @@ func applyRecommendedProtectionSettings(settings *db.Settings) {
 	settings.ChallengeTimeout = (3 * time.Minute).Nanoseconds()
 	settings.RejectTimeout = (10 * time.Minute).Nanoseconds()
 	settings.LLMFirstMessageEnabled = true
-	settings.ReactionModerationEnabled = true
+	settings.ReactionProfileCheckEnabled = true
 	settings.CommunityVotingEnabled = false
 }
 
@@ -36,7 +36,7 @@ func hasRecommendedProtection(state *panelState) bool {
 		time.Duration(state.ChallengeTimeout) == 3*time.Minute &&
 		time.Duration(state.RejectTimeout) == 10*time.Minute &&
 		state.Features.LLMFirstMessageEnabled &&
-		state.Features.ReactionModerationEnabled &&
+		state.Features.ReactionProfileCheckEnabled &&
 		!state.Features.CommunityVotingEnabled
 }
 
@@ -54,7 +54,7 @@ func hasCustomizedSettings(state *panelState) bool {
 		state.GatekeeperCaptchaOptionsCount != defaultSettings.GatekeeperCaptchaOptionsCount ||
 		state.GatekeeperGreetingText != defaultSettings.GatekeeperGreetingText ||
 		state.Features.LLMFirstMessageEnabled != defaultSettings.LLMFirstMessageEnabled ||
-		state.Features.ReactionModerationEnabled != defaultSettings.ReactionModerationEnabled ||
+		state.Features.ReactionProfileCheckEnabled != defaultSettings.ReactionProfileCheckEnabled ||
 		state.Features.CommunityVotingEnabled != defaultSettings.CommunityVotingEnabled ||
 		state.CommunityVotingTimeoutOverrideNS != defaultSettings.CommunityVotingTimeoutOverrideNS ||
 		state.CommunityVotingMinVotersOverride != defaultSettings.CommunityVotingMinVotersOverride ||

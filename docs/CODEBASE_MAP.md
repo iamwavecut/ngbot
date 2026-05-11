@@ -179,7 +179,7 @@ ngbot/
 │   │   │   ├── reactor_command_router_test.go  # Command targeting tests
 │   │   │   ├── reactor_message_pipeline.go   # Spam detection pipeline
 │   │   │   ├── reactor_message_pipeline_test.go  # External quote + override bypass tests
-│   │   │   ├── reactor_reaction_moderator.go # Reaction-based moderation
+│   │   │   ├── reactor_reaction_profile_check.go # Reaction profile checks
 │   │   │   ├── reactor_text_normalizer.go    # Cyrillic homoglyph normalization
 │   │   │   └── test_bot_api_test.go          # Shared test BotAPI with httptest.Server
 │   │   └── moderation/            # Spam detection, ban service
@@ -407,7 +407,7 @@ stateDiagram-v2
 | `reactor_command_router_test.go` | Command targeting tests |
 | `reactor_message_pipeline.go` | Spam detection pipeline with external quote heuristic + stat tracking |
 | `reactor_message_pipeline_test.go` | External quote heuristic tests |
-| `reactor_reaction_moderator.go` | Reaction-based moderation (5 flagged emojis = auto-ban) |
+| `reactor_reaction_profile_check.go` | Reaction profile checks for unknown reactors before first message |
 | `reactor_text_normalizer.go` | Cyrillic homoglyph normalization (100+ confusable chars) |
 | `test_bot_api_test.go` | Shared test BotAPI with httptest.Server |
 
@@ -1020,7 +1020,6 @@ sequenceDiagram
 | `NG_LLM_API_MODEL` | `gpt-4o-mini` | Model name |
 | `NG_LLM_API_URL` | `https://api.openai.com/v1` | OpenAI-compatible endpoint |
 | `NG_LLM_API_TYPE` | `openai` | Provider (openai/gemini) |
-| `NG_FLAGGED_EMOJIS` | `👎,💩` | Reaction ban triggers |
 | `NG_SPAM_MIN_VOTERS` | `2` | Min votes for action |
 | `NG_SPAM_MAX_VOTERS` | `10` | Max voters |
 | `NG_SPAM_MIN_VOTERS_PERCENTAGE` | `5` | Vote threshold % |
@@ -1080,7 +1079,7 @@ sequenceDiagram
 | 7 | Gatekeeper fallback | `lang → en → built-in defaults` |
 | 8 | Admin panel session TTL | 1 hour, background cleanup every 5 min |
 | 9 | CAPTCHA max attempts | 3 wrong answers = temp ban |
-| 10 | Reaction threshold | 5 flagged emojis = auto-ban (hardcoded) |
+| 10 | Reaction profile check | LLM checks unknown reactors before their first chat message |
 | 11 | Polling recovery window | Default 10m; exceeded → `PollingRecoveryError` → shutdown |
 | 12 | Malformed update filtering | `isStructurallyEmptyUpdate` must stay in sync with `api.Update` struct |
 | 13 | Polling error channel | Buffer size 1; second error silently dropped |
@@ -1319,11 +1318,10 @@ sequenceDiagram
 
 ### Community Voting Settings Enhancements
 - **Files**: `spam_control.go`, `spam_control_policy_test.go`, `reactor.go`
-- **Purpose**: Improved voting settings management and reaction handling
+- **Purpose**: Improved voting settings management
 - **Features**:
-  - Reaction moderation resolves custom emoji stickers to unicode via Telegram API
-  - Reaction threshold hardcoded at 5 flagged emojis (not configurable per-chat)
-  - Fallback to raw emoji field if custom emoji resolution fails
+  - Community voting uses inline callback votes, not Telegram message reactions
+  - Reaction profile checks are handled separately from voting thresholds
 
 ### Gatekeeper Timeout Normalization
 - **Files**: `entities.go`, `settings_test.go`, migration `20260418000000-normalize-gatekeeper-timeouts.sql`

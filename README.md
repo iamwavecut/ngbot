@@ -81,7 +81,6 @@ See [.env.example](.env.example) for a quick reference of all available options.
 | | `NG_LLM_API_MODEL` | LLM model to use | `gpt-4o-mini` | Any valid OpenAI or Gemini model |
 | | `NG_LLM_API_URL` | OpenAI-compatible API base URL | `https://api.openai.com/v1` | Used when `NG_LLM_API_TYPE=openai` |
 | | `NG_LLM_API_TYPE` | LLM provider | `openai` | `openai`, `gemini` |
-| | `NG_FLAGGED_EMOJIS` | Emojis used for content flagging | `👎,💩` | Comma-separated list of emojis |
 | | `NG_SPAM_LOG_CHANNEL_USERNAME` | Channel for spam logging | | Any valid channel username |
 | | `NG_SPAM_VERBOSE` | Verbose in-chat notifications | `false` | `true`, `false` |
 | | `NG_SPAM_VOTING_TIMEOUT` | Voting time limit | `5m` | Any valid duration string |

@@ -208,7 +208,6 @@ func isStructurallyEmptyUpdate(u *api.Update) bool {
 		u.EditedBusinessMessage == nil &&
 		u.DeletedBusinessMessages == nil &&
 		u.MessageReaction == nil &&
-		u.MessageReactionCount == nil &&
 		u.InlineQuery == nil &&
 		u.ChosenInlineResult == nil &&
 		u.CallbackQuery == nil &&

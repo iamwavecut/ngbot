@@ -70,8 +70,8 @@ func (a *Admin) applyPanelCommand(ctx context.Context, session *db.AdminPanelSes
 		}
 	case panelActionOpenLLM:
 		state.Page = panelPageLLM
-	case panelActionOpenReactionModeration:
-		state.Page = panelPageReactionModeration
+	case panelActionOpenReactionProfileCheck:
+		state.Page = panelPageReactionProfileCheck
 	case panelActionOpenExamples:
 		state.Page = panelPageExamplesList
 	case panelActionOpenIndulgence:
@@ -184,7 +184,7 @@ func (a *Admin) applyPanelCommand(ctx context.Context, session *db.AdminPanelSes
 			state.Page = panelPageGatekeeperGreeting
 		case panelPageLLM:
 			state.Page = panelPageHome
-		case panelPageReactionModeration:
+		case panelPageReactionProfileCheck:
 			state.Page = panelPageHome
 		case panelPageExamplesList:
 			state.Page = panelPageLLM
@@ -232,8 +232,8 @@ func (a *Admin) toggleFeature(ctx context.Context, session *db.AdminPanelSession
 	switch feature {
 	case panelFeatureLLMFirst:
 		settings.LLMFirstMessageEnabled = !settings.LLMFirstMessageEnabled
-	case panelFeatureReactions:
-		settings.ReactionModerationEnabled = !settings.ReactionModerationEnabled
+	case panelFeatureReactionProfileCheck:
+		settings.ReactionProfileCheckEnabled = !settings.ReactionProfileCheckEnabled
 	case panelFeatureVoting:
 		settings.CommunityVotingEnabled = !settings.CommunityVotingEnabled
 	default:
@@ -458,13 +458,13 @@ func syncPanelStateFromSettings(state *panelState, settings *db.Settings) {
 		return
 	}
 	state.Features = panelFeatureFlags{
-		GatekeeperEnabled:         settings.GatekeeperEnabled,
-		GatekeeperCaptchaEnabled:  settings.GatekeeperCaptchaEnabled,
-		GatekeeperGreetingEnabled: settings.GatekeeperGreetingEnabled,
-		GatekeeperEffective:       settings.GatekeeperEnabled && (settings.GatekeeperCaptchaEnabled || settings.GatekeeperGreetingEnabled),
-		LLMFirstMessageEnabled:    settings.LLMFirstMessageEnabled,
-		ReactionModerationEnabled: settings.ReactionModerationEnabled,
-		CommunityVotingEnabled:    settings.CommunityVotingEnabled,
+		GatekeeperEnabled:           settings.GatekeeperEnabled,
+		GatekeeperCaptchaEnabled:    settings.GatekeeperCaptchaEnabled,
+		GatekeeperGreetingEnabled:   settings.GatekeeperGreetingEnabled,
+		GatekeeperEffective:         settings.GatekeeperEnabled && (settings.GatekeeperCaptchaEnabled || settings.GatekeeperGreetingEnabled),
+		LLMFirstMessageEnabled:      settings.LLMFirstMessageEnabled,
+		ReactionProfileCheckEnabled: settings.ReactionProfileCheckEnabled,
+		CommunityVotingEnabled:      settings.CommunityVotingEnabled,
 	}
 	state.GatekeeperCaptchaOptionsCount = settings.GatekeeperCaptchaOptionsCount
 	state.GatekeeperGreetingText = settings.GatekeeperGreetingText
