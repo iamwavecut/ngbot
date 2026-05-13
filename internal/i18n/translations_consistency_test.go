@@ -100,14 +100,7 @@ func TestAdminPanelTranslationsAreCompleteForSupportedLocales(t *testing.T) {
 		"No cap",
 	}
 
-	locales := make([]string, 0, len(languageNames)-1)
-	for code := range languageNames {
-		if strings.EqualFold(code, "en") {
-			continue
-		}
-		locales = append(locales, strings.ToUpper(code))
-	}
-	sort.Strings(locales)
+	locales := supportedTranslationLocales()
 
 	for _, key := range keys {
 		translations, ok := dict[key]
@@ -124,6 +117,62 @@ func TestAdminPanelTranslationsAreCompleteForSupportedLocales(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestHelpTranslationsAreCompleteAndLocalized(t *testing.T) {
+	t.Parallel()
+
+	dict, err := loadTranslationsDict()
+	if err != nil {
+		t.Fatalf("load translations dict: %v", err)
+	}
+
+	keys := []string{
+		"Help is available in private chat. Use the button below to open it.",
+		"Open help in private chat",
+		"This is the /help command output. You can open it in private chat at any time.",
+		"Checks join requests and new members with CAPTCHA or greeting when enabled.",
+		"Checks known spammers with LoLs bot, CAS, Combot, and the local banlist.",
+		"Runs the LLM first-message check and reaction profile check when they are enabled.",
+		"Reply with %s or mention %s in a reply to report spam.",
+		"The bot re-checks the reported message. Confirmed spam is removed and the user is banned; uncertain cases go to community voting.",
+		"Voting uses the chat limits from settings, and the suspected user cannot vote on their own case.",
+		"Group admins run %s in a group to open the private admin panel.",
+		"The panel configures language, gatekeeper, CAPTCHA and greeting, LLM checks, voting limits, spam examples, and not-spammer overrides.",
+		"Commands",
+		"%s opens this help, %s reports spam by reply, %s reports by mention, %s opens settings for group admins, and %s changes language.",
+	}
+
+	for _, key := range keys {
+		translations, ok := dict[key]
+		if !ok {
+			t.Fatalf("missing key in translations: %s", key)
+		}
+		for _, locale := range supportedTranslationLocales() {
+			value, ok := translations[locale]
+			if !ok {
+				t.Fatalf("missing locale %s for key %s", locale, key)
+			}
+			if strings.TrimSpace(value) == "" {
+				t.Fatalf("empty translation for key %s locale %s", key, locale)
+			}
+			if value == key {
+				t.Fatalf("locale %s for key %s is still the English source text", locale, key)
+			}
+		}
+	}
+}
+
+func supportedTranslationLocales() []string {
+	locales := make([]string, 0, len(languageNames)-1)
+	for code := range languageNames {
+		if strings.EqualFold(code, "en") {
+			continue
+		}
+		locales = append(locales, strings.ToUpper(code))
+	}
+	sort.Strings(locales)
+	return locales
 }
 
 func collectUsedI18nKeys() ([]string, error) {

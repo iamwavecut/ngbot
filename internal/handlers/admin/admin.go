@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -22,10 +23,13 @@ type Admin struct {
 	store      adminStore
 	banService moderation.BanService
 	languages  []string
+	runCtx     context.Context
 	cancel     context.CancelFunc
 	wg         sync.WaitGroup
 	mu         sync.Mutex
 	started    bool
+
+	temporaryMessageTTL time.Duration
 }
 
 type adminStore interface {
@@ -66,10 +70,11 @@ func NewAdmin(s bot.Service, banService moderation.BanService) *Admin {
 	entry := log.WithField("object", "Admin").WithField("method", "NewAdmin")
 
 	a := &Admin{
-		s:          s,
-		store:      s.GetDB(),
-		banService: banService,
-		languages:  i18n.GetLanguagesList(),
+		s:                   s,
+		store:               s.GetDB(),
+		banService:          banService,
+		languages:           i18n.GetLanguagesList(),
+		temporaryMessageTTL: time.Minute,
 	}
 	entry.Debug("created new admin handler")
 	return a
@@ -83,6 +88,7 @@ func (a *Admin) Start(ctx context.Context) error {
 	}
 
 	runCtx, cancel := context.WithCancel(ctx)
+	a.runCtx = runCtx
 	a.cancel = cancel
 	a.startPanelCleanup(runCtx)
 	a.started = true
@@ -97,6 +103,8 @@ func (a *Admin) Stop(ctx context.Context) error {
 	}
 	a.started = false
 	cancel := a.cancel
+	a.cancel = nil
+	a.runCtx = nil
 	a.mu.Unlock()
 
 	if cancel != nil {
@@ -155,13 +163,19 @@ func (a *Admin) Handle(ctx context.Context, u *api.Update, chat *api.Chat, user 
 		entry.Debugf("processing command: %s", u.Message.Command())
 		switch u.Message.Command() {
 		case "lang":
-			isAdmin, err := a.isAdmin(chat.ID, user.ID)
-			if err != nil {
-				entry.WithField("error", err.Error()).Error("can't check admin status")
-				return true, err
+			isAdmin := chat.Type == panelChatTypePrivate
+			if !isAdmin {
+				var err error
+				isAdmin, err = a.isAdmin(chat.ID, user.ID)
+				if err != nil {
+					entry.WithField("error", err.Error()).Error("can't check admin status")
+					return true, err
+				}
 			}
 			entry.Debugf("user is admin: %v", isAdmin)
 			return a.handleLangCommand(ctx, u.Message, isAdmin, language)
+		case "help":
+			return false, a.handleHelpCommand(ctx, u.Message, chat, language)
 		case "settings":
 			return false, a.handleSettingsCommand(ctx, u.Message, chat, user)
 		case "start":
@@ -169,7 +183,7 @@ func (a *Admin) Handle(ctx context.Context, u *api.Update, chat *api.Chat, user 
 			if strings.HasPrefix(payload, "settings_") {
 				return false, a.handleStartSettings(ctx, u.Message, chat, user, payload)
 			}
-			return a.handleStartCommand(u.Message, language)
+			return false, a.handleHelpCommand(ctx, u.Message, chat, language)
 		default:
 			entry.Debug("unknown command")
 			return true, nil
@@ -212,8 +226,10 @@ func (a *Admin) handleLangCommand(ctx context.Context, msg *api.Message, isAdmin
 
 	settings, err := a.s.GetSettings(ctx, msg.Chat.ID)
 	if err != nil {
-		entry.WithField("error", err.Error()).Error("can't get chat settings")
-		return true, err
+		if !errors.Is(err, db.ErrNotFound) {
+			entry.WithField("error", err.Error()).Error("can't get chat settings")
+			return true, err
+		}
 	}
 	if settings == nil {
 		settings = db.DefaultSettings(msg.Chat.ID)
@@ -228,17 +244,6 @@ func (a *Admin) handleLangCommand(ctx context.Context, msg *api.Message, isAdmin
 	_, _ = a.s.GetBot().Send(api.NewMessage(
 		msg.Chat.ID,
 		i18n.Get("Language set successfully", language),
-	))
-
-	return false, nil
-}
-
-func (a *Admin) handleStartCommand(msg *api.Message, language string) (bool, error) {
-	entry := a.getLogEntry().WithField("method", "handleStartCommand")
-	entry.Debug("start command received")
-	_, _ = a.s.GetBot().Send(api.NewMessage(
-		msg.Chat.ID,
-		i18n.Get("Bot started successfully", language),
 	))
 
 	return false, nil

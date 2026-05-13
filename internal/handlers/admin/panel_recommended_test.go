@@ -210,11 +210,12 @@ func TestRecommendedProtectionStaysHiddenAfterSettingsUpdate(t *testing.T) {
 }
 
 type testAdminService struct {
-	db db.Client
+	db  db.Client
+	bot *api.BotAPI
 }
 
 func (s testAdminService) GetBot() *api.BotAPI {
-	return nil
+	return s.bot
 }
 
 func (s testAdminService) GetDB() db.Client {
@@ -241,6 +242,12 @@ func (s testAdminService) SetSettings(ctx context.Context, settings *db.Settings
 	return s.db.SetSettings(ctx, settings)
 }
 
-func (s testAdminService) GetLanguage(context.Context, int64, *api.User) string {
+func (s testAdminService) GetLanguage(ctx context.Context, chatID int64, _ *api.User) string {
+	if s.db != nil {
+		settings, err := s.db.GetSettings(ctx, chatID)
+		if err == nil && settings != nil && settings.Language != "" {
+			return settings.Language
+		}
+	}
 	return "en"
 }

@@ -1453,6 +1453,6 @@ sequenceDiagram
 - **Format**: "What this is / Where used / Value meaning"
 - **File**: `panel_render.go` (`panelHelpBlock` / `appendPanelHelp`)
 
-### Group Admin Command Management
-- **Change**: Deletes all bot commands globally before setting group-admin-scoped commands
-- **File**: `cmd/ngbot/main.go` (`announceGroupAdminCommands`)
+### Bot Command Management
+- **Change**: Deletes all bot commands globally before setting private, group, and group-admin scoped commands
+- **File**: `cmd/ngbot/main.go` (`announceBotCommands`)

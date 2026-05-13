@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path"
 	"slices"
 	"testing"
@@ -25,61 +26,40 @@ func TestConfigureUpdatesRequestsMessageReactionsOnly(t *testing.T) {
 	}
 }
 
-func TestAnnounceGroupAdminCommandsRegistersVoteBanForAllGroups(t *testing.T) {
-	t.Parallel()
+type commandRegistrationCall struct {
+	method   string
+	scope    string
+	commands []api.BotCommand
+}
 
-	type commandScope struct {
-		Type string `json:"type"`
-	}
-	type command struct {
-		Command     string `json:"command"`
-		Description string `json:"description"`
-	}
-	type setCommandsCall struct {
-		Scope    commandScope
-		Commands []command
-	}
-
-	var calls []setCommandsCall
-	deleteCalls := 0
+func TestAnnounceBotCommandsRegistersPrivateHelp(t *testing.T) {
+	var calls []commandRegistrationCall
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Helper()
-
 		method := path.Base(r.URL.Path)
-		result := any(true)
 		switch method {
 		case "getMe":
-			result = map[string]any{
+			writeTelegramResult(t, w, map[string]any{
 				"id":         1,
 				"is_bot":     true,
 				"first_name": "Test",
 				"username":   "testbot",
-			}
+			})
+			return
 		case "deleteMyCommands":
-			deleteCalls++
+			calls = append(calls, commandRegistrationCall{method: method})
+			writeTelegramResult(t, w, true)
+			return
 		case "setMyCommands":
-			if err := r.ParseForm(); err != nil {
-				t.Fatalf("parse form: %v", err)
-			}
-			var scope commandScope
-			if err := json.Unmarshal([]byte(r.Form.Get("scope")), &scope); err != nil {
-				t.Fatalf("unmarshal scope: %v", err)
-			}
-			var commands []command
-			if err := json.Unmarshal([]byte(r.Form.Get("commands")), &commands); err != nil {
-				t.Fatalf("unmarshal commands: %v", err)
-			}
-			calls = append(calls, setCommandsCall{Scope: scope, Commands: commands})
+			form := parseRegistrationForm(t, r)
+			calls = append(calls, commandRegistrationCall{
+				method:   method,
+				scope:    commandScopeType(t, form),
+				commands: commandList(t, form),
+			})
+			writeTelegramResult(t, w, true)
+			return
 		default:
-			t.Fatalf("unexpected method %s", method)
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(map[string]any{
-			"ok":     true,
-			"result": result,
-		}); err != nil {
-			t.Fatalf("encode response: %v", err)
+			t.Fatalf("unexpected telegram method: %s", method)
 		}
 	}))
 	t.Cleanup(server.Close)
@@ -88,28 +68,81 @@ func TestAnnounceGroupAdminCommandsRegistersVoteBanForAllGroups(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new bot api: %v", err)
 	}
-	if err := announceGroupAdminCommands(botAPI); err != nil {
-		t.Fatalf("announce commands: %v", err)
+
+	if err := announceBotCommands(botAPI); err != nil {
+		t.Fatalf("announce bot commands: %v", err)
 	}
 
-	if deleteCalls != 1 {
-		t.Fatalf("deleteMyCommands calls = %d, want 1", deleteCalls)
+	if len(calls) != 4 {
+		t.Fatalf("registration calls = %#v, want delete + 3 set calls", calls)
 	}
 
-	var groupCommands []command
-	var adminCommands []command
+	private := commandsForScope(t, calls, "all_private_chats")
+	if !slices.Equal(private, []api.BotCommand{{Command: "help", Description: "Show bot help"}}) {
+		t.Fatalf("private commands = %#v", private)
+	}
+
+	group := commandsForScope(t, calls, "all_group_chats")
+	if !slices.Equal(group, []api.BotCommand{{Command: "voteban", Description: "Report spam with community voting"}}) {
+		t.Fatalf("group commands = %#v", group)
+	}
+
+	admin := commandsForScope(t, calls, "all_chat_administrators")
+	wantAdmin := []api.BotCommand{
+		{Command: "voteban", Description: "Report spam with community voting"},
+		{Command: "settings", Description: "Bot settings"},
+	}
+	if !slices.Equal(admin, wantAdmin) {
+		t.Fatalf("admin commands = %#v", admin)
+	}
+}
+
+func writeTelegramResult(t *testing.T, w http.ResponseWriter, result any) {
+	t.Helper()
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(map[string]any{
+		"ok":     true,
+		"result": result,
+	}); err != nil {
+		t.Fatalf("encode response: %v", err)
+	}
+}
+
+func parseRegistrationForm(t *testing.T, r *http.Request) url.Values {
+	t.Helper()
+	if err := r.ParseForm(); err != nil {
+		t.Fatalf("parse form: %v", err)
+	}
+	return r.Form
+}
+
+func commandScopeType(t *testing.T, form url.Values) string {
+	t.Helper()
+	var scope struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal([]byte(form.Get("scope")), &scope); err != nil {
+		t.Fatalf("unmarshal scope %q: %v", form.Get("scope"), err)
+	}
+	return scope.Type
+}
+
+func commandList(t *testing.T, form url.Values) []api.BotCommand {
+	t.Helper()
+	var commands []api.BotCommand
+	if err := json.Unmarshal([]byte(form.Get("commands")), &commands); err != nil {
+		t.Fatalf("unmarshal commands %q: %v", form.Get("commands"), err)
+	}
+	return commands
+}
+
+func commandsForScope(t *testing.T, calls []commandRegistrationCall, scope string) []api.BotCommand {
+	t.Helper()
 	for _, call := range calls {
-		switch call.Scope.Type {
-		case "all_group_chats":
-			groupCommands = call.Commands
-		case "all_chat_administrators":
-			adminCommands = call.Commands
+		if call.scope == scope {
+			return call.commands
 		}
 	}
-	if len(groupCommands) != 1 || groupCommands[0].Command != "voteban" {
-		t.Fatalf("expected all-group voteban command, got %#v", groupCommands)
-	}
-	if len(adminCommands) != 2 || adminCommands[0].Command != "voteban" || adminCommands[1].Command != "settings" {
-		t.Fatalf("expected admin settings command, got %#v", adminCommands)
-	}
+	t.Fatalf("missing commands for scope %s in %#v", scope, calls)
+	return nil
 }
