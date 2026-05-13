@@ -58,6 +58,7 @@ type testModerationStore struct {
 	recentJoiners         []*db.RecentJoiner
 	processedJoiners      [][3]int64
 	deletedKnownNonMember [][2]int64
+	reportMessages        []*db.SpamCaseReportMessage
 }
 
 func (s *testModerationStore) CreateSpamCase(_ context.Context, sc *db.SpamCase) (*db.SpamCase, error) {
@@ -78,6 +79,16 @@ func (s *testModerationStore) GetSpamCase(context.Context, int64) (*db.SpamCase,
 
 func (s *testModerationStore) GetActiveSpamCase(context.Context, int64, int64) (*db.SpamCase, error) {
 	if s.spamCase == nil || s.spamCase.Status != spamCaseStatusPending {
+		return nil, nil
+	}
+	return s.spamCase, nil
+}
+
+func (s *testModerationStore) GetActiveSpamCaseByMessage(_ context.Context, chatID int64, userID int64, messageID int) (*db.SpamCase, error) {
+	if s.spamCase == nil || s.spamCase.Status != spamCaseStatusPending {
+		return nil, nil
+	}
+	if s.spamCase.ChatID != chatID || s.spamCase.UserID != userID || s.spamCase.MessageID != messageID {
 		return nil, nil
 	}
 	return s.spamCase, nil
@@ -119,7 +130,25 @@ func (s *testModerationStore) DeleteChatKnownNonMember(_ context.Context, chatID
 	return nil
 }
 
-type testModerationBanService struct{}
+func (s *testModerationStore) AddSpamCaseReportMessage(_ context.Context, message *db.SpamCaseReportMessage) error {
+	copyMessage := *message
+	s.reportMessages = append(s.reportMessages, &copyMessage)
+	return nil
+}
+
+func (s *testModerationStore) GetSpamCaseReportMessages(context.Context, int64) ([]*db.SpamCaseReportMessage, error) {
+	return s.reportMessages, nil
+}
+
+func (s *testModerationStore) DeleteSpamCaseReportMessages(context.Context, int64) error {
+	s.reportMessages = nil
+	return nil
+}
+
+type testModerationBanService struct {
+	muteCalls   int
+	unmuteCalls int
+}
 
 func (s *testModerationBanService) Start(context.Context) error { return nil }
 func (s *testModerationBanService) Stop(context.Context) error  { return nil }
@@ -128,10 +157,12 @@ func (s *testModerationBanService) CheckBan(context.Context, int64) (bool, error
 }
 
 func (s *testModerationBanService) MuteUser(context.Context, int64, int64) error {
+	s.muteCalls++
 	return nil
 }
 
 func (s *testModerationBanService) UnmuteUser(context.Context, int64, int64) error {
+	s.unmuteCalls++
 	return nil
 }
 
@@ -239,6 +270,82 @@ func TestProcessBannedMessageClearsKnownNonMember(t *testing.T) {
 	}
 	if store.spamCase == nil || store.spamCase.Status != spamCaseStatusSpam {
 		t.Fatalf("expected spam case to be marked as spam, got %#v", store.spamCase)
+	}
+}
+
+func TestProcessReportedMessageStartsVotingWithoutDeletingOrMuting(t *testing.T) {
+	t.Parallel()
+
+	sendCalls := 0
+	botAPI := newModerationTestBotAPI(t, func(method string, r *http.Request) any {
+		switch method {
+		case testTelegramMethodSendMessage:
+			if err := r.ParseForm(); err != nil {
+				t.Fatalf("parse form: %v", err)
+			}
+			sendCalls++
+			if got := r.Form.Get("reply_parameters"); got == "" {
+				t.Fatal("expected voting prompt to reply to the reported message")
+			}
+			return map[string]any{
+				"message_id": 700,
+				"date":       0,
+				"chat": map[string]any{
+					"id":   100,
+					"type": "supergroup",
+				},
+			}
+		default:
+			t.Fatalf("unexpected bot method: %s", method)
+			return nil
+		}
+	})
+	store := &testModerationStore{}
+	banService := &testModerationBanService{}
+	sc := &SpamControl{
+		s: &testModerationService{
+			botAPI: botAPI,
+		},
+		store:      store,
+		config:     config.SpamControl{VotingTimeoutMinutes: time.Hour, MinVoters: 1},
+		banService: banService,
+	}
+
+	chat := &api.Chat{ID: 100, Type: "supergroup"}
+	target := &api.Message{
+		MessageID: 40,
+		Chat:      *chat,
+		From:      &api.User{ID: 200, FirstName: "Target"},
+		Text:      "reported text",
+	}
+	report := &api.Message{
+		MessageID:       50,
+		MessageThreadID: 7,
+		Chat:            *chat,
+		From:            &api.User{ID: 300, FirstName: "Reporter"},
+		Text:            "/voteban",
+	}
+
+	if _, err := sc.ProcessReportedMessage(context.Background(), target, report, chat, "en"); err != nil {
+		t.Fatalf("ProcessReportedMessage returned error: %v", err)
+	}
+	if sendCalls != 1 {
+		t.Fatalf("sendMessage calls = %d, want 1", sendCalls)
+	}
+	if banService.muteCalls != 0 {
+		t.Fatalf("expected report-first voting not to mute target, got %d mute calls", banService.muteCalls)
+	}
+	if store.spamCase == nil {
+		t.Fatal("expected spam case to be created")
+	}
+	if store.spamCase.MessageID != target.MessageID {
+		t.Fatalf("expected message-bound spam case, got %#v", store.spamCase)
+	}
+	if store.spamCase.PreVoteRestricted {
+		t.Fatalf("expected report-first case to avoid pre-vote restriction, got %#v", store.spamCase)
+	}
+	if len(store.reportMessages) != 1 || store.reportMessages[0].MessageID != report.MessageID {
+		t.Fatalf("expected report command artifact, got %#v", store.reportMessages)
 	}
 }
 
@@ -375,6 +482,131 @@ func TestResolveCaseSpamClearsKnownNonMember(t *testing.T) {
 	}
 	if store.spamCase == nil || store.spamCase.Status != spamCaseStatusSpam {
 		t.Fatalf("expected spam case to be resolved as spam, got %#v", store.spamCase)
+	}
+}
+
+func TestResolveReportedCaseSpamDeletesTargetAndReportMessages(t *testing.T) {
+	t.Parallel()
+
+	var deletedMessageIDs []string
+	botAPI := newModerationTestBotAPI(t, func(method string, r *http.Request) any {
+		switch method {
+		case testTelegramMethodBanChatMember:
+			return true
+		case testTelegramMethodDeleteMessage:
+			if err := r.ParseForm(); err != nil {
+				t.Fatalf("parse form: %v", err)
+			}
+			deletedMessageIDs = append(deletedMessageIDs, r.Form.Get("message_id"))
+			return true
+		case "editMessageReplyMarkup":
+			return true
+		default:
+			t.Fatalf("unexpected bot method: %s", method)
+			return nil
+		}
+	})
+
+	store := &testModerationStore{
+		spamCase: &db.SpamCase{
+			ID:                    55,
+			ChatID:                100,
+			UserID:                200,
+			MessageID:             40,
+			NotificationMessageID: 70,
+			Status:                spamCaseStatusPending,
+			CreatedAt:             time.Now(),
+			PreVoteRestricted:     false,
+		},
+		votes: []*db.SpamVote{
+			{Vote: false},
+		},
+		reportMessages: []*db.SpamCaseReportMessage{{
+			CaseID:    55,
+			ChatID:    100,
+			MessageID: 50,
+			CreatedAt: time.Now(),
+		}},
+	}
+	sc := &SpamControl{
+		s:          &testModerationService{botAPI: botAPI},
+		store:      store,
+		config:     config.SpamControl{MinVoters: 1},
+		banService: &testModerationBanService{},
+	}
+
+	if err := sc.ResolveCase(context.Background(), 55, false); err != nil {
+		t.Fatalf("ResolveCase returned error: %v", err)
+	}
+
+	if len(deletedMessageIDs) != 2 || deletedMessageIDs[0] != "40" || deletedMessageIDs[1] != "50" {
+		t.Fatalf("expected target and report command deletes, got %#v", deletedMessageIDs)
+	}
+	if len(store.reportMessages) != 0 {
+		t.Fatalf("expected report message artifacts to be cleared, got %#v", store.reportMessages)
+	}
+}
+
+func TestResolveReportedCaseFalsePositiveKeepsTargetAndDeletesReportMessages(t *testing.T) {
+	t.Parallel()
+
+	var deletedMessageIDs []string
+	botAPI := newModerationTestBotAPI(t, func(method string, r *http.Request) any {
+		switch method {
+		case testTelegramMethodDeleteMessage:
+			if err := r.ParseForm(); err != nil {
+				t.Fatalf("parse form: %v", err)
+			}
+			deletedMessageIDs = append(deletedMessageIDs, r.Form.Get("message_id"))
+			return true
+		case "editMessageReplyMarkup":
+			return true
+		default:
+			t.Fatalf("unexpected bot method: %s", method)
+			return nil
+		}
+	})
+	store := &testModerationStore{
+		spamCase: &db.SpamCase{
+			ID:                    55,
+			ChatID:                100,
+			UserID:                200,
+			MessageID:             40,
+			NotificationMessageID: 70,
+			Status:                spamCaseStatusPending,
+			CreatedAt:             time.Now(),
+			PreVoteRestricted:     false,
+		},
+		votes: []*db.SpamVote{
+			{Vote: true},
+		},
+		reportMessages: []*db.SpamCaseReportMessage{{
+			CaseID:    55,
+			ChatID:    100,
+			MessageID: 50,
+			CreatedAt: time.Now(),
+		}},
+	}
+	banService := &testModerationBanService{}
+	sc := &SpamControl{
+		s:          &testModerationService{botAPI: botAPI},
+		store:      store,
+		config:     config.SpamControl{MinVoters: 1},
+		banService: banService,
+	}
+
+	if err := sc.ResolveCase(context.Background(), 55, false); err != nil {
+		t.Fatalf("ResolveCase returned error: %v", err)
+	}
+
+	if len(deletedMessageIDs) != 1 || deletedMessageIDs[0] != "50" {
+		t.Fatalf("expected only report command delete, got %#v", deletedMessageIDs)
+	}
+	if banService.unmuteCalls != 0 {
+		t.Fatalf("expected report-first false positive not to unmute, got %d unmute calls", banService.unmuteCalls)
+	}
+	if len(store.reportMessages) != 0 {
+		t.Fatalf("expected report message artifacts to be cleared, got %#v", store.reportMessages)
 	}
 }
 

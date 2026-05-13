@@ -175,7 +175,7 @@ ngbot/
 │   │   │   ├── gatekeeper_scheduler.go          # Background workers (status-aware expiry)
 │   │   │   ├── gatekeeper_scheduler_test.go     # Scheduler tests
 │   │   │   ├── reactor.go         # Orchestrator, pipeline stages
-│   │   │   ├── reactor_command_router.go     # /ban, /testspam, /skipreason
+│   │   │   ├── reactor_command_router.go     # /voteban, @bot reports, /testspam, /skipreason
 │   │   │   ├── reactor_command_router_test.go  # Command targeting tests
 │   │   │   ├── reactor_message_pipeline.go   # Spam detection pipeline
 │   │   │   ├── reactor_message_pipeline_test.go  # External quote + override bypass tests
@@ -403,7 +403,7 @@ stateDiagram-v2
 | File | Purpose |
 |------|---------|
 | `reactor.go` | Orchestrator, pipeline stages, callback/reaction/command dispatch |
-| `reactor_command_router.go` | `/testspam`, `/skipreason`, `/ban` with `commandTargetsCurrentBot` |
+| `reactor_command_router.go` | `/testspam`, `/skipreason`, `/voteban`, reply `@bot` reports with `commandTargetsCurrentBot` |
 | `reactor_command_router_test.go` | Command targeting tests |
 | `reactor_message_pipeline.go` | Spam detection pipeline with external quote heuristic + stat tracking |
 | `reactor_message_pipeline_test.go` | External quote heuristic tests |
@@ -1083,7 +1083,7 @@ sequenceDiagram
 | 11 | Polling recovery window | Default 10m; exceeded → `PollingRecoveryError` → shutdown |
 | 12 | Malformed update filtering | `isStructurallyEmptyUpdate` must stay in sync with `api.Update` struct |
 | 13 | Polling error channel | Buffer size 1; second error silently dropped |
-| 14 | Command targeting | `commandTargetsCurrentBot` rejects `/ban@otherbot`; empty bot username rejects all named commands |
+| 14 | Command targeting | `commandTargetsCurrentBot` rejects `/voteban@otherbot`; empty bot username rejects all named commands |
 | 15 | External quote heuristic | Bypasses LLM entirely — treated as spam immediately |
 | 16 | Auto-forward detection | `IsAutomaticForward + IsChannel` → skips entire spam pipeline |
 | 17 | Ban durations are temporary | All bans/mutes = 10 minutes |
@@ -1121,7 +1121,7 @@ sequenceDiagram
 | 49 | Greeting placeholder restrictions | Placeholders inside `code`, `pre`, `text_link`, `text_mention`, `url`, `mention` entities are rejected during normalization — only formatting entities (bold, italic, underline, strikethrough, spoiler) can wrap placeholders |
 | 50 | Greeting entity normalization uses UTF-16 offsets | Telegram uses UTF-16 for entity positions; `buildGreetingEntitySpans` converts to rune indices — any change to offset handling must account for multi-byte characters |
 | 51 | Empty greeting treated as legacy Markdown | Empty `GatekeeperGreetingText` fails the `mdv2:` prefix check, so `greetingParseMode()` falls back to `ModeMarkdown` — safe because gate checks for empty template and returns early |
-| 52 | Ban command permission gating | `/ban` requires `CanRestrictMembers` permission for immediate ban; users without it route to community voting (if enabled) or get rejected |
+| 52 | Vote-ban report flow | `/voteban` and reply `@bot` re-run a report-specific LLM check; non-restrict reporters start message-bound community voting without pre-delete or pre-mute |
 | 53 | CAS provider | Second banlist provider (Combot Anti-Spam) with real-time check API + CSV export; races concurrently with lols.bot |
 | 54 | Ban service concurrent checking | `CheckBan` races all providers concurrently; first positive wins; remaining providers cancelled via child context |
 | 55 | Provider fail-open | All provider errors are treated as "not banned" — resilience over false positives |
@@ -1189,7 +1189,7 @@ sequenceDiagram
 2. **Fetch**: `ban_service_fetch.go` (daily/hourly refresh, retry logic)
 3. **Actions**: `ban_service_actions.go` (mute/ban/unban/unmute)
 4. **Permissions**: `permissions.go` (`CanRestrictMembers` check)
-5. **Command**: `reactor_command_router.go` (`banCommand` routing logic)
+5. **Report command**: `reactor_command_router.go` (`voteBanCommand` routing logic)
 6. **Tests**: `ban_service_test.go` (concurrent access), `ban_service_actions_test.go` (action tests)
 
 ### To modify permissions
@@ -1298,14 +1298,14 @@ sequenceDiagram
   - Bootstrap skips network fetches if timestamps are recent
   - 8-writer/8-reader concurrent access tests with full-replace goroutine
 
-### Ban Command Permission Gating
-- **Files**: `reactor_command_router.go`, `reactor_command_router_test.go`, `permissions.go`, `permissions_test.go`
-- **Purpose**: `/ban` command now gates by restrict permission instead of allowing all users
+### Vote-Ban Report Flow
+- **Files**: `reactor_command_router.go`, `reactor_command_router_test.go`, `spam_control.go`, `client_spam.go`
+- **Purpose**: `/voteban` and reply `@bot` let users report missed spam without letting ordinary users silently delete messages
 - **Behavior**:
-  - Users with `CanRestrictMembers` (checked via `permissions.CanRestrictMembers`): immediate ban
-  - Other users with `CommunityVotingEnabled`: starts community voting
-  - Other users without community voting: rejection message
-  - Added `CanRestrictMembers()` function to permissions package
+  - Every valid report reply first runs a report-specific LLM check
+  - Confirmed spam uses the existing immediate ban/delete path
+  - Non-restrict reporters create/reuse a message-bound voting case with no pre-delete and no pre-mute
+  - Report command/mention messages are stored as artifacts and deleted when the case resolves
 
 ### Spam Control Notification Improvements
 - **Files**: `spam_control.go`, `spam_control_notification_test.go`
@@ -1436,7 +1436,7 @@ sequenceDiagram
 ### Command Targeting
 - **File**: `reactor_command_router.go`, `reactor_command_router_test.go`
 - **Function**: `commandTargetsCurrentBot(msg, botUserName) bool`
-- **Behavior**: Ignores `/ban@otherbot`, accepts `/ban` and `/ban@thisbot`
+- **Behavior**: Ignores `/voteban@otherbot`, accepts `/voteban`, `/voteban@thisbot`, and reply `@thisbot`
 
 ### Auto-Forward Detection
 - **File**: `reactor_message_pipeline.go`

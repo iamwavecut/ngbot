@@ -315,6 +315,31 @@ Is Spam result: {{ .isSpam -}}
 	return isSpam, err
 }
 
+func (r *Reactor) checkReportedMessageForSpam(ctx context.Context, chatID int64, content string) (*bool, error) {
+	if r.spamDetector == nil {
+		return nil, nil
+	}
+	words := strings.Fields(content)
+	for i, word := range words {
+		if hasCyrillics(word) {
+			words[i] = normalizeCyrillics(word)
+		}
+	}
+	contentAltered := strings.Join(words, " ")
+
+	var examples []string
+	if r.store != nil {
+		examples = r.loadSpamExamples(ctx, chatID)
+	}
+	isSpam, err := r.spamDetector.IsReportedSpam(ctx, contentAltered, examples)
+	if err == nil {
+		if statErr := handlersbase.IncrementDailyStat(ctx, r.s.GetDB(), chatID, handlersbase.StatLLMChecked); statErr != nil {
+			r.getLogEntry().WithField("error", statErr.Error()).Warn("failed to increment reported LLM checked stat")
+		}
+	}
+	return isSpam, err
+}
+
 func (r *Reactor) loadSpamExamples(ctx context.Context, chatID int64) []string {
 	examples, err := r.store.ListChatSpamExamples(ctx, chatID, maxSpamExamples, 0)
 	if err != nil {

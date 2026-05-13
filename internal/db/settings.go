@@ -20,7 +20,7 @@ func DefaultSettings(chatID int64) *Settings {
 		GatekeeperGreetingText:                  "",
 		LLMFirstMessageEnabled:                  true,
 		ReactionProfileCheckEnabled:             true,
-		CommunityVotingEnabled:                  false,
+		CommunityVotingEnabled:                  true,
 		CommunityVotingTimeoutOverrideNS:        int64(SettingsOverrideInherit),
 		CommunityVotingMinVotersOverride:        SettingsOverrideInherit,
 		CommunityVotingMaxVotersOverride:        SettingsOverrideInherit,

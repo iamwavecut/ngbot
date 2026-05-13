@@ -26,3 +26,12 @@ func TestSettingsLegacySecondTimeoutsAreNormalized(t *testing.T) {
 		t.Fatalf("expected normalized reject timeout to be persisted in settings, got %d", settings.RejectTimeout)
 	}
 }
+
+func TestDefaultSettingsEnableCommunityVoting(t *testing.T) {
+	t.Parallel()
+
+	settings := DefaultSettings(42)
+	if !settings.CommunityVotingEnabled {
+		t.Fatal("expected community voting to be enabled by default")
+	}
+}

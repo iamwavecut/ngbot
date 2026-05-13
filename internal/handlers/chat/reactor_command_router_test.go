@@ -22,36 +22,36 @@ func TestCommandTargetsCurrentBot(t *testing.T) {
 	}{
 		{
 			name:        "unnamed command is accepted",
-			messageText: "/ban",
-			entityLen:   len("/ban"),
+			messageText: "/voteban",
+			entityLen:   len("/voteban"),
 			botUserName: "ngbot",
 			want:        true,
 		},
 		{
 			name:        "named current bot command is accepted",
-			messageText: "/ban@ngbot",
-			entityLen:   len("/ban@ngbot"),
+			messageText: "/voteban@ngbot",
+			entityLen:   len("/voteban@ngbot"),
 			botUserName: "ngbot",
 			want:        true,
 		},
 		{
 			name:        "named current bot command is case insensitive",
-			messageText: "/ban@NgBoT",
-			entityLen:   len("/ban@NgBoT"),
+			messageText: "/voteban@NgBoT",
+			entityLen:   len("/voteban@NgBoT"),
 			botUserName: "ngbot",
 			want:        true,
 		},
 		{
 			name:        "named foreign bot command is ignored",
-			messageText: "/ban@otherbot",
-			entityLen:   len("/ban@otherbot"),
+			messageText: "/voteban@otherbot",
+			entityLen:   len("/voteban@otherbot"),
 			botUserName: "ngbot",
 			want:        false,
 		},
 		{
 			name:        "named command is ignored when bot username is empty",
-			messageText: "/ban@ngbot",
-			entityLen:   len("/ban@ngbot"),
+			messageText: "/voteban@ngbot",
+			entityLen:   len("/voteban@ngbot"),
 			botUserName: "",
 			want:        false,
 		},
@@ -85,14 +85,14 @@ func TestCommandTargetsCurrentBot(t *testing.T) {
 	}
 }
 
-func TestBanCommandRoutesByRestrictPermission(t *testing.T) {
+func TestVoteBanCommandRoutesByRestrictPermissionAfterReportCheck(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name          string
 		member        map[string]any
 		wantBanned    int
-		wantSpam      int
+		wantReported  int
 		wantDeleteCmd bool
 	}{
 		{
@@ -108,19 +108,19 @@ func TestBanCommandRoutesByRestrictPermission(t *testing.T) {
 			wantDeleteCmd: true,
 		},
 		{
-			name:     "admin with manage permission only starts voting",
-			member:   testChatMemberResponse("administrator", true, false, false),
-			wantSpam: 1,
+			name:         "admin with manage permission only starts voting",
+			member:       testChatMemberResponse("administrator", true, false, false),
+			wantReported: 1,
 		},
 		{
-			name:     "admin with promote permission only starts voting",
-			member:   testChatMemberResponse("administrator", false, true, false),
-			wantSpam: 1,
+			name:         "admin with promote permission only starts voting",
+			member:       testChatMemberResponse("administrator", false, true, false),
+			wantReported: 1,
 		},
 		{
-			name:     "regular member starts voting",
-			member:   testChatMemberResponse("member", false, false, false),
-			wantSpam: 1,
+			name:         "regular member starts voting",
+			member:       testChatMemberResponse("member", false, false, false),
+			wantReported: 1,
 		},
 	}
 
@@ -152,16 +152,18 @@ func TestBanCommandRoutesByRestrictPermission(t *testing.T) {
 			actor := &api.User{ID: 100, FirstName: "Actor"}
 			target := &api.User{ID: 200, FirstName: "Target"}
 			reply := &api.Message{MessageID: 40, Chat: *chat, From: target, Text: "spam text"}
-			command := &api.Message{MessageID: 50, MessageThreadID: 7, Chat: *chat, From: actor, Text: "/ban", ReplyToMessage: reply}
+			command := &api.Message{MessageID: 50, MessageThreadID: 7, Chat: *chat, From: actor, Text: "/voteban", ReplyToMessage: reply}
 			settings := &db.Settings{CommunityVotingEnabled: true}
 
 			bannedCalls := 0
-			spamCalls := 0
+			reportedCalls := 0
+			detector := &testSpamDetector{reportedResult: boolPtr(false)}
 			reactor := &Reactor{
 				s: &testBotService{
 					botAPI:   botAPI,
 					language: "en",
 				},
+				spamDetector: detector,
 				processBanned: func(_ context.Context, gotMsg *api.Message, gotChat *api.Chat, lang string) (*moderation.ProcessingResult, error) {
 					bannedCalls++
 					if gotMsg != reply || gotChat != chat || lang != "en" {
@@ -169,24 +171,30 @@ func TestBanCommandRoutesByRestrictPermission(t *testing.T) {
 					}
 					return &moderation.ProcessingResult{MessageDeleted: true, UserBanned: true}, nil
 				},
-				processSpam: func(_ context.Context, gotMsg *api.Message, gotChat *api.Chat, lang string) (*moderation.ProcessingResult, error) {
-					spamCalls++
+				processReported: func(_ context.Context, gotMsg *api.Message, gotReport *api.Message, gotChat *api.Chat, lang string) (*moderation.ProcessingResult, error) {
+					reportedCalls++
 					if gotMsg != reply || gotChat != chat || lang != "en" {
 						t.Fatalf("unexpected voting target: msg=%p chat=%p lang=%q", gotMsg, gotChat, lang)
 					}
-					return &moderation.ProcessingResult{MessageDeleted: true, UserBanned: true}, nil
+					if gotReport != command {
+						t.Fatalf("unexpected report message: %p", gotReport)
+					}
+					return &moderation.ProcessingResult{}, nil
 				},
 			}
 
-			if err := reactor.banCommand(context.Background(), command, chat, actor, settings); err != nil {
-				t.Fatalf("banCommand returned error: %v", err)
+			if err := reactor.voteBanCommand(context.Background(), command, chat, actor, settings); err != nil {
+				t.Fatalf("voteBanCommand returned error: %v", err)
 			}
 
+			if detector.reportedCalls != 1 {
+				t.Fatalf("reported spam checks = %d, want 1", detector.reportedCalls)
+			}
 			if bannedCalls != tt.wantBanned {
 				t.Fatalf("processBanned calls = %d, want %d", bannedCalls, tt.wantBanned)
 			}
-			if spamCalls != tt.wantSpam {
-				t.Fatalf("processSpam calls = %d, want %d", spamCalls, tt.wantSpam)
+			if reportedCalls != tt.wantReported {
+				t.Fatalf("processReported calls = %d, want %d", reportedCalls, tt.wantReported)
 			}
 			if gotDelete := deleteCommandCalls > 0; gotDelete != tt.wantDeleteCmd {
 				t.Fatalf("command delete called = %v, want %v", gotDelete, tt.wantDeleteCmd)
@@ -195,7 +203,7 @@ func TestBanCommandRoutesByRestrictPermission(t *testing.T) {
 	}
 }
 
-func TestBanCommandCommunityVotingDisabledSkipsProcessing(t *testing.T) {
+func TestVoteBanCommandCommunityVotingDisabledSkipsProcessing(t *testing.T) {
 	t.Parallel()
 
 	sendMessageCalls := 0
@@ -233,38 +241,274 @@ func TestBanCommandCommunityVotingDisabledSkipsProcessing(t *testing.T) {
 		MessageThreadID: 7,
 		Chat:            *chat,
 		From:            actor,
-		Text:            "/ban",
+		Text:            "/voteban",
 		ReplyToMessage:  &api.Message{MessageID: 40, Chat: *chat, From: target, Text: "spam text"},
 		IsTopicMessage:  true,
 	}
 	settings := &db.Settings{CommunityVotingEnabled: false}
 
 	bannedCalls := 0
-	spamCalls := 0
+	reportedCalls := 0
 	reactor := &Reactor{
 		s: &testBotService{
 			botAPI:   botAPI,
 			language: "en",
 		},
+		spamDetector: &testSpamDetector{reportedResult: boolPtr(false)},
 		processBanned: func(context.Context, *api.Message, *api.Chat, string) (*moderation.ProcessingResult, error) {
 			bannedCalls++
 			return nil, nil
 		},
-		processSpam: func(context.Context, *api.Message, *api.Chat, string) (*moderation.ProcessingResult, error) {
-			spamCalls++
+		processReported: func(context.Context, *api.Message, *api.Message, *api.Chat, string) (*moderation.ProcessingResult, error) {
+			reportedCalls++
 			return nil, nil
 		},
 	}
 
-	if err := reactor.banCommand(context.Background(), command, chat, actor, settings); err != nil {
-		t.Fatalf("banCommand returned error: %v", err)
+	if err := reactor.voteBanCommand(context.Background(), command, chat, actor, settings); err != nil {
+		t.Fatalf("voteBanCommand returned error: %v", err)
 	}
 
-	if bannedCalls != 0 || spamCalls != 0 {
-		t.Fatalf("expected no processing calls, got banned=%d spam=%d", bannedCalls, spamCalls)
+	if bannedCalls != 0 || reportedCalls != 0 {
+		t.Fatalf("expected no processing calls, got banned=%d reported=%d", bannedCalls, reportedCalls)
 	}
 	if sendMessageCalls != 1 {
 		t.Fatalf("sendMessage calls = %d, want 1", sendMessageCalls)
+	}
+}
+
+func TestBanCommandIsIgnored(t *testing.T) {
+	t.Parallel()
+
+	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
+		t.Fatalf("unexpected bot method: %s", method)
+		return nil
+	})
+	chat := &api.Chat{ID: -100, Type: "supergroup"}
+	actor := &api.User{ID: 100, FirstName: "Actor"}
+	msg := &api.Message{
+		MessageID: 50,
+		Chat:      *chat,
+		From:      actor,
+		Text:      "/ban",
+		Entities: []api.MessageEntity{{
+			Type:   "bot_command",
+			Offset: 0,
+			Length: len("/ban"),
+		}},
+	}
+	reactor := &Reactor{
+		s: &testBotService{
+			botAPI: botAPI,
+		},
+	}
+
+	if err := reactor.handleCommand(context.Background(), msg, chat, actor, &db.Settings{CommunityVotingEnabled: true}); err != nil {
+		t.Fatalf("handleCommand returned error: %v", err)
+	}
+}
+
+func TestVoteBanCommandWithoutReplySendsUsageHelp(t *testing.T) {
+	t.Parallel()
+
+	sendMessageCalls := 0
+	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
+		switch method {
+		case testTelegramMethodSendMessage:
+			if err := r.ParseForm(); err != nil {
+				t.Fatalf("parse form: %v", err)
+			}
+			sendMessageCalls++
+			if got := r.Form.Get("reply_parameters"); got == "" {
+				t.Fatal("expected usage help to reply to the command")
+			}
+			if got := r.Form.Get("text"); got == "" {
+				t.Fatal("expected usage help text")
+			}
+			return map[string]any{
+				"message_id": 70,
+				"date":       0,
+				"chat": map[string]any{
+					"id":   -100,
+					"type": "supergroup",
+				},
+			}
+		default:
+			t.Fatalf("unexpected bot method: %s", method)
+			return nil
+		}
+	})
+	chat := &api.Chat{ID: -100, Type: "supergroup"}
+	actor := &api.User{ID: 100, FirstName: "Actor"}
+	command := &api.Message{MessageID: 50, Chat: *chat, From: actor, Text: "/voteban"}
+	reactor := &Reactor{
+		s: &testBotService{
+			botAPI:   botAPI,
+			language: "en",
+		},
+	}
+
+	if err := reactor.voteBanCommand(context.Background(), command, chat, actor, &db.Settings{CommunityVotingEnabled: true}); err != nil {
+		t.Fatalf("voteBanCommand returned error: %v", err)
+	}
+	if sendMessageCalls != 1 {
+		t.Fatalf("sendMessage calls = %d, want 1", sendMessageCalls)
+	}
+}
+
+func TestVoteBanCommandLLMSpamBansImmediatelyAndDeletesReportMessage(t *testing.T) {
+	t.Parallel()
+
+	sendMessageCalls := 0
+	deleteMessageCalls := 0
+	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
+		switch method {
+		case testTelegramMethodSendMessage:
+			sendMessageCalls++
+			return map[string]any{
+				"message_id": 70,
+				"date":       0,
+				"chat": map[string]any{
+					"id":   -100,
+					"type": "supergroup",
+				},
+			}
+		case testTelegramMethodDeleteMessage:
+			if err := r.ParseForm(); err != nil {
+				t.Fatalf("parse form: %v", err)
+			}
+			deleteMessageCalls++
+			if got := r.Form.Get("message_id"); got != "50" {
+				t.Fatalf("expected report message delete, got message_id=%q", got)
+			}
+			return true
+		default:
+			t.Fatalf("unexpected bot method: %s", method)
+			return nil
+		}
+	})
+	chat := &api.Chat{ID: -100, Type: "supergroup"}
+	actor := &api.User{ID: 100, FirstName: "Actor"}
+	target := &api.User{ID: 200, FirstName: "Target"}
+	reply := &api.Message{MessageID: 40, Chat: *chat, From: target, Text: "reported spam text"}
+	command := &api.Message{MessageID: 50, Chat: *chat, From: actor, Text: "/voteban", ReplyToMessage: reply}
+	bannedCalls := 0
+	reactor := &Reactor{
+		s: &testBotService{
+			botAPI:   botAPI,
+			language: "en",
+		},
+		spamDetector: &testSpamDetector{reportedResult: boolPtr(true)},
+		processBanned: func(_ context.Context, gotMsg *api.Message, gotChat *api.Chat, lang string) (*moderation.ProcessingResult, error) {
+			bannedCalls++
+			if gotMsg != reply || gotChat != chat || lang != "en" {
+				t.Fatalf("unexpected banned target: msg=%p chat=%p lang=%q", gotMsg, gotChat, lang)
+			}
+			return &moderation.ProcessingResult{MessageDeleted: true, UserBanned: true}, nil
+		},
+	}
+
+	if err := reactor.voteBanCommand(context.Background(), command, chat, actor, &db.Settings{CommunityVotingEnabled: true}); err != nil {
+		t.Fatalf("voteBanCommand returned error: %v", err)
+	}
+	if bannedCalls != 1 {
+		t.Fatalf("processBanned calls = %d, want 1", bannedCalls)
+	}
+	if sendMessageCalls != 1 {
+		t.Fatalf("sendMessage calls = %d, want 1", sendMessageCalls)
+	}
+	if deleteMessageCalls != 1 {
+		t.Fatalf("deleteMessage calls = %d, want 1", deleteMessageCalls)
+	}
+}
+
+func TestMessageMentionCurrentBotTriggersReportFlow(t *testing.T) {
+	t.Parallel()
+
+	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
+		switch method {
+		case testTelegramMethodGetChatMember:
+			return testChatMemberResponse("member", false, false, false)
+		default:
+			t.Fatalf("unexpected bot method: %s", method)
+			return nil
+		}
+	})
+	chat := &api.Chat{ID: -100, Type: "supergroup"}
+	actor := &api.User{ID: 100, FirstName: "Actor"}
+	target := &api.User{ID: 200, FirstName: "Target"}
+	reply := &api.Message{MessageID: 40, Chat: *chat, From: target, Text: "reported text"}
+	report := &api.Message{
+		MessageID:       50,
+		MessageThreadID: 7,
+		Chat:            *chat,
+		From:            actor,
+		Text:            "@testbot",
+		Entities: []api.MessageEntity{{
+			Type:   "mention",
+			Offset: 0,
+			Length: len("@testbot"),
+		}},
+		ReplyToMessage: reply,
+	}
+	reportedCalls := 0
+	reactor := &Reactor{
+		s: &testBotService{
+			botAPI:   botAPI,
+			language: "en",
+			settings: &db.Settings{CommunityVotingEnabled: true},
+		},
+		store:        &testReactorStore{},
+		spamDetector: &testSpamDetector{reportedResult: boolPtr(false)},
+		processReported: func(_ context.Context, gotMsg *api.Message, gotReport *api.Message, gotChat *api.Chat, lang string) (*moderation.ProcessingResult, error) {
+			reportedCalls++
+			if gotMsg != reply || gotReport != report || gotChat != chat || lang != "en" {
+				t.Fatalf("unexpected report flow args: msg=%p report=%p chat=%p lang=%q", gotMsg, gotReport, gotChat, lang)
+			}
+			return &moderation.ProcessingResult{}, nil
+		},
+	}
+
+	proceed, err := reactor.Handle(context.Background(), &api.Update{Message: report}, chat, actor)
+	if err != nil {
+		t.Fatalf("Handle returned error: %v", err)
+	}
+	if !proceed {
+		t.Fatal("expected reactor to proceed")
+	}
+	if reportedCalls != 1 {
+		t.Fatalf("processReported calls = %d, want 1", reportedCalls)
+	}
+}
+
+func TestMessageMentionsCurrentBot(t *testing.T) {
+	t.Parallel()
+
+	msg := &api.Message{
+		Text: "hi @testbot",
+		Entities: []api.MessageEntity{{
+			Type:   "mention",
+			Offset: 3,
+			Length: len("@testbot"),
+		}},
+	}
+	if !messageMentionsCurrentBot(msg, api.User{ID: 1, UserName: "testbot"}) {
+		t.Fatal("expected current bot mention to match")
+	}
+	if messageMentionsCurrentBot(msg, api.User{ID: 2, UserName: "otherbot"}) {
+		t.Fatal("expected foreign bot mention to be ignored")
+	}
+	textMention := &api.Message{
+		Text: "bot",
+		Entities: []api.MessageEntity{{
+			Type:   "text_mention",
+			Offset: 0,
+			Length: len("bot"),
+			User:   &api.User{ID: 1, UserName: "testbot", IsBot: true},
+		}},
+	}
+	if !messageMentionsCurrentBot(textMention, api.User{ID: 1, UserName: "testbot"}) {
+		t.Fatal("expected current bot text mention to match")
 	}
 }
 

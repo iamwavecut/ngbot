@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -139,6 +140,129 @@ func TestChatKnownNonMemberPrimaryKeyIndexExistsAfterMigrations(t *testing.T) {
 	}
 }
 
+func TestSpamCasesReportColumnsExistAfterMigrations(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	client, err := NewSQLiteClient(ctx, t.TempDir(), "test.db")
+	if err != nil {
+		t.Fatalf("new sqlite client: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+
+	rows, err := client.db.QueryContext(ctx, "PRAGMA table_info('spam_cases')")
+	if err != nil {
+		t.Fatalf("query spam_cases columns: %v", err)
+	}
+	defer rows.Close()
+
+	columns := make(map[string]struct{})
+	for rows.Next() {
+		var (
+			cid        int
+			name       string
+			columnType string
+			notNull    int
+			defaultVal sql.NullString
+			pk         int
+		)
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultVal, &pk); err != nil {
+			t.Fatalf("scan column row: %v", err)
+		}
+		columns[name] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate column rows: %v", err)
+	}
+
+	for _, name := range []string{"message_id", "pre_vote_restricted"} {
+		if _, ok := columns[name]; !ok {
+			t.Fatalf("expected spam_cases.%s to exist", name)
+		}
+	}
+}
+
+func TestSpamCaseReportMessagesTableExistsAfterMigrations(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	client, err := NewSQLiteClient(ctx, t.TempDir(), "test.db")
+	if err != nil {
+		t.Fatalf("new sqlite client: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+
+	var name string
+	if err := client.db.QueryRowContext(ctx, `
+		SELECT name
+		FROM sqlite_master
+		WHERE type = 'table' AND name = 'spam_case_report_messages'
+	`).Scan(&name); err != nil {
+		t.Fatalf("expected spam_case_report_messages table: %v", err)
+	}
+	if name != "spam_case_report_messages" {
+		t.Fatalf("unexpected table name %q", name)
+	}
+}
+
+func TestCommunityVotingMigrationEnablesExistingChats(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	sqlDB, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
+
+	source := &migrate.EmbedFileSystemMigrationSource{
+		FileSystem: resources.FS,
+		Root:       "migrations",
+	}
+	migrationCount := countSQLMigrations(t)
+	if _, err := migrate.ExecMax(sqlDB, "sqlite3", source, migrate.Up, migrationCount-1); err != nil {
+		t.Fatalf("execute pre-report migrations: %v", err)
+	}
+
+	if _, err := sqlDB.ExecContext(ctx, `
+		INSERT INTO chats (id, community_voting_enabled)
+		VALUES (100, 0), (101, 1)
+	`); err != nil {
+		t.Fatalf("insert voting values: %v", err)
+	}
+
+	if _, err := migrate.Exec(sqlDB, "sqlite3", source, migrate.Up); err != nil {
+		t.Fatalf("execute report migration: %v", err)
+	}
+
+	rows, err := sqlDB.QueryContext(ctx, `
+		SELECT community_voting_enabled
+		FROM chats
+		WHERE id IN (100, 101)
+		ORDER BY id
+	`)
+	if err != nil {
+		t.Fatalf("query migrated values: %v", err)
+	}
+	defer rows.Close()
+
+	got := make([]bool, 0, 2)
+	for rows.Next() {
+		var enabled bool
+		if err := rows.Scan(&enabled); err != nil {
+			t.Fatalf("scan migrated value: %v", err)
+		}
+		got = append(got, enabled)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate migrated values: %v", err)
+	}
+	if !slices.Equal(got, []bool{true, true}) {
+		t.Fatalf("expected migration to enable community voting for all chats, got %#v", got)
+	}
+}
+
 func TestReactionProfileCheckSettingDefaultsToEnabledAfterMigrations(t *testing.T) {
 	t.Parallel()
 
@@ -179,7 +303,7 @@ func TestReactionProfileCheckMigrationPreservesReactionModerationValues(t *testi
 		Root:       "migrations",
 	}
 	migrationCount := countSQLMigrations(t)
-	if _, err := migrate.ExecMax(sqlDB, "sqlite3", source, migrate.Up, migrationCount-1); err != nil {
+	if _, err := migrate.ExecMax(sqlDB, "sqlite3", source, migrate.Up, migrationCount-2); err != nil {
 		t.Fatalf("execute pre-rename migrations: %v", err)
 	}
 

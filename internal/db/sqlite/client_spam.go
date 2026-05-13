@@ -42,18 +42,20 @@ func (s *sqliteClient) CreateSpamCase(ctx context.Context, sc *db.SpamCase) (*db
 	defer s.mutex.Unlock()
 
 	query := `
-		INSERT INTO spam_cases (chat_id, user_id, message_text, created_at, channel_username, channel_post_id, 
-			notification_message_id, status, resolved_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO spam_cases (chat_id, user_id, message_id, message_text, created_at, channel_username, channel_post_id,
+			notification_message_id, pre_vote_restricted, status, resolved_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 	result, err := s.db.ExecContext(ctx, query,
 		sc.ChatID,
 		sc.UserID,
+		sc.MessageID,
 		sc.MessageText,
 		sc.CreatedAt,
 		sc.ChannelUsername,
 		sc.ChannelPostID,
 		sc.NotificationMessageID,
+		sc.PreVoteRestricted,
 		sc.Status,
 		sc.ResolvedAt,
 	)
@@ -74,10 +76,12 @@ func (s *sqliteClient) UpdateSpamCase(ctx context.Context, sc *db.SpamCase) erro
 	defer s.mutex.Unlock()
 
 	query := `
-		UPDATE spam_cases 
+		UPDATE spam_cases
 		SET channel_username = ?,
 			channel_post_id = ?,
 			notification_message_id = ?,
+			message_id = ?,
+			pre_vote_restricted = ?,
 			status = ?,
 			resolved_at = ?
 		WHERE id = ?
@@ -86,6 +90,8 @@ func (s *sqliteClient) UpdateSpamCase(ctx context.Context, sc *db.SpamCase) erro
 		sc.ChannelUsername,
 		sc.ChannelPostID,
 		sc.NotificationMessageID,
+		sc.MessageID,
+		sc.PreVoteRestricted,
 		sc.Status,
 		sc.ResolvedAt,
 		sc.ID,
@@ -111,14 +117,38 @@ func (s *sqliteClient) GetActiveSpamCase(ctx context.Context, chatID, userID int
 
 	var sc db.SpamCase
 	err := s.db.GetContext(ctx, &sc, `
-		SELECT * FROM spam_cases 
-		WHERE chat_id = ? 
-		AND user_id = ? 
-		AND status = 'pending' 
+		SELECT * FROM spam_cases
+		WHERE chat_id = ?
+		AND user_id = ?
+		AND status = 'pending'
 		AND resolved_at IS NULL
-		ORDER BY created_at DESC 
+		ORDER BY created_at DESC
 		LIMIT 1
 	`, chatID, userID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &sc, nil
+}
+
+func (s *sqliteClient) GetActiveSpamCaseByMessage(ctx context.Context, chatID, userID int64, messageID int) (*db.SpamCase, error) {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+
+	var sc db.SpamCase
+	err := s.db.GetContext(ctx, &sc, `
+		SELECT * FROM spam_cases
+		WHERE chat_id = ?
+		AND user_id = ?
+		AND message_id = ?
+		AND status = 'pending'
+		AND resolved_at IS NULL
+		ORDER BY created_at DESC
+		LIMIT 1
+	`, chatID, userID, messageID)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -134,11 +164,49 @@ func (s *sqliteClient) GetPendingSpamCases(ctx context.Context) ([]*db.SpamCase,
 
 	var cases []*db.SpamCase
 	err := s.db.SelectContext(ctx, &cases, `
-		SELECT * FROM spam_cases 
+		SELECT * FROM spam_cases
 		WHERE status = 'pending' AND resolved_at IS NULL
 		ORDER BY created_at DESC
 	`)
 	return cases, err
+}
+
+func (s *sqliteClient) AddSpamCaseReportMessage(ctx context.Context, message *db.SpamCaseReportMessage) error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	query := `
+		INSERT OR IGNORE INTO spam_case_report_messages (case_id, chat_id, message_id, created_at)
+		VALUES (?, ?, ?, ?)
+	`
+	_, err := s.db.ExecContext(ctx, query,
+		message.CaseID,
+		message.ChatID,
+		message.MessageID,
+		message.CreatedAt,
+	)
+	return err
+}
+
+func (s *sqliteClient) GetSpamCaseReportMessages(ctx context.Context, caseID int64) ([]*db.SpamCaseReportMessage, error) {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+
+	var messages []*db.SpamCaseReportMessage
+	err := s.db.SelectContext(ctx, &messages, `
+		SELECT * FROM spam_case_report_messages
+		WHERE case_id = ?
+		ORDER BY created_at ASC, message_id ASC
+	`, caseID)
+	return messages, err
+}
+
+func (s *sqliteClient) DeleteSpamCaseReportMessages(ctx context.Context, caseID int64) error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	_, err := s.db.ExecContext(ctx, `DELETE FROM spam_case_report_messages WHERE case_id = ?`, caseID)
+	return err
 }
 
 func (s *sqliteClient) AddSpamVote(ctx context.Context, vote *db.SpamVote) error {
@@ -167,7 +235,7 @@ func (s *sqliteClient) GetSpamVotes(ctx context.Context, caseID int64) ([]*db.Sp
 
 	var votes []*db.SpamVote
 	err := s.db.SelectContext(ctx, &votes, `
-		SELECT * FROM spam_votes 
+		SELECT * FROM spam_votes
 		WHERE case_id = ?
 		ORDER BY voted_at ASC
 	`, caseID)
@@ -180,7 +248,7 @@ func (s *sqliteClient) GetActiveRestriction(ctx context.Context, chatID, userID 
 
 	var restriction db.UserRestriction
 	err := s.db.GetContext(ctx, &restriction, `
-		SELECT * FROM user_restrictions 
+		SELECT * FROM user_restrictions
 		WHERE chat_id = ? AND user_id = ? AND expires_at > datetime('now')
 		ORDER BY restricted_at DESC LIMIT 1
 	`, chatID, userID)
@@ -246,7 +314,7 @@ func (s *sqliteClient) GetChatRecentJoiners(ctx context.Context, chatID int64) (
 
 	var joiners []*db.RecentJoiner
 	err := s.db.SelectContext(ctx, &joiners, `
-		SELECT * FROM recent_joiners 
+		SELECT * FROM recent_joiners
 		WHERE chat_id = ?
 		ORDER BY joined_at DESC
 	`, chatID)
@@ -259,7 +327,7 @@ func (s *sqliteClient) GetUnprocessedRecentJoiners(ctx context.Context) ([]*db.R
 
 	var joiners []*db.RecentJoiner
 	err := s.db.SelectContext(ctx, &joiners, `
-		SELECT * FROM recent_joiners 
+		SELECT * FROM recent_joiners
 		WHERE processed = FALSE
 		ORDER BY joined_at ASC
 	`)
@@ -271,7 +339,7 @@ func (s *sqliteClient) ProcessRecentJoiner(ctx context.Context, chatID int64, us
 	defer s.mutex.Unlock()
 
 	query := `
-		UPDATE recent_joiners 
+		UPDATE recent_joiners
 		SET processed = TRUE, is_spammer = ?
 		WHERE chat_id = ? AND user_id = ?
 	`

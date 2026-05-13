@@ -96,14 +96,26 @@ func (s *testReactorStore) DeleteChatKnownNonMember(_ context.Context, chatID in
 }
 
 type testSpamDetector struct {
-	calls    int
-	messages []string
-	result   *bool
+	calls            int
+	reportedCalls    int
+	messages         []string
+	reportedMessages []string
+	result           *bool
+	reportedResult   *bool
 }
 
 func (d *testSpamDetector) IsSpam(_ context.Context, message string, _ []string) (*bool, error) {
 	d.calls++
 	d.messages = append(d.messages, message)
+	return d.result, nil
+}
+
+func (d *testSpamDetector) IsReportedSpam(_ context.Context, message string, _ []string) (*bool, error) {
+	d.reportedCalls++
+	d.reportedMessages = append(d.reportedMessages, message)
+	if d.reportedResult != nil {
+		return d.reportedResult, nil
+	}
 	return d.result, nil
 }
 

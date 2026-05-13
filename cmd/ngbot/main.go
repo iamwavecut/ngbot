@@ -201,7 +201,7 @@ func buildRuntime(ctx context.Context, cfg *config.Config, errChan chan<- shutdo
 	}
 
 	if err := announceGroupAdminCommands(botAPI); err != nil {
-		log.WithError(err).Warn("failed to set group admin commands")
+		log.WithError(err).Warn("failed to set group commands")
 	}
 
 	dbClient, err := sqlite.NewSQLiteClient(ctx, cfg.DotPath, "bot.db")
@@ -318,6 +318,20 @@ func formatPollingShutdown(err error) string {
 func announceGroupAdminCommands(botAPI *api.BotAPI) error {
 	if _, err := botAPI.Request(api.NewDeleteMyCommands()); err != nil {
 		return fmt.Errorf("delete commands: %w", err)
+	}
+
+	groupCommands := []api.BotCommand{
+		{
+			Command:     "voteban",
+			Description: "Report spam with community voting",
+		},
+	}
+	groupCommandsSet := api.NewSetMyCommandsWithScope(
+		api.NewBotCommandScopeAllGroupChats(),
+		groupCommands...,
+	)
+	if _, err := botAPI.Request(groupCommandsSet); err != nil {
+		return fmt.Errorf("set group commands: %w", err)
 	}
 
 	groupAdminCommands := []api.BotCommand{

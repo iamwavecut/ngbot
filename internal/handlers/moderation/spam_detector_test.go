@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/iamwavecut/ngbot/internal/adapters/llm"
@@ -67,5 +68,40 @@ func TestSpamDetectorIncludesExtraExamplesInPrompt(t *testing.T) {
 	}
 	if tail[2].Cacheable {
 		t.Fatalf("expected candidate message to stay live")
+	}
+}
+
+func TestSpamDetectorUsesReportedPromptForReportedSpam(t *testing.T) {
+	t.Parallel()
+
+	llmStub := &spamDetectorTestLLM{
+		response: llm.ChatCompletionResponse{
+			Choices: []llm.ChatCompletionChoice{
+				{Message: llm.ChatCompletionMessage{Role: "assistant", Content: "1"}},
+			},
+		},
+	}
+	detector := NewSpamDetector(llmStub, log.New().WithField("test", "spam_detector"))
+
+	candidate := "reported message"
+	result, err := detector.IsReportedSpam(context.Background(), candidate, nil)
+	if err != nil {
+		t.Fatalf("IsReportedSpam returned error: %v", err)
+	}
+	if result == nil || !*result {
+		t.Fatalf("expected reported spam result, got %v", result)
+	}
+	if len(llmStub.lastMessages) == 0 {
+		t.Fatal("expected reported spam check to call LLM")
+	}
+	systemPrompt := llmStub.lastMessages[0].Content
+	if systemPrompt == spamDetectionPrompt {
+		t.Fatal("expected reported spam check to use a report-specific prompt")
+	}
+	if !strings.Contains(strings.ToLower(systemPrompt), "reported") && !strings.Contains(strings.ToLower(systemPrompt), "зарепорч") {
+		t.Fatalf("expected report-specific prompt to mention reported spam, got %q", systemPrompt)
+	}
+	if got := llmStub.lastMessages[len(llmStub.lastMessages)-1].Content; got != candidate {
+		t.Fatalf("expected reported candidate at tail, got %q", got)
 	}
 }

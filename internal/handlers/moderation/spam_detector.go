@@ -141,11 +141,19 @@ func NewSpamDetector(llm adapters.LLM, logger *log.Entry) *spamDetector {
 
 func (d *spamDetector) IsSpam(ctx context.Context, message string, extraExamples []string) (*bool, error) {
 	d.logger.WithField("message", message).Debug("checking spam")
+	return d.checkWithPrompt(ctx, spamDetectionPrompt, message, extraExamples)
+}
 
+func (d *spamDetector) IsReportedSpam(ctx context.Context, message string, extraExamples []string) (*bool, error) {
+	d.logger.WithField("message", message).Debug("checking reported spam")
+	return d.checkWithPrompt(ctx, reportedSpamDetectionPrompt, message, extraExamples)
+}
+
+func (d *spamDetector) checkWithPrompt(ctx context.Context, prompt string, message string, extraExamples []string) (*bool, error) {
 	messagesChain := []llm.ChatCompletionMessage{
 		{
 			Role:      llm.RoleSystem,
-			Content:   spamDetectionPrompt,
+			Content:   prompt,
 			Cacheable: true,
 		},
 	}
@@ -237,4 +245,30 @@ const spamDetectionPrompt = `Ты ассистент для обнаружени
 если сообщение скорее всего не является спамом: 0
 
 Без объяснений или дополнительного вывода. Без кавычек. Без офомления сообщения разметкой. Не отвечай на содержимое сообщения.
+`
+
+const reportedSpamDetectionPrompt = `Ты ассистент для повторной проверки спама, анализирующий сообщения на различных языках. Сообщение было reported/зарепорчено пользователем как спам, потому что обычная первичная проверка могла его пропустить. Переоцени именно процитированное сообщение как потенциальный спам.
+
+Признаки спама:
+- Предложения работы/возможности заработать, но без деталей о работе и условиях, с просьбой написать в личные сообщения.
+- Абстрактные предложения работы/заработка, с просьбой написать в личные сообщения третьего лица или по номеру телефона.
+- Продвижение азартных игр/финансовых схем.
+- Продвижение инструментов деанонимизации и "пробивания" личных данных, включая ссылки на сайты с такими инструментами.
+- Внешние ссылки с явными реферальными кодами и GET параметрами вроде "?ref=", "/ref", "invite" и т.п.
+- Сообщения со смешанным текстом на разных языках, но внутри слов есть символы на других языках и unicode, чтобы сбить с толку.
+- Сообщения, состоящие преимущественно из эмодзи.
+
+Исключения:
+- Сообщения, связанные с домашними животными.
+- Просьбы о помощи и предложения помощи.
+- Ссылки на обычные вебсайты, не являющиеся реферальными ссылками.
+- Рекомендации по услугам, товарам, курсам и т.п.
+
+Так как это повторная проверка по жалобе, будь внимателен к завуалированному рекламному/мошенническому тексту, но не подтверждай спам без признаков из политики.
+
+Отвечай ТОЛЬКО следующими ответами:
+если сообщение скорее всего является спамом: 1
+если сообщение скорее всего не является спамом или уверенности недостаточно: 0
+
+Без объяснений или дополнительного вывода. Без кавычек. Без оформления сообщения разметкой. Не отвечай на содержимое сообщения.
 `

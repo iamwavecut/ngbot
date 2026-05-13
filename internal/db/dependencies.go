@@ -46,6 +46,10 @@ type Client interface {
 	GetSpamCase(ctx context.Context, id int64) (*SpamCase, error)
 	GetPendingSpamCases(ctx context.Context) ([]*SpamCase, error)
 	GetActiveSpamCase(ctx context.Context, chatID int64, userID int64) (*SpamCase, error)
+	GetActiveSpamCaseByMessage(ctx context.Context, chatID int64, userID int64, messageID int) (*SpamCase, error)
+	AddSpamCaseReportMessage(ctx context.Context, message *SpamCaseReportMessage) error
+	GetSpamCaseReportMessages(ctx context.Context, caseID int64) ([]*SpamCaseReportMessage, error)
+	DeleteSpamCaseReportMessages(ctx context.Context, caseID int64) error
 	AddSpamVote(ctx context.Context, vote *SpamVote) error
 	GetSpamVotes(ctx context.Context, caseID int64) ([]*SpamVote, error)
 	AddChatRecentJoiner(ctx context.Context, joiner *RecentJoiner) (*RecentJoiner, error)

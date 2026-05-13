@@ -31,13 +31,22 @@ type (
 		ID                    int64      `db:"id"`
 		ChatID                int64      `db:"chat_id"`
 		UserID                int64      `db:"user_id"`
+		MessageID             int        `db:"message_id"`
 		MessageText           string     `db:"message_text"`
 		CreatedAt             time.Time  `db:"created_at"`
 		ChannelUsername       string     `db:"channel_username"`
 		ChannelPostID         int        `db:"channel_post_id"`
 		NotificationMessageID int        `db:"notification_message_id"`
+		PreVoteRestricted     bool       `db:"pre_vote_restricted"`
 		Status                string     `db:"status"` // pending, spam, false_positive
 		ResolvedAt            *time.Time `db:"resolved_at"`
+	}
+
+	SpamCaseReportMessage struct {
+		CaseID    int64     `db:"case_id"`
+		ChatID    int64     `db:"chat_id"`
+		MessageID int       `db:"message_id"`
+		CreatedAt time.Time `db:"created_at"`
 	}
 
 	SpamVote struct {

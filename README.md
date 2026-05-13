@@ -19,7 +19,8 @@
    - **External quote heuristic** for obvious cross-chat spam patterns
    - **LLM-powered binary classification** with built-in and chat-specific spam examples
 2. If the message is considered spam, the user is either immediately banned or sent into community voting, depending on chat settings.
-3. If the message is clean, the user is remembered so repeat checks can be reduced where possible.
+3. Chat users can report missed spam with `/voteban` or by mentioning the bot in reply to the message. Reports are rechecked by the LLM first, then either moderated immediately or sent to community voting without pre-deleting the original message.
+4. If the message is clean, the user is remembered so repeat checks can be reduced where possible.
 
 ## Admin panel
 1. Run `/settings` in a group where the bot is an admin.

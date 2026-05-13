@@ -19,6 +19,7 @@ import (
 
 type SpamDetectorInterface interface {
 	IsSpam(ctx context.Context, message string, examples []string) (*bool, error)
+	IsReportedSpam(ctx context.Context, message string, examples []string) (*bool, error)
 }
 
 type Config struct {
@@ -54,16 +55,17 @@ type MessageProcessingResult struct {
 }
 
 type Reactor struct {
-	s             bot.Service
-	store         reactorStore
-	config        Config
-	spamDetector  SpamDetectorInterface
-	banService    moderation.BanService
-	spamControl   *moderation.SpamControl
-	processSpam   func(ctx context.Context, msg *api.Message, chat *api.Chat, lang string) (*moderation.ProcessingResult, error)
-	processBanned func(ctx context.Context, msg *api.Message, chat *api.Chat, lang string) (*moderation.ProcessingResult, error)
-	lastResults   map[int64]*MessageProcessingResult
-	resultOrder   []int64
+	s               bot.Service
+	store           reactorStore
+	config          Config
+	spamDetector    SpamDetectorInterface
+	banService      moderation.BanService
+	spamControl     *moderation.SpamControl
+	processSpam     func(ctx context.Context, msg *api.Message, chat *api.Chat, lang string) (*moderation.ProcessingResult, error)
+	processBanned   func(ctx context.Context, msg *api.Message, chat *api.Chat, lang string) (*moderation.ProcessingResult, error)
+	processReported func(ctx context.Context, targetMsg *api.Message, reportMsg *api.Message, chat *api.Chat, lang string) (*moderation.ProcessingResult, error)
+	lastResults     map[int64]*MessageProcessingResult
+	resultOrder     []int64
 }
 
 type reactorStore interface {
@@ -76,16 +78,17 @@ type reactorStore interface {
 
 func NewReactor(s bot.Service, banService moderation.BanService, spamControl *moderation.SpamControl, spamDetector SpamDetectorInterface, config Config) *Reactor {
 	r := &Reactor{
-		s:             s,
-		store:         s.GetDB(),
-		config:        config,
-		banService:    banService,
-		spamControl:   spamControl,
-		spamDetector:  spamDetector,
-		processSpam:   spamControl.ProcessSpamMessage,
-		processBanned: spamControl.ProcessBannedMessage,
-		lastResults:   make(map[int64]*MessageProcessingResult),
-		resultOrder:   make([]int64, 0, maxLastResults),
+		s:               s,
+		store:           s.GetDB(),
+		config:          config,
+		banService:      banService,
+		spamControl:     spamControl,
+		spamDetector:    spamDetector,
+		processSpam:     spamControl.ProcessSpamMessage,
+		processBanned:   spamControl.ProcessBannedMessage,
+		processReported: spamControl.ProcessReportedMessage,
+		lastResults:     make(map[int64]*MessageProcessingResult),
+		resultOrder:     make([]int64, 0, maxLastResults),
 	}
 	r.getLogEntry().Debug("created new reactor")
 	return r
@@ -128,6 +131,13 @@ func (r *Reactor) Handle(ctx context.Context, u *api.Update, chat *api.Chat, use
 			}
 			return true, nil
 		}
+		if messageMentionsCurrentBot(u.Message, r.s.GetBot().Self) {
+			if err := r.voteBanCommand(ctx, u.Message, chat, user, settings); err != nil {
+				entry.WithField("error", err.Error()).Error("error handling bot mention report")
+				return true, err
+			}
+			return true, nil
+		}
 		if err := r.handleMessage(ctx, u.Message, chat, user, settings); err != nil {
 			entry.WithField("error", err.Error()).Error("error handling message")
 			return true, err
@@ -163,6 +173,14 @@ func (r *Reactor) handleCallbackQuery(ctx context.Context, u *api.Update, chat *
 				language = r.s.GetLanguage(ctx, chat.ID, user)
 			}
 			_, _ = r.s.GetBot().Request(api.NewCallback(u.CallbackQuery.ID, i18n.Get("Community voting is disabled", language)))
+			return true, nil
+		}
+		if errors.Is(err, moderation.ErrSuspectCannotVote) {
+			language := "en"
+			if chat != nil {
+				language = r.s.GetLanguage(ctx, chat.ID, user)
+			}
+			_, _ = r.s.GetBot().Request(api.NewCallback(u.CallbackQuery.ID, i18n.Get("You cannot vote on your own spam case", language)))
 			return true, nil
 		}
 		entry.WithField("error", err.Error()).Error("failed to record spam vote")
