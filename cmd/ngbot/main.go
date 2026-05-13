@@ -336,6 +336,10 @@ func announceGroupAdminCommands(botAPI *api.BotAPI) error {
 
 	groupAdminCommands := []api.BotCommand{
 		{
+			Command:     "voteban",
+			Description: "Report spam with community voting",
+		},
+		{
 			Command:     "settings",
 			Description: "Bot settings",
 		},

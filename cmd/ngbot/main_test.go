@@ -109,7 +109,7 @@ func TestAnnounceGroupAdminCommandsRegistersVoteBanForAllGroups(t *testing.T) {
 	if len(groupCommands) != 1 || groupCommands[0].Command != "voteban" {
 		t.Fatalf("expected all-group voteban command, got %#v", groupCommands)
 	}
-	if len(adminCommands) != 1 || adminCommands[0].Command != "settings" {
+	if len(adminCommands) != 2 || adminCommands[0].Command != "voteban" || adminCommands[1].Command != "settings" {
 		t.Fatalf("expected admin settings command, got %#v", adminCommands)
 	}
 }
