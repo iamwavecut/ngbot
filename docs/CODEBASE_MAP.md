@@ -215,6 +215,7 @@ ngbot/
 ├── go.mod                         # Dependencies (Go 1.25)
 ├── Dockerfile                     # Multi-stage build
 ├── compose.yaml.dist              # Docker Compose config
+├── deploy/caddy/ngbot-webapp.Caddyfile # Mini App reverse proxy template
 └── .env.example                   # Configuration template
 ```
 
@@ -359,12 +360,15 @@ Applies these values in one click:
 | `gatekeeper_captcha.go` | CAPTCHA button generation, smart keyboard layout (2 rows for 6+) |
 | `gatekeeper_challenge_service.go` | Challenge lifecycle with status management, stat instrumentation |
 | `gatekeeper_join_processor.go` | Two-phase join flow with `passed_waiting_member_join` handoff, dual Markdown/MarkdownV2 greeting rendering, placeholder substitution |
+| `gatekeeper_webapp.go` | Bot API 10.1 join-request Mini App CAPTCHA server, anti-indexing hardening, and answer validation |
 | `gatekeeper_join_flow_test.go` | Full integration tests for join-request handoff + MarkdownV2 greeting rendering |
 | `gatekeeper_scheduler.go` | Background workers (status-aware expiry, joiners check, not-spammer bypass) |
 | `gatekeeper_scheduler_test.go` | Scheduler override bypass + expired join-request tests |
 | `gatekeeper_captcha_test.go` | Button generation and keyboard layout tests |
 
 **Challenge Status Lifecycle**:
+
+Join requests with `query_id` use `sendChatJoinRequestWebApp` when `NG_GATEKEEPER_WEBAPP_PUBLIC_URL` is set; otherwise the handler queues the query and falls back to the legacy DM CAPTCHA path. The embedded Mini App server also publishes deny-all `/robots.txt`, an empty `/sitemap.xml`, no-store/noindex headers, CSP nonces, frame denial, Fetch Metadata checks for cross-site mutation requests, request body limits, and known crawler/LLM user-agent rejection.
 
 ```mermaid
 stateDiagram-v2
@@ -1016,6 +1020,9 @@ sequenceDiagram
 | `NG_TELEGRAM_POLL_TIMEOUT` | `30s` | Long-poll timeout |
 | `NG_TELEGRAM_REQUEST_TIMEOUT` | `35s` | HTTP client timeout (must be > poll timeout) |
 | `NG_TELEGRAM_RECOVERY_WINDOW` | `10m` | Polling recovery window (must be > request timeout) |
+| `NG_GATEKEEPER_WEBAPP_PUBLIC_URL` | empty | Public HTTP(S) origin for join-request CAPTCHA Mini App |
+| `NG_GATEKEEPER_WEBAPP_LISTEN_ADDR` | `:8080` | Local address for embedded Mini App HTTP server |
+| `NG_GATEKEEPER_WEBAPP_HOST_PORT` | `18080` | Compose-only localhost port for Caddy reverse proxy |
 | `NG_LLM_API_KEY` | *required* | LLM API key |
 | `NG_LLM_API_MODEL` | `gpt-4o-mini` | Model name |
 | `NG_LLM_API_URL` | `https://api.openai.com/v1` | OpenAI-compatible endpoint |
@@ -1032,6 +1039,7 @@ sequenceDiagram
 | `PollTimeout > 0` | Long-poll must wait for updates |
 | `RequestTimeout > PollTimeout` | HTTP timeout must exceed poll wait |
 | `RecoveryWindow > RequestTimeout` | Recovery must span multiple retry cycles |
+| `GatekeeperWebApp.PublicURL` absolute when set | Telegram needs an absolute Mini App URL |
 
 ## Conventions
 

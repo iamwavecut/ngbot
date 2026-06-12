@@ -3,6 +3,7 @@ package config
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -20,6 +21,7 @@ type (
 		LogLevel         int      `env:"LOG_LEVEL,default=2"`
 		DotPath          string   `env:"DOT_PATH,default=~/.ngbot"`
 		Telegram         Telegram
+		GatekeeperWebApp GatekeeperWebApp
 		LLM              LLM
 		SpamControl      SpamControl
 	}
@@ -28,6 +30,11 @@ type (
 		PollTimeout    time.Duration `env:"TELEGRAM_POLL_TIMEOUT,default=60s"`
 		RequestTimeout time.Duration `env:"TELEGRAM_REQUEST_TIMEOUT,default=75s"`
 		RecoveryWindow time.Duration `env:"TELEGRAM_RECOVERY_WINDOW,default=10m"`
+	}
+
+	GatekeeperWebApp struct {
+		PublicURL  string `env:"GATEKEEPER_WEBAPP_PUBLIC_URL"`
+		ListenAddr string `env:"GATEKEEPER_WEBAPP_LISTEN_ADDR,default=:8080"`
 	}
 
 	LLM struct {
@@ -100,6 +107,15 @@ func validateConfig(cfg *Config) error {
 	}
 	if cfg.Telegram.RecoveryWindow <= cfg.Telegram.RequestTimeout {
 		return fmt.Errorf("telegram recovery window must be greater than request timeout")
+	}
+	if cfg.GatekeeperWebApp.PublicURL != "" {
+		parsed, err := url.Parse(cfg.GatekeeperWebApp.PublicURL)
+		if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+			return fmt.Errorf("gatekeeper web app public url must be an absolute URL")
+		}
+		if parsed.Scheme != "https" && parsed.Scheme != "http" {
+			return fmt.Errorf("gatekeeper web app public url must use http or https")
+		}
 	}
 	return nil
 }

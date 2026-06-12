@@ -1,0 +1,53 @@
+{$NGBOT_GATEKEEPER_WEBAPP_DOMAIN} {
+	encode zstd gzip
+	header {
+		Cache-Control "no-store, no-cache, must-revalidate, private, max-age=0"
+		Cross-Origin-Opener-Policy "same-origin"
+		Cross-Origin-Resource-Policy "same-origin"
+		Origin-Agent-Cluster "?1"
+		Permissions-Policy "accelerometer=(), ambient-light-sensor=(), autoplay=(), battery=(), camera=(), clipboard-read=(), clipboard-write=(), display-capture=(), document-domain=(), encrypted-media=(), fullscreen=(), gamepad=(), geolocation=(), gyroscope=(), hid=(), identity-credentials-get=(), interest-cohort=(), local-fonts=(), magnetometer=(), microphone=(), midi=(), otp-credentials=(), payment=(), picture-in-picture=(), publickey-credentials-create=(), publickey-credentials-get=(), screen-wake-lock=(), serial=(), storage-access=(), usb=(), web-share=(), xr-spatial-tracking=()"
+		Pragma "no-cache"
+		Referrer-Policy "no-referrer"
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		X-Permitted-Cross-Domain-Policies "none"
+		X-Robots-Tag "noindex, nofollow, noarchive, nosnippet, noimageindex, notranslate, noai, noimageai"
+	}
+
+	@robots path /robots.txt
+	header @robots {
+		Content-Security-Policy "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'; img-src 'none'; manifest-src 'none'; media-src 'none'; worker-src 'none'"
+		Content-Type "text/plain; charset=utf-8"
+	}
+	respond @robots `User-agent: *
+Disallow: /
+Noindex: /
+
+User-agent: GPTBot
+Disallow: /
+Noindex: /
+
+User-agent: ClaudeBot
+Disallow: /
+Noindex: /
+
+User-agent: OAI-SearchBot
+Disallow: /
+Noindex: /
+` 200
+
+	@sitemap path /sitemap.xml
+	header @sitemap {
+		Content-Security-Policy "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'; img-src 'none'; manifest-src 'none'; media-src 'none'; worker-src 'none'"
+		Content-Type "application/xml; charset=utf-8"
+	}
+	respond @sitemap `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"></urlset>
+` 200
+
+	@blockedCrawler header_regexp User-Agent `(?i)(ahrefsbot|amazonbot|anthropic-ai|applebot|applebot-extended|baiduspider|bingbot|blexbot|bytespider|ccbot|chatgpt-user|claude-web|claudebot|diffbot|dotbot|facebookbot|google-extended|googlebot|googleother|gptbot|meta-externalagent|mj12bot|oai-searchbot|perplexity-user|perplexitybot|petalbot|semrushbot|yandexbot)`
+	respond @blockedCrawler "" 403
+
+	reverse_proxy 127.0.0.1:{$NG_GATEKEEPER_WEBAPP_HOST_PORT:18080}
+}

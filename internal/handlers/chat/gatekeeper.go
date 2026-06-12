@@ -27,6 +27,7 @@ graph BusinessFlow
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
 	"sync"
@@ -72,6 +73,7 @@ type Gatekeeper struct {
 
 	logger         *log.Entry
 	workerCancel   context.CancelFunc
+	webAppServer   *http.Server
 	workerWG       sync.WaitGroup
 	startStopMutex sync.Mutex
 	started        bool
@@ -86,6 +88,7 @@ type GatekeeperBanChecker interface {
 type gatekeeperStore interface {
 	CreateChallenge(ctx context.Context, challenge *db.Challenge) (*db.Challenge, error)
 	GetChallengeByMessage(ctx context.Context, commChatID, userID int64, challengeMessageID int) (*db.Challenge, error)
+	GetChallengeByWebAppToken(ctx context.Context, token string) (*db.Challenge, error)
 	GetChallengeByChatUser(ctx context.Context, chatID, userID int64) (*db.Challenge, error)
 	GetPassedJoinRequestChallengeByChatUser(ctx context.Context, chatID, userID int64) (*db.Challenge, error)
 	UpdateChallenge(ctx context.Context, challenge *db.Challenge) error
@@ -170,6 +173,13 @@ func (g *Gatekeeper) Start(ctx context.Context) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	g.workerCancel = cancel
 
+	if g.joinCaptchaPublicURL() != "" {
+		if err := g.startWebAppServer(runCtx); err != nil {
+			cancel()
+			return err
+		}
+	}
+
 	g.workerWG.Go(func() {
 		ticker := time.NewTicker(processNewChatMembersInterval)
 		defer ticker.Stop()
@@ -218,6 +228,9 @@ func (g *Gatekeeper) Stop(ctx context.Context) error {
 
 	if cancel != nil {
 		cancel()
+	}
+	if err := g.stopWebAppServer(ctx); err != nil {
+		return err
 	}
 
 	done := make(chan struct{})
@@ -279,6 +292,11 @@ func (g *Gatekeeper) Handle(ctx context.Context, u *api.Update, chat *api.Chat, 
 			return true, err
 		}
 		if !settings.GatekeeperEnabled {
+			if u.ChatJoinRequest.QueryID != "" {
+				if err := bot.AnswerJoinRequestQuery(ctx, g.s.GetBot(), u.ChatJoinRequest.QueryID, bot.JoinRequestQueryResultQueue); err != nil {
+					entry.WithField("error", err.Error()).Error("failed to queue disabled gatekeeper join request query")
+				}
+			}
 			entry.Debug("gatekeeper is disabled for this chat")
 			return true, nil
 		}

@@ -8,6 +8,8 @@ const (
 	testTelegramMethodDeclineJoinRequest = "declineChatJoinRequest"
 	testTelegramMethodGetChat            = "getChat"
 	testTelegramMethodGetChatMember      = "getChatMember"
+	testTelegramMethodJoinRequestQuery   = "answerChatJoinRequestQuery"
 	testTelegramMethodRestrictChatMember = "restrictChatMember"
 	testTelegramMethodSendMessage        = "sendMessage"
+	testTelegramMethodSendJoinWebApp     = "sendChatJoinRequestWebApp"
 )

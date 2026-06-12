@@ -20,11 +20,16 @@ func (c *sqliteClient) CreateChallenge(ctx context.Context, challenge *db.Challe
 
 	query := `
 		INSERT INTO gatekeeper_challenges (
-			comm_chat_id, user_id, chat_id, status, success_uuid, join_message_id, challenge_message_id, attempts, created_at, expires_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			comm_chat_id, user_id, chat_id, status, success_uuid, web_app_token, join_request_query_id, captcha_prompt,
+			captcha_options_json, join_message_id, challenge_message_id, attempts, created_at, expires_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(comm_chat_id, user_id, chat_id) DO UPDATE SET
 			status = excluded.status,
 			success_uuid = excluded.success_uuid,
+			web_app_token = excluded.web_app_token,
+			join_request_query_id = excluded.join_request_query_id,
+			captcha_prompt = excluded.captcha_prompt,
+			captcha_options_json = excluded.captcha_options_json,
 			join_message_id = excluded.join_message_id,
 			challenge_message_id = excluded.challenge_message_id,
 			attempts = excluded.attempts,
@@ -37,6 +42,10 @@ func (c *sqliteClient) CreateChallenge(ctx context.Context, challenge *db.Challe
 		challenge.ChatID,
 		challenge.Status,
 		challenge.SuccessUUID,
+		challenge.WebAppToken,
+		challenge.JoinRequestQueryID,
+		challenge.CaptchaPrompt,
+		challenge.CaptchaOptionsJSON,
 		challenge.JoinMessageID,
 		challenge.ChallengeMessageID,
 		challenge.Attempts,
@@ -55,11 +64,33 @@ func (c *sqliteClient) GetChallengeByMessage(ctx context.Context, commChatID, us
 
 	var challenge db.Challenge
 	err := c.db.GetContext(ctx, &challenge, `
-		SELECT comm_chat_id, user_id, chat_id, status, success_uuid, join_message_id, challenge_message_id, attempts, created_at, expires_at
+		SELECT comm_chat_id, user_id, chat_id, status, success_uuid, web_app_token, join_request_query_id, captcha_prompt,
+			captcha_options_json, join_message_id, challenge_message_id, attempts, created_at, expires_at
 		FROM gatekeeper_challenges
 		WHERE comm_chat_id = ? AND user_id = ? AND challenge_message_id = ? AND status = ?
 		LIMIT 1
 	`, commChatID, userID, challengeMessageID, db.ChallengeStatusPending)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &challenge, nil
+}
+
+func (c *sqliteClient) GetChallengeByWebAppToken(ctx context.Context, token string) (*db.Challenge, error) {
+	c.mutex.RLock()
+	defer c.mutex.RUnlock()
+
+	var challenge db.Challenge
+	err := c.db.GetContext(ctx, &challenge, `
+		SELECT comm_chat_id, user_id, chat_id, status, success_uuid, web_app_token, join_request_query_id, captcha_prompt,
+			captcha_options_json, join_message_id, challenge_message_id, attempts, created_at, expires_at
+		FROM gatekeeper_challenges
+		WHERE web_app_token = ? AND web_app_token <> ''
+		LIMIT 1
+	`, token)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
@@ -75,7 +106,8 @@ func (c *sqliteClient) GetChallengeByChatUser(ctx context.Context, chatID, userI
 
 	var challenge db.Challenge
 	err := c.db.GetContext(ctx, &challenge, `
-		SELECT comm_chat_id, user_id, chat_id, status, success_uuid, join_message_id, challenge_message_id, attempts, created_at, expires_at
+		SELECT comm_chat_id, user_id, chat_id, status, success_uuid, web_app_token, join_request_query_id, captcha_prompt,
+			captcha_options_json, join_message_id, challenge_message_id, attempts, created_at, expires_at
 		FROM gatekeeper_challenges
 		WHERE chat_id = ? AND user_id = ?
 		ORDER BY created_at DESC
@@ -96,7 +128,8 @@ func (c *sqliteClient) GetPassedJoinRequestChallengeByChatUser(ctx context.Conte
 
 	var challenge db.Challenge
 	err := c.db.GetContext(ctx, &challenge, `
-		SELECT comm_chat_id, user_id, chat_id, status, success_uuid, join_message_id, challenge_message_id, attempts, created_at, expires_at
+		SELECT comm_chat_id, user_id, chat_id, status, success_uuid, web_app_token, join_request_query_id, captcha_prompt,
+			captcha_options_json, join_message_id, challenge_message_id, attempts, created_at, expires_at
 		FROM gatekeeper_challenges
 		WHERE chat_id = ? AND user_id = ? AND comm_chat_id <> chat_id AND status = ?
 		ORDER BY created_at DESC
@@ -120,6 +153,10 @@ func (c *sqliteClient) UpdateChallenge(ctx context.Context, challenge *db.Challe
 			SET chat_id = ?,
 				status = ?,
 				success_uuid = ?,
+				web_app_token = ?,
+				join_request_query_id = ?,
+				captcha_prompt = ?,
+				captcha_options_json = ?,
 				join_message_id = ?,
 				challenge_message_id = ?,
 				attempts = ?,
@@ -131,6 +168,10 @@ func (c *sqliteClient) UpdateChallenge(ctx context.Context, challenge *db.Challe
 		challenge.ChatID,
 		challenge.Status,
 		challenge.SuccessUUID,
+		challenge.WebAppToken,
+		challenge.JoinRequestQueryID,
+		challenge.CaptchaPrompt,
+		challenge.CaptchaOptionsJSON,
 		challenge.JoinMessageID,
 		challenge.ChallengeMessageID,
 		challenge.Attempts,
@@ -157,7 +198,8 @@ func (c *sqliteClient) GetExpiredChallenges(ctx context.Context, now time.Time) 
 
 	var challenges []*db.Challenge
 	err := c.db.SelectContext(ctx, &challenges, `
-		SELECT comm_chat_id, user_id, chat_id, status, success_uuid, join_message_id, challenge_message_id, attempts, created_at, expires_at
+		SELECT comm_chat_id, user_id, chat_id, status, success_uuid, web_app_token, join_request_query_id, captcha_prompt,
+			captcha_options_json, join_message_id, challenge_message_id, attempts, created_at, expires_at
 		FROM gatekeeper_challenges
 		WHERE expires_at <= ?
 	`, now)

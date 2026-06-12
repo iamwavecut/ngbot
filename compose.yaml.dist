@@ -12,6 +12,8 @@ services:
       - NG_TELEGRAM_POLL_TIMEOUT
       - NG_TELEGRAM_REQUEST_TIMEOUT
       - NG_TELEGRAM_RECOVERY_WINDOW
+      - NG_GATEKEEPER_WEBAPP_PUBLIC_URL
+      - NG_GATEKEEPER_WEBAPP_LISTEN_ADDR
       - NG_LLM_API_KEY
       - NG_LLM_API_URL
       - NG_LLM_API_MODEL
@@ -26,6 +28,8 @@ services:
     volumes:
       # Set the path to your ngbot directory
       - dotpath:/root/.ngbot:delegated
+    ports:
+      - "127.0.0.1:${NG_GATEKEEPER_WEBAPP_HOST_PORT:-18080}:8080"
     restart: unless-stopped
 
 volumes:

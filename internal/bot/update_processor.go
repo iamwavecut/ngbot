@@ -17,6 +17,12 @@ const (
 	UpdateTimeout = 5 * time.Minute
 )
 
+const (
+	JoinRequestQueryResultApprove = "approve"
+	JoinRequestQueryResultDecline = "decline"
+	JoinRequestQueryResultQueue   = "queue"
+)
+
 type (
 	UpdateProcessor struct {
 		s              Service
@@ -291,6 +297,30 @@ func DeclineJoinRequest(ctx context.Context, bot *api.BotAPI, userID int64, chat
 			UserID: userID,
 		}); err != nil {
 			return errors.WithMessage(err, "cant decline join request")
+		}
+		return nil
+	}
+}
+
+func AnswerJoinRequestQuery(ctx context.Context, bot *api.BotAPI, queryID string, result string) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+		if _, err := bot.AnswerChatJoinRequestQuery(api.NewAnswerChatJoinRequestQuery(queryID, result)); err != nil {
+			return errors.WithMessage(err, "cant answer join request query")
+		}
+		return nil
+	}
+}
+
+func SendJoinRequestWebApp(ctx context.Context, bot *api.BotAPI, queryID string, webAppURL string) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+		if _, err := bot.SendChatJoinRequestWebApp(api.NewSendChatJoinRequestWebApp(queryID, webAppURL)); err != nil {
+			return errors.WithMessage(err, "cant send join request web app")
 		}
 		return nil
 	}

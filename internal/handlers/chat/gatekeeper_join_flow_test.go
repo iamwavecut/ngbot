@@ -94,6 +94,15 @@ func (s *gatekeeperFlowStore) GetChallengeByMessage(_ context.Context, commChatI
 	return nil, nil
 }
 
+func (s *gatekeeperFlowStore) GetChallengeByWebAppToken(_ context.Context, token string) (*db.Challenge, error) {
+	for _, challenge := range s.challenges {
+		if challenge.WebAppToken == token {
+			return cloneChallenge(challenge), nil
+		}
+	}
+	return nil, nil
+}
+
 func (s *gatekeeperFlowStore) GetChallengeByChatUser(_ context.Context, chatID, userID int64) (*db.Challenge, error) {
 	var latest *db.Challenge
 	for _, challenge := range s.challenges {
@@ -311,6 +320,158 @@ func TestBannedChatJoinRequestDeclinesAndBansBeforeCaptcha(t *testing.T) {
 	}
 	if len(store.challenges) != 0 {
 		t.Fatalf("expected no challenge rows, got %d", len(store.challenges))
+	}
+}
+
+func TestBannedChatJoinRequestQueryDeclinesAndBansBeforeCaptcha(t *testing.T) {
+	t.Parallel()
+
+	recorder := &botRequestRecorder{}
+	groupChat := api.Chat{ID: -100123, Type: "supergroup", Title: "Wave Club", UserName: "waveclub"}
+	user := api.User{ID: 42, FirstName: "Neo"}
+	store := newGatekeeperFlowStore()
+
+	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
+		recorder.record(t, method, r)
+
+		switch method {
+		case testTelegramMethodJoinRequestQuery:
+			return true
+		default:
+			t.Fatalf("unexpected bot method before captcha: %s", method)
+			return nil
+		}
+	})
+
+	settings := &db.Settings{
+		GatekeeperEnabled:             true,
+		GatekeeperCaptchaEnabled:      true,
+		GatekeeperGreetingEnabled:     true,
+		GatekeeperGreetingText:        "GREETING {user} to {chat_title}",
+		GatekeeperCaptchaOptionsCount: 3,
+		ChallengeTimeout:              (3 * time.Minute).Nanoseconds(),
+	}
+	banChecker := &testGatekeeperBanChecker{banned: true}
+	gatekeeper := &Gatekeeper{
+		s:          &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI, language: "en"}, settings: settings},
+		store:      store,
+		config:     &config.Config{},
+		banChecker: banChecker,
+	}
+
+	update := &api.Update{
+		ChatJoinRequest: &api.ChatJoinRequest{
+			Chat:       groupChat,
+			From:       user,
+			UserChatID: 9001,
+			QueryID:    "join-query",
+		},
+	}
+	if err := gatekeeper.handleChatJoinRequest(context.Background(), update, settings); err != nil {
+		t.Fatalf("handleChatJoinRequest returned error: %v", err)
+	}
+
+	queryAnswers := recorder.byMethod(testTelegramMethodJoinRequestQuery)
+	if len(queryAnswers) != 1 {
+		t.Fatalf("expected one join request query answer, got %d", len(queryAnswers))
+	}
+	if queryAnswers[0].form.Get("chat_join_request_query_id") != "join-query" {
+		t.Fatalf("unexpected query id: %q", queryAnswers[0].form.Get("chat_join_request_query_id"))
+	}
+	if queryAnswers[0].form.Get("result") != "decline" {
+		t.Fatalf("expected decline result, got %q", queryAnswers[0].form.Get("result"))
+	}
+	if len(recorder.byMethod(testTelegramMethodDeclineJoinRequest)) != 0 {
+		t.Fatalf("expected no legacy join request decline, got %d", len(recorder.byMethod(testTelegramMethodDeclineJoinRequest)))
+	}
+	if len(banChecker.bans) != 1 {
+		t.Fatalf("expected one ban, got %d", len(banChecker.bans))
+	}
+	if len(store.challenges) != 0 {
+		t.Fatalf("expected no challenge rows, got %d", len(store.challenges))
+	}
+}
+
+func TestJoinRequestCaptchaUsesWebAppQueryWhenAvailable(t *testing.T) {
+	t.Parallel()
+
+	recorder := &botRequestRecorder{}
+	groupChat := api.Chat{ID: -100123, Type: "supergroup", Title: "Wave Club", UserName: "waveclub"}
+	user := api.User{ID: 42, FirstName: "Neo"}
+	store := newGatekeeperFlowStore()
+
+	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
+		recorder.record(t, method, r)
+
+		switch method {
+		case testTelegramMethodSendJoinWebApp:
+			return true
+		default:
+			t.Fatalf("unexpected bot method for join request web app: %s", method)
+			return nil
+		}
+	})
+
+	settings := &db.Settings{
+		GatekeeperEnabled:             true,
+		GatekeeperCaptchaEnabled:      true,
+		GatekeeperGreetingEnabled:     true,
+		GatekeeperGreetingText:        "GREETING {user} to {chat_title}",
+		GatekeeperCaptchaOptionsCount: 3,
+		ChallengeTimeout:              (3 * time.Minute).Nanoseconds(),
+	}
+	gatekeeper := &Gatekeeper{
+		s:          &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI, language: "en"}, settings: settings},
+		store:      store,
+		config:     &config.Config{GatekeeperWebApp: config.GatekeeperWebApp{PublicURL: "https://guard.example"}},
+		banChecker: &testGatekeeperBanChecker{},
+	}
+
+	update := &api.Update{
+		ChatJoinRequest: &api.ChatJoinRequest{
+			Chat:       groupChat,
+			From:       user,
+			UserChatID: 9001,
+			QueryID:    "join-query",
+		},
+	}
+	if err := gatekeeper.handleChatJoinRequest(context.Background(), update, settings); err != nil {
+		t.Fatalf("handleChatJoinRequest returned error: %v", err)
+	}
+
+	webApps := recorder.byMethod(testTelegramMethodSendJoinWebApp)
+	if len(webApps) != 1 {
+		t.Fatalf("expected one join request web app call, got %d", len(webApps))
+	}
+	if webApps[0].form.Get("chat_join_request_query_id") != "join-query" {
+		t.Fatalf("unexpected query id: %q", webApps[0].form.Get("chat_join_request_query_id"))
+	}
+	webAppURL := webApps[0].form.Get("web_app_url")
+	if !strings.HasPrefix(webAppURL, "https://guard.example/gatekeeper/join-captcha?token=") {
+		t.Fatalf("unexpected web app url: %q", webAppURL)
+	}
+	if len(recorder.byMethod(testTelegramMethodGetChat)) != 0 {
+		t.Fatalf("expected no private chat probe, got %d", len(recorder.byMethod(testTelegramMethodGetChat)))
+	}
+	if len(recorder.byMethod(testTelegramMethodSendMessage)) != 0 {
+		t.Fatalf("expected no DM challenge, got %d", len(recorder.byMethod(testTelegramMethodSendMessage)))
+	}
+
+	challenge := store.onlyChallenge(t)
+	if challenge.CommChatID != 0 {
+		t.Fatalf("expected web app challenge communication chat to be 0, got %d", challenge.CommChatID)
+	}
+	if challenge.JoinRequestQueryID != "join-query" {
+		t.Fatalf("unexpected stored query id: %q", challenge.JoinRequestQueryID)
+	}
+	if challenge.WebAppToken == "" {
+		t.Fatal("expected web app token to be stored")
+	}
+	if challenge.CaptchaPrompt == "" {
+		t.Fatal("expected captcha prompt to be stored")
+	}
+	if challenge.CaptchaOptionsJSON == "" {
+		t.Fatal("expected captcha options to be stored")
 	}
 }
 
@@ -1107,6 +1268,59 @@ func TestJoinRequestGreetingWithoutCaptchaLeavesManualReviewUntouched(t *testing
 
 	if len(recorder.requests) != 0 {
 		t.Fatalf("expected no bot requests, got %d", len(recorder.requests))
+	}
+	if len(store.challenges) != 0 {
+		t.Fatalf("expected no challenge rows, got %d", len(store.challenges))
+	}
+}
+
+func TestJoinRequestQueryWithoutCaptchaQueuesManualReview(t *testing.T) {
+	t.Parallel()
+
+	recorder := &botRequestRecorder{}
+	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
+		recorder.record(t, method, r)
+		switch method {
+		case testTelegramMethodJoinRequestQuery:
+			return true
+		default:
+			t.Fatalf("unexpected bot method: %s", method)
+			return nil
+		}
+	})
+
+	settings := &db.Settings{
+		GatekeeperEnabled:         true,
+		GatekeeperCaptchaEnabled:  false,
+		GatekeeperGreetingEnabled: true,
+		GatekeeperGreetingText:    "GREETING {user}",
+	}
+	store := newGatekeeperFlowStore()
+	gatekeeper := &Gatekeeper{
+		s:          &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI, language: "en"}, settings: settings},
+		store:      store,
+		config:     &config.Config{GatekeeperWebApp: config.GatekeeperWebApp{PublicURL: "https://guard.example"}},
+		banChecker: &testGatekeeperBanChecker{},
+	}
+
+	update := &api.Update{
+		ChatJoinRequest: &api.ChatJoinRequest{
+			Chat:       api.Chat{ID: -100123, Type: "supergroup", Title: "Wave Club"},
+			From:       api.User{ID: 42, FirstName: "Neo"},
+			UserChatID: 9001,
+			QueryID:    "join-query",
+		},
+	}
+	if err := gatekeeper.handleChatJoinRequest(context.Background(), update, settings); err != nil {
+		t.Fatalf("handleChatJoinRequest returned error: %v", err)
+	}
+
+	answers := recorder.byMethod(testTelegramMethodJoinRequestQuery)
+	if len(answers) != 1 {
+		t.Fatalf("expected one join request query answer, got %d", len(answers))
+	}
+	if answers[0].form.Get("result") != "queue" {
+		t.Fatalf("expected queue result, got %q", answers[0].form.Get("result"))
 	}
 	if len(store.challenges) != 0 {
 		t.Fatalf("expected no challenge rows, got %d", len(store.challenges))

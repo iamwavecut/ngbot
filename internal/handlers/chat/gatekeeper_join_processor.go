@@ -246,10 +246,20 @@ func (g *Gatekeeper) handleChatJoinRequest(ctx context.Context, u *api.Update, s
 		}
 	}
 	if !settings.GatekeeperCaptchaEnabled && !settings.GatekeeperGreetingEnabled {
+		if u.ChatJoinRequest.QueryID != "" {
+			if err := bot.AnswerJoinRequestQuery(ctx, g.s.GetBot(), u.ChatJoinRequest.QueryID, bot.JoinRequestQueryResultQueue); err != nil {
+				entry.WithField("error", err.Error()).Error("failed to queue join request query with disabled gatekeeper subfeatures")
+			}
+		}
 		entry.Debug("both gatekeeper subfeatures are disabled")
 		return nil
 	}
 	if !settings.GatekeeperCaptchaEnabled {
+		if u.ChatJoinRequest.QueryID != "" {
+			if err := bot.AnswerJoinRequestQuery(ctx, g.s.GetBot(), u.ChatJoinRequest.QueryID, bot.JoinRequestQueryResultQueue); err != nil {
+				entry.WithField("error", err.Error()).Error("failed to queue join request query with disabled captcha")
+			}
+		}
 		entry.Debug("captcha is disabled for join requests, leaving request for manual review")
 		return nil
 	}
@@ -258,6 +268,15 @@ func (g *Gatekeeper) handleChatJoinRequest(ctx context.Context, u *api.Update, s
 	case <-ctx.Done():
 		return ctx.Err()
 	default:
+	}
+
+	if u.ChatJoinRequest.QueryID != "" && g.joinCaptchaPublicURL() != "" {
+		return g.startJoinRequestWebAppChallenge(ctx, u.ChatJoinRequest, settings)
+	}
+	if u.ChatJoinRequest.QueryID != "" {
+		if err := bot.AnswerJoinRequestQuery(ctx, g.s.GetBot(), u.ChatJoinRequest.QueryID, bot.JoinRequestQueryResultQueue); err != nil {
+			entry.WithField("error", err.Error()).Error("failed to queue join request query before DM fallback")
+		}
 	}
 
 	if _, err := g.s.GetBot().GetChat(api.ChatInfoConfig{
@@ -438,7 +457,13 @@ func (g *Gatekeeper) processKnownBannedJoinRequest(ctx context.Context, request 
 	chatID := request.Chat.ID
 	userID := request.From.ID
 
-	if err := bot.DeclineJoinRequest(ctx, g.s.GetBot(), userID, chatID); err != nil {
+	var err error
+	if request.QueryID != "" {
+		err = bot.AnswerJoinRequestQuery(ctx, g.s.GetBot(), request.QueryID, bot.JoinRequestQueryResultDecline)
+	} else {
+		err = bot.DeclineJoinRequest(ctx, g.s.GetBot(), userID, chatID)
+	}
+	if err != nil {
 		entry.WithFields(log.Fields{
 			"user_id": userID,
 			"error":   err.Error(),

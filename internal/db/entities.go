@@ -73,6 +73,10 @@ type (
 		ChatID             int64     `db:"chat_id"`
 		Status             string    `db:"status"`
 		SuccessUUID        string    `db:"success_uuid"`
+		WebAppToken        string    `db:"web_app_token"`
+		JoinRequestQueryID string    `db:"join_request_query_id"`
+		CaptchaPrompt      string    `db:"captcha_prompt"`
+		CaptchaOptionsJSON string    `db:"captcha_options_json"`
 		JoinMessageID      int       `db:"join_message_id"`
 		ChallengeMessageID int       `db:"challenge_message_id"`
 		Attempts           int       `db:"attempts"`

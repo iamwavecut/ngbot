@@ -46,9 +46,10 @@ cp .env.example .env
 ```bash
 docker compose up -d
 ```
-5. Add your bot to chat and give it **Ban**, **Delete**, and **Invite** permissions.
-6. Optional: Change bot language with `/lang <code>` (e.g., `/lang ru`).
-7. Optional: Open `/settings` as a group admin and apply `Recommended Protection`.
+5. Optional for join-request Mini App CAPTCHA: set `NG_GATEKEEPER_WEBAPP_PUBLIC_URL=https://antifraud.rtfm.rsvp`, point Caddy at `deploy/caddy/ngbot-webapp.Caddyfile`, then restart Compose.
+6. Add your bot to chat and give it **Ban**, **Delete**, and **Invite** permissions.
+7. Optional: Change bot language with `/lang <code>` (e.g., `/lang ru`).
+8. Optional: Open `/settings` as a group admin and apply `Recommended Protection`.
 
 ### Manual Installation
 1. Follow steps 1-3 from Quick Start.
@@ -79,6 +80,9 @@ See [.env.example](.env.example) for a quick reference of all available options.
 | | `NG_TELEGRAM_POLL_TIMEOUT` | Telegram long poll timeout | `60s` | Any valid duration string |
 | | `NG_TELEGRAM_REQUEST_TIMEOUT` | Telegram HTTP request timeout | `75s` | Must be greater than poll timeout |
 | | `NG_TELEGRAM_RECOVERY_WINDOW` | Maximum degraded polling window before restart | `10m` | Must be greater than request timeout |
+| | `NG_GATEKEEPER_WEBAPP_PUBLIC_URL` | Public HTTPS origin for join-request CAPTCHA Mini App | | Absolute URL, e.g. `https://captcha.example.com` |
+| | `NG_GATEKEEPER_WEBAPP_LISTEN_ADDR` | Embedded Mini App server listen address inside the container | `:8080` | Keep `:8080` with the default Compose port mapping |
+| | `NG_GATEKEEPER_WEBAPP_HOST_PORT` | Compose-only localhost port for Caddy reverse proxy | `18080` | Host port bound to `127.0.0.1` |
 | | `NG_LLM_API_MODEL` | LLM model to use | `gpt-4o-mini` | Any valid OpenAI or Gemini model |
 | | `NG_LLM_API_URL` | OpenAI-compatible API base URL | `https://api.openai.com/v1` | Used when `NG_LLM_API_TYPE=openai` |
 | | `NG_LLM_API_TYPE` | LLM provider | `openai` | `openai`, `gemini` |
@@ -89,6 +93,39 @@ See [.env.example](.env.example) for a quick reference of all available options.
 | | `NG_SPAM_MAX_VOTERS` | Maximum voters cap | `10` | Any positive integer |
 | | `NG_SPAM_MIN_VOTERS_PERCENTAGE` | Minimum voter percentage | `5` | Any positive float |
 | | `NG_SPAM_SUSPECT_NOTIFICATION_TIMEOUT` | Suspect notification timeout | `2m` | Any valid duration string |
+
+### Caddy reverse proxy
+
+The Docker Compose file binds the Mini App server to `127.0.0.1:${NG_GATEKEEPER_WEBAPP_HOST_PORT:-18080}` on the host. A matching Caddy template is available at `deploy/caddy/ngbot-webapp.Caddyfile`.
+
+Set these values on the host before enabling the Caddy site:
+
+```bash
+export NGBOT_GATEKEEPER_WEBAPP_DOMAIN=antifraud.rtfm.rsvp
+export NG_GATEKEEPER_WEBAPP_HOST_PORT=18080
+```
+
+Then configure the bot with:
+
+```bash
+NG_GATEKEEPER_WEBAPP_PUBLIC_URL=https://antifraud.rtfm.rsvp
+NG_GATEKEEPER_WEBAPP_LISTEN_ADDR=:8080
+```
+
+The Mini App endpoint is intentionally hostile to indexing and embedding:
+
+1. `/robots.txt` disallows all crawlers, including known search, SEO, and LLM training bots.
+2. `/sitemap.xml` is an empty sitemap.
+3. `X-Robots-Tag` denies indexing, following, snippets, archives, image indexing, translation, AI use, and image-AI use.
+4. CSP uses `default-src 'none'` and per-request nonces for the Telegram script and local inline code.
+5. CSP and `X-Frame-Options` deny framing.
+6. Browser capability APIs are disabled with `Permissions-Policy`.
+7. Referrers are suppressed with `Referrer-Policy: no-referrer`.
+8. Responses are marked `no-store` and `private`.
+9. Cross-origin resource sharing is not enabled, and cross-site mutation requests are rejected through Fetch Metadata.
+10. POST bodies are size-limited before form parsing.
+11. Known crawler and LLM user agents are rejected before challenge lookup.
+12. MIME sniffing and legacy cross-domain policies are disabled.
 
 ## Troubleshooting
 Don't hesitate to contact me

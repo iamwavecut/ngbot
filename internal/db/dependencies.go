@@ -24,6 +24,7 @@ type Client interface {
 	// Gatekeeper challenges
 	CreateChallenge(ctx context.Context, challenge *Challenge) (*Challenge, error)
 	GetChallengeByMessage(ctx context.Context, commChatID, userID int64, challengeMessageID int) (*Challenge, error)
+	GetChallengeByWebAppToken(ctx context.Context, token string) (*Challenge, error)
 	GetChallengeByChatUser(ctx context.Context, chatID, userID int64) (*Challenge, error)
 	GetPassedJoinRequestChallengeByChatUser(ctx context.Context, chatID, userID int64) (*Challenge, error)
 	UpdateChallenge(ctx context.Context, challenge *Challenge) error

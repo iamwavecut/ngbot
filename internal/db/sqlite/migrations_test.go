@@ -140,6 +140,77 @@ func TestChatKnownNonMemberPrimaryKeyIndexExistsAfterMigrations(t *testing.T) {
 	}
 }
 
+func TestGatekeeperWebAppChallengeColumnsExistAfterMigrations(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	client, err := NewSQLiteClient(ctx, t.TempDir(), "test.db")
+	if err != nil {
+		t.Fatalf("new sqlite client: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+
+	rows, err := client.db.QueryContext(ctx, "PRAGMA table_info('gatekeeper_challenges')")
+	if err != nil {
+		t.Fatalf("query gatekeeper_challenges columns: %v", err)
+	}
+	defer rows.Close()
+
+	columns := make(map[string]struct{})
+	for rows.Next() {
+		var (
+			cid        int
+			name       string
+			columnType string
+			notNull    int
+			defaultVal sql.NullString
+			pk         int
+		)
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultVal, &pk); err != nil {
+			t.Fatalf("scan column row: %v", err)
+		}
+		columns[name] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate column rows: %v", err)
+	}
+
+	for _, name := range []string{"web_app_token", "join_request_query_id", "captcha_prompt", "captcha_options_json"} {
+		if _, ok := columns[name]; !ok {
+			t.Fatalf("expected gatekeeper_challenges.%s to exist", name)
+		}
+	}
+
+	indexRows, err := client.db.QueryContext(ctx, "PRAGMA index_list('gatekeeper_challenges')")
+	if err != nil {
+		t.Fatalf("query gatekeeper_challenges indexes: %v", err)
+	}
+	defer indexRows.Close()
+
+	foundTokenIndex := false
+	for indexRows.Next() {
+		var (
+			seq     int
+			name    string
+			unique  int
+			origin  string
+			partial int
+		)
+		if err := indexRows.Scan(&seq, &name, &unique, &origin, &partial); err != nil {
+			t.Fatalf("scan index row: %v", err)
+		}
+		if name == "idx_gatekeeper_challenges_web_app_token" {
+			foundTokenIndex = true
+		}
+	}
+	if err := indexRows.Err(); err != nil {
+		t.Fatalf("iterate index rows: %v", err)
+	}
+	if !foundTokenIndex {
+		t.Fatal("expected web app token index to exist")
+	}
+}
+
 func TestSpamCasesReportColumnsExistAfterMigrations(t *testing.T) {
 	t.Parallel()
 
@@ -220,8 +291,7 @@ func TestCommunityVotingMigrationEnablesExistingChats(t *testing.T) {
 		FileSystem: resources.FS,
 		Root:       "migrations",
 	}
-	migrationCount := countSQLMigrations(t)
-	if _, err := migrate.ExecMax(sqlDB, "sqlite3", source, migrate.Up, migrationCount-1); err != nil {
+	if _, err := migrate.ExecMax(sqlDB, "sqlite3", source, migrate.Up, migrationsBefore(t, "20260513000000-add-voteban-report-flow.sql")); err != nil {
 		t.Fatalf("execute pre-report migrations: %v", err)
 	}
 
@@ -302,8 +372,7 @@ func TestReactionProfileCheckMigrationPreservesReactionModerationValues(t *testi
 		FileSystem: resources.FS,
 		Root:       "migrations",
 	}
-	migrationCount := countSQLMigrations(t)
-	if _, err := migrate.ExecMax(sqlDB, "sqlite3", source, migrate.Up, migrationCount-2); err != nil {
+	if _, err := migrate.ExecMax(sqlDB, "sqlite3", source, migrate.Up, migrationsBefore(t, "20260511000000-rename-reaction-profile-check-setting.sql")); err != nil {
 		t.Fatalf("execute pre-rename migrations: %v", err)
 	}
 
@@ -349,7 +418,7 @@ func TestReactionProfileCheckMigrationPreservesReactionModerationValues(t *testi
 	}
 }
 
-func countSQLMigrations(t *testing.T) int {
+func migrationsBefore(t *testing.T, target string) int {
 	t.Helper()
 
 	entries, err := resources.FS.ReadDir("migrations")
@@ -358,12 +427,14 @@ func countSQLMigrations(t *testing.T) int {
 	}
 	count := 0
 	for _, entry := range entries {
-		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".sql") {
-			count++
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") {
+			continue
 		}
+		if entry.Name() == target {
+			return count
+		}
+		count++
 	}
-	if count == 0 {
-		t.Fatal("expected at least one migration")
-	}
-	return count
+	t.Fatalf("migration %q not found", target)
+	return 0
 }

@@ -45,6 +45,33 @@ func TestValidateConfig(t *testing.T) {
 			},
 			wantErr: true,
 		},
+		{
+			name: "valid gatekeeper web app public url",
+			cfg: Config{
+				Telegram: Telegram{
+					PollTimeout:    60 * time.Second,
+					RequestTimeout: 75 * time.Second,
+					RecoveryWindow: 10 * time.Minute,
+				},
+				GatekeeperWebApp: GatekeeperWebApp{
+					PublicURL: "https://guard.example",
+				},
+			},
+		},
+		{
+			name: "gatekeeper web app public url must be absolute",
+			cfg: Config{
+				Telegram: Telegram{
+					PollTimeout:    60 * time.Second,
+					RequestTimeout: 75 * time.Second,
+					RecoveryWindow: 10 * time.Minute,
+				},
+				GatekeeperWebApp: GatekeeperWebApp{
+					PublicURL: "/gatekeeper",
+				},
+			},
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {

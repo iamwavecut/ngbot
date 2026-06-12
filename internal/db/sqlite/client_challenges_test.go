@@ -147,6 +147,48 @@ func TestChallengeStatusLookupAndExpiryLifecycle(t *testing.T) {
 	}
 }
 
+func TestChallengeWebAppTokenLookup(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	client, err := NewSQLiteClient(ctx, t.TempDir(), "test.db")
+	if err != nil {
+		t.Fatalf("new sqlite client: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+
+	now := time.Now()
+	challenge := &db.Challenge{
+		CommChatID:         0,
+		UserID:             777,
+		ChatID:             -100333,
+		Status:             db.ChallengeStatusPending,
+		SuccessUUID:        "uuid-pending",
+		WebAppToken:        "web-token",
+		JoinRequestQueryID: "join-query",
+		CaptchaPrompt:      "poodle",
+		CaptchaOptionsJSON: `[{"id":"uuid-pending","symbol":"A"}]`,
+		ChallengeMessageID: 0,
+		CreatedAt:          now,
+		ExpiresAt:          now.Add(5 * time.Minute),
+	}
+
+	if _, err := client.CreateChallenge(ctx, challenge); err != nil {
+		t.Fatalf("create challenge: %v", err)
+	}
+
+	got, err := client.GetChallengeByWebAppToken(ctx, "web-token")
+	if err != nil {
+		t.Fatalf("get challenge by web app token: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected challenge lookup by web app token to match")
+	}
+	if got.JoinRequestQueryID != challenge.JoinRequestQueryID || got.CaptchaPrompt != challenge.CaptchaPrompt {
+		t.Fatalf("unexpected web app challenge: %#v", got)
+	}
+}
+
 func TestGetPassedJoinRequestChallengeByChatUserIgnoresNewerPublicChallenge(t *testing.T) {
 	t.Parallel()
 
