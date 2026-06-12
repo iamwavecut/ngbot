@@ -296,11 +296,6 @@ func (g *Gatekeeper) Handle(ctx context.Context, u *api.Update, chat *api.Chat, 
 			return true, err
 		}
 		if !settings.GatekeeperEnabled {
-			if u.ChatJoinRequest.QueryID != "" {
-				if err := bot.AnswerJoinRequestQuery(ctx, g.s.GetBot(), u.ChatJoinRequest.QueryID, bot.JoinRequestQueryResultQueue); err != nil {
-					entry.WithField("error", err.Error()).Error("failed to queue disabled gatekeeper join request query")
-				}
-			}
 			entry.Debug("gatekeeper is disabled for this chat")
 			return true, nil
 		}

@@ -256,6 +256,27 @@ func newChatMemberJoinUpdate(chat api.Chat, joinedUser api.User, actor api.User)
 	}
 }
 
+func TestDisabledGatekeeperChatMemberUpdateDoesNotTouchJoinRequest(t *testing.T) {
+	t.Parallel()
+
+	user := api.User{ID: 200, FirstName: "User"}
+	chat := api.Chat{ID: -100, Type: "supergroup", Title: "Group"}
+	gatekeeper := &Gatekeeper{
+		s:          &gatekeeperTestService{testBotService: testBotService{language: "en"}, settings: &db.Settings{GatekeeperEnabled: false}},
+		store:      newGatekeeperFlowStore(),
+		config:     &config.Config{},
+		banChecker: &testGatekeeperBanChecker{},
+	}
+
+	proceed, err := gatekeeper.Handle(t.Context(), newChatMemberJoinUpdate(chat, user, user), &chat, &user)
+	if err != nil {
+		t.Fatalf("handle chat member: %v", err)
+	}
+	if !proceed {
+		t.Fatalf("expected disabled gatekeeper to keep propagation")
+	}
+}
+
 func TestBannedChatJoinRequestDeclinesAndBansBeforeCaptcha(t *testing.T) {
 	t.Parallel()
 
