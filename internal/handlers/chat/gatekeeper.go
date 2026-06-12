@@ -48,8 +48,9 @@ import (
 )
 
 const (
-	captchaSize          = 5
-	maxChallengeAttempts = 3
+	captchaSize            = 5
+	maxChallengeAttempts   = 3
+	testJoinCaptchaCommand = "test_join_captcha"
 
 	updateTypeCallbackQuery   updateType = "callback_query"
 	updateTypeChatMember      updateType = "chat_member"
@@ -272,6 +273,9 @@ func (g *Gatekeeper) Handle(ctx context.Context, u *api.Update, chat *api.Chat, 
 	case <-ctx.Done():
 		return false, ctx.Err()
 	default:
+	}
+	if u.Message != nil && u.Message.IsCommand() && commandTargetsCurrentBot(u.Message, g.s.GetBot().Self.UserName) && u.Message.Command() == testJoinCaptchaCommand {
+		return false, g.handleTestJoinCaptchaCommand(ctx, u.Message, chat, user)
 	}
 	updateType := g.determineUpdateType(u)
 	switch updateType {

@@ -30,6 +30,7 @@ const (
 	joinCaptchaSitemapPath         = "/sitemap.xml"
 	joinCaptchaCSPNonceBytes       = 16
 	joinCaptchaMaxRequestBodyBytes = 16 << 10
+	joinCaptchaTestQueryPrefix     = "test:"
 )
 
 type webAppCaptchaOption struct {
@@ -421,6 +422,69 @@ func (g *Gatekeeper) startJoinRequestWebAppChallenge(ctx context.Context, reques
 	return nil
 }
 
+func (g *Gatekeeper) handleTestJoinCaptchaCommand(ctx context.Context, msg *api.Message, chat *api.Chat, user *api.User) error {
+	if msg == nil || chat == nil || user == nil {
+		return nil
+	}
+	if chat.Type != "private" {
+		reply := api.NewMessage(chat.ID, "Run /"+testJoinCaptchaCommand+" in private chat with the bot.")
+		reply.DisableNotification = true
+		_, _ = g.s.GetBot().Send(reply)
+		return nil
+	}
+
+	webAppToken := uuid.New()
+	webAppURL, err := g.joinCaptchaURL(webAppToken)
+	if err != nil {
+		reply := api.NewMessage(chat.ID, "Gatekeeper Web App public URL is not configured.")
+		reply.DisableNotification = true
+		_, _ = g.s.GetBot().Send(reply)
+		return nil
+	}
+
+	successUUID := uuid.New()
+	language := g.s.GetLanguage(ctx, chat.ID, user)
+	settings := db.DefaultSettings(chat.ID)
+	options, correctVariant, err := g.createWebAppCaptchaOptions(language, settings.GatekeeperCaptchaOptionsCount, successUUID)
+	if err != nil {
+		return err
+	}
+	optionsJSON, err := json.Marshal(options)
+	if err != nil {
+		return fmt.Errorf("marshal test captcha options: %w", err)
+	}
+
+	now := time.Now()
+	challenge := &db.Challenge{
+		CommChatID:         chat.ID,
+		UserID:             user.ID,
+		ChatID:             chat.ID,
+		Status:             db.ChallengeStatusPending,
+		SuccessUUID:        successUUID,
+		WebAppToken:        webAppToken,
+		JoinRequestQueryID: joinCaptchaTestQueryPrefix + uuid.New(),
+		CaptchaPrompt:      correctVariant[1],
+		CaptchaOptionsJSON: string(optionsJSON),
+		CreatedAt:          now,
+		ExpiresAt:          now.Add(settings.GetChallengeTimeout()),
+	}
+	if err := g.store.DeleteChallenge(ctx, challenge.CommChatID, challenge.UserID, challenge.ChatID); err != nil {
+		return err
+	}
+	if _, err := g.store.CreateChallenge(ctx, challenge); err != nil {
+		return err
+	}
+
+	reply := api.NewMessage(chat.ID, "Test join-request CAPTCHA. Open it in Telegram and try the choices.")
+	markup := api.NewInlineKeyboardMarkup(api.NewInlineKeyboardRow(
+		api.NewInlineKeyboardButtonWebApp("Open CAPTCHA", api.WebAppInfo{URL: webAppURL}),
+	))
+	reply.ReplyMarkup = markup
+	reply.DisableNotification = true
+	_, err = g.s.GetBot().Send(reply)
+	return err
+}
+
 func (g *Gatekeeper) createWebAppCaptchaOptions(lang string, optionsCount int, successUUID string) ([]webAppCaptchaOption, [2]string, error) {
 	captchaIndex := g.createCaptchaIndex(lang)
 	if len(captchaIndex) == 0 {
@@ -521,7 +585,7 @@ func (g *Gatekeeper) handleJoinCaptchaAnswer(w http.ResponseWriter, r *http.Requ
 		writeJoinCaptchaJSON(w, http.StatusUnauthorized, joinCaptchaAnswerResponse{Message: "Telegram check failed."})
 		return
 	}
-	if initData.UserID != challenge.UserID || initData.QueryID != challenge.JoinRequestQueryID {
+	if initData.UserID != challenge.UserID || (!isTestWebAppChallenge(challenge) && initData.QueryID != challenge.JoinRequestQueryID) {
 		writeJoinCaptchaJSON(w, http.StatusForbidden, joinCaptchaAnswerResponse{Message: "This challenge belongs to another request."})
 		return
 	}
@@ -547,6 +611,15 @@ func (g *Gatekeeper) handleJoinCaptchaAnswer(w http.ResponseWriter, r *http.Requ
 			return
 		}
 		writeJoinCaptchaJSON(w, http.StatusOK, joinCaptchaAnswerResponse{OK: false, Done: false, Message: "Wrong option. Try again."})
+		return
+	}
+
+	if isTestWebAppChallenge(challenge) {
+		if err := g.store.DeleteChallenge(r.Context(), challenge.CommChatID, challenge.UserID, challenge.ChatID); err != nil {
+			writeJoinCaptchaJSON(w, http.StatusInternalServerError, joinCaptchaAnswerResponse{Message: "Could not save the result."})
+			return
+		}
+		writeJoinCaptchaJSON(w, http.StatusOK, joinCaptchaAnswerResponse{OK: true, Done: true, Message: "Test passed. You can return to Telegram."})
 		return
 	}
 
@@ -593,13 +666,17 @@ func (g *Gatekeeper) declineWebAppChallenge(ctx context.Context, challenge *db.C
 	if err := handlersbase.IncrementDailyStat(ctx, g.s.GetDB(), challenge.ChatID, handlersbase.StatChallengeFailed); err != nil {
 		g.getLogEntry().WithField("error", err.Error()).Warn("failed to increment failed challenge stat")
 	}
-	if challenge.JoinRequestQueryID != "" {
+	if challenge.JoinRequestQueryID != "" && !isTestWebAppChallenge(challenge) {
 		result = bot.AnswerJoinRequestQuery(ctx, g.s.GetBot(), challenge.JoinRequestQueryID, bot.JoinRequestQueryResultDecline)
 	}
 	if err := g.store.DeleteChallenge(ctx, challenge.CommChatID, challenge.UserID, challenge.ChatID); err != nil {
 		result = errors.WithMessage(err, "delete declined web app challenge")
 	}
 	return result
+}
+
+func isTestWebAppChallenge(challenge *db.Challenge) bool {
+	return challenge != nil && strings.HasPrefix(challenge.JoinRequestQueryID, joinCaptchaTestQueryPrefix)
 }
 
 func decodeWebAppCaptchaOptions(raw string) ([]webAppCaptchaOption, error) {

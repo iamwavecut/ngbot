@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	api "github.com/OvyFlash/telegram-bot-api"
 	"github.com/iamwavecut/ngbot/internal/config"
 	"github.com/iamwavecut/ngbot/internal/db"
 )
@@ -81,6 +82,110 @@ func TestJoinCaptchaAnswerApprovesMatchingTokenUserAndChoice(t *testing.T) {
 	got := store.onlyChallenge(t)
 	if got.Status != db.ChallengeStatusPassedWaitingMemberJoin {
 		t.Fatalf("expected handoff status, got %q", got.Status)
+	}
+}
+
+func TestTestJoinCaptchaCommandSendsWebAppButton(t *testing.T) {
+	t.Parallel()
+
+	recorder := &botRequestRecorder{}
+	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
+		recorder.record(t, method, r)
+		switch method {
+		case testTelegramMethodSendMessage:
+			return recorder.nextSendMessageResult()
+		default:
+			t.Fatalf("unexpected bot method: %s", method)
+			return nil
+		}
+	})
+	botAPI.Self.UserName = "testbot"
+	store := newGatekeeperFlowStore()
+	gatekeeper := &Gatekeeper{
+		s:      &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI, language: "en"}, settings: webAppSettings()},
+		store:  store,
+		config: &config.Config{GatekeeperWebApp: config.GatekeeperWebApp{PublicURL: "https://guard.example"}},
+	}
+
+	user := &api.User{ID: 42, FirstName: "Neo"}
+	chat := &api.Chat{ID: user.ID, Type: "private"}
+	update := &api.Update{Message: commandMessage(chat, user, "/test_join_captcha")}
+
+	proceed, err := gatekeeper.Handle(t.Context(), update, chat, user)
+	if err != nil {
+		t.Fatalf("handle command: %v", err)
+	}
+	if proceed {
+		t.Fatalf("expected command to stop propagation")
+	}
+
+	messages := recorder.byMethod(testTelegramMethodSendMessage)
+	if len(messages) != 1 {
+		t.Fatalf("expected one message, got %d", len(messages))
+	}
+	replyMarkup := messages[0].form.Get("reply_markup")
+	if !strings.Contains(replyMarkup, `"web_app"`) || !strings.Contains(replyMarkup, `https://guard.example/gatekeeper/join-captcha?token=`) {
+		t.Fatalf("expected web app button, got %q", replyMarkup)
+	}
+	challenge := store.onlyChallenge(t)
+	if !strings.HasPrefix(challenge.JoinRequestQueryID, joinCaptchaTestQueryPrefix) {
+		t.Fatalf("expected test query id, got %q", challenge.JoinRequestQueryID)
+	}
+	if challenge.WebAppToken == "" || challenge.UserID != user.ID || challenge.ChatID != chat.ID {
+		t.Fatalf("unexpected challenge: %#v", challenge)
+	}
+}
+
+func TestJoinCaptchaAnswerCompletesTestChallengeWithoutJoinQueryAnswer(t *testing.T) {
+	t.Parallel()
+
+	recorder := &botRequestRecorder{}
+	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
+		recorder.record(t, method, r)
+		t.Fatalf("unexpected bot method: %s", method)
+		return nil
+	})
+	store := newGatekeeperFlowStore()
+	challenge := newWebAppChallenge(time.Now().Add(3 * time.Minute))
+	challenge.CommChatID = challenge.UserID
+	challenge.ChatID = challenge.UserID
+	challenge.JoinRequestQueryID = joinCaptchaTestQueryPrefix + "local"
+	if _, err := store.CreateChallenge(t.Context(), challenge); err != nil {
+		t.Fatalf("create challenge: %v", err)
+	}
+	gatekeeper := &Gatekeeper{
+		s:          &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI, language: "en"}, settings: webAppSettings()},
+		store:      store,
+		config:     &config.Config{},
+		banChecker: &testGatekeeperBanChecker{},
+	}
+
+	form := url.Values{
+		"token":     {challenge.WebAppToken},
+		"choice":    {challenge.SuccessUUID},
+		"init_data": {signedWebAppInitData(t, botAPI.Token, "runtime-webapp-query", challenge.UserID)},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/gatekeeper/join-captcha/answer", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+
+	gatekeeper.handleJoinCaptchaAnswer(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("unexpected status %d: %s", rr.Code, rr.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body["ok"] != true || body["done"] != true {
+		t.Fatalf("unexpected response: %#v", body)
+	}
+	if len(recorder.requests) != 0 {
+		t.Fatalf("expected no bot requests, got %d", len(recorder.requests))
+	}
+	if len(store.challenges) != 0 {
+		t.Fatalf("expected test challenge to be deleted, got %d rows", len(store.challenges))
 	}
 }
 
@@ -526,4 +631,19 @@ func signedWebAppInitData(t *testing.T, token string, queryID string, userID int
 	values.Set("hash", hex.EncodeToString(hash.Sum(nil)))
 
 	return values.Encode()
+}
+
+func commandMessage(chat *api.Chat, user *api.User, text string) *api.Message {
+	return &api.Message{
+		MessageID: 1,
+		Chat:      *chat,
+		From:      user,
+		Text:      text,
+		Date:      time.Now().Unix(),
+		Entities: []api.MessageEntity{{
+			Type:   "bot_command",
+			Offset: 0,
+			Length: len(text),
+		}},
+	}
 }
