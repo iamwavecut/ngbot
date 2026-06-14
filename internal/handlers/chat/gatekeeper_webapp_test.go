@@ -86,6 +86,54 @@ func TestJoinCaptchaAnswerApprovesMatchingTokenUserAndChoice(t *testing.T) {
 	}
 }
 
+func TestHandleJoinCaptchaAnswerConflictsWhenAlreadyClaimed(t *testing.T) {
+	t.Parallel()
+
+	store := newGatekeeperFlowStore()
+	challenge := newWebAppChallenge(time.Now().Add(3 * time.Minute))
+	if _, err := store.CreateChallenge(t.Context(), challenge); err != nil {
+		t.Fatalf("create challenge: %v", err)
+	}
+
+	claimed, err := store.ClaimWebAppChallengeForApproval(t.Context(), challenge.WebAppToken)
+	if err != nil {
+		t.Fatalf("first claim: %v", err)
+	}
+	if !claimed {
+		t.Fatal("expected first approval claim to win")
+	}
+	got := store.onlyChallenge(t)
+	if got.Status != db.ChallengeStatusPassedWaitingMemberJoin {
+		t.Fatalf("expected status to become passed after claim, got %q", got.Status)
+	}
+
+	claimed, err = store.ClaimWebAppChallengeForApproval(t.Context(), challenge.WebAppToken)
+	if err != nil {
+		t.Fatalf("second claim: %v", err)
+	}
+	if claimed {
+		t.Fatal("expected second approval claim to lose once the row left pending")
+	}
+
+	fallback := newWebAppChallenge(time.Now().Add(3 * time.Minute))
+	fallback.CommChatID = 7002
+	fallback.UserID = 99
+	fallback.ChatID = -100777
+	fallback.WebAppToken = "fallback-claimed-token"
+	fallback.Status = db.ChallengeStatusWebAppFallbackPending
+	if _, err := store.CreateChallenge(t.Context(), fallback); err != nil {
+		t.Fatalf("create fallback-claimed challenge: %v", err)
+	}
+
+	claimed, err = store.ClaimWebAppChallengeForApproval(t.Context(), fallback.WebAppToken)
+	if err != nil {
+		t.Fatalf("claim against fallback-claimed row: %v", err)
+	}
+	if claimed {
+		t.Fatal("expected approval claim to lose when a fallback already claimed the row")
+	}
+}
+
 func TestTestJoinCaptchaCommandSendsWebAppButton(t *testing.T) {
 	t.Parallel()
 

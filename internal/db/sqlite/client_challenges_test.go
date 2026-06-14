@@ -252,6 +252,71 @@ func TestWebAppChallengeClaimAndOpen(t *testing.T) {
 		}
 	})
 
+	t.Run("approval claim returns true then false on second attempt", func(t *testing.T) {
+		challenge := newWebAppChallenge(2011, 111, -100211, "token-approve", "query-approve")
+		if _, err := client.CreateChallenge(ctx, challenge); err != nil {
+			t.Fatalf("create challenge: %v", err)
+		}
+
+		claimed, err := client.ClaimWebAppChallengeForApproval(ctx, "token-approve")
+		if err != nil {
+			t.Fatalf("first approval claim: %v", err)
+		}
+		if !claimed {
+			t.Fatal("expected first approval claim to return true")
+		}
+
+		got, err := client.GetChallengeByWebAppToken(ctx, "token-approve")
+		if err != nil {
+			t.Fatalf("get after approval claim: %v", err)
+		}
+		if got == nil {
+			t.Fatal("expected challenge to still exist")
+		}
+		if got.Status != db.ChallengeStatusPassedWaitingMemberJoin {
+			t.Fatalf("expected status %q after approval claim, got %q", db.ChallengeStatusPassedWaitingMemberJoin, got.Status)
+		}
+
+		claimed, err = client.ClaimWebAppChallengeForApproval(ctx, "token-approve")
+		if err != nil {
+			t.Fatalf("second approval claim: %v", err)
+		}
+		if claimed {
+			t.Fatal("expected second approval claim to return false")
+		}
+	})
+
+	t.Run("approval claim loses to a fallback-claimed row", func(t *testing.T) {
+		challenge := newWebAppChallenge(2012, 112, -100212, "token-approve-fallback", "query-approve-fallback")
+		if _, err := client.CreateChallenge(ctx, challenge); err != nil {
+			t.Fatalf("create challenge: %v", err)
+		}
+
+		claimed, err := client.ClaimWebAppChallengeForFallback(ctx, challenge.CommChatID, challenge.UserID, challenge.ChatID)
+		if err != nil {
+			t.Fatalf("fallback claim: %v", err)
+		}
+		if !claimed {
+			t.Fatal("expected fallback claim to win")
+		}
+
+		claimed, err = client.ClaimWebAppChallengeForApproval(ctx, "token-approve-fallback")
+		if err != nil {
+			t.Fatalf("approval claim after fallback: %v", err)
+		}
+		if claimed {
+			t.Fatal("expected approval claim to return false once fallback owns the row")
+		}
+
+		got, err := client.GetChallengeByWebAppToken(ctx, "token-approve-fallback")
+		if err != nil {
+			t.Fatalf("get after fallback claim: %v", err)
+		}
+		if got.Status != db.ChallengeStatusWebAppFallbackPending {
+			t.Fatalf("expected status to remain %q, got %q", db.ChallengeStatusWebAppFallbackPending, got.Status)
+		}
+	})
+
 	t.Run("opened challenge is not claimable and not returned by GetUnopenedWebAppChallenges", func(t *testing.T) {
 		challenge := newWebAppChallenge(2002, 102, -100202, "token-opened", "query-opened")
 		if _, err := client.CreateChallenge(ctx, challenge); err != nil {

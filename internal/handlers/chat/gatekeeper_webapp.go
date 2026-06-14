@@ -938,8 +938,22 @@ func (g *Gatekeeper) handleJoinCaptchaAnswer(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	claimed, err := g.store.ClaimWebAppChallengeForApproval(r.Context(), challenge.WebAppToken)
+	if err != nil {
+		g.getLogEntry().WithField("error", err.Error()).Error("failed to claim join request challenge for approval")
+		writeJoinCaptchaJSON(w, http.StatusInternalServerError, joinCaptchaAnswerResponse{Message: copy.CouldNotSaveResult})
+		return
+	}
+	if !claimed {
+		writeJoinCaptchaJSON(w, http.StatusConflict, joinCaptchaAnswerResponse{OK: false, Done: true, Message: copy.ExpiredBlocked})
+		return
+	}
 	if err := bot.AnswerJoinRequestQuery(r.Context(), g.s.GetBot(), challenge.JoinRequestQueryID, bot.JoinRequestQueryResultApprove); err != nil {
 		g.getLogEntry().WithField("error", err.Error()).Error("failed to approve join request query")
+		challenge.Status = db.ChallengeStatusPending
+		if rollbackErr := g.store.UpdateChallenge(r.Context(), challenge); rollbackErr != nil {
+			g.getLogEntry().WithField("error", rollbackErr.Error()).Error("failed to roll back approval claim after approve failure")
+		}
 		writeJoinCaptchaJSON(w, http.StatusBadGateway, joinCaptchaAnswerResponse{Message: copy.CouldNotApprove})
 		return
 	}

@@ -247,6 +247,26 @@ func (c *sqliteClient) ClaimWebAppChallengeForFallback(ctx context.Context, comm
 	return affected == 1, nil
 }
 
+func (c *sqliteClient) ClaimWebAppChallengeForApproval(ctx context.Context, token string) (bool, error) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	res, err := c.db.ExecContext(ctx, `
+		UPDATE gatekeeper_challenges
+		SET status = ?
+		WHERE web_app_token = ? AND web_app_token <> ''
+			AND status = ?
+	`, db.ChallengeStatusPassedWaitingMemberJoin, token, db.ChallengeStatusPending)
+	if err != nil {
+		return false, err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return affected == 1, nil
+}
+
 func (c *sqliteClient) GetUnopenedWebAppChallenges(ctx context.Context, deadline time.Time) ([]*db.Challenge, error) {
 	c.mutex.RLock()
 	defer c.mutex.RUnlock()

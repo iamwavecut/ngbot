@@ -181,6 +181,19 @@ func (s *gatekeeperFlowStore) ClaimWebAppChallengeForFallback(_ context.Context,
 	return true, nil
 }
 
+func (s *gatekeeperFlowStore) ClaimWebAppChallengeForApproval(_ context.Context, token string) (bool, error) {
+	for key, challenge := range s.challenges {
+		if challenge.WebAppToken == token && challenge.WebAppToken != "" &&
+			challenge.Status == db.ChallengeStatusPending {
+			clone := *challenge
+			clone.Status = db.ChallengeStatusPassedWaitingMemberJoin
+			s.challenges[key] = &clone
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func (s *gatekeeperFlowStore) GetUnopenedWebAppChallenges(_ context.Context, deadline time.Time) ([]*db.Challenge, error) {
 	out := make([]*db.Challenge, 0)
 	for _, challenge := range s.challenges {

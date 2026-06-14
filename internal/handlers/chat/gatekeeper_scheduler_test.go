@@ -62,6 +62,10 @@ func (s *testGatekeeperStore) ClaimWebAppChallengeForFallback(context.Context, i
 	return false, nil
 }
 
+func (s *testGatekeeperStore) ClaimWebAppChallengeForApproval(context.Context, string) (bool, error) {
+	return false, nil
+}
+
 func (s *testGatekeeperStore) GetUnopenedWebAppChallenges(context.Context, time.Time) ([]*db.Challenge, error) {
 	return nil, nil
 }

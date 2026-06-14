@@ -60,7 +60,7 @@ const (
 
 	processNewChatMembersInterval         = 1 * time.Minute
 	processExpiredChallengesInterval      = 1 * time.Minute
-	processUnopenedWebAppChallengesPeriod = 5 * time.Second
+	processUnopenedWebAppChallengesPeriod = 3 * time.Second
 )
 
 type updateType string
@@ -98,6 +98,7 @@ type gatekeeperStore interface {
 	GetExpiredChallenges(ctx context.Context, now time.Time) ([]*db.Challenge, error)
 	MarkWebAppChallengeOpened(ctx context.Context, token string, openedAt time.Time) error
 	ClaimWebAppChallengeForFallback(ctx context.Context, commChatID, userID, chatID int64) (bool, error)
+	ClaimWebAppChallengeForApproval(ctx context.Context, token string) (bool, error)
 	GetUnopenedWebAppChallenges(ctx context.Context, deadline time.Time) ([]*db.Challenge, error)
 
 	AddChatRecentJoiner(ctx context.Context, joiner *db.RecentJoiner) (*db.RecentJoiner, error)

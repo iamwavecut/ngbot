@@ -32,6 +32,7 @@ type Client interface {
 	GetExpiredChallenges(ctx context.Context, now time.Time) ([]*Challenge, error)
 	MarkWebAppChallengeOpened(ctx context.Context, token string, openedAt time.Time) error
 	ClaimWebAppChallengeForFallback(ctx context.Context, commChatID, userID, chatID int64) (bool, error)
+	ClaimWebAppChallengeForApproval(ctx context.Context, token string) (bool, error)
 	GetUnopenedWebAppChallenges(ctx context.Context, deadline time.Time) ([]*Challenge, error)
 
 	// KV store methods
