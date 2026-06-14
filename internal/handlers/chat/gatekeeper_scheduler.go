@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
@@ -142,7 +143,19 @@ func (g *Gatekeeper) processExpiredChallenges(ctx context.Context) error {
 			}
 			continue
 		}
-		if challenge.Status == db.ChallengeStatusPassedWaitingMemberJoin || challenge.CommChatID != challenge.ChatID {
+		if challenge.Status == db.ChallengeStatusPassedWaitingMemberJoin {
+			if err := g.cleanupChallengeWithoutPenalty(ctx, challenge); err != nil {
+				entry.WithField("error", err.Error()).Error("failed to cleanup non-punitive challenge state")
+			}
+			continue
+		}
+		if challenge.WebAppToken != "" && challenge.JoinRequestQueryID != "" {
+			if err := g.fallbackExpiredWebAppChallenge(ctx, challenge, settings); err != nil {
+				entry.WithField("error", err.Error()).Error("failed to fallback expired web app challenge")
+			}
+			continue
+		}
+		if challenge.CommChatID != challenge.ChatID && challenge.JoinRequestQueryID == "" {
 			if err := g.cleanupChallengeWithoutPenalty(ctx, challenge); err != nil {
 				entry.WithField("error", err.Error()).Error("failed to cleanup non-punitive challenge state")
 			}
@@ -176,5 +189,53 @@ func (g *Gatekeeper) processExpiredChallenges(ctx context.Context) error {
 		}
 	}
 
+	return nil
+}
+
+func (g *Gatekeeper) fallbackExpiredWebAppChallenge(ctx context.Context, challenge *db.Challenge, settings *db.Settings) error {
+	if challenge.CommChatID == 0 {
+		return g.declineWebAppChallenge(ctx, challenge)
+	}
+
+	privateChat, err := g.s.GetBot().GetChat(api.ChatInfoConfig{
+		ChatConfig: api.ChatConfig{
+			ChatID: challenge.CommChatID,
+		},
+	})
+	if err != nil {
+		declineErr := g.declineWebAppChallenge(ctx, challenge)
+		return errors.Join(err, declineErr)
+	}
+
+	targetChat, err := g.s.GetBot().GetChat(api.ChatInfoConfig{
+		ChatConfig: api.ChatConfig{
+			ChatID: challenge.ChatID,
+		},
+	})
+	if err != nil {
+		return err
+	}
+
+	user := &api.User{
+		ID:        challenge.UserID,
+		FirstName: privateChat.FirstName,
+		LastName:  privateChat.LastName,
+		UserName:  privateChat.UserName,
+	}
+	if user.FirstName == "" && user.UserName == "" {
+		user.FirstName = "friend"
+	}
+	if err := g.startChallenge(ctx, nil, user, &targetChat.Chat, challenge.CommChatID, challenge.CommChatID, settings); err != nil {
+		declineErr := bot.AnswerJoinRequestQuery(ctx, g.s.GetBot(), challenge.JoinRequestQueryID, bot.JoinRequestQueryResultDecline)
+		return errors.Join(err, declineErr)
+	}
+	fallbackChallenge, err := g.store.GetChallengeByChatUser(ctx, challenge.ChatID, challenge.UserID)
+	if err != nil {
+		return err
+	}
+	if fallbackChallenge != nil && fallbackChallenge.CommChatID == challenge.CommChatID {
+		fallbackChallenge.JoinRequestQueryID = challenge.JoinRequestQueryID
+		return g.store.UpdateChallenge(ctx, fallbackChallenge)
+	}
 	return nil
 }

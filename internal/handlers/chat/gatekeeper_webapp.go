@@ -665,7 +665,7 @@ func (g *Gatekeeper) startJoinRequestWebAppChallenge(ctx context.Context, reques
 		return err
 	}
 	challenge := &db.Challenge{
-		CommChatID:         0,
+		CommChatID:         request.UserChatID,
 		UserID:             request.From.ID,
 		ChatID:             request.Chat.ID,
 		Status:             db.ChallengeStatusPending,
