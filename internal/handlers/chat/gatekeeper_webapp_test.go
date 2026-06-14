@@ -1092,6 +1092,37 @@ func TestHandleJoinCaptchaAnswerDeclinesKnownBannedUser(t *testing.T) {
 	}
 }
 
+func TestHandleJoinCaptchaMarksOpened(t *testing.T) {
+	t.Parallel()
+
+	store := newGatekeeperFlowStore()
+	expiresAt := time.Now().Add(3 * time.Minute)
+	challenge := newWebAppChallenge(expiresAt)
+	if _, err := store.CreateChallenge(t.Context(), challenge); err != nil {
+		t.Fatalf("create challenge: %v", err)
+	}
+	gatekeeper := &Gatekeeper{
+		store:  store,
+		config: &config.Config{},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, joinCaptchaPath+"?token="+url.QueryEscape(challenge.WebAppToken), nil)
+	rr := httptest.NewRecorder()
+
+	gatekeeper.joinCaptchaWebAppHandler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("unexpected status %d: %s", rr.Code, rr.Body.String())
+	}
+	got := store.onlyChallenge(t)
+	if !got.WebAppOpenedAt.Valid {
+		t.Fatal("expected WebAppOpenedAt.Valid to be true after page load")
+	}
+	if !got.ExpiresAt.Equal(expiresAt) {
+		t.Fatalf("expected ExpiresAt to be unchanged, got %v (want %v)", got.ExpiresAt, expiresAt)
+	}
+}
+
 func commandMessage(chat *api.Chat, user *api.User, text string) *api.Message {
 	return &api.Message{
 		MessageID: 1,

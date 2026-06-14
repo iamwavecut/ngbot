@@ -826,6 +826,11 @@ func (g *Gatekeeper) handleJoinCaptcha(w http.ResponseWriter, r *http.Request) {
 		g.renderJoinCaptchaPage(w, http.StatusInternalServerError, joinCaptchaErrorPageData(copy, copy.UnavailableTitle, copy.UnavailableMessage, copy.TryAgainFromTelegram))
 		return
 	}
+	if !challenge.WebAppOpenedAt.Valid {
+		if err := g.store.MarkWebAppChallengeOpened(r.Context(), challenge.WebAppToken, time.Now()); err != nil {
+			g.getLogEntry().WithField("error", err.Error()).Warn("failed to mark web app challenge opened")
+		}
+	}
 	copy := joinCaptchaCopyForLocale(locale)
 	pageOptions, payload, err := newJoinCaptchaPageChallenge(challenge.CaptchaPrompt, options)
 	if err != nil {
