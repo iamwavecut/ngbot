@@ -17,7 +17,10 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-const approvedJoinRequestChallengeTTL = 5 * time.Minute
+const (
+	approvedJoinRequestChallengeTTL = 5 * time.Minute
+	webAppOpenDeadline              = 11 * time.Second
+)
 
 func (g *Gatekeeper) handleChallenge(ctx context.Context, u *api.Update, chat *api.Chat, user *api.User) (err error) {
 	entry := g.getLogEntry().WithField("method", "handleChallenge")

@@ -1,6 +1,7 @@
 package db
 
 import (
+	"database/sql"
 	"time"
 
 	"github.com/iamwavecut/ngbot/internal/config"
@@ -80,8 +81,9 @@ type (
 		JoinMessageID      int       `db:"join_message_id"`
 		ChallengeMessageID int       `db:"challenge_message_id"`
 		Attempts           int       `db:"attempts"`
-		CreatedAt          time.Time `db:"created_at"`
-		ExpiresAt          time.Time `db:"expires_at"`
+		CreatedAt          time.Time    `db:"created_at"`
+		ExpiresAt          time.Time    `db:"expires_at"`
+		WebAppOpenedAt     sql.NullTime `db:"web_app_opened_at"`
 	}
 
 	ChatManager struct {
@@ -150,6 +152,7 @@ const (
 	NotSpammerMatchTypeUsername            = "username"
 	ChallengeStatusPending                 = "pending"
 	ChallengeStatusPassedWaitingMemberJoin = "passed_waiting_member_join"
+	ChallengeStatusWebAppFallbackPending   = "web_app_fallback_pending"
 )
 
 // GetLanguage Returns chat's set language
