@@ -1918,6 +1918,56 @@ func TestProcessExpiredRecoversFallbackPendingChallenge(t *testing.T) {
 	}
 }
 
+func TestProcessExpiredPassedWebAppChallengeCleansUpWithoutPenalty(t *testing.T) {
+	t.Parallel()
+
+	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
+		switch method {
+		case testTelegramMethodDeleteMessage:
+			return true
+		default:
+			t.Fatalf("punitive telegram method called for passed handoff challenge: %s", method)
+			return nil
+		}
+	})
+
+	store := newGatekeeperFlowStore()
+	passedChallenge := &db.Challenge{
+		CommChatID:         9001,
+		UserID:             42,
+		ChatID:             -100123,
+		Status:             db.ChallengeStatusPassedWaitingMemberJoin,
+		WebAppToken:        "tok",
+		JoinRequestQueryID: "join-query",
+		CreatedAt:          time.Now().Add(-10 * time.Minute),
+		ExpiresAt:          time.Now().Add(-time.Minute),
+	}
+	if _, err := store.CreateChallenge(context.Background(), passedChallenge); err != nil {
+		t.Fatalf("create passed challenge: %v", err)
+	}
+
+	gatekeeper := &Gatekeeper{
+		s: &gatekeeperTestService{
+			testBotService: testBotService{botAPI: botAPI, language: "en"},
+			settings: &db.Settings{
+				GatekeeperEnabled:        true,
+				GatekeeperCaptchaEnabled: true,
+			},
+		},
+		store:      store,
+		config:     &config.Config{},
+		banChecker: &testGatekeeperBanChecker{},
+	}
+
+	if err := gatekeeper.processExpiredChallenges(context.Background()); err != nil {
+		t.Fatalf("processExpiredChallenges returned error: %v", err)
+	}
+
+	if len(store.challenges) != 0 {
+		t.Fatalf("expected expired passed handoff challenge to be removed, got %d rows", len(store.challenges))
+	}
+}
+
 func TestFallbackClaimedWebAppChallengeDeclinesWhenTargetChatUnavailable(t *testing.T) {
 	t.Parallel()
 
