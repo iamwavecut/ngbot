@@ -154,17 +154,20 @@ func (s *gatekeeperFlowStore) GetExpiredChallenges(_ context.Context, now time.T
 }
 
 func (s *gatekeeperFlowStore) MarkWebAppChallengeOpened(_ context.Context, token string, openedAt time.Time) error {
-	for _, challenge := range s.challenges {
+	for key, challenge := range s.challenges {
 		if challenge.WebAppToken == token && challenge.WebAppToken != "" &&
 			challenge.Status == db.ChallengeStatusPending && !challenge.WebAppOpenedAt.Valid {
-			challenge.WebAppOpenedAt = sql.NullTime{Time: openedAt, Valid: true}
+			clone := *challenge
+			clone.WebAppOpenedAt = sql.NullTime{Time: openedAt, Valid: true}
+			s.challenges[key] = &clone
 		}
 	}
 	return nil
 }
 
 func (s *gatekeeperFlowStore) ClaimWebAppChallengeForFallback(_ context.Context, commChatID, userID, chatID int64) (bool, error) {
-	challenge, ok := s.challenges[s.challengeKey(commChatID, userID, chatID)]
+	key := s.challengeKey(commChatID, userID, chatID)
+	challenge, ok := s.challenges[key]
 	if !ok {
 		return false, nil
 	}
@@ -172,7 +175,9 @@ func (s *gatekeeperFlowStore) ClaimWebAppChallengeForFallback(_ context.Context,
 		challenge.JoinRequestQueryID == "" || challenge.WebAppOpenedAt.Valid {
 		return false, nil
 	}
-	challenge.Status = db.ChallengeStatusWebAppFallbackPending
+	clone := *challenge
+	clone.Status = db.ChallengeStatusWebAppFallbackPending
+	s.challenges[key] = &clone
 	return true, nil
 }
 
