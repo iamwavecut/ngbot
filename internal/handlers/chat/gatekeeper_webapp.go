@@ -691,7 +691,7 @@ func (g *Gatekeeper) startJoinRequestWebAppChallenge(ctx context.Context, reques
 		if queueErr := bot.AnswerJoinRequestQuery(ctx, g.s.GetBot(), request.QueryID, bot.JoinRequestQueryResultQueue); queueErr != nil {
 			entry.WithField("error", queueErr.Error()).Error("failed to queue join request after web app send failure")
 		}
-		return errors.Wrap(err, "send web app challenge")
+		return fmt.Errorf("send web app challenge: %w", err)
 	}
 	return nil
 }

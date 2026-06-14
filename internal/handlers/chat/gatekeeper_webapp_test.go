@@ -6,11 +6,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"path"
 	"sort"
 	"strconv"
 	"strings"
@@ -835,57 +833,20 @@ func TestStartJoinRequestWebAppChallengeQueuesOnSendFailure(t *testing.T) {
 	t.Parallel()
 
 	recorder := &botRequestRecorder{}
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		method := path.Base(r.URL.Path)
-		if method == "getMe" {
-			w.Header().Set("Content-Type", "application/json")
-			if err := json.NewEncoder(w).Encode(map[string]any{
-				"ok": true,
-				"result": map[string]any{
-					"id":         1,
-					"is_bot":     true,
-					"first_name": "Test",
-					"username":   "testbot",
-				},
-			}); err != nil {
-				t.Fatalf("encode getMe: %v", err)
-			}
-			return
-		}
-
-		if err := r.ParseForm(); err != nil {
-			t.Fatalf("parse form for %s: %v", method, err)
-		}
-		recorder.requests = append(recorder.requests, recordedBotRequest{method: method, form: r.Form})
-
-		w.Header().Set("Content-Type", "application/json")
+	botAPI := newTestBotAPIWithErrors(t, func(method string, r *http.Request) any {
+		recorder.record(t, method, r)
 		switch method {
 		case testTelegramMethodSendJoinWebApp:
-			if err := json.NewEncoder(w).Encode(map[string]any{
-				"ok":          false,
-				"error_code":  400,
-				"description": "Bad Request: test send failure",
-			}); err != nil {
-				t.Fatalf("encode send failure: %v", err)
-			}
+			return nil
 		case testTelegramMethodJoinRequestQuery:
-			if err := json.NewEncoder(w).Encode(map[string]any{
-				"ok":     true,
-				"result": true,
-			}); err != nil {
-				t.Fatalf("encode query answer: %v", err)
-			}
+			return true
 		default:
 			t.Fatalf("unexpected bot method: %s", method)
+			return nil
 		}
-	}))
-	t.Cleanup(server.Close)
-
-	botAPI, err := api.NewBotAPIWithClient("TEST_TOKEN", fmt.Sprintf("%s/bot%%s/%%s", server.URL), server.Client())
-	if err != nil {
-		t.Fatalf("new test bot api: %v", err)
-	}
+	}, map[string]int{
+		testTelegramMethodSendJoinWebApp: 400,
+	})
 
 	store := newGatekeeperFlowStore()
 	gatekeeper := &Gatekeeper{

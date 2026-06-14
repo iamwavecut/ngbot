@@ -13,25 +13,46 @@ import (
 
 func newTestBotAPI(t *testing.T, handler func(method string, r *http.Request) any) *api.BotAPI {
 	t.Helper()
+	return newTestBotAPIWithErrors(t, handler, nil)
+}
+
+func newTestBotAPIWithErrors(t *testing.T, handler func(method string, r *http.Request) any, failures map[string]int) *api.BotAPI {
+	t.Helper()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Helper()
 
 		method := path.Base(r.URL.Path)
-		var result any
-		switch method {
-		case "getMe":
-			result = map[string]any{
-				"id":         1,
-				"is_bot":     true,
-				"first_name": "Test",
-				"username":   "testbot",
+
+		if method == "getMe" {
+			w.Header().Set("Content-Type", "application/json")
+			if err := json.NewEncoder(w).Encode(map[string]any{
+				"ok": true,
+				"result": map[string]any{
+					"id":         1,
+					"is_bot":     true,
+					"first_name": "Test",
+					"username":   "testbot",
+				},
+			}); err != nil {
+				t.Fatalf("encode getMe response: %v", err)
 			}
-		default:
-			result = handler(method, r)
+			return
 		}
 
+		result := handler(method, r)
+
 		w.Header().Set("Content-Type", "application/json")
+		if code, forced := failures[method]; forced && code != 0 {
+			if err := json.NewEncoder(w).Encode(map[string]any{
+				"ok":          false,
+				"error_code":  code,
+				"description": method + " forced failure",
+			}); err != nil {
+				t.Fatalf("encode error response: %v", err)
+			}
+			return
+		}
 		if err := json.NewEncoder(w).Encode(map[string]any{
 			"ok":     true,
 			"result": result,
