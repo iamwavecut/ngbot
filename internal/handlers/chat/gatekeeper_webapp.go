@@ -1109,11 +1109,6 @@ func decodeWebAppCaptchaData(raw string) (string, []webAppCaptchaOption, error) 
 	return normalizeJoinCaptchaLocale(data.Locale), data.Options, nil
 }
 
-func decodeWebAppCaptchaOptions(raw string) ([]webAppCaptchaOption, error) {
-	_, options, err := decodeWebAppCaptchaData(raw)
-	return options, err
-}
-
 func joinCaptchaChallengeLocale(challenge *db.Challenge) string {
 	if challenge == nil {
 		return "en"
