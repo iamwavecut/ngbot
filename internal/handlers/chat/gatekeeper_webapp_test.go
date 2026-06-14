@@ -1,13 +1,16 @@
 package handlers
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path"
 	"sort"
 	"strconv"
 	"strings"
@@ -825,6 +828,98 @@ func TestJoinCaptchaAnswerDeclinesExpiredChallenge(t *testing.T) {
 	}
 	if len(store.challenges) != 0 {
 		t.Fatalf("expected expired challenge to be deleted, got %d rows", len(store.challenges))
+	}
+}
+
+func TestStartJoinRequestWebAppChallengeQueuesOnSendFailure(t *testing.T) {
+	t.Parallel()
+
+	recorder := &botRequestRecorder{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method := path.Base(r.URL.Path)
+		if method == "getMe" {
+			w.Header().Set("Content-Type", "application/json")
+			if err := json.NewEncoder(w).Encode(map[string]any{
+				"ok": true,
+				"result": map[string]any{
+					"id":         1,
+					"is_bot":     true,
+					"first_name": "Test",
+					"username":   "testbot",
+				},
+			}); err != nil {
+				t.Fatalf("encode getMe: %v", err)
+			}
+			return
+		}
+
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("parse form for %s: %v", method, err)
+		}
+		recorder.requests = append(recorder.requests, recordedBotRequest{method: method, form: r.Form})
+
+		w.Header().Set("Content-Type", "application/json")
+		switch method {
+		case testTelegramMethodSendJoinWebApp:
+			if err := json.NewEncoder(w).Encode(map[string]any{
+				"ok":          false,
+				"error_code":  400,
+				"description": "Bad Request: test send failure",
+			}); err != nil {
+				t.Fatalf("encode send failure: %v", err)
+			}
+		case testTelegramMethodJoinRequestQuery:
+			if err := json.NewEncoder(w).Encode(map[string]any{
+				"ok":     true,
+				"result": true,
+			}); err != nil {
+				t.Fatalf("encode query answer: %v", err)
+			}
+		default:
+			t.Fatalf("unexpected bot method: %s", method)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	botAPI, err := api.NewBotAPIWithClient("TEST_TOKEN", fmt.Sprintf("%s/bot%%s/%%s", server.URL), server.Client())
+	if err != nil {
+		t.Fatalf("new test bot api: %v", err)
+	}
+
+	store := newGatekeeperFlowStore()
+	gatekeeper := &Gatekeeper{
+		s: &gatekeeperTestService{
+			testBotService: testBotService{botAPI: botAPI, language: "en"},
+			settings:       webAppSettings(),
+		},
+		store:      store,
+		config:     &config.Config{GatekeeperWebApp: config.GatekeeperWebApp{PublicURL: "https://guard.example"}},
+		banChecker: &testGatekeeperBanChecker{},
+	}
+
+	req := &api.ChatJoinRequest{
+		Chat:       api.Chat{ID: -100123, Type: "supergroup"},
+		From:       api.User{ID: 42, FirstName: "Neo"},
+		UserChatID: 9001,
+		QueryID:    "join-query",
+	}
+
+	sendErr := gatekeeper.startJoinRequestWebAppChallenge(context.Background(), req, webAppSettings())
+	if sendErr == nil {
+		t.Fatal("expected non-nil error from startJoinRequestWebAppChallenge when send fails")
+	}
+
+	if len(store.challenges) != 0 {
+		t.Fatalf("expected challenge row to be deleted after send failure, got %d rows", len(store.challenges))
+	}
+
+	queryAnswers := recorder.byMethod(testTelegramMethodJoinRequestQuery)
+	if len(queryAnswers) != 1 {
+		t.Fatalf("expected exactly one answerChatJoinRequestQuery call, got %d", len(queryAnswers))
+	}
+	if got := queryAnswers[0].form.Get("result"); got != "queue" {
+		t.Fatalf("expected queue result on send failure, got %q", got)
 	}
 }
 

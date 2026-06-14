@@ -688,7 +688,10 @@ func (g *Gatekeeper) startJoinRequestWebAppChallenge(ctx context.Context, reques
 		if deleteErr := g.store.DeleteChallenge(ctx, challenge.CommChatID, challenge.UserID, challenge.ChatID); deleteErr != nil {
 			entry.WithField("error", deleteErr.Error()).Error("failed to delete unsent web app challenge")
 		}
-		return err
+		if queueErr := bot.AnswerJoinRequestQuery(ctx, g.s.GetBot(), request.QueryID, bot.JoinRequestQueryResultQueue); queueErr != nil {
+			entry.WithField("error", queueErr.Error()).Error("failed to queue join request after web app send failure")
+		}
+		return errors.Wrap(err, "send web app challenge")
 	}
 	return nil
 }
