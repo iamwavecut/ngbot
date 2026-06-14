@@ -584,6 +584,9 @@ func (g *Gatekeeper) startWebAppServer(context.Context) error {
 		Addr:              listenAddr,
 		Handler:           g.joinCaptchaWebAppHandler(),
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 	g.webAppServer = server
 
