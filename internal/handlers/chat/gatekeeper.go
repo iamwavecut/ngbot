@@ -95,6 +95,9 @@ type gatekeeperStore interface {
 	UpdateChallenge(ctx context.Context, challenge *db.Challenge) error
 	DeleteChallenge(ctx context.Context, commChatID, userID, chatID int64) error
 	GetExpiredChallenges(ctx context.Context, now time.Time) ([]*db.Challenge, error)
+	MarkWebAppChallengeOpened(ctx context.Context, token string, openedAt time.Time) error
+	ClaimWebAppChallengeForFallback(ctx context.Context, commChatID, userID, chatID int64) (bool, error)
+	GetUnopenedWebAppChallenges(ctx context.Context, deadline time.Time) ([]*db.Challenge, error)
 
 	AddChatRecentJoiner(ctx context.Context, joiner *db.RecentJoiner) (*db.RecentJoiner, error)
 	GetUnprocessedRecentJoiners(ctx context.Context) ([]*db.RecentJoiner, error)

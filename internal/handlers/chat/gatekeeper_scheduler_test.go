@@ -54,6 +54,18 @@ func (s *testGatekeeperStore) GetExpiredChallenges(context.Context, time.Time) (
 	return nil, nil
 }
 
+func (s *testGatekeeperStore) MarkWebAppChallengeOpened(context.Context, string, time.Time) error {
+	return nil
+}
+
+func (s *testGatekeeperStore) ClaimWebAppChallengeForFallback(context.Context, int64, int64, int64) (bool, error) {
+	return false, nil
+}
+
+func (s *testGatekeeperStore) GetUnopenedWebAppChallenges(context.Context, time.Time) ([]*db.Challenge, error) {
+	return nil, nil
+}
+
 func (s *testGatekeeperStore) AddChatRecentJoiner(context.Context, *db.RecentJoiner) (*db.RecentJoiner, error) {
 	return nil, nil
 }

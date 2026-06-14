@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -150,6 +151,41 @@ func (s *gatekeeperFlowStore) GetExpiredChallenges(_ context.Context, now time.T
 		}
 	}
 	return expired, nil
+}
+
+func (s *gatekeeperFlowStore) MarkWebAppChallengeOpened(_ context.Context, token string, openedAt time.Time) error {
+	for _, challenge := range s.challenges {
+		if challenge.WebAppToken == token && challenge.WebAppToken != "" &&
+			challenge.Status == db.ChallengeStatusPending && !challenge.WebAppOpenedAt.Valid {
+			challenge.WebAppOpenedAt = sql.NullTime{Time: openedAt, Valid: true}
+		}
+	}
+	return nil
+}
+
+func (s *gatekeeperFlowStore) ClaimWebAppChallengeForFallback(_ context.Context, commChatID, userID, chatID int64) (bool, error) {
+	challenge, ok := s.challenges[s.challengeKey(commChatID, userID, chatID)]
+	if !ok {
+		return false, nil
+	}
+	if challenge.Status != db.ChallengeStatusPending || challenge.WebAppToken == "" ||
+		challenge.JoinRequestQueryID == "" || challenge.WebAppOpenedAt.Valid {
+		return false, nil
+	}
+	challenge.Status = db.ChallengeStatusWebAppFallbackPending
+	return true, nil
+}
+
+func (s *gatekeeperFlowStore) GetUnopenedWebAppChallenges(_ context.Context, deadline time.Time) ([]*db.Challenge, error) {
+	out := make([]*db.Challenge, 0)
+	for _, challenge := range s.challenges {
+		if challenge.WebAppToken != "" && challenge.JoinRequestQueryID != "" &&
+			challenge.Status == db.ChallengeStatusPending && !challenge.WebAppOpenedAt.Valid &&
+			!challenge.CreatedAt.After(deadline) {
+			out = append(out, cloneChallenge(challenge))
+		}
+	}
+	return out, nil
 }
 
 func (s *gatekeeperFlowStore) AddChatRecentJoiner(_ context.Context, joiner *db.RecentJoiner) (*db.RecentJoiner, error) {

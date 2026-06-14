@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 	"time"
 
@@ -187,6 +188,203 @@ func TestChallengeWebAppTokenLookup(t *testing.T) {
 	if got.JoinRequestQueryID != challenge.JoinRequestQueryID || got.CaptchaPrompt != challenge.CaptchaPrompt {
 		t.Fatalf("unexpected web app challenge: %#v", got)
 	}
+}
+
+func TestWebAppChallengeClaimAndOpen(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	client, err := NewSQLiteClient(ctx, t.TempDir(), "test.db")
+	if err != nil {
+		t.Fatalf("new sqlite client: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+
+	now := time.Now().UTC().Truncate(time.Second)
+
+	newWebAppChallenge := func(commChatID, userID, chatID int64, token, queryID string) *db.Challenge {
+		return &db.Challenge{
+			CommChatID:         commChatID,
+			UserID:             userID,
+			ChatID:             chatID,
+			Status:             db.ChallengeStatusPending,
+			SuccessUUID:        "uuid-webapp",
+			WebAppToken:        token,
+			JoinRequestQueryID: queryID,
+			CaptchaPrompt:      "poodle",
+			CaptchaOptionsJSON: `[{"id":"uuid-webapp","symbol":"A"}]`,
+			CreatedAt:          now.Add(-2 * time.Minute),
+			ExpiresAt:          now.Add(5 * time.Minute),
+		}
+	}
+
+	t.Run("claim returns true then false on second attempt", func(t *testing.T) {
+		challenge := newWebAppChallenge(2001, 101, -100201, "token-claim", "query-claim")
+		if _, err := client.CreateChallenge(ctx, challenge); err != nil {
+			t.Fatalf("create challenge: %v", err)
+		}
+
+		claimed, err := client.ClaimWebAppChallengeForFallback(ctx, challenge.CommChatID, challenge.UserID, challenge.ChatID)
+		if err != nil {
+			t.Fatalf("first claim: %v", err)
+		}
+		if !claimed {
+			t.Fatal("expected first claim to return true")
+		}
+
+		got, err := client.GetChallengeByWebAppToken(ctx, "token-claim")
+		if err != nil {
+			t.Fatalf("get after claim: %v", err)
+		}
+		if got == nil {
+			t.Fatal("expected challenge to still exist")
+		}
+		if got.Status != db.ChallengeStatusWebAppFallbackPending {
+			t.Fatalf("expected status %q after claim, got %q", db.ChallengeStatusWebAppFallbackPending, got.Status)
+		}
+
+		claimed, err = client.ClaimWebAppChallengeForFallback(ctx, challenge.CommChatID, challenge.UserID, challenge.ChatID)
+		if err != nil {
+			t.Fatalf("second claim: %v", err)
+		}
+		if claimed {
+			t.Fatal("expected second claim to return false")
+		}
+	})
+
+	t.Run("opened challenge is not claimable and not returned by GetUnopenedWebAppChallenges", func(t *testing.T) {
+		challenge := newWebAppChallenge(2002, 102, -100202, "token-opened", "query-opened")
+		if _, err := client.CreateChallenge(ctx, challenge); err != nil {
+			t.Fatalf("create challenge: %v", err)
+		}
+
+		openedAt := now
+		if err := client.MarkWebAppChallengeOpened(ctx, "token-opened", openedAt); err != nil {
+			t.Fatalf("mark opened: %v", err)
+		}
+
+		claimed, err := client.ClaimWebAppChallengeForFallback(ctx, challenge.CommChatID, challenge.UserID, challenge.ChatID)
+		if err != nil {
+			t.Fatalf("claim after open: %v", err)
+		}
+		if claimed {
+			t.Fatal("expected claim to return false for already-opened challenge")
+		}
+
+		unopened, err := client.GetUnopenedWebAppChallenges(ctx, now)
+		if err != nil {
+			t.Fatalf("get unopened: %v", err)
+		}
+		for _, ch := range unopened {
+			if ch.WebAppToken == "token-opened" {
+				t.Fatal("opened challenge must not appear in GetUnopenedWebAppChallenges")
+			}
+		}
+	})
+
+	t.Run("pending unopened challenge appears in sweep and WebAppOpenedAt round-trips", func(t *testing.T) {
+		challenge := newWebAppChallenge(2003, 103, -100203, "token-sweep", "query-sweep")
+		if _, err := client.CreateChallenge(ctx, challenge); err != nil {
+			t.Fatalf("create challenge: %v", err)
+		}
+
+		unopened, err := client.GetUnopenedWebAppChallenges(ctx, now)
+		if err != nil {
+			t.Fatalf("get unopened before mark: %v", err)
+		}
+		found := false
+		for _, ch := range unopened {
+			if ch.WebAppToken == "token-sweep" {
+				found = true
+				if ch.WebAppOpenedAt.Valid {
+					t.Fatal("expected WebAppOpenedAt to be NULL before mark")
+				}
+			}
+		}
+		if !found {
+			t.Fatal("expected pending challenge to appear in GetUnopenedWebAppChallenges")
+		}
+
+		openedAt := now
+		if err := client.MarkWebAppChallengeOpened(ctx, "token-sweep", openedAt); err != nil {
+			t.Fatalf("mark opened: %v", err)
+		}
+
+		got, err := client.GetChallengeByWebAppToken(ctx, "token-sweep")
+		if err != nil {
+			t.Fatalf("get after mark: %v", err)
+		}
+		if got == nil {
+			t.Fatal("expected challenge to exist after mark")
+		}
+		if !got.WebAppOpenedAt.Valid {
+			t.Fatal("expected WebAppOpenedAt.Valid to be true after MarkWebAppChallengeOpened")
+		}
+		if !got.WebAppOpenedAt.Time.Equal(openedAt) {
+			t.Fatalf("WebAppOpenedAt mismatch: got %v want %v", got.WebAppOpenedAt.Time, openedAt)
+		}
+
+		unopened, err = client.GetUnopenedWebAppChallenges(ctx, now)
+		if err != nil {
+			t.Fatalf("get unopened after mark: %v", err)
+		}
+		for _, ch := range unopened {
+			if ch.WebAppToken == "token-sweep" {
+				t.Fatal("marked-opened challenge must not appear in GetUnopenedWebAppChallenges")
+			}
+		}
+	})
+
+	t.Run("MarkWebAppChallengeOpened is idempotent on already-opened row", func(t *testing.T) {
+		challenge := newWebAppChallenge(2004, 104, -100204, "token-idem", "query-idem")
+		if _, err := client.CreateChallenge(ctx, challenge); err != nil {
+			t.Fatalf("create challenge: %v", err)
+		}
+
+		first := now
+		if err := client.MarkWebAppChallengeOpened(ctx, "token-idem", first); err != nil {
+			t.Fatalf("first mark: %v", err)
+		}
+
+		second := now.Add(time.Minute)
+		if err := client.MarkWebAppChallengeOpened(ctx, "token-idem", second); err != nil {
+			t.Fatalf("second mark: %v", err)
+		}
+
+		got, err := client.GetChallengeByWebAppToken(ctx, "token-idem")
+		if err != nil {
+			t.Fatalf("get after second mark: %v", err)
+		}
+		if !got.WebAppOpenedAt.Valid {
+			t.Fatal("expected WebAppOpenedAt to be valid")
+		}
+		if !got.WebAppOpenedAt.Time.Equal(first) {
+			t.Fatalf("expected first open time to be preserved, got %v", got.WebAppOpenedAt.Time)
+		}
+	})
+
+	t.Run("CreateChallenge round-trips WebAppOpenedAt when set", func(t *testing.T) {
+		openedAt := now
+		challenge := newWebAppChallenge(2005, 105, -100205, "token-rt", "query-rt")
+		challenge.WebAppOpenedAt = sql.NullTime{Time: openedAt, Valid: true}
+		if _, err := client.CreateChallenge(ctx, challenge); err != nil {
+			t.Fatalf("create challenge with opened at: %v", err)
+		}
+
+		got, err := client.GetChallengeByWebAppToken(ctx, "token-rt")
+		if err != nil {
+			t.Fatalf("get challenge: %v", err)
+		}
+		if got == nil {
+			t.Fatal("expected challenge")
+		}
+		if !got.WebAppOpenedAt.Valid {
+			t.Fatal("expected WebAppOpenedAt.Valid after round-trip")
+		}
+		if !got.WebAppOpenedAt.Time.Equal(openedAt) {
+			t.Fatalf("WebAppOpenedAt time mismatch: got %v want %v", got.WebAppOpenedAt.Time, openedAt)
+		}
+	})
 }
 
 func TestGetPassedJoinRequestChallengeByChatUserIgnoresNewerPublicChallenge(t *testing.T) {
