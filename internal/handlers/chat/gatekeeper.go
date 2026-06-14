@@ -58,8 +58,9 @@ const (
 	updateTypeNewChatMembers  updateType = "new_chat_members"
 	updateTypeIgnore          updateType = "ignore"
 
-	processNewChatMembersInterval    = 1 * time.Minute
-	processExpiredChallengesInterval = 1 * time.Minute
+	processNewChatMembersInterval         = 1 * time.Minute
+	processExpiredChallengesInterval      = 1 * time.Minute
+	processUnopenedWebAppChallengesPeriod = 5 * time.Second
 )
 
 type updateType string
@@ -211,6 +212,22 @@ func (g *Gatekeeper) Start(ctx context.Context) error {
 			case <-ticker.C:
 				if err := g.processExpiredChallenges(runCtx); err != nil && !errors.Is(err, context.Canceled) {
 					g.getLogEntry().WithField("error", err.Error()).Error("failed to process expired challenges")
+				}
+			}
+		}
+	})
+
+	g.workerWG.Go(func() {
+		ticker := time.NewTicker(processUnopenedWebAppChallengesPeriod)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-runCtx.Done():
+				return
+			case <-ticker.C:
+				if err := g.processUnopenedWebAppChallenges(runCtx); err != nil && !errors.Is(err, context.Canceled) {
+					g.getLogEntry().WithField("error", err.Error()).Error("failed to process unopened web app challenges")
 				}
 			}
 		}

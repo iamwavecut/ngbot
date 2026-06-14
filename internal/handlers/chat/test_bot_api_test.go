@@ -11,6 +11,11 @@ import (
 	api "github.com/OvyFlash/telegram-bot-api"
 )
 
+type testBotAPIError struct {
+	code        int
+	description string
+}
+
 func newTestBotAPI(t *testing.T, handler func(method string, r *http.Request) any) *api.BotAPI {
 	t.Helper()
 	return newTestBotAPIWithErrors(t, handler, nil)
@@ -43,6 +48,16 @@ func newTestBotAPIWithErrors(t *testing.T, handler func(method string, r *http.R
 		result := handler(method, r)
 
 		w.Header().Set("Content-Type", "application/json")
+		if forcedErr, ok := result.(*testBotAPIError); ok {
+			if err := json.NewEncoder(w).Encode(map[string]any{
+				"ok":          false,
+				"error_code":  forcedErr.code,
+				"description": forcedErr.description,
+			}); err != nil {
+				t.Fatalf("encode forced error response: %v", err)
+			}
+			return
+		}
 		if code, forced := failures[method]; forced && code != 0 {
 			if err := json.NewEncoder(w).Encode(map[string]any{
 				"ok":          false,

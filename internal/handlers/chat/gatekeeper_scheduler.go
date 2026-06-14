@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -149,8 +150,14 @@ func (g *Gatekeeper) processExpiredChallenges(ctx context.Context) error {
 			}
 			continue
 		}
+		if challenge.Status == db.ChallengeStatusWebAppFallbackPending {
+			if err := g.fallbackClaimedWebAppChallenge(ctx, challenge, settings); err != nil {
+				entry.WithField("error", err.Error()).Error("failed to recover stuck web app fallback challenge")
+			}
+			continue
+		}
 		if challenge.WebAppToken != "" && challenge.JoinRequestQueryID != "" {
-			if err := g.fallbackExpiredWebAppChallenge(ctx, challenge, settings); err != nil {
+			if err := g.attemptWebAppFallback(ctx, challenge, settings); err != nil {
 				entry.WithField("error", err.Error()).Error("failed to fallback expired web app challenge")
 			}
 			continue
@@ -192,30 +199,27 @@ func (g *Gatekeeper) processExpiredChallenges(ctx context.Context) error {
 	return nil
 }
 
-func (g *Gatekeeper) fallbackExpiredWebAppChallenge(ctx context.Context, challenge *db.Challenge, settings *db.Settings) error {
-	if challenge.CommChatID == 0 {
-		return g.declineWebAppChallenge(ctx, challenge)
-	}
-
-	privateChat, err := g.s.GetBot().GetChat(api.ChatInfoConfig{
-		ChatConfig: api.ChatConfig{
-			ChatID: challenge.CommChatID,
-		},
-	})
-	if err != nil {
-		declineErr := g.declineWebAppChallenge(ctx, challenge)
-		return errors.Join(err, declineErr)
-	}
-
-	targetChat, err := g.s.GetBot().GetChat(api.ChatInfoConfig{
-		ChatConfig: api.ChatConfig{
-			ChatID: challenge.ChatID,
-		},
-	})
+func (g *Gatekeeper) attemptWebAppFallback(ctx context.Context, challenge *db.Challenge, settings *db.Settings) error {
+	claimed, err := g.store.ClaimWebAppChallengeForFallback(ctx, challenge.CommChatID, challenge.UserID, challenge.ChatID)
 	if err != nil {
 		return err
 	}
+	if !claimed {
+		return nil
+	}
+	challenge.Status = db.ChallengeStatusWebAppFallbackPending
+	return g.fallbackClaimedWebAppChallenge(ctx, challenge, settings)
+}
 
+func (g *Gatekeeper) fallbackClaimedWebAppChallenge(ctx context.Context, challenge *db.Challenge, settings *db.Settings) error {
+	privateChat, err := g.s.GetBot().GetChat(api.ChatInfoConfig{ChatConfig: api.ChatConfig{ChatID: challenge.CommChatID}})
+	if err != nil {
+		return errors.Join(fmt.Errorf("get private chat for fallback: %w", err), g.declineWebAppChallenge(ctx, challenge))
+	}
+	targetChat, err := g.s.GetBot().GetChat(api.ChatInfoConfig{ChatConfig: api.ChatConfig{ChatID: challenge.ChatID}})
+	if err != nil {
+		return errors.Join(fmt.Errorf("get target chat for fallback: %w", err), g.declineWebAppChallenge(ctx, challenge))
+	}
 	user := &api.User{
 		ID:        challenge.UserID,
 		FirstName: privateChat.FirstName,
@@ -226,16 +230,49 @@ func (g *Gatekeeper) fallbackExpiredWebAppChallenge(ctx context.Context, challen
 		user.FirstName = "friend"
 	}
 	if err := g.startChallenge(ctx, nil, user, &targetChat.Chat, challenge.CommChatID, challenge.CommChatID, settings); err != nil {
-		declineErr := bot.AnswerJoinRequestQuery(ctx, g.s.GetBot(), challenge.JoinRequestQueryID, bot.JoinRequestQueryResultDecline)
-		return errors.Join(err, declineErr)
+		return errors.Join(fmt.Errorf("start dm fallback challenge: %w", err), g.declineWebAppChallenge(ctx, challenge))
 	}
 	fallbackChallenge, err := g.store.GetChallengeByChatUser(ctx, challenge.ChatID, challenge.UserID)
 	if err != nil {
+		return errors.Join(fmt.Errorf("load dm fallback challenge: %w", err), g.declineWebAppChallenge(ctx, challenge))
+	}
+	if fallbackChallenge == nil || fallbackChallenge.CommChatID != challenge.CommChatID {
+		return g.declineWebAppChallenge(ctx, challenge)
+	}
+	fallbackChallenge.JoinRequestQueryID = challenge.JoinRequestQueryID
+	return g.store.UpdateChallenge(ctx, fallbackChallenge)
+}
+
+func (g *Gatekeeper) processUnopenedWebAppChallenges(ctx context.Context) error {
+	entry := g.getLogEntry().WithField("method", "processUnopenedWebAppChallenges")
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
+	deadline := time.Now().Add(-webAppOpenDeadline)
+	unopened, err := g.store.GetUnopenedWebAppChallenges(ctx, deadline)
+	if err != nil {
+		entry.WithField("error", err.Error()).Error("failed to get unopened web app challenges")
 		return err
 	}
-	if fallbackChallenge != nil && fallbackChallenge.CommChatID == challenge.CommChatID {
-		fallbackChallenge.JoinRequestQueryID = challenge.JoinRequestQueryID
-		return g.store.UpdateChallenge(ctx, fallbackChallenge)
+	for _, challenge := range unopened {
+		settings, err := g.fetchAndValidateSettings(ctx, challenge.ChatID)
+		if err != nil {
+			entry.WithField("error", err.Error()).Error("failed to load chat settings for unopened challenge")
+			continue
+		}
+		if !settings.GatekeeperEnabled || !settings.GatekeeperCaptchaEnabled {
+			if err := g.declineWebAppChallenge(ctx, challenge); err != nil {
+				entry.WithField("error", err.Error()).Error("failed to clean up unopened challenge for disabled gatekeeper")
+			}
+			continue
+		}
+		if err := g.attemptWebAppFallback(ctx, challenge, settings); err != nil {
+			entry.WithField("error", err.Error()).Error("failed to fall back unopened web app challenge")
+		}
 	}
 	return nil
 }

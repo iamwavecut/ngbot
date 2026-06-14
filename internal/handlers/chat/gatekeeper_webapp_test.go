@@ -886,7 +886,7 @@ func TestStartJoinRequestWebAppChallengeQueuesOnSendFailure(t *testing.T) {
 
 func newWebAppChallenge(expiresAt time.Time) *db.Challenge {
 	return &db.Challenge{
-		CommChatID:         0,
+		CommChatID:         9001,
 		UserID:             42,
 		ChatID:             -100123,
 		Status:             db.ChallengeStatusPending,

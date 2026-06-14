@@ -1638,3 +1638,340 @@ func TestProcessExpiredJoinRequestDMFallbackChallengeRejects(t *testing.T) {
 		t.Fatalf("expected expired fallback challenge cleanup to remove the row, got %d", len(store.challenges))
 	}
 }
+
+func TestProcessUnopenedWebAppChallengeFallsBackEarly(t *testing.T) {
+	t.Parallel()
+
+	recorder := &botRequestRecorder{}
+	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
+		recorder.record(t, method, r)
+
+		switch method {
+		case testTelegramMethodGetChat:
+			switch r.Form.Get("chat_id") {
+			case "9001":
+				return map[string]any{
+					"id":         9001,
+					"type":       "private",
+					"first_name": "Neo",
+				}
+			case "-100123":
+				return map[string]any{
+					"id":    -100123,
+					"type":  "supergroup",
+					"title": "Wave Club",
+				}
+			default:
+				t.Fatalf("unexpected getChat chat_id: %q", r.Form.Get("chat_id"))
+				return nil
+			}
+		case testTelegramMethodSendMessage:
+			return recorder.nextSendMessageResult()
+		default:
+			t.Fatalf("unexpected bot method: %s", method)
+			return nil
+		}
+	})
+
+	store := newGatekeeperFlowStore()
+	unopened := &db.Challenge{
+		CommChatID:         9001,
+		UserID:             42,
+		ChatID:             -100123,
+		Status:             db.ChallengeStatusPending,
+		SuccessUUID:        "correct-choice",
+		WebAppToken:        "tok",
+		JoinRequestQueryID: "join-query",
+		CaptchaPrompt:      "poodle",
+		CaptchaOptionsJSON: `[{"id":"correct-choice","symbol":"A"},{"id":"wrong-choice","symbol":"B"}]`,
+		CreatedAt:          time.Now().Add(-30 * time.Second),
+		ExpiresAt:          time.Now().Add(2 * time.Minute),
+	}
+	if _, err := store.CreateChallenge(context.Background(), unopened); err != nil {
+		t.Fatalf("create unopened challenge: %v", err)
+	}
+
+	gatekeeper := &Gatekeeper{
+		s: &gatekeeperTestService{
+			testBotService: testBotService{botAPI: botAPI, language: "en"},
+			settings: &db.Settings{
+				GatekeeperEnabled:        true,
+				GatekeeperCaptchaEnabled: true,
+			},
+		},
+		store:      store,
+		config:     &config.Config{},
+		banChecker: &testGatekeeperBanChecker{},
+	}
+
+	if err := gatekeeper.processUnopenedWebAppChallenges(context.Background()); err != nil {
+		t.Fatalf("processUnopenedWebAppChallenges returned error: %v", err)
+	}
+
+	sends := recorder.byMethod(testTelegramMethodSendMessage)
+	if len(sends) != 1 {
+		t.Fatalf("expected one DM fallback challenge message, got %d", len(sends))
+	}
+	challenge := store.onlyChallenge(t)
+	if challenge.WebAppToken != "" {
+		t.Fatalf("expected web app token cleared after fallback, got %q", challenge.WebAppToken)
+	}
+	if challenge.JoinRequestQueryID != "join-query" {
+		t.Fatalf("expected query marker preserved, got %q", challenge.JoinRequestQueryID)
+	}
+}
+
+func TestProcessUnopenedWebAppChallengeSkipsOpened(t *testing.T) {
+	t.Parallel()
+
+	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
+		t.Fatalf("unexpected bot method for opened challenge: %s", method)
+		return nil
+	})
+
+	store := newGatekeeperFlowStore()
+	opened := &db.Challenge{
+		CommChatID:         9001,
+		UserID:             42,
+		ChatID:             -100123,
+		Status:             db.ChallengeStatusPending,
+		SuccessUUID:        "correct-choice",
+		WebAppToken:        "tok",
+		JoinRequestQueryID: "join-query",
+		CaptchaPrompt:      "poodle",
+		CaptchaOptionsJSON: `[{"id":"correct-choice","symbol":"A"},{"id":"wrong-choice","symbol":"B"}]`,
+		CreatedAt:          time.Now().Add(-30 * time.Second),
+		ExpiresAt:          time.Now().Add(2 * time.Minute),
+		WebAppOpenedAt:     sql.NullTime{Time: time.Now(), Valid: true},
+	}
+	if _, err := store.CreateChallenge(context.Background(), opened); err != nil {
+		t.Fatalf("create opened challenge: %v", err)
+	}
+
+	gatekeeper := &Gatekeeper{
+		s: &gatekeeperTestService{
+			testBotService: testBotService{botAPI: botAPI, language: "en"},
+			settings: &db.Settings{
+				GatekeeperEnabled:        true,
+				GatekeeperCaptchaEnabled: true,
+			},
+		},
+		store:      store,
+		config:     &config.Config{},
+		banChecker: &testGatekeeperBanChecker{},
+	}
+
+	if err := gatekeeper.processUnopenedWebAppChallenges(context.Background()); err != nil {
+		t.Fatalf("processUnopenedWebAppChallenges returned error: %v", err)
+	}
+
+	challenge := store.onlyChallenge(t)
+	if challenge.WebAppToken != "tok" {
+		t.Fatalf("expected opened challenge to remain untouched, got token %q", challenge.WebAppToken)
+	}
+}
+
+func TestProcessUnopenedWebAppChallengeSkipsAlreadyPassed(t *testing.T) {
+	t.Parallel()
+
+	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
+		t.Fatalf("unexpected bot method for already-passed challenge: %s", method)
+		return nil
+	})
+
+	store := newGatekeeperFlowStore()
+	passed := &db.Challenge{
+		CommChatID:         9001,
+		UserID:             42,
+		ChatID:             -100123,
+		Status:             db.ChallengeStatusPassedWaitingMemberJoin,
+		SuccessUUID:        "correct-choice",
+		WebAppToken:        "tok",
+		JoinRequestQueryID: "join-query",
+		CaptchaPrompt:      "poodle",
+		CaptchaOptionsJSON: `[{"id":"correct-choice","symbol":"A"},{"id":"wrong-choice","symbol":"B"}]`,
+		CreatedAt:          time.Now().Add(-30 * time.Second),
+		ExpiresAt:          time.Now().Add(2 * time.Minute),
+	}
+	if _, err := store.CreateChallenge(context.Background(), passed); err != nil {
+		t.Fatalf("create passed challenge: %v", err)
+	}
+
+	gatekeeper := &Gatekeeper{
+		s: &gatekeeperTestService{
+			testBotService: testBotService{botAPI: botAPI, language: "en"},
+			settings: &db.Settings{
+				GatekeeperEnabled:        true,
+				GatekeeperCaptchaEnabled: true,
+			},
+		},
+		store:      store,
+		config:     &config.Config{},
+		banChecker: &testGatekeeperBanChecker{},
+	}
+
+	if err := gatekeeper.processUnopenedWebAppChallenges(context.Background()); err != nil {
+		t.Fatalf("processUnopenedWebAppChallenges returned error: %v", err)
+	}
+
+	challenge := store.onlyChallenge(t)
+	if challenge.Status != db.ChallengeStatusPassedWaitingMemberJoin {
+		t.Fatalf("expected passed challenge status to be unchanged, got %q", challenge.Status)
+	}
+	if challenge.WebAppToken != "tok" {
+		t.Fatalf("expected passed challenge token to be unchanged, got %q", challenge.WebAppToken)
+	}
+}
+
+func TestProcessExpiredRecoversFallbackPendingChallenge(t *testing.T) {
+	t.Parallel()
+
+	recorder := &botRequestRecorder{}
+	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
+		recorder.record(t, method, r)
+
+		switch method {
+		case testTelegramMethodGetChat:
+			switch r.Form.Get("chat_id") {
+			case "9001":
+				return map[string]any{
+					"id":         9001,
+					"type":       "private",
+					"first_name": "Neo",
+				}
+			case "-100123":
+				return map[string]any{
+					"id":    -100123,
+					"type":  "supergroup",
+					"title": "Wave Club",
+				}
+			default:
+				t.Fatalf("unexpected getChat chat_id: %q", r.Form.Get("chat_id"))
+				return nil
+			}
+		case testTelegramMethodSendMessage:
+			return recorder.nextSendMessageResult()
+		default:
+			t.Fatalf("unexpected bot method: %s", method)
+			return nil
+		}
+	})
+
+	store := newGatekeeperFlowStore()
+	stuck := &db.Challenge{
+		CommChatID:         9001,
+		UserID:             42,
+		ChatID:             -100123,
+		Status:             db.ChallengeStatusWebAppFallbackPending,
+		SuccessUUID:        "correct-choice",
+		WebAppToken:        "tok",
+		JoinRequestQueryID: "join-query",
+		CaptchaPrompt:      "poodle",
+		CaptchaOptionsJSON: `[{"id":"correct-choice","symbol":"A"},{"id":"wrong-choice","symbol":"B"}]`,
+		CreatedAt:          time.Now().Add(-10 * time.Minute),
+		ExpiresAt:          time.Now().Add(-time.Minute),
+	}
+	if _, err := store.CreateChallenge(context.Background(), stuck); err != nil {
+		t.Fatalf("create stuck challenge: %v", err)
+	}
+
+	gatekeeper := &Gatekeeper{
+		s: &gatekeeperTestService{
+			testBotService: testBotService{botAPI: botAPI, language: "en"},
+			settings: &db.Settings{
+				GatekeeperEnabled:        true,
+				GatekeeperCaptchaEnabled: true,
+			},
+		},
+		store:      store,
+		config:     &config.Config{},
+		banChecker: &testGatekeeperBanChecker{},
+	}
+
+	if err := gatekeeper.processExpiredChallenges(context.Background()); err != nil {
+		t.Fatalf("processExpiredChallenges returned error: %v", err)
+	}
+
+	sends := recorder.byMethod(testTelegramMethodSendMessage)
+	if len(sends) != 1 {
+		t.Fatalf("expected one recovered DM fallback challenge message, got %d", len(sends))
+	}
+	challenge := store.onlyChallenge(t)
+	if challenge.WebAppToken != "" {
+		t.Fatalf("expected web app token cleared after recovery, got %q", challenge.WebAppToken)
+	}
+	if challenge.JoinRequestQueryID != "join-query" {
+		t.Fatalf("expected query marker preserved after recovery, got %q", challenge.JoinRequestQueryID)
+	}
+}
+
+func TestFallbackClaimedWebAppChallengeDeclinesWhenTargetChatUnavailable(t *testing.T) {
+	t.Parallel()
+
+	recorder := &botRequestRecorder{}
+	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
+		recorder.record(t, method, r)
+
+		switch method {
+		case testTelegramMethodGetChat:
+			switch r.Form.Get("chat_id") {
+			case "9001":
+				return map[string]any{
+					"id":         9001,
+					"type":       "private",
+					"first_name": "Neo",
+				}
+			case "-100123":
+				return &testBotAPIError{code: 502, description: "target chat unavailable"}
+			default:
+				t.Fatalf("unexpected getChat chat_id: %q", r.Form.Get("chat_id"))
+				return nil
+			}
+		case testTelegramMethodJoinRequestQuery:
+			return true
+		default:
+			t.Fatalf("unexpected bot method: %s", method)
+			return nil
+		}
+	})
+
+	store := newGatekeeperFlowStore()
+	claimed := &db.Challenge{
+		CommChatID:         9001,
+		UserID:             42,
+		ChatID:             -100123,
+		Status:             db.ChallengeStatusWebAppFallbackPending,
+		SuccessUUID:        "correct-choice",
+		WebAppToken:        "tok",
+		JoinRequestQueryID: "join-query",
+		CaptchaPrompt:      "poodle",
+		CaptchaOptionsJSON: `[{"id":"correct-choice","symbol":"A"},{"id":"wrong-choice","symbol":"B"}]`,
+		CreatedAt:          time.Now().Add(-10 * time.Minute),
+		ExpiresAt:          time.Now().Add(-time.Minute),
+	}
+	if _, err := store.CreateChallenge(context.Background(), claimed); err != nil {
+		t.Fatalf("create claimed challenge: %v", err)
+	}
+
+	gatekeeper := &Gatekeeper{
+		s:          &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI, language: "en"}, settings: webAppSettings()},
+		store:      store,
+		config:     &config.Config{},
+		banChecker: &testGatekeeperBanChecker{},
+	}
+
+	err := gatekeeper.fallbackClaimedWebAppChallenge(context.Background(), claimed, webAppSettings())
+	if err == nil {
+		t.Fatal("expected fallback to return error when target chat is unavailable")
+	}
+	if len(store.challenges) != 0 {
+		t.Fatalf("expected declined challenge to be deleted, got %d rows", len(store.challenges))
+	}
+	declines := recorder.byMethod(testTelegramMethodJoinRequestQuery)
+	if len(declines) != 1 {
+		t.Fatalf("expected one join request query answer, got %d", len(declines))
+	}
+	if declines[0].form.Get("result") != "decline" {
+		t.Fatalf("expected decline result, got %q", declines[0].form.Get("result"))
+	}
+}
