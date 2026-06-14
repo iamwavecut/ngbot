@@ -908,11 +908,11 @@ func webAppSettings() *db.Settings {
 	}
 }
 
-func signedWebAppInitData(t *testing.T, token string, queryID string, userID int64) string {
+func staleSignedWebAppInitData(t *testing.T, token string, queryID string, userID int64, authDate time.Time) string {
 	t.Helper()
 
 	values := url.Values{
-		"auth_date": {strconv.FormatInt(time.Now().Unix(), 10)},
+		"auth_date": {strconv.FormatInt(authDate.Unix(), 10)},
 		"query_id":  {queryID},
 		"user":      {`{"id":` + strconv.FormatInt(userID, 10) + `,"first_name":"Neo"}`},
 	}
@@ -931,6 +931,49 @@ func signedWebAppInitData(t *testing.T, token string, queryID string, userID int
 	values.Set("hash", hex.EncodeToString(hash.Sum(nil)))
 
 	return values.Encode()
+}
+
+func signedWebAppInitData(t *testing.T, token string, queryID string, userID int64) string {
+	t.Helper()
+	return staleSignedWebAppInitData(t, token, queryID, userID, time.Now())
+}
+
+func TestHandleJoinCaptchaAnswerRejectsStaleInitData(t *testing.T) {
+	t.Parallel()
+
+	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
+		t.Fatalf("unexpected bot method: %s", method)
+		return nil
+	})
+
+	store := newGatekeeperFlowStore()
+	challenge := newWebAppChallenge(time.Now().Add(time.Minute))
+	challenge.CommChatID = 9001
+	if _, err := store.CreateChallenge(t.Context(), challenge); err != nil {
+		t.Fatalf("create challenge: %v", err)
+	}
+
+	gatekeeper := &Gatekeeper{
+		s:          &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI, language: "en"}, settings: webAppSettings()},
+		store:      store,
+		config:     &config.Config{},
+		banChecker: &testGatekeeperBanChecker{},
+	}
+
+	form := url.Values{
+		"token":     {challenge.WebAppToken},
+		"choice":    {challenge.SuccessUUID},
+		"init_data": {staleSignedWebAppInitData(t, botAPI.Token, challenge.JoinRequestQueryID, challenge.UserID, time.Now().Add(-2*time.Hour))},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/gatekeeper/join-captcha/answer", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+
+	gatekeeper.handleJoinCaptchaAnswer(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for stale init data, got %d: %s", rr.Code, rr.Body.String())
+	}
 }
 
 func TestHandleJoinCaptchaAnswerKeepsPendingWhenApproveFails(t *testing.T) {

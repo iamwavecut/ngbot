@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -33,6 +34,7 @@ const (
 	joinCaptchaObfuscationKeyBytes = 8
 	joinCaptchaMaxRequestBodyBytes = 16 << 10
 	joinCaptchaTestQueryPrefix     = "test:"
+	joinCaptchaInitDataTTL         = time.Hour
 )
 
 type webAppCaptchaOption struct {
@@ -75,8 +77,9 @@ type joinCaptchaAnswerResponse struct {
 }
 
 type webAppInitData struct {
-	QueryID string
-	UserID  int64
+	QueryID  string
+	UserID   int64
+	AuthDate int64
 }
 
 type joinCaptchaCopy struct {
@@ -877,6 +880,10 @@ func (g *Gatekeeper) handleJoinCaptchaAnswer(w http.ResponseWriter, r *http.Requ
 		writeJoinCaptchaJSON(w, http.StatusUnauthorized, joinCaptchaAnswerResponse{Message: copy.TelegramCheckFailed})
 		return
 	}
+	if initData.AuthDate == 0 || time.Since(time.Unix(initData.AuthDate, 0)) > joinCaptchaInitDataTTL {
+		writeJoinCaptchaJSON(w, http.StatusUnauthorized, joinCaptchaAnswerResponse{Message: copy.TelegramCheckFailed})
+		return
+	}
 	if initData.UserID != challenge.UserID || (!isTestWebAppChallenge(challenge) && initData.QueryID != challenge.JoinRequestQueryID) {
 		writeJoinCaptchaJSON(w, http.StatusForbidden, joinCaptchaAnswerResponse{Message: copy.OtherRequest})
 		return
@@ -1218,9 +1225,11 @@ func parseWebAppInitData(raw string) (webAppInitData, error) {
 	if err := json.Unmarshal([]byte(values.Get("user")), &user); err != nil {
 		return webAppInitData{}, err
 	}
+	authDate, _ := strconv.ParseInt(values.Get("auth_date"), 10, 64)
 	return webAppInitData{
-		QueryID: values.Get("query_id"),
-		UserID:  user.ID,
+		QueryID:  values.Get("query_id"),
+		UserID:   user.ID,
+		AuthDate: authDate,
 	}, nil
 }
 
