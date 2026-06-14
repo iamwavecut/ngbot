@@ -182,6 +182,9 @@ func (g *Gatekeeper) processExpiredChallenges(ctx context.Context) error {
 		}
 
 		language := g.s.GetLanguage(ctx, challenge.ChatID, nil)
+		if challenge.CommChatID != challenge.ChatID {
+			language = g.dmLanguage(challenge.UserLanguage, nil)
+		}
 		title := ""
 		if targetChat != nil {
 			title = targetChat.Title
@@ -221,10 +224,11 @@ func (g *Gatekeeper) fallbackClaimedWebAppChallenge(ctx context.Context, challen
 		return errors.Join(fmt.Errorf("get target chat for fallback: %w", err), g.declineWebAppChallenge(ctx, challenge))
 	}
 	user := &api.User{
-		ID:        challenge.UserID,
-		FirstName: privateChat.FirstName,
-		LastName:  privateChat.LastName,
-		UserName:  privateChat.UserName,
+		ID:           challenge.UserID,
+		FirstName:    privateChat.FirstName,
+		LastName:     privateChat.LastName,
+		UserName:     privateChat.UserName,
+		LanguageCode: challenge.UserLanguage,
 	}
 	if user.FirstName == "" && user.UserName == "" {
 		user.FirstName = "friend"

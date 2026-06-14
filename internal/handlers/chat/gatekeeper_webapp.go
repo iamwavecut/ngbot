@@ -681,6 +681,7 @@ func (g *Gatekeeper) startJoinRequestWebAppChallenge(ctx context.Context, reques
 		JoinRequestQueryID: request.QueryID,
 		CaptchaPrompt:      correctVariant[1],
 		CaptchaOptionsJSON: string(optionsJSON),
+		UserLanguage:       strings.TrimSpace(request.From.LanguageCode),
 		CreatedAt:          now,
 		ExpiresAt:          now.Add(settings.GetChallengeTimeout()),
 	}
@@ -746,6 +747,7 @@ func (g *Gatekeeper) handleTestJoinCaptchaCommand(ctx context.Context, msg *api.
 		JoinRequestQueryID: joinCaptchaTestQueryPrefix + uuid.New(),
 		CaptchaPrompt:      correctVariant[1],
 		CaptchaOptionsJSON: string(optionsJSON),
+		UserLanguage:       strings.TrimSpace(user.LanguageCode),
 		CreatedAt:          now,
 		ExpiresAt:          now.Add(settings.GetChallengeTimeout()),
 	}

@@ -349,13 +349,14 @@ func (g *Gatekeeper) startChallenge(ctx context.Context, u *api.Update, user *ap
 
 	now := time.Now()
 	challenge := &db.Challenge{
-		CommChatID:  recipientChatID,
-		UserID:      user.ID,
-		ChatID:      target.ID,
-		Status:      db.ChallengeStatusPending,
-		SuccessUUID: uuid.New(),
-		CreatedAt:   now,
-		ExpiresAt:   now.Add(challengeTimeout),
+		CommChatID:   recipientChatID,
+		UserID:       user.ID,
+		ChatID:       target.ID,
+		Status:       db.ChallengeStatusPending,
+		SuccessUUID:  uuid.New(),
+		UserLanguage: strings.TrimSpace(user.LanguageCode),
+		CreatedAt:    now,
+		ExpiresAt:    now.Add(challengeTimeout),
 	}
 	if u != nil && u.Message != nil {
 		challenge.JoinMessageID = u.Message.MessageID
@@ -368,7 +369,12 @@ func (g *Gatekeeper) startChallenge(ctx context.Context, u *api.Update, user *ap
 		entry.WithField("error", err.Error()).Warn("failed to increment started challenge stat")
 	}
 
-	commLang := g.s.GetLanguage(ctx, languageChatID, user)
+	var commLang string
+	if isPublic {
+		commLang = g.s.GetLanguage(ctx, languageChatID, user)
+	} else {
+		commLang = g.dmLanguage(user.LanguageCode, user)
+	}
 	buttons, correctVariant := g.createCaptchaButtons(user.ID, challenge.SuccessUUID, commLang, captchaOptionsCount)
 	rows := captchaKeyboardRows(buttons)
 	inlineRows := make([][]api.InlineKeyboardButton, 0, len(rows))

@@ -69,21 +69,22 @@ type (
 	}
 
 	Challenge struct {
-		CommChatID         int64     `db:"comm_chat_id"`
-		UserID             int64     `db:"user_id"`
-		ChatID             int64     `db:"chat_id"`
-		Status             string    `db:"status"`
-		SuccessUUID        string    `db:"success_uuid"`
-		WebAppToken        string    `db:"web_app_token"`
-		JoinRequestQueryID string    `db:"join_request_query_id"`
-		CaptchaPrompt      string    `db:"captcha_prompt"`
-		CaptchaOptionsJSON string    `db:"captcha_options_json"`
-		JoinMessageID      int       `db:"join_message_id"`
-		ChallengeMessageID int       `db:"challenge_message_id"`
-		Attempts           int       `db:"attempts"`
+		CommChatID         int64        `db:"comm_chat_id"`
+		UserID             int64        `db:"user_id"`
+		ChatID             int64        `db:"chat_id"`
+		Status             string       `db:"status"`
+		SuccessUUID        string       `db:"success_uuid"`
+		WebAppToken        string       `db:"web_app_token"`
+		JoinRequestQueryID string       `db:"join_request_query_id"`
+		CaptchaPrompt      string       `db:"captcha_prompt"`
+		CaptchaOptionsJSON string       `db:"captcha_options_json"`
+		JoinMessageID      int          `db:"join_message_id"`
+		ChallengeMessageID int          `db:"challenge_message_id"`
+		Attempts           int          `db:"attempts"`
 		CreatedAt          time.Time    `db:"created_at"`
 		ExpiresAt          time.Time    `db:"expires_at"`
 		WebAppOpenedAt     sql.NullTime `db:"web_app_opened_at"`
+		UserLanguage       string       `db:"user_language"`
 	}
 
 	ChatManager struct {

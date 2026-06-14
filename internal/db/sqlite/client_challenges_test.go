@@ -190,6 +190,52 @@ func TestChallengeWebAppTokenLookup(t *testing.T) {
 	}
 }
 
+func TestChallengeUserLanguageRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	client, err := NewSQLiteClient(ctx, t.TempDir(), "test.db")
+	if err != nil {
+		t.Fatalf("new sqlite client: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+
+	now := time.Now().UTC().Truncate(time.Second)
+	challenge := &db.Challenge{
+		CommChatID:   3001,
+		UserID:       303,
+		ChatID:       -100303,
+		Status:       db.ChallengeStatusPending,
+		SuccessUUID:  "uuid-lang",
+		UserLanguage: "ru",
+		CreatedAt:    now,
+		ExpiresAt:    now.Add(3 * time.Minute),
+	}
+	if _, err := client.CreateChallenge(ctx, challenge); err != nil {
+		t.Fatalf("create challenge: %v", err)
+	}
+
+	loaded, err := client.GetChallengeByChatUser(ctx, challenge.ChatID, challenge.UserID)
+	if err != nil {
+		t.Fatalf("get challenge: %v", err)
+	}
+	if loaded == nil || loaded.UserLanguage != "ru" {
+		t.Fatalf("expected user_language ru to round-trip, got %#v", loaded)
+	}
+
+	loaded.UserLanguage = "de"
+	if err := client.UpdateChallenge(ctx, loaded); err != nil {
+		t.Fatalf("update challenge: %v", err)
+	}
+	reloaded, err := client.GetChallengeByChatUser(ctx, challenge.ChatID, challenge.UserID)
+	if err != nil {
+		t.Fatalf("reload challenge: %v", err)
+	}
+	if reloaded == nil || reloaded.UserLanguage != "de" {
+		t.Fatalf("expected updated user_language de, got %#v", reloaded)
+	}
+}
+
 func TestWebAppChallengeClaimAndOpen(t *testing.T) {
 	t.Parallel()
 

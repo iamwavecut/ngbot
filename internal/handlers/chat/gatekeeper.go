@@ -398,6 +398,31 @@ func (g *Gatekeeper) fetchAndValidateSettings(ctx context.Context, chatID int64)
 	return settings, nil
 }
 
+func languageInList(code string) bool {
+	if code == "" {
+		return false
+	}
+	for _, language := range i18n.GetLanguagesList() {
+		if language == code {
+			return true
+		}
+	}
+	return false
+}
+
+func (g *Gatekeeper) dmLanguage(storedLanguage string, user *api.User) string {
+	if user != nil && languageInList(user.LanguageCode) {
+		return user.LanguageCode
+	}
+	if languageInList(storedLanguage) {
+		return storedLanguage
+	}
+	if g.config != nil && g.config.DefaultLanguage != "" {
+		return g.config.DefaultLanguage
+	}
+	return "en"
+}
+
 func (g *Gatekeeper) getLogEntry() *log.Entry {
 	if g.logger == nil {
 		g.logger = log.WithField("handler", "gatekeeper")

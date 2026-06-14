@@ -111,6 +111,9 @@ func (g *Gatekeeper) handleChallenge(ctx context.Context, u *api.Update, chat *a
 	}
 
 	language := g.s.GetLanguage(ctx, targetChat.ID, user)
+	if challenge.CommChatID != challenge.ChatID {
+		language = g.dmLanguage(challenge.UserLanguage, user)
+	}
 	rejectDuration, rejectText, err := g.rejectConfigFromSettings(targetSettings, language, targetChat.Title)
 	if err != nil {
 		entry.WithField("error", err.Error()).Error("failed to build reject config")
