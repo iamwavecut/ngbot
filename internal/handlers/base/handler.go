@@ -3,17 +3,11 @@ package base
 import (
 	"context"
 	"errors"
-	"time"
 
 	api "github.com/OvyFlash/telegram-bot-api"
 	"github.com/iamwavecut/ngbot/internal/bot"
 	"github.com/iamwavecut/ngbot/internal/db"
 	log "github.com/sirupsen/logrus"
-)
-
-const (
-	defaultChallengeTimeout = 5 * time.Minute
-	defaultRejectTimeout    = 10 * time.Minute
 )
 
 // BaseHandler provides common functionality for all handlers
@@ -58,24 +52,7 @@ func (h *BaseHandler) GetOrCreateSettings(ctx context.Context, chat *api.Chat) (
 		return nil, err
 	}
 	if settings == nil {
-		settings = &db.Settings{
-			ID:                                      chat.ID,
-			Enabled:                                 true,
-			GatekeeperEnabled:                       false,
-			GatekeeperCaptchaEnabled:                false,
-			GatekeeperGreetingEnabled:               false,
-			GatekeeperCaptchaOptionsCount:           5,
-			GatekeeperGreetingText:                  "",
-			LLMFirstMessageEnabled:                  true,
-			CommunityVotingEnabled:                  true,
-			CommunityVotingTimeoutOverrideNS:        int64(db.SettingsOverrideInherit),
-			CommunityVotingMinVotersOverride:        db.SettingsOverrideInherit,
-			CommunityVotingMaxVotersOverride:        db.SettingsOverrideInherit,
-			CommunityVotingMinVotersPercentOverride: db.SettingsOverrideInherit,
-			ChallengeTimeout:                        defaultChallengeTimeout.Nanoseconds(),
-			RejectTimeout:                           defaultRejectTimeout.Nanoseconds(),
-			Language:                                "en",
-		}
+		settings = db.DefaultSettings(chat.ID)
 		if err := h.service.SetSettings(ctx, settings); err != nil {
 			return nil, err
 		}

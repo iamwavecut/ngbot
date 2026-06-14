@@ -35,3 +35,12 @@ func TestDefaultSettingsEnableCommunityVoting(t *testing.T) {
 		t.Fatal("expected community voting to be enabled by default")
 	}
 }
+
+func TestDefaultSettingsEnableGatekeeperCaptcha(t *testing.T) {
+	t.Parallel()
+
+	settings := DefaultSettings(42)
+	if !settings.GatekeeperEnabled || !settings.GatekeeperCaptchaEnabled {
+		t.Fatalf("expected gatekeeper captcha to be enabled by default: %#v", settings)
+	}
+}

@@ -13,8 +13,8 @@ func DefaultSettings(chatID int64) *Settings {
 	return &Settings{
 		ID:                                      chatID,
 		Enabled:                                 true,
-		GatekeeperEnabled:                       false,
-		GatekeeperCaptchaEnabled:                false,
+		GatekeeperEnabled:                       true,
+		GatekeeperCaptchaEnabled:                true,
 		GatekeeperGreetingEnabled:               false,
 		GatekeeperCaptchaOptionsCount:           5,
 		GatekeeperGreetingText:                  "",
