@@ -933,6 +933,55 @@ func signedWebAppInitData(t *testing.T, token string, queryID string, userID int
 	return values.Encode()
 }
 
+func TestHandleJoinCaptchaAnswerKeepsPendingWhenApproveFails(t *testing.T) {
+	t.Parallel()
+
+	botAPI := newTestBotAPIWithErrors(t, func(method string, r *http.Request) any {
+		switch method {
+		case testTelegramMethodJoinRequestQuery:
+			return nil
+		default:
+			t.Fatalf("unexpected bot method: %s", method)
+			return nil
+		}
+	}, map[string]int{
+		testTelegramMethodJoinRequestQuery: 502,
+	})
+
+	store := newGatekeeperFlowStore()
+	challenge := newWebAppChallenge(time.Now().Add(time.Minute))
+	challenge.CommChatID = 9001
+	if _, err := store.CreateChallenge(t.Context(), challenge); err != nil {
+		t.Fatalf("create challenge: %v", err)
+	}
+
+	gatekeeper := &Gatekeeper{
+		s:          &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI, language: "en"}, settings: webAppSettings()},
+		store:      store,
+		config:     &config.Config{},
+		banChecker: &testGatekeeperBanChecker{},
+	}
+
+	form := url.Values{
+		"token":     {challenge.WebAppToken},
+		"choice":    {challenge.SuccessUUID},
+		"init_data": {signedWebAppInitData(t, botAPI.Token, challenge.JoinRequestQueryID, challenge.UserID)},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/gatekeeper/join-captcha/answer", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+
+	gatekeeper.handleJoinCaptchaAnswer(rr, req)
+
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502, got %d: %s", rr.Code, rr.Body.String())
+	}
+	got := store.onlyChallenge(t)
+	if got.Status != db.ChallengeStatusPending {
+		t.Fatalf("expected status to remain pending, got %q", got.Status)
+	}
+}
+
 func commandMessage(chat *api.Chat, user *api.User, text string) *api.Message {
 	return &api.Message{
 		MessageID: 1,

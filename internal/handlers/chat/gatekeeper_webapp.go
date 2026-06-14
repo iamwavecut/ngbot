@@ -914,14 +914,16 @@ func (g *Gatekeeper) handleJoinCaptchaAnswer(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	if err := bot.AnswerJoinRequestQuery(r.Context(), g.s.GetBot(), challenge.JoinRequestQueryID, bot.JoinRequestQueryResultApprove); err != nil {
+		g.getLogEntry().WithField("error", err.Error()).Error("failed to approve join request query")
+		writeJoinCaptchaJSON(w, http.StatusBadGateway, joinCaptchaAnswerResponse{Message: copy.CouldNotApprove})
+		return
+	}
 	challenge.Status = db.ChallengeStatusPassedWaitingMemberJoin
 	challenge.ExpiresAt = time.Now().Add(approvedJoinRequestChallengeTTL)
 	if err := g.store.UpdateChallenge(r.Context(), challenge); err != nil {
+		g.getLogEntry().WithField("error", err.Error()).Error("failed to persist passed join request challenge after approve")
 		writeJoinCaptchaJSON(w, http.StatusInternalServerError, joinCaptchaAnswerResponse{Message: copy.CouldNotSaveResult})
-		return
-	}
-	if err := bot.AnswerJoinRequestQuery(r.Context(), g.s.GetBot(), challenge.JoinRequestQueryID, bot.JoinRequestQueryResultApprove); err != nil {
-		writeJoinCaptchaJSON(w, http.StatusBadGateway, joinCaptchaAnswerResponse{Message: copy.CouldNotApprove})
 		return
 	}
 	if err := handlersbase.IncrementDailyStat(r.Context(), g.s.GetDB(), challenge.ChatID, handlersbase.StatChallengePassed); err != nil {
