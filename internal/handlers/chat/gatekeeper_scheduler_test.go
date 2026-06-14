@@ -79,6 +79,7 @@ type testGatekeeperBanChecker struct {
 	checkBanCalls int
 	banned        bool
 	bans          []testGatekeeperBan
+	knownBanned   map[int64]bool
 }
 
 type testGatekeeperBan struct {
@@ -92,8 +93,8 @@ func (c *testGatekeeperBanChecker) CheckBan(context.Context, int64) (bool, error
 	return c.banned, nil
 }
 
-func (c *testGatekeeperBanChecker) IsKnownBanned(int64) bool {
-	return false
+func (c *testGatekeeperBanChecker) IsKnownBanned(userID int64) bool {
+	return c.knownBanned[userID]
 }
 
 func (c *testGatekeeperBanChecker) BanUserWithMessage(_ context.Context, chatID int64, userID int64, messageID int) error {

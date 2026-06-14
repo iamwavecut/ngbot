@@ -922,6 +922,14 @@ func (g *Gatekeeper) handleJoinCaptchaAnswer(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	if g.banChecker != nil && g.banChecker.IsKnownBanned(challenge.UserID) {
+		if err := g.declineWebAppChallenge(r.Context(), challenge); err != nil {
+			g.getLogEntry().WithField("error", err.Error()).Error("failed to decline banned web app challenge")
+		}
+		writeJoinCaptchaJSON(w, http.StatusForbidden, joinCaptchaAnswerResponse{OK: false, Done: true, Message: copy.Blocked})
+		return
+	}
+
 	if err := bot.AnswerJoinRequestQuery(r.Context(), g.s.GetBot(), challenge.JoinRequestQueryID, bot.JoinRequestQueryResultApprove); err != nil {
 		g.getLogEntry().WithField("error", err.Error()).Error("failed to approve join request query")
 		writeJoinCaptchaJSON(w, http.StatusBadGateway, joinCaptchaAnswerResponse{Message: copy.CouldNotApprove})

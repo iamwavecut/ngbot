@@ -1025,6 +1025,73 @@ func TestHandleJoinCaptchaAnswerKeepsPendingWhenApproveFails(t *testing.T) {
 	}
 }
 
+func TestHandleJoinCaptchaAnswerDeclinesKnownBannedUser(t *testing.T) {
+	t.Parallel()
+
+	recorder := &botRequestRecorder{}
+	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
+		recorder.record(t, method, r)
+		switch method {
+		case testTelegramMethodJoinRequestQuery:
+			return true
+		default:
+			t.Fatalf("unexpected bot method: %s", method)
+			return nil
+		}
+	})
+
+	store := newGatekeeperFlowStore()
+	challenge := newWebAppChallenge(time.Now().Add(3 * time.Minute))
+	challenge.CommChatID = 9001
+	if _, err := store.CreateChallenge(t.Context(), challenge); err != nil {
+		t.Fatalf("create challenge: %v", err)
+	}
+
+	banChecker := &testGatekeeperBanChecker{
+		knownBanned: map[int64]bool{challenge.UserID: true},
+	}
+	gatekeeper := &Gatekeeper{
+		s:          &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI, language: "en"}, settings: webAppSettings()},
+		store:      store,
+		config:     &config.Config{},
+		banChecker: banChecker,
+	}
+
+	form := url.Values{
+		"token":     {challenge.WebAppToken},
+		"choice":    {challenge.SuccessUUID},
+		"init_data": {signedWebAppInitData(t, botAPI.Token, challenge.JoinRequestQueryID, challenge.UserID)},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/gatekeeper/join-captcha/answer", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+
+	gatekeeper.handleJoinCaptchaAnswer(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for known-banned user, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body["ok"] != false || body["done"] != true {
+		t.Fatalf("expected terminal blocked response, got %#v", body)
+	}
+
+	answers := recorder.byMethod(testTelegramMethodJoinRequestQuery)
+	if len(answers) != 1 {
+		t.Fatalf("expected one query answer, got %d", len(answers))
+	}
+	if got := answers[0].form.Get("result"); got != "decline" {
+		t.Fatalf("expected decline result for banned user, got %q", got)
+	}
+
+	if len(store.challenges) != 0 {
+		t.Fatalf("expected challenge to be deleted after ban decline, got %d rows", len(store.challenges))
+	}
+}
+
 func commandMessage(chat *api.Chat, user *api.User, text string) *api.Message {
 	return &api.Message{
 		MessageID: 1,
