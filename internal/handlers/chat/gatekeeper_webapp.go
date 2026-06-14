@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	stderrors "errors"
 	"fmt"
 	"html/template"
 	mathrand "math/rand"
@@ -1018,7 +1019,7 @@ func (g *Gatekeeper) declineWebAppChallenge(ctx context.Context, challenge *db.C
 		result = bot.AnswerJoinRequestQuery(ctx, g.s.GetBot(), challenge.JoinRequestQueryID, bot.JoinRequestQueryResultDecline)
 	}
 	if err := g.store.DeleteChallenge(ctx, challenge.CommChatID, challenge.UserID, challenge.ChatID); err != nil {
-		result = errors.WithMessage(err, "delete declined web app challenge")
+		result = stderrors.Join(result, errors.WithMessage(err, "delete declined web app challenge"))
 	}
 	return result
 }
