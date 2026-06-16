@@ -67,5 +67,5 @@ func (f *NbFormatter) Format(entry *log.Entry) ([]byte, error) {
 	output += fmt.Sprintf(" \x1b[%dm%s\x1b[0m=\x1b[%dm\"%s\"\x1b[0m", cyan, "msg", lightGreen, entry.Message)
 	output = strings.Replace(output, "\r", "\\r", -1)
 	output = strings.Replace(output, "\n", "\\n", -1) + "\n"
-	return []byte(output), nil
+	return []byte(Redact(output)), nil
 }

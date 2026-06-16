@@ -129,6 +129,9 @@ func main() {
 		os.Exit(1)
 	}
 
+	config.RegisterSecret(cfg.TelegramAPIToken)
+	config.RegisterSecret(cfg.LLM.APIKey)
+
 	log.SetFormatter(&config.NbFormatter{})
 	log.SetOutput(os.Stdout)
 	log.SetLevel(log.Level(cfg.LogLevel))
