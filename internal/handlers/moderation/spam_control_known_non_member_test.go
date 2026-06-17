@@ -485,7 +485,15 @@ func TestResolveCaseSpamClearsKnownNonMember(t *testing.T) {
 	}
 }
 
-func TestResolveReportedCaseSpamDeletesTargetAndReportMessages(t *testing.T) {
+func TestVoteBanReportMessageRetentionIsTenMinutes(t *testing.T) {
+	t.Parallel()
+
+	if voteBanReportMessageRetention != 10*time.Minute {
+		t.Fatalf("voteBanReportMessageRetention = %v, want 10m", voteBanReportMessageRetention)
+	}
+}
+
+func TestResolveReportedCaseSpamDeletesTargetAndKeepsReportMessage(t *testing.T) {
 	t.Parallel()
 
 	var deletedMessageIDs []string
@@ -539,15 +547,15 @@ func TestResolveReportedCaseSpamDeletesTargetAndReportMessages(t *testing.T) {
 		t.Fatalf("ResolveCase returned error: %v", err)
 	}
 
-	if len(deletedMessageIDs) != 2 || deletedMessageIDs[0] != "40" || deletedMessageIDs[1] != "50" {
-		t.Fatalf("expected target and report command deletes, got %#v", deletedMessageIDs)
+	if len(deletedMessageIDs) != 1 || deletedMessageIDs[0] != "40" {
+		t.Fatalf("expected only target message delete, got %#v", deletedMessageIDs)
 	}
 	if len(store.reportMessages) != 0 {
 		t.Fatalf("expected report message artifacts to be cleared, got %#v", store.reportMessages)
 	}
 }
 
-func TestResolveReportedCaseFalsePositiveKeepsTargetAndDeletesReportMessages(t *testing.T) {
+func TestResolveReportedCaseFalsePositiveKeepsTargetAndReportMessage(t *testing.T) {
 	t.Parallel()
 
 	var deletedMessageIDs []string
@@ -599,8 +607,8 @@ func TestResolveReportedCaseFalsePositiveKeepsTargetAndDeletesReportMessages(t *
 		t.Fatalf("ResolveCase returned error: %v", err)
 	}
 
-	if len(deletedMessageIDs) != 1 || deletedMessageIDs[0] != "50" {
-		t.Fatalf("expected only report command delete, got %#v", deletedMessageIDs)
+	if len(deletedMessageIDs) != 0 {
+		t.Fatalf("expected no immediate message deletes, got %#v", deletedMessageIDs)
 	}
 	if banService.unmuteCalls != 0 {
 		t.Fatalf("expected report-first false positive not to unmute, got %d unmute calls", banService.unmuteCalls)

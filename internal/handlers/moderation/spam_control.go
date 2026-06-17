@@ -39,11 +39,12 @@ type votingPolicy struct {
 }
 
 const (
-	spamCaseStatusPending       = "pending"
-	spamCaseStatusSpam          = "spam"
-	spamCaseStatusFalsePositive = "false_positive"
-	errChatAdminRequired        = "CHAT_ADMIN_REQUIRED"
-	maxReplyQuoteRunes          = 1024
+	spamCaseStatusPending         = "pending"
+	spamCaseStatusSpam            = "spam"
+	spamCaseStatusFalsePositive   = "false_positive"
+	errChatAdminRequired          = "CHAT_ADMIN_REQUIRED"
+	maxReplyQuoteRunes            = 1024
+	voteBanReportMessageRetention = 10 * time.Minute
 )
 
 var (
@@ -205,6 +206,8 @@ func (sc *SpamControl) ProcessReportedMessage(ctx context.Context, targetMsg *ap
 		CreatedAt: time.Now(),
 	}); err != nil {
 		log.WithField("error", err.Error()).Error("failed to record report message")
+	} else {
+		sc.DeleteMessageAfter(reportMsg.Chat.ID, reportMsg.MessageID, voteBanReportMessageRetention)
 	}
 
 	if spamCase.NotificationMessageID == 0 && spamCase.ChannelPostID == 0 {
@@ -691,14 +694,6 @@ func (sc *SpamControl) cleanupReportMessages(ctx context.Context, caseID int64) 
 	if err != nil {
 		log.WithField("error", err.Error()).WithField("case_id", caseID).Error("failed to get spam case report messages")
 		return 0
-	}
-	for _, message := range messages {
-		if message == nil {
-			continue
-		}
-		if err := bot.DeleteChatMessage(ctx, sc.s.GetBot(), message.ChatID, message.MessageID); err != nil {
-			log.WithField("error", err.Error()).WithField("case_id", caseID).WithField("chat_id", message.ChatID).WithField("message_id", message.MessageID).Error("failed to delete spam report message")
-		}
 	}
 	if err := sc.store.DeleteSpamCaseReportMessages(ctx, caseID); err != nil {
 		log.WithField("error", err.Error()).WithField("case_id", caseID).Error("failed to delete spam case report message artifacts")

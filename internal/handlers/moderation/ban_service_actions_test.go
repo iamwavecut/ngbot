@@ -93,3 +93,31 @@ func TestUnmuteUserSendsExplicitAllowPermissions(t *testing.T) {
 		t.Fatalf("expected all send permissions to be true, got %#v", permissions)
 	}
 }
+
+func TestBanUserWithMessageRevokesMessages(t *testing.T) {
+	t.Parallel()
+
+	botAPI := newModerationTestBotAPI(t, func(method string, r *http.Request) any {
+		if method != testTelegramMethodBanChatMember {
+			t.Fatalf("unexpected bot method: %s", method)
+		}
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("parse form: %v", err)
+		}
+		if got := r.Form.Get("chat_id"); got != "-100" {
+			t.Fatalf("chat_id = %q, want -100", got)
+		}
+		if got := r.Form.Get("user_id"); got != "200" {
+			t.Fatalf("user_id = %q, want 200", got)
+		}
+		if got := r.Form.Get("revoke_messages"); got != "true" {
+			t.Fatalf("revoke_messages = %q, want true", got)
+		}
+		return true
+	})
+
+	service := &defaultBanService{bot: botAPI, db: &testBanStore{}}
+	if err := service.BanUserWithMessage(context.Background(), -100, 200, 50); err != nil {
+		t.Fatalf("ban user: %v", err)
+	}
+}
