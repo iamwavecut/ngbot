@@ -220,6 +220,64 @@ func TestChatCompletionFallsBackWhenCachedContentCannotBeUsed(t *testing.T) {
 	}
 }
 
+func TestChatCompletionFallsBackWhenCachedResponseIsEmpty(t *testing.T) {
+	t.Parallel()
+
+	segments, err := splitPromptSegments([]llm.ChatCompletionMessage{
+		{Role: llm.RoleSystem, Content: "system", Cacheable: true},
+		{Role: llm.RoleUser, Content: "static-user", Cacheable: true},
+		{Role: llm.RoleAssistant, Content: "static-answer", Cacheable: true},
+		{Role: llm.RoleUser, Content: "candidate"},
+	})
+	if err != nil {
+		t.Fatalf("splitPromptSegments returned error: %v", err)
+	}
+	fingerprint := cacheFingerprint("gemini-2.5-flash-lite", segments.systemInstruction, segments.cacheablePrefix)
+
+	callCount := 0
+	api := &API{
+		model:      "gemini-2.5-flash-lite",
+		logger:     log.New().WithField("test", "gemini"),
+		listCaches: listedCaches(&genai.CachedContent{Name: "cachedContents/existing", DisplayName: cacheDisplayPrefix + fingerprint, Model: "gemini-2.5-flash-lite", ExpireTime: time.Now().Add(time.Hour)}),
+		generateContent: func(_ context.Context, _ string, contents []*genai.Content, config *genai.GenerateContentConfig) (*genai.GenerateContentResponse, error) {
+			callCount++
+			if config.CachedContent != "" {
+				if len(contents) != 1 || contentText(contents[0]) != "candidate" {
+					t.Fatalf("expected cached request to include only candidate content, got %#v", contents)
+				}
+				return &genai.GenerateContentResponse{}, nil
+			}
+			if config.SystemInstruction == nil || contentText(config.SystemInstruction) != "system" {
+				t.Fatalf("expected uncached fallback to restore system instruction, got %#v", config.SystemInstruction)
+			}
+			if len(contents) != 3 {
+				t.Fatalf("expected uncached fallback to send full contents, got %d", len(contents))
+			}
+			return &genai.GenerateContentResponse{
+				Candidates: []*genai.Candidate{{
+					Content: genai.NewContentFromText("0", genai.RoleModel),
+				}},
+			}, nil
+		},
+	}
+
+	resp, err := api.ChatCompletion(context.Background(), []llm.ChatCompletionMessage{
+		{Role: llm.RoleSystem, Content: "system", Cacheable: true},
+		{Role: llm.RoleUser, Content: "static-user", Cacheable: true},
+		{Role: llm.RoleAssistant, Content: "static-answer", Cacheable: true},
+		{Role: llm.RoleUser, Content: "candidate"},
+	})
+	if err != nil {
+		t.Fatalf("ChatCompletion returned error: %v", err)
+	}
+	if callCount != 2 {
+		t.Fatalf("expected two GenerateContent calls, got %d", callCount)
+	}
+	if len(resp.Choices) != 1 || resp.Choices[0].Message.Content != "0" {
+		t.Fatalf("unexpected response: %#v", resp)
+	}
+}
+
 func listedCaches(caches ...*genai.CachedContent) listCachesFunc {
 	return func(context.Context) iter.Seq2[*genai.CachedContent, error] {
 		return func(yield func(*genai.CachedContent, error) bool) {

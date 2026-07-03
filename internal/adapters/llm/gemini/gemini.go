@@ -106,16 +106,24 @@ func (g *API) ChatCompletion(ctx context.Context, messages []llm.ChatCompletionM
 			})
 			if err == nil {
 				g.logUsageMetadata(resp)
-				return toChatCompletionResponse(resp), nil
+				if hasTextResponse(resp) {
+					return toChatCompletionResponse(resp), nil
+				}
+				g.logger.WithFields(log.Fields{
+					"cache_name": cache.Name,
+					"display":    cache.DisplayName,
+				}).Warn("Gemini cached response was empty, retrying without cache")
 			}
-			if !isCacheUseError(err) {
+			if err != nil && !isCacheUseError(err) {
 				return llm.ChatCompletionResponse{}, fmt.Errorf("generate gemini content with cache: %w", err)
 			}
-			g.logger.WithFields(log.Fields{
-				"cache_name": cache.Name,
-				"display":    cache.DisplayName,
-				"error":      err.Error(),
-			}).Warn("Gemini explicit cache could not be used, retrying without cache")
+			if err != nil {
+				g.logger.WithFields(log.Fields{
+					"cache_name": cache.Name,
+					"display":    cache.DisplayName,
+					"error":      err.Error(),
+				}).Warn("Gemini explicit cache could not be used, retrying without cache")
+			}
 		}
 	}
 
@@ -316,6 +324,10 @@ func toChatCompletionResponse(resp *genai.GenerateContentResponse) llm.ChatCompl
 			},
 		}},
 	}
+}
+
+func hasTextResponse(resp *genai.GenerateContentResponse) bool {
+	return resp != nil && strings.TrimSpace(resp.Text()) != ""
 }
 
 func (g *API) logUsageMetadata(resp *genai.GenerateContentResponse) {
