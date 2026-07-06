@@ -210,8 +210,11 @@ func (r *Reactor) validateUpdate(u *api.Update, chat *api.Chat, user *api.User) 
 	}
 
 	if u.Message != nil {
-		if chat == nil || user == nil {
-			return errors.New("nil chat or user")
+		if chat == nil {
+			return errors.New("nil chat")
+		}
+		if user == nil && u.Message.SenderChat == nil {
+			return errors.New("nil user")
 		}
 		return nil
 	}

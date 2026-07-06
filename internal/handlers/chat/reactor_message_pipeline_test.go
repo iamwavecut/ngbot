@@ -455,6 +455,163 @@ func TestHandleMessageNotSpammerOverrideBypassesBanAndLLM(t *testing.T) {
 	}
 }
 
+func TestHandleMessageChatAdministratorBypassesBanAndLLM(t *testing.T) {
+	t.Parallel()
+
+	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("parse form: %v", err)
+		}
+
+		switch method {
+		case testTelegramMethodGetChatMember:
+			if got := r.Form.Get("user_id"); got != "200" {
+				t.Fatalf("expected admin member lookup for user 200, got %q", got)
+			}
+			return testChatMemberResponse("administrator", false, false, false)
+		default:
+			t.Fatalf("unexpected bot method: %s", method)
+			return nil
+		}
+	})
+
+	service := &testBotService{botAPI: botAPI}
+	detector := &testSpamDetector{result: boolPtr(true)}
+	banService := &testBanService{}
+	processSpamCalls := 0
+	r := &Reactor{
+		s:            service,
+		store:        &testReactorStore{},
+		spamDetector: detector,
+		banService:   banService,
+		processSpam: func(context.Context, *api.Message, *api.Chat, string) (*moderation.ProcessingResult, error) {
+			processSpamCalls++
+			return &moderation.ProcessingResult{MessageDeleted: true, UserBanned: true}, nil
+		},
+		processBanned: func(context.Context, *api.Message, *api.Chat, string) (*moderation.ProcessingResult, error) {
+			t.Fatal("processBanned should not be called")
+			return nil, nil
+		},
+		lastResults: make(map[int64]*MessageProcessingResult),
+	}
+
+	chat := &api.Chat{ID: 100, Type: "supergroup"}
+	user := &api.User{ID: 200, FirstName: "Admin"}
+	msg := &api.Message{MessageID: 14, Chat: *chat, From: user, Text: "реклама от админа"}
+	settings := &db.Settings{LLMFirstMessageEnabled: true, CommunityVotingEnabled: true}
+
+	if err := r.handleMessage(context.Background(), msg, chat, user, settings); err != nil {
+		t.Fatalf("handleMessage returned error: %v", err)
+	}
+
+	if detector.calls != 0 {
+		t.Fatalf("expected LLM detector not to be called, got %d calls", detector.calls)
+	}
+	if banService.checkBanCalls != 0 {
+		t.Fatalf("expected ban check not to be called, got %d calls", banService.checkBanCalls)
+	}
+	if processSpamCalls != 0 {
+		t.Fatalf("expected processSpam not to be called, got %d calls", processSpamCalls)
+	}
+
+	result := r.GetLastProcessingResult(int64(msg.MessageID))
+	if result == nil {
+		t.Fatal("expected processing result")
+	}
+	if result.SkipReason != "User is chat administrator" {
+		t.Fatalf("unexpected skip reason: %q", result.SkipReason)
+	}
+}
+
+func TestHandleMessageLinkedChannelSenderBypassesSpamPipeline(t *testing.T) {
+	t.Parallel()
+
+	getChatCalls := 0
+	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("parse form: %v", err)
+		}
+
+		switch method {
+		case testTelegramMethodGetChat:
+			getChatCalls++
+			if got := r.Form.Get("chat_id"); got != "-100" {
+				t.Fatalf("expected linked group lookup, got chat_id %q", got)
+			}
+			return map[string]any{
+				"id":             -100,
+				"type":           "supergroup",
+				"title":          "Discussion",
+				"linked_chat_id": -200,
+			}
+		default:
+			t.Fatalf("unexpected bot method: %s", method)
+			return nil
+		}
+	})
+
+	service := &testBotService{botAPI: botAPI}
+	detector := &testSpamDetector{result: boolPtr(true)}
+	banService := &testBanService{checkBan: true}
+	processSpamCalls := 0
+	r := &Reactor{
+		s:            service,
+		store:        &testReactorStore{},
+		spamDetector: detector,
+		banService:   banService,
+		processSpam: func(context.Context, *api.Message, *api.Chat, string) (*moderation.ProcessingResult, error) {
+			processSpamCalls++
+			return &moderation.ProcessingResult{MessageDeleted: true, UserBanned: true}, nil
+		},
+		processBanned: func(context.Context, *api.Message, *api.Chat, string) (*moderation.ProcessingResult, error) {
+			t.Fatal("processBanned should not be called")
+			return nil, nil
+		},
+		lastResults: make(map[int64]*MessageProcessingResult),
+	}
+
+	chat := &api.Chat{ID: -100, Type: "supergroup"}
+	msg := &api.Message{
+		MessageID: 15,
+		Chat:      *chat,
+		SenderChat: &api.Chat{
+			ID:    -200,
+			Type:  "channel",
+			Title: "Linked Channel",
+		},
+		Text: "рекламный пост связанного канала",
+	}
+
+	proceed, err := r.Handle(context.Background(), &api.Update{Message: msg}, chat, nil)
+	if err != nil {
+		t.Fatalf("Handle returned error: %v", err)
+	}
+	if !proceed {
+		t.Fatal("expected reactor to proceed")
+	}
+
+	if getChatCalls != 1 {
+		t.Fatalf("expected one getChat call, got %d", getChatCalls)
+	}
+	if detector.calls != 0 {
+		t.Fatalf("expected LLM detector not to be called, got %d calls", detector.calls)
+	}
+	if banService.checkBanCalls != 0 {
+		t.Fatalf("expected ban check not to be called, got %d calls", banService.checkBanCalls)
+	}
+	if processSpamCalls != 0 {
+		t.Fatalf("expected processSpam not to be called, got %d calls", processSpamCalls)
+	}
+
+	result := r.GetLastProcessingResult(int64(msg.MessageID))
+	if result == nil {
+		t.Fatal("expected processing result")
+	}
+	if result.SkipReason != "Linked channel sender" {
+		t.Fatalf("unexpected skip reason: %q", result.SkipReason)
+	}
+}
+
 func TestHandleMessageKnownNonMemberBypassesFirstMessageChecks(t *testing.T) {
 	t.Parallel()
 

@@ -29,6 +29,9 @@ type firstMessageExternalQuoteHeuristic struct {
 const (
 	messageSkipReasonAlreadyMember       = "User is already a member"
 	messageSkipReasonRememberedNonMember = "User is a remembered non-member"
+	messageSkipReasonChatAdministrator   = "User is chat administrator"
+	messageSkipReasonLinkedChannelSender = "Linked channel sender"
+	messageSkipReasonChatSender          = "Chat sender"
 )
 
 func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api.Chat, user *api.User, settings *db.Settings) error {
@@ -48,12 +51,16 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 	}
 	r.storeLastResult(int64(msg.MessageID), result)
 
-	if isLinkedChannelAutoForward(msg) {
+	if skipReason, trusted := r.trustedSenderChat(msg, chat, entry); trusted {
 		result.Stage = StageSpamCheck
 		result.Skipped = true
-		result.SkipReason = "Linked channel auto-forward"
-		entry.WithField("sender_chat_id", msg.SenderChat.ID).Debug("Skipping linked channel auto-forward from spam pipeline")
+		result.SkipReason = skipReason
+		entry.WithField("sender_chat_id", msg.SenderChat.ID).Debug("Skipping trusted sender chat from spam pipeline")
 		return nil
+	}
+
+	if user == nil {
+		return errors.New("nil message user")
 	}
 
 	isMember, err := r.s.IsMember(ctx, chat.ID, user.ID)
@@ -66,6 +73,12 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 	if isMember {
 		result.Skipped = true
 		result.SkipReason = messageSkipReasonAlreadyMember
+		return nil
+	}
+
+	if r.isChatAdministrator(chat.ID, user.ID, entry) {
+		result.Skipped = true
+		result.SkipReason = messageSkipReasonChatAdministrator
 		return nil
 	}
 
@@ -263,17 +276,42 @@ func detectFirstMessageExternalQuoteHeuristic(msg *api.Message) firstMessageExte
 	return result
 }
 
-func isLinkedChannelAutoForward(msg *api.Message) bool {
-	if msg == nil {
+func (r *Reactor) trustedSenderChat(msg *api.Message, chat *api.Chat, entry *log.Entry) (string, bool) {
+	if msg == nil || chat == nil || msg.SenderChat == nil {
+		return "", false
+	}
+	if msg.SenderChat.ID == chat.ID {
+		return messageSkipReasonChatSender, true
+	}
+	if !msg.SenderChat.IsChannel() {
+		return "", false
+	}
+	if msg.IsAutomaticForward {
+		return messageSkipReasonLinkedChannelSender, true
+	}
+
+	fullChat, err := r.s.GetBot().GetChat(api.ChatInfoConfig{
+		ChatConfig: api.ChatConfig{ChatID: chat.ID},
+	})
+	if err != nil {
+		entry.WithField("error", err.Error()).Warn("failed to verify linked channel sender")
+		return "", false
+	}
+	return messageSkipReasonLinkedChannelSender, fullChat.LinkedChatID == msg.SenderChat.ID
+}
+
+func (r *Reactor) isChatAdministrator(chatID int64, userID int64, entry *log.Entry) bool {
+	member, err := r.s.GetBot().GetChatMember(api.GetChatMemberConfig{
+		ChatConfigWithUser: api.ChatConfigWithUser{
+			ChatConfig: api.ChatConfig{ChatID: chatID},
+			UserID:     userID,
+		},
+	})
+	if err != nil {
+		entry.WithField("error", err.Error()).Warn("failed to verify message sender administrator status")
 		return false
 	}
-	if !msg.IsAutomaticForward {
-		return false
-	}
-	if msg.SenderChat == nil {
-		return false
-	}
-	return msg.SenderChat.IsChannel()
+	return member.IsCreator() || member.IsAdministrator()
 }
 
 func (r *Reactor) processDetectedSpam(ctx context.Context, msg *api.Message, chat *api.Chat, language string, settings *db.Settings) (*moderation.ProcessingResult, error) {

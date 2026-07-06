@@ -3,7 +3,7 @@ module github.com/iamwavecut/ngbot
 go 1.25.8
 
 require (
-	github.com/OvyFlash/telegram-bot-api v0.0.0-20260612124758-0bddfd1457c9
+	github.com/OvyFlash/telegram-bot-api v0.0.0-20260706090024-ac50f6fbf49c
 	github.com/jmoiron/sqlx v1.4.0
 	github.com/mitchellh/go-homedir v1.1.0
 	github.com/pborman/uuid v1.2.1
@@ -11,9 +11,9 @@ require (
 	github.com/rubenv/sql-migrate v1.8.1
 	github.com/sirupsen/logrus v1.9.4
 	golang.org/x/sync v0.21.0
-	google.golang.org/genai v1.60.0
+	google.golang.org/genai v1.62.0
 	gopkg.in/yaml.v2 v2.4.0
-	modernc.org/sqlite v1.52.0
+	modernc.org/sqlite v1.53.0
 )
 
 require (
@@ -46,7 +46,7 @@ require (
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260610212136-7ab31c22f7ad // indirect
 	google.golang.org/grpc v1.81.1 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
-	modernc.org/libc v1.73.1 // indirect
+	modernc.org/libc v1.73.4 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
