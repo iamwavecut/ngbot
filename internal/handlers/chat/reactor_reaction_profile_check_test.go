@@ -16,7 +16,7 @@ func TestHandleMessageReactionModeratesUnknownUserProfileSpam(t *testing.T) {
 
 	chat := &api.Chat{ID: -100123, Type: testChatTypeSupergroup, Title: testGroupTitle}
 	settings := db.DefaultSettings(chat.ID)
-	user := &api.User{ID: 777, FirstName: testFirstNameBad, UserName: "badworker"}
+	user := &api.User{ID: 777, FirstName: testFirstNameBad, UserName: testBadUsername}
 	detector := &testSpamDetector{result: boolPtr(true)}
 
 	var deletedAllUserID string
@@ -37,13 +37,13 @@ func TestHandleMessageReactionModeratesUnknownUserProfileSpam(t *testing.T) {
 				"id":              777,
 				testJSONType:      telegramChatTypePrivate,
 				testJSONFirstName: testFirstNameBad,
-				"username":        "badworker",
+				logFieldUsername:  testBadUsername,
 				"bio":             "Удаленная работа от 500 долларов в день, подробности в личку",
 				"personal_chat": map[string]any{
-					"id":          -100999,
-					testJSONType:  testChatTypeChannel,
-					testJSONTitle: "Fast income",
-					"username":    "fast_income_bot",
+					"id":             -100999,
+					testJSONType:     testChatTypeChannel,
+					testJSONTitle:    "Fast income",
+					logFieldUsername: "fast_income_bot",
 				},
 			}
 		case "getUserPersonalChatMessages":
@@ -137,7 +137,7 @@ func TestHandleMessageReactionRemembersUnknownUserProfileNotSpam(t *testing.T) {
 				"id":              777,
 				testJSONType:      telegramChatTypePrivate,
 				testJSONFirstName: "Clean",
-				"username":        "cleanworker",
+				logFieldUsername:  "cleanworker",
 				"bio":             "Local neighbor and regular reader",
 			}
 		case "getUserPersonalChatMessages":
@@ -306,7 +306,7 @@ func TestHandleMessageReactionModeratesActorChatProfileSpam(t *testing.T) {
 				"id":                -100777,
 				testJSONType:        testChatTypeChannel,
 				testJSONTitle:       testSpamChannelTitle,
-				"username":          "spam_channel",
+				logFieldUsername:    "spam_channel",
 				testJSONDescription: "Крипто-казино, бонусы, быстрый заработок",
 				"pinned_message": map[string]any{
 					logFieldMessageID: 10,
@@ -376,7 +376,7 @@ func TestHandleMessageReactionSkipsWhenReactionProfileCheckDisabled(t *testing.T
 	chat := &api.Chat{ID: -100123, Type: testChatTypeSupergroup, Title: testGroupTitle}
 	settings := db.DefaultSettings(chat.ID)
 	settings.ReactionProfileCheckEnabled = false
-	user := &api.User{ID: 777, FirstName: testFirstNameBad, UserName: "badworker"}
+	user := &api.User{ID: 777, FirstName: testFirstNameBad, UserName: testBadUsername}
 	detector := &testSpamDetector{result: boolPtr(true)}
 
 	reactor := &Reactor{
@@ -413,7 +413,7 @@ func TestHandleMessageReactionSkipsReactionRemoval(t *testing.T) {
 
 	chat := &api.Chat{ID: -100123, Type: testChatTypeSupergroup, Title: testGroupTitle}
 	settings := db.DefaultSettings(chat.ID)
-	user := &api.User{ID: 777, FirstName: testFirstNameBad, UserName: "badworker"}
+	user := &api.User{ID: 777, FirstName: testFirstNameBad, UserName: testBadUsername}
 	detector := &testSpamDetector{result: boolPtr(true)}
 
 	reactor := &Reactor{
