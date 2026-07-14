@@ -407,7 +407,7 @@ func newChatMemberJoinUpdate(chat api.Chat, joinedUser api.User, actor api.User)
 func TestDisabledGatekeeperChatMemberUpdateDoesNotTouchJoinRequest(t *testing.T) {
 	t.Parallel()
 
-	user := api.User{ID: 200, FirstName: "User"}
+	user := api.User{ID: 200, FirstName: testFirstNameUser}
 	chat := api.Chat{ID: -100, Type: "supergroup", Title: "Group"}
 	gatekeeper := &Gatekeeper{
 		s:          &gatekeeperTestService{testBotService: testBotService{language: "en"}, settings: &db.Settings{GatekeeperEnabled: false}},
@@ -429,8 +429,8 @@ func TestBannedChatJoinRequestDeclinesAndBansBeforeCaptcha(t *testing.T) {
 	t.Parallel()
 
 	recorder := &botRequestRecorder{}
-	groupChat := api.Chat{ID: -100123, Type: "supergroup", Title: "Wave Club", UserName: "waveclub"}
-	user := api.User{ID: 42, FirstName: "Neo"}
+	groupChat := api.Chat{ID: -100123, Type: "supergroup", Title: testGroupTitle, UserName: "waveclub"}
+	user := api.User{ID: 42, FirstName: testFirstNameNeo}
 	store := newGatekeeperFlowStore()
 
 	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
@@ -449,7 +449,7 @@ func TestBannedChatJoinRequestDeclinesAndBansBeforeCaptcha(t *testing.T) {
 		GatekeeperEnabled:             true,
 		GatekeeperCaptchaEnabled:      true,
 		GatekeeperGreetingEnabled:     true,
-		GatekeeperGreetingText:        "GREETING {user} to {chat_title}",
+		GatekeeperGreetingText:        testGreetingTemplate,
 		GatekeeperCaptchaOptionsCount: 3,
 		ChallengeTimeout:              (3 * time.Minute).Nanoseconds(),
 	}
@@ -497,8 +497,8 @@ func TestBannedChatJoinRequestQueryDeclinesAndBansBeforeCaptcha(t *testing.T) {
 	t.Parallel()
 
 	recorder := &botRequestRecorder{}
-	groupChat := api.Chat{ID: -100123, Type: "supergroup", Title: "Wave Club", UserName: "waveclub"}
-	user := api.User{ID: 42, FirstName: "Neo"}
+	groupChat := api.Chat{ID: -100123, Type: "supergroup", Title: testGroupTitle, UserName: "waveclub"}
+	user := api.User{ID: 42, FirstName: testFirstNameNeo}
 	store := newGatekeeperFlowStore()
 
 	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
@@ -517,7 +517,7 @@ func TestBannedChatJoinRequestQueryDeclinesAndBansBeforeCaptcha(t *testing.T) {
 		GatekeeperEnabled:             true,
 		GatekeeperCaptchaEnabled:      true,
 		GatekeeperGreetingEnabled:     true,
-		GatekeeperGreetingText:        "GREETING {user} to {chat_title}",
+		GatekeeperGreetingText:        testGreetingTemplate,
 		GatekeeperCaptchaOptionsCount: 3,
 		ChallengeTimeout:              (3 * time.Minute).Nanoseconds(),
 	}
@@ -549,7 +549,7 @@ func TestBannedChatJoinRequestQueryDeclinesAndBansBeforeCaptcha(t *testing.T) {
 	if queryAnswers[0].form.Get("chat_join_request_query_id") != "join-query" {
 		t.Fatalf("unexpected query id: %q", queryAnswers[0].form.Get("chat_join_request_query_id"))
 	}
-	if queryAnswers[0].form.Get("result") != "decline" {
+	if queryAnswers[0].form.Get("result") != testJoinRequestDecline {
 		t.Fatalf("expected decline result, got %q", queryAnswers[0].form.Get("result"))
 	}
 	if len(recorder.byMethod(testTelegramMethodDeclineJoinRequest)) != 0 {
@@ -567,8 +567,8 @@ func TestJoinRequestCaptchaUsesWebAppQueryWhenAvailable(t *testing.T) {
 	t.Parallel()
 
 	recorder := &botRequestRecorder{}
-	groupChat := api.Chat{ID: -100123, Type: "supergroup", Title: "Wave Club", UserName: "waveclub"}
-	user := api.User{ID: 42, FirstName: "Neo"}
+	groupChat := api.Chat{ID: -100123, Type: "supergroup", Title: testGroupTitle, UserName: "waveclub"}
+	user := api.User{ID: 42, FirstName: testFirstNameNeo}
 	store := newGatekeeperFlowStore()
 
 	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
@@ -587,7 +587,7 @@ func TestJoinRequestCaptchaUsesWebAppQueryWhenAvailable(t *testing.T) {
 		GatekeeperEnabled:             true,
 		GatekeeperCaptchaEnabled:      true,
 		GatekeeperGreetingEnabled:     true,
-		GatekeeperGreetingText:        "GREETING {user} to {chat_title}",
+		GatekeeperGreetingText:        testGreetingTemplate,
 		GatekeeperCaptchaOptionsCount: 3,
 		ChallengeTimeout:              (3 * time.Minute).Nanoseconds(),
 	}
@@ -595,7 +595,7 @@ func TestJoinRequestCaptchaUsesWebAppQueryWhenAvailable(t *testing.T) {
 		bot:        botAPI,
 		s:          &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI, language: "en"}, settings: settings},
 		store:      store,
-		config:     &config.Config{GatekeeperWebApp: config.GatekeeperWebApp{PublicURL: "https://guard.example"}},
+		config:     &config.Config{GatekeeperWebApp: config.GatekeeperWebApp{PublicURL: testWebAppURL}},
 		banChecker: &testGatekeeperBanChecker{},
 	}
 
@@ -651,8 +651,8 @@ func TestBannedChatMemberSkipsCaptchaAndDeletesKnownJoinArtifacts(t *testing.T) 
 	t.Parallel()
 
 	recorder := &botRequestRecorder{}
-	groupChat := api.Chat{ID: -100123, Type: "supergroup", Title: "Wave Club", UserName: "waveclub"}
-	user := api.User{ID: 42, FirstName: "Neo"}
+	groupChat := api.Chat{ID: -100123, Type: "supergroup", Title: testGroupTitle, UserName: "waveclub"}
+	user := api.User{ID: 42, FirstName: testFirstNameNeo}
 	store := newGatekeeperFlowStore()
 	store.joiners[store.joinerKey(groupChat.ID, user.ID)] = &db.RecentJoiner{
 		ID:            1,
@@ -689,7 +689,7 @@ func TestBannedChatMemberSkipsCaptchaAndDeletesKnownJoinArtifacts(t *testing.T) 
 		GatekeeperEnabled:             true,
 		GatekeeperCaptchaEnabled:      true,
 		GatekeeperGreetingEnabled:     true,
-		GatekeeperGreetingText:        "GREETING {user} to {chat_title}",
+		GatekeeperGreetingText:        testGreetingTemplate,
 		GatekeeperCaptchaOptionsCount: 3,
 		ChallengeTimeout:              (3 * time.Minute).Nanoseconds(),
 	}
@@ -764,8 +764,8 @@ func TestFailedChallengeActivationRetainsDurableUnrestrictRetry(t *testing.T) {
 	}
 	service := &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI, language: "en"}, settings: settings}
 	gatekeeper := NewGatekeeper(service, botAPI, store, nil, &config.Config{}, &testGatekeeperBanChecker{})
-	chat := &api.Chat{ID: -100123, Type: "supergroup", Title: "Wave Club"}
-	user := &api.User{ID: 42, FirstName: "Neo", LanguageCode: "en"}
+	chat := &api.Chat{ID: -100123, Type: "supergroup", Title: testGroupTitle}
+	user := &api.User{ID: 42, FirstName: testFirstNameNeo, LanguageCode: "en"}
 
 	if err := gatekeeper.startChallenge(context.Background(), nil, user, chat, chat.ID, chat.ID, settings); err == nil {
 		t.Fatal("expected challenge activation failure")
@@ -783,8 +783,8 @@ func TestBannedNewChatMembersDeletesJoinMessageAndSkipsBackfill(t *testing.T) {
 	t.Parallel()
 
 	recorder := &botRequestRecorder{}
-	groupChat := api.Chat{ID: -100123, Type: "supergroup", Title: "Wave Club", UserName: "waveclub"}
-	user := api.User{ID: 42, FirstName: "Neo"}
+	groupChat := api.Chat{ID: -100123, Type: "supergroup", Title: testGroupTitle, UserName: "waveclub"}
+	user := api.User{ID: 42, FirstName: testFirstNameNeo}
 	store := newGatekeeperFlowStore()
 
 	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
@@ -803,7 +803,7 @@ func TestBannedNewChatMembersDeletesJoinMessageAndSkipsBackfill(t *testing.T) {
 		GatekeeperEnabled:             true,
 		GatekeeperCaptchaEnabled:      true,
 		GatekeeperGreetingEnabled:     true,
-		GatekeeperGreetingText:        "GREETING {user} to {chat_title}",
+		GatekeeperGreetingText:        testGreetingTemplate,
 		GatekeeperCaptchaOptionsCount: 3,
 		ChallengeTimeout:              (3 * time.Minute).Nanoseconds(),
 	}
@@ -853,7 +853,7 @@ func TestBannedBotNewChatMembersDeletesJoinMessageAndSkipsCaptcha(t *testing.T) 
 	t.Parallel()
 
 	recorder := &botRequestRecorder{}
-	groupChat := api.Chat{ID: -100123, Type: "group", Title: "Wave Club"}
+	groupChat := api.Chat{ID: -100123, Type: "group", Title: testGroupTitle}
 	user := api.User{ID: 42, FirstName: "SpamBot", UserName: "spambot", IsBot: true}
 	store := newGatekeeperFlowStore()
 
@@ -873,7 +873,7 @@ func TestBannedBotNewChatMembersDeletesJoinMessageAndSkipsCaptcha(t *testing.T) 
 		GatekeeperEnabled:             true,
 		GatekeeperCaptchaEnabled:      true,
 		GatekeeperGreetingEnabled:     true,
-		GatekeeperGreetingText:        "GREETING {user} to {chat_title}",
+		GatekeeperGreetingText:        testGreetingTemplate,
 		GatekeeperCaptchaOptionsCount: 3,
 		ChallengeTimeout:              (3 * time.Minute).Nanoseconds(),
 	}
@@ -920,8 +920,8 @@ func TestJoinRequestCaptchaSuccessHandoffSkipsSecondCaptchaAndSendsGreetingOnce(
 	t.Parallel()
 
 	recorder := &botRequestRecorder{}
-	groupChat := api.Chat{ID: -100123, Type: "supergroup", Title: "Wave Club", UserName: "waveclub"}
-	user := api.User{ID: 42, FirstName: "Neo"}
+	groupChat := api.Chat{ID: -100123, Type: "supergroup", Title: testGroupTitle, UserName: "waveclub"}
+	user := api.User{ID: 42, FirstName: testFirstNameNeo}
 	store := newGatekeeperFlowStore()
 
 	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
@@ -930,9 +930,9 @@ func TestJoinRequestCaptchaSuccessHandoffSkipsSecondCaptchaAndSendsGreetingOnce(
 		switch method {
 		case testTelegramMethodGetChat:
 			return map[string]any{
-				"id":         9001,
-				"type":       "private",
-				"first_name": "Neo",
+				"id":              9001,
+				"type":            "private",
+				testJSONFirstName: testFirstNameNeo,
 			}
 		case "approveChatJoinRequest":
 			handoffChallenge := store.onlyChallenge(t)
@@ -954,7 +954,7 @@ func TestJoinRequestCaptchaSuccessHandoffSkipsSecondCaptchaAndSendsGreetingOnce(
 		GatekeeperEnabled:             true,
 		GatekeeperCaptchaEnabled:      true,
 		GatekeeperGreetingEnabled:     true,
-		GatekeeperGreetingText:        "GREETING {user} to {chat_title}",
+		GatekeeperGreetingText:        testGreetingTemplate,
 		GatekeeperCaptchaOptionsCount: 3,
 		ChallengeTimeout:              (3 * time.Minute).Nanoseconds(),
 	}
@@ -1069,8 +1069,8 @@ func TestJoinRequestCaptchaSuccessHandoffSkipsPublicCaptchaWithoutViaJoinRequest
 	t.Parallel()
 
 	recorder := &botRequestRecorder{}
-	groupChat := api.Chat{ID: -100123, Type: "supergroup", Title: "Wave Club", UserName: "waveclub"}
-	user := api.User{ID: 42, FirstName: "Neo"}
+	groupChat := api.Chat{ID: -100123, Type: "supergroup", Title: testGroupTitle, UserName: "waveclub"}
+	user := api.User{ID: 42, FirstName: testFirstNameNeo}
 	store := newGatekeeperFlowStore()
 
 	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
@@ -1079,9 +1079,9 @@ func TestJoinRequestCaptchaSuccessHandoffSkipsPublicCaptchaWithoutViaJoinRequest
 		switch method {
 		case testTelegramMethodGetChat:
 			return map[string]any{
-				"id":         9001,
-				"type":       "private",
-				"first_name": "Neo",
+				"id":              9001,
+				"type":            "private",
+				testJSONFirstName: testFirstNameNeo,
 			}
 		case "approveChatJoinRequest":
 			return true
@@ -1099,7 +1099,7 @@ func TestJoinRequestCaptchaSuccessHandoffSkipsPublicCaptchaWithoutViaJoinRequest
 		GatekeeperEnabled:             true,
 		GatekeeperCaptchaEnabled:      true,
 		GatekeeperGreetingEnabled:     true,
-		GatekeeperGreetingText:        "GREETING {user} to {chat_title}",
+		GatekeeperGreetingText:        testGreetingTemplate,
 		GatekeeperCaptchaOptionsCount: 3,
 		ChallengeTimeout:              (3 * time.Minute).Nanoseconds(),
 	}
@@ -1149,8 +1149,8 @@ func TestManualJoinRequestApprovalSkipsPublicCaptchaAndSendsOnlyGreeting(t *test
 	t.Parallel()
 
 	recorder := &botRequestRecorder{}
-	groupChat := api.Chat{ID: -100123, Type: "supergroup", Title: "Wave Club", UserName: "waveclub"}
-	user := api.User{ID: 42, FirstName: "Neo"}
+	groupChat := api.Chat{ID: -100123, Type: "supergroup", Title: testGroupTitle, UserName: "waveclub"}
+	user := api.User{ID: 42, FirstName: testFirstNameNeo}
 
 	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
 		recorder.record(t, method, r)
@@ -1170,7 +1170,7 @@ func TestManualJoinRequestApprovalSkipsPublicCaptchaAndSendsOnlyGreeting(t *test
 		GatekeeperEnabled:             true,
 		GatekeeperCaptchaEnabled:      true,
 		GatekeeperGreetingEnabled:     true,
-		GatekeeperGreetingText:        "GREETING {user} to {chat_title}",
+		GatekeeperGreetingText:        testGreetingTemplate,
 		GatekeeperCaptchaOptionsCount: 3,
 		ChallengeTimeout:              (3 * time.Minute).Nanoseconds(),
 	}
@@ -1183,7 +1183,7 @@ func TestManualJoinRequestApprovalSkipsPublicCaptchaAndSendsOnlyGreeting(t *test
 		banChecker: &testGatekeeperBanChecker{},
 	}
 
-	update := newChatMemberJoinUpdate(groupChat, user, api.User{ID: 777, FirstName: "Admin"})
+	update := newChatMemberJoinUpdate(groupChat, user, api.User{ID: 777, FirstName: testFirstNameAdmin})
 	update.ChatMember.ViaJoinRequest = true
 	gatekeeper.handleChatMember(context.Background(), update, settings)
 
@@ -1225,8 +1225,8 @@ func TestDirectJoinCaptchaIncludesGreetingImmediatelyAndBackfillsJoinMessageID(t
 	t.Parallel()
 
 	recorder := &botRequestRecorder{}
-	groupChat := api.Chat{ID: -100123, Type: "supergroup", Title: "Wave Club", UserName: "waveclub"}
-	user := api.User{ID: 42, FirstName: "Neo"}
+	groupChat := api.Chat{ID: -100123, Type: "supergroup", Title: testGroupTitle, UserName: "waveclub"}
+	user := api.User{ID: 42, FirstName: testFirstNameNeo}
 
 	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
 		recorder.record(t, method, r)
@@ -1246,7 +1246,7 @@ func TestDirectJoinCaptchaIncludesGreetingImmediatelyAndBackfillsJoinMessageID(t
 		GatekeeperEnabled:             true,
 		GatekeeperCaptchaEnabled:      true,
 		GatekeeperGreetingEnabled:     true,
-		GatekeeperGreetingText:        "GREETING {user} to {chat_title}",
+		GatekeeperGreetingText:        testGreetingTemplate,
 		GatekeeperCaptchaOptionsCount: 3,
 		ChallengeTimeout:              (3 * time.Minute).Nanoseconds(),
 	}
@@ -1316,8 +1316,8 @@ func TestDirectJoinCaptchaUsesMarkdownV2ForNormalizedGreetingTemplate(t *testing
 	t.Parallel()
 
 	recorder := &botRequestRecorder{}
-	groupChat := api.Chat{ID: -100123, Type: "supergroup", Title: "Wave Club", UserName: "waveclub"}
-	user := api.User{ID: 42, FirstName: "Neo"}
+	groupChat := api.Chat{ID: -100123, Type: "supergroup", Title: testGroupTitle, UserName: "waveclub"}
+	user := api.User{ID: 42, FirstName: testFirstNameNeo}
 
 	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
 		recorder.record(t, method, r)
@@ -1381,7 +1381,7 @@ func TestNonJoinRequestChatMemberJoinsStillStartPublicCaptcha(t *testing.T) {
 					InviteLink: "https://t.me/+waveclub",
 				}
 			},
-			actor:       api.User{ID: 42, FirstName: "Neo"},
+			actor:       api.User{ID: 42, FirstName: testFirstNameNeo},
 			description: "invite-link join should keep public captcha",
 		},
 		{
@@ -1389,13 +1389,13 @@ func TestNonJoinRequestChatMemberJoinsStillStartPublicCaptcha(t *testing.T) {
 			prepare: func(update *api.Update) {
 				update.ChatMember.ViaChatFolderInviteLink = true
 			},
-			actor:       api.User{ID: 42, FirstName: "Neo"},
+			actor:       api.User{ID: 42, FirstName: testFirstNameNeo},
 			description: "folder invite join should keep public captcha",
 		},
 		{
 			name:        "added by another user",
 			prepare:     func(update *api.Update) {},
-			actor:       api.User{ID: 777, FirstName: "Admin"},
+			actor:       api.User{ID: 777, FirstName: testFirstNameAdmin},
 			description: "admin-added join should keep public captcha",
 		},
 	}
@@ -1403,8 +1403,8 @@ func TestNonJoinRequestChatMemberJoinsStillStartPublicCaptcha(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			recorder := &botRequestRecorder{}
-			groupChat := api.Chat{ID: -100123, Type: "supergroup", Title: "Wave Club", UserName: "waveclub"}
-			user := api.User{ID: 42, FirstName: "Neo"}
+			groupChat := api.Chat{ID: -100123, Type: "supergroup", Title: testGroupTitle, UserName: "waveclub"}
+			user := api.User{ID: 42, FirstName: testFirstNameNeo}
 
 			botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
 				recorder.record(t, method, r)
@@ -1424,7 +1424,7 @@ func TestNonJoinRequestChatMemberJoinsStillStartPublicCaptcha(t *testing.T) {
 				GatekeeperEnabled:             true,
 				GatekeeperCaptchaEnabled:      true,
 				GatekeeperGreetingEnabled:     true,
-				GatekeeperGreetingText:        "GREETING {user} to {chat_title}",
+				GatekeeperGreetingText:        testGreetingTemplate,
 				GatekeeperCaptchaOptionsCount: 3,
 				ChallengeTimeout:              (3 * time.Minute).Nanoseconds(),
 			}
@@ -1482,8 +1482,8 @@ func TestJoinRequestGreetingWithoutCaptchaLeavesManualReviewUntouched(t *testing
 
 	update := &api.Update{
 		ChatJoinRequest: &api.ChatJoinRequest{
-			Chat:       api.Chat{ID: -100123, Type: "supergroup", Title: "Wave Club"},
-			From:       api.User{ID: 42, FirstName: "Neo"},
+			Chat:       api.Chat{ID: -100123, Type: "supergroup", Title: testGroupTitle},
+			From:       api.User{ID: 42, FirstName: testFirstNameNeo},
 			UserChatID: 9001,
 		},
 	}
@@ -1525,14 +1525,14 @@ func TestJoinRequestQueryWithoutCaptchaQueuesManualReview(t *testing.T) {
 		bot:        botAPI,
 		s:          &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI, language: "en"}, settings: settings},
 		store:      store,
-		config:     &config.Config{GatekeeperWebApp: config.GatekeeperWebApp{PublicURL: "https://guard.example"}},
+		config:     &config.Config{GatekeeperWebApp: config.GatekeeperWebApp{PublicURL: testWebAppURL}},
 		banChecker: &testGatekeeperBanChecker{},
 	}
 
 	update := &api.Update{
 		ChatJoinRequest: &api.ChatJoinRequest{
-			Chat:       api.Chat{ID: -100123, Type: "supergroup", Title: "Wave Club"},
-			From:       api.User{ID: 42, FirstName: "Neo"},
+			Chat:       api.Chat{ID: -100123, Type: "supergroup", Title: testGroupTitle},
+			From:       api.User{ID: 42, FirstName: testFirstNameNeo},
 			UserChatID: 9001,
 			QueryID:    "join-query",
 		},
@@ -1649,15 +1649,15 @@ func TestProcessExpiredJoinRequestWebAppChallengeFallsBackToDM(t *testing.T) {
 			switch r.Form.Get("chat_id") {
 			case "9001":
 				return map[string]any{
-					"id":         9001,
-					"type":       "private",
-					"first_name": "Neo",
+					"id":              9001,
+					"type":            "private",
+					testJSONFirstName: testFirstNameNeo,
 				}
 			case "-100123":
 				return map[string]any{
 					"id":    -100123,
 					"type":  "supergroup",
-					"title": "Wave Club",
+					"title": testGroupTitle,
 				}
 			default:
 				t.Fatalf("unexpected getChat chat_id: %q", r.Form.Get("chat_id"))
@@ -1742,7 +1742,7 @@ func TestProcessExpiredJoinRequestDMFallbackChallengeRejects(t *testing.T) {
 			return map[string]any{
 				"id":    -100123,
 				"type":  "supergroup",
-				"title": "Wave Club",
+				"title": testGroupTitle,
 			}
 		case testTelegramMethodDeleteMessage, testTelegramMethodBanChatMember, testTelegramMethodJoinRequestQuery:
 			return true
@@ -1818,15 +1818,15 @@ func TestProcessUnopenedWebAppChallengeFallsBackEarly(t *testing.T) {
 			switch r.Form.Get("chat_id") {
 			case "9001":
 				return map[string]any{
-					"id":         9001,
-					"type":       "private",
-					"first_name": "Neo",
+					"id":              9001,
+					"type":            "private",
+					testJSONFirstName: testFirstNameNeo,
 				}
 			case "-100123":
 				return map[string]any{
 					"id":    -100123,
 					"type":  "supergroup",
-					"title": "Wave Club",
+					"title": testGroupTitle,
 				}
 			default:
 				t.Fatalf("unexpected getChat chat_id: %q", r.Form.Get("chat_id"))
@@ -1846,11 +1846,11 @@ func TestProcessUnopenedWebAppChallengeFallsBackEarly(t *testing.T) {
 		UserID:             42,
 		ChatID:             -100123,
 		Status:             db.ChallengeStatusPending,
-		SuccessUUID:        "correct-choice",
+		SuccessUUID:        testCorrectChoice,
 		WebAppToken:        "tok",
 		JoinRequestQueryID: "join-query",
 		CaptchaPrompt:      "poodle",
-		CaptchaOptionsJSON: `[{"id":"correct-choice","symbol":"A"},{"id":"wrong-choice","symbol":"B"}]`,
+		CaptchaOptionsJSON: testCaptchaOptionsJSON,
 		CreatedAt:          time.Now().Add(-30 * time.Second),
 		ExpiresAt:          time.Now().Add(2 * time.Minute),
 	}
@@ -1903,11 +1903,11 @@ func TestProcessUnopenedWebAppChallengeSkipsOpened(t *testing.T) {
 		UserID:             42,
 		ChatID:             -100123,
 		Status:             db.ChallengeStatusPending,
-		SuccessUUID:        "correct-choice",
+		SuccessUUID:        testCorrectChoice,
 		WebAppToken:        "tok",
 		JoinRequestQueryID: "join-query",
 		CaptchaPrompt:      "poodle",
-		CaptchaOptionsJSON: `[{"id":"correct-choice","symbol":"A"},{"id":"wrong-choice","symbol":"B"}]`,
+		CaptchaOptionsJSON: testCaptchaOptionsJSON,
 		CreatedAt:          time.Now().Add(-30 * time.Second),
 		ExpiresAt:          time.Now().Add(2 * time.Minute),
 		WebAppOpenedAt:     sql.NullTime{Time: time.Now(), Valid: true},
@@ -1954,11 +1954,11 @@ func TestProcessUnopenedWebAppChallengeSkipsAlreadyPassed(t *testing.T) {
 		UserID:             42,
 		ChatID:             -100123,
 		Status:             db.ChallengeStatusPassedWaitingMemberJoin,
-		SuccessUUID:        "correct-choice",
+		SuccessUUID:        testCorrectChoice,
 		WebAppToken:        "tok",
 		JoinRequestQueryID: "join-query",
 		CaptchaPrompt:      "poodle",
-		CaptchaOptionsJSON: `[{"id":"correct-choice","symbol":"A"},{"id":"wrong-choice","symbol":"B"}]`,
+		CaptchaOptionsJSON: testCaptchaOptionsJSON,
 		CreatedAt:          time.Now().Add(-30 * time.Second),
 		ExpiresAt:          time.Now().Add(2 * time.Minute),
 	}
@@ -2005,15 +2005,15 @@ func TestProcessExpiredRecoversFallbackPendingChallenge(t *testing.T) {
 			switch r.Form.Get("chat_id") {
 			case "9001":
 				return map[string]any{
-					"id":         9001,
-					"type":       "private",
-					"first_name": "Neo",
+					"id":              9001,
+					"type":            "private",
+					testJSONFirstName: testFirstNameNeo,
 				}
 			case "-100123":
 				return map[string]any{
 					"id":    -100123,
 					"type":  "supergroup",
-					"title": "Wave Club",
+					"title": testGroupTitle,
 				}
 			default:
 				t.Fatalf("unexpected getChat chat_id: %q", r.Form.Get("chat_id"))
@@ -2033,11 +2033,11 @@ func TestProcessExpiredRecoversFallbackPendingChallenge(t *testing.T) {
 		UserID:             42,
 		ChatID:             -100123,
 		Status:             db.ChallengeStatusWebAppFallbackPending,
-		SuccessUUID:        "correct-choice",
+		SuccessUUID:        testCorrectChoice,
 		WebAppToken:        "tok",
 		JoinRequestQueryID: "join-query",
 		CaptchaPrompt:      "poodle",
-		CaptchaOptionsJSON: `[{"id":"correct-choice","symbol":"A"},{"id":"wrong-choice","symbol":"B"}]`,
+		CaptchaOptionsJSON: testCaptchaOptionsJSON,
 		CreatedAt:          time.Now().Add(-10 * time.Minute),
 		ExpiresAt:          time.Now().Add(-time.Minute),
 	}
@@ -2139,9 +2139,9 @@ func TestFallbackClaimedWebAppChallengeDeclinesWhenTargetChatUnavailable(t *test
 			switch r.Form.Get("chat_id") {
 			case "9001":
 				return map[string]any{
-					"id":         9001,
-					"type":       "private",
-					"first_name": "Neo",
+					"id":              9001,
+					"type":            "private",
+					testJSONFirstName: testFirstNameNeo,
 				}
 			case "-100123":
 				return &testBotAPIError{code: 502, description: "target chat unavailable"}
@@ -2163,11 +2163,11 @@ func TestFallbackClaimedWebAppChallengeDeclinesWhenTargetChatUnavailable(t *test
 		UserID:             42,
 		ChatID:             -100123,
 		Status:             db.ChallengeStatusWebAppFallbackPending,
-		SuccessUUID:        "correct-choice",
+		SuccessUUID:        testCorrectChoice,
 		WebAppToken:        "tok",
 		JoinRequestQueryID: "join-query",
 		CaptchaPrompt:      "poodle",
-		CaptchaOptionsJSON: `[{"id":"correct-choice","symbol":"A"},{"id":"wrong-choice","symbol":"B"}]`,
+		CaptchaOptionsJSON: testCaptchaOptionsJSON,
 		CreatedAt:          time.Now().Add(-10 * time.Minute),
 		ExpiresAt:          time.Now().Add(-time.Minute),
 	}
@@ -2194,7 +2194,7 @@ func TestFallbackClaimedWebAppChallengeDeclinesWhenTargetChatUnavailable(t *test
 	if len(declines) != 1 {
 		t.Fatalf("expected one join request query answer, got %d", len(declines))
 	}
-	if declines[0].form.Get("result") != "decline" {
+	if declines[0].form.Get("result") != testJoinRequestDecline {
 		t.Fatalf("expected decline result, got %q", declines[0].form.Get("result"))
 	}
 }

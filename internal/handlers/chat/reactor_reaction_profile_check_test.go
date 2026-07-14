@@ -14,9 +14,9 @@ import (
 func TestHandleMessageReactionModeratesUnknownUserProfileSpam(t *testing.T) {
 	t.Parallel()
 
-	chat := &api.Chat{ID: -100123, Type: "supergroup", Title: "Wave Club"}
+	chat := &api.Chat{ID: -100123, Type: "supergroup", Title: testGroupTitle}
 	settings := db.DefaultSettings(chat.ID)
-	user := &api.User{ID: 777, FirstName: "Bad", UserName: "badworker"}
+	user := &api.User{ID: 777, FirstName: testFirstNameBad, UserName: "badworker"}
 	detector := &testSpamDetector{result: boolPtr(true)}
 
 	var deletedAllUserID string
@@ -34,14 +34,14 @@ func TestHandleMessageReactionModeratesUnknownUserProfileSpam(t *testing.T) {
 				t.Fatalf("expected user profile chat lookup, got chat_id %q", got)
 			}
 			return map[string]any{
-				"id":         777,
-				"type":       "private",
-				"first_name": "Bad",
-				"username":   "badworker",
-				"bio":        "Удаленная работа от 500 долларов в день, подробности в личку",
+				"id":              777,
+				"type":            "private",
+				testJSONFirstName: testFirstNameBad,
+				"username":        "badworker",
+				"bio":             "Удаленная работа от 500 долларов в день, подробности в личку",
 				"personal_chat": map[string]any{
 					"id":       -100999,
-					"type":     "channel",
+					"type":     testChatTypeChannel,
 					"title":    "Fast income",
 					"username": "fast_income_bot",
 				},
@@ -52,10 +52,10 @@ func TestHandleMessageReactionModeratesUnknownUserProfileSpam(t *testing.T) {
 			}
 			return []map[string]any{{
 				"message_id": 1,
-				"date":       1,
-				"chat": map[string]any{
+				testJSONDate: 1,
+				logFieldChat: map[string]any{
 					"id":    -100999,
-					"type":  "channel",
+					"type":  testChatTypeChannel,
 					"title": "Fast income",
 				},
 				"text": "Казино бот с бонусом, переходи по ссылке",
@@ -118,7 +118,7 @@ func TestHandleMessageReactionModeratesUnknownUserProfileSpam(t *testing.T) {
 func TestHandleMessageReactionRemembersUnknownUserProfileNotSpam(t *testing.T) {
 	t.Parallel()
 
-	chat := &api.Chat{ID: -100123, Type: "supergroup", Title: "Wave Club"}
+	chat := &api.Chat{ID: -100123, Type: "supergroup", Title: testGroupTitle}
 	settings := db.DefaultSettings(chat.ID)
 	user := &api.User{ID: 777, FirstName: "Clean", UserName: "cleanworker"}
 	detector := &testSpamDetector{result: boolPtr(false)}
@@ -134,11 +134,11 @@ func TestHandleMessageReactionRemembersUnknownUserProfileNotSpam(t *testing.T) {
 			return testChatMemberResponse("left", false, false, false)
 		case testTelegramMethodGetChat:
 			return map[string]any{
-				"id":         777,
-				"type":       "private",
-				"first_name": "Clean",
-				"username":   "cleanworker",
-				"bio":        "Local neighbor and regular reader",
+				"id":              777,
+				"type":            "private",
+				testJSONFirstName: "Clean",
+				"username":        "cleanworker",
+				"bio":             "Local neighbor and regular reader",
 			}
 		case "getUserPersonalChatMessages":
 			return []any{}
@@ -187,7 +187,7 @@ func TestHandleMessageReactionRemembersUnknownUserProfileNotSpam(t *testing.T) {
 func TestHandleMessageReactionSkipsKnownMemberAfterTelegramMembershipCheck(t *testing.T) {
 	t.Parallel()
 
-	chat := &api.Chat{ID: -100123, Type: "supergroup", Title: "Wave Club"}
+	chat := &api.Chat{ID: -100123, Type: "supergroup", Title: testGroupTitle}
 	settings := db.DefaultSettings(chat.ID)
 	user := &api.User{ID: 777, FirstName: "Member", UserName: "member"}
 	detector := &testSpamDetector{result: boolPtr(true)}
@@ -240,7 +240,7 @@ func TestHandleMessageReactionSkipsKnownMemberAfterTelegramMembershipCheck(t *te
 func TestHandleMessageReactionSkipsRememberedNonMember(t *testing.T) {
 	t.Parallel()
 
-	chat := &api.Chat{ID: -100123, Type: "supergroup", Title: "Wave Club"}
+	chat := &api.Chat{ID: -100123, Type: "supergroup", Title: testGroupTitle}
 	settings := db.DefaultSettings(chat.ID)
 	user := &api.User{ID: 777, FirstName: "Known", UserName: "knownreader"}
 	detector := &testSpamDetector{result: boolPtr(true)}
@@ -277,9 +277,9 @@ func TestHandleMessageReactionSkipsRememberedNonMember(t *testing.T) {
 func TestHandleMessageReactionModeratesActorChatProfileSpam(t *testing.T) {
 	t.Parallel()
 
-	chat := &api.Chat{ID: -100123, Type: "supergroup", Title: "Wave Club"}
+	chat := &api.Chat{ID: -100123, Type: "supergroup", Title: testGroupTitle}
 	settings := db.DefaultSettings(chat.ID)
-	actorChat := &api.Chat{ID: -100777, Type: "channel", Title: "Spam Channel", UserName: "spam_channel"}
+	actorChat := &api.Chat{ID: -100777, Type: testChatTypeChannel, Title: testSpamChannelTitle, UserName: "spam_channel"}
 	detector := &testSpamDetector{result: boolPtr(true)}
 
 	var deletedAllActorChatID string
@@ -296,25 +296,25 @@ func TestHandleMessageReactionModeratesActorChatProfileSpam(t *testing.T) {
 				return map[string]any{
 					"id":    -100123,
 					"type":  "supergroup",
-					"title": "Wave Club",
+					"title": testGroupTitle,
 				}
 			case "-100777":
 			default:
 				t.Fatalf("unexpected chat lookup: %q", got)
 			}
 			return map[string]any{
-				"id":          -100777,
-				"type":        "channel",
-				"title":       "Spam Channel",
-				"username":    "spam_channel",
-				"description": "Крипто-казино, бонусы, быстрый заработок",
+				"id":                -100777,
+				"type":              testChatTypeChannel,
+				"title":             testSpamChannelTitle,
+				"username":          "spam_channel",
+				testJSONDescription: "Крипто-казино, бонусы, быстрый заработок",
 				"pinned_message": map[string]any{
 					"message_id": 10,
-					"date":       1,
-					"chat": map[string]any{
+					testJSONDate: 1,
+					logFieldChat: map[string]any{
 						"id":    -100777,
-						"type":  "channel",
-						"title": "Spam Channel",
+						"type":  testChatTypeChannel,
+						"title": testSpamChannelTitle,
 					},
 					"text": "Переходи в бота и забирай бонус",
 				},
@@ -373,10 +373,10 @@ func TestHandleMessageReactionModeratesActorChatProfileSpam(t *testing.T) {
 func TestHandleMessageReactionSkipsWhenReactionProfileCheckDisabled(t *testing.T) {
 	t.Parallel()
 
-	chat := &api.Chat{ID: -100123, Type: "supergroup", Title: "Wave Club"}
+	chat := &api.Chat{ID: -100123, Type: "supergroup", Title: testGroupTitle}
 	settings := db.DefaultSettings(chat.ID)
 	settings.ReactionProfileCheckEnabled = false
-	user := &api.User{ID: 777, FirstName: "Bad", UserName: "badworker"}
+	user := &api.User{ID: 777, FirstName: testFirstNameBad, UserName: "badworker"}
 	detector := &testSpamDetector{result: boolPtr(true)}
 
 	reactor := &Reactor{
@@ -411,9 +411,9 @@ func TestHandleMessageReactionSkipsWhenReactionProfileCheckDisabled(t *testing.T
 func TestHandleMessageReactionSkipsReactionRemoval(t *testing.T) {
 	t.Parallel()
 
-	chat := &api.Chat{ID: -100123, Type: "supergroup", Title: "Wave Club"}
+	chat := &api.Chat{ID: -100123, Type: "supergroup", Title: testGroupTitle}
 	settings := db.DefaultSettings(chat.ID)
-	user := &api.User{ID: 777, FirstName: "Bad", UserName: "badworker"}
+	user := &api.User{ID: 777, FirstName: testFirstNameBad, UserName: "badworker"}
 	detector := &testSpamDetector{result: boolPtr(true)}
 
 	reactor := &Reactor{

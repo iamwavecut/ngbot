@@ -59,8 +59,8 @@ func TestCommandTargetsCurrentBot(t *testing.T) {
 	}{
 		{
 			name:        "unnamed command is accepted",
-			messageText: "/voteban",
-			entityLen:   len("/voteban"),
+			messageText: testVoteBanCommand,
+			entityLen:   len(testVoteBanCommand),
 			botUserName: "ngbot",
 			want:        true,
 		},
@@ -108,7 +108,7 @@ func TestCommandTargetsCurrentBot(t *testing.T) {
 			msg := &api.Message{Text: tt.messageText}
 			if tt.entityLen > 0 {
 				msg.Entities = []api.MessageEntity{{
-					Type:   "bot_command",
+					Type:   testEntityBotCommand,
 					Offset: 0,
 					Length: tt.entityLen,
 				}}
@@ -186,10 +186,10 @@ func TestVoteBanCommandRoutesByRestrictPermissionAfterReportCheck(t *testing.T) 
 			})
 
 			chat := &api.Chat{ID: -100, Type: "supergroup"}
-			actor := &api.User{ID: 100, FirstName: "Actor"}
-			target := &api.User{ID: 200, FirstName: "Target"}
+			actor := &api.User{ID: 100, FirstName: testFirstNameActor}
+			target := &api.User{ID: 200, FirstName: testFirstNameTarget}
 			reply := &api.Message{MessageID: 40, Chat: *chat, From: target, Text: "spam text"}
-			command := &api.Message{MessageID: 50, MessageThreadID: 7, Chat: *chat, From: actor, Text: "/voteban", ReplyToMessage: reply}
+			command := &api.Message{MessageID: 50, MessageThreadID: 7, Chat: *chat, From: actor, Text: testVoteBanCommand, ReplyToMessage: reply}
 			settings := &db.Settings{CommunityVotingEnabled: true}
 
 			bannedCalls := 0
@@ -259,8 +259,8 @@ func TestVoteBanCommandCommunityVotingDisabledSkipsProcessing(t *testing.T) {
 			}
 			return map[string]any{
 				"message_id": 70,
-				"date":       0,
-				"chat": map[string]any{
+				testJSONDate: 0,
+				logFieldChat: map[string]any{
 					"id":   -100,
 					"type": "supergroup",
 				},
@@ -272,14 +272,14 @@ func TestVoteBanCommandCommunityVotingDisabledSkipsProcessing(t *testing.T) {
 	})
 
 	chat := &api.Chat{ID: -100, Type: "supergroup"}
-	actor := &api.User{ID: 100, FirstName: "Actor"}
-	target := &api.User{ID: 200, FirstName: "Target"}
+	actor := &api.User{ID: 100, FirstName: testFirstNameActor}
+	target := &api.User{ID: 200, FirstName: testFirstNameTarget}
 	command := &api.Message{
 		MessageID:       50,
 		MessageThreadID: 7,
 		Chat:            *chat,
 		From:            actor,
-		Text:            "/voteban",
+		Text:            testVoteBanCommand,
 		ReplyToMessage:  &api.Message{MessageID: 40, Chat: *chat, From: target, Text: "spam text"},
 		IsTopicMessage:  true,
 	}
@@ -324,14 +324,14 @@ func TestBanCommandIsIgnored(t *testing.T) {
 		return nil
 	})
 	chat := &api.Chat{ID: -100, Type: "supergroup"}
-	actor := &api.User{ID: 100, FirstName: "Actor"}
+	actor := &api.User{ID: 100, FirstName: testFirstNameActor}
 	msg := &api.Message{
 		MessageID: 50,
 		Chat:      *chat,
 		From:      actor,
 		Text:      "/ban",
 		Entities: []api.MessageEntity{{
-			Type:   "bot_command",
+			Type:   testEntityBotCommand,
 			Offset: 0,
 			Length: len("/ban"),
 		}},
@@ -367,8 +367,8 @@ func TestVoteBanCommandWithoutReplySendsUsageHelp(t *testing.T) {
 			}
 			return map[string]any{
 				"message_id": 70,
-				"date":       0,
-				"chat": map[string]any{
+				testJSONDate: 0,
+				logFieldChat: map[string]any{
 					"id":   -100,
 					"type": "supergroup",
 				},
@@ -379,8 +379,8 @@ func TestVoteBanCommandWithoutReplySendsUsageHelp(t *testing.T) {
 		}
 	})
 	chat := &api.Chat{ID: -100, Type: "supergroup"}
-	actor := &api.User{ID: 100, FirstName: "Actor"}
-	command := &api.Message{MessageID: 50, Chat: *chat, From: actor, Text: "/voteban"}
+	actor := &api.User{ID: 100, FirstName: testFirstNameActor}
+	command := &api.Message{MessageID: 50, Chat: *chat, From: actor, Text: testVoteBanCommand}
 	reactor := &Reactor{
 		s: &testBotService{
 			botAPI:   botAPI,
@@ -408,8 +408,8 @@ func TestVoteBanCommandLLMSpamBansImmediatelyAndDeletesReportMessage(t *testing.
 			sendMessageCalls++
 			return map[string]any{
 				"message_id": 70,
-				"date":       0,
-				"chat": map[string]any{
+				testJSONDate: 0,
+				logFieldChat: map[string]any{
 					"id":   -100,
 					"type": "supergroup",
 				},
@@ -429,10 +429,10 @@ func TestVoteBanCommandLLMSpamBansImmediatelyAndDeletesReportMessage(t *testing.
 		}
 	})
 	chat := &api.Chat{ID: -100, Type: "supergroup"}
-	actor := &api.User{ID: 100, FirstName: "Actor"}
-	target := &api.User{ID: 200, FirstName: "Target"}
+	actor := &api.User{ID: 100, FirstName: testFirstNameActor}
+	target := &api.User{ID: 200, FirstName: testFirstNameTarget}
 	reply := &api.Message{MessageID: 40, Chat: *chat, From: target, Text: "reported spam text"}
-	command := &api.Message{MessageID: 50, Chat: *chat, From: actor, Text: "/voteban", ReplyToMessage: reply}
+	command := &api.Message{MessageID: 50, Chat: *chat, From: actor, Text: testVoteBanCommand, ReplyToMessage: reply}
 	bannedCalls := 0
 	reactor := &Reactor{
 		s: &testBotService{
@@ -477,8 +477,8 @@ func TestMessageMentionCurrentBotTriggersReportFlow(t *testing.T) {
 		}
 	})
 	chat := &api.Chat{ID: -100, Type: "supergroup"}
-	actor := &api.User{ID: 100, FirstName: "Actor"}
-	target := &api.User{ID: 200, FirstName: "Target"}
+	actor := &api.User{ID: 100, FirstName: testFirstNameActor}
+	target := &api.User{ID: 200, FirstName: testFirstNameTarget}
 	reply := &api.Message{MessageID: 40, Chat: *chat, From: target, Text: "reported text"}
 	report := &api.Message{
 		MessageID:       50,
@@ -558,9 +558,9 @@ func TestMessageMentionsCurrentBot(t *testing.T) {
 func testChatMemberResponse(status string, canManage bool, canPromote bool, canRestrict bool) map[string]any {
 	return map[string]any{
 		"user": map[string]any{
-			"id":         100,
-			"is_bot":     false,
-			"first_name": "Actor",
+			"id":              100,
+			testJSONIsBot:     false,
+			testJSONFirstName: testFirstNameActor,
 		},
 		"status":               status,
 		"can_manage_chat":      canManage,

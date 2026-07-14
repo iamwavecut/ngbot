@@ -28,6 +28,7 @@ const (
 	adminTestMethodGetChatMember = "getChatMember"
 	adminTestJSONType            = "type"
 	adminTestJSONFirstName       = "first_name"
+	adminTestJSONIsBot           = "is_bot"
 )
 
 type adminTelegramCall struct {
@@ -134,7 +135,7 @@ func TestStartSettingsPayloadStillUsesSettingsFlow(t *testing.T) {
 		case adminTestMethodGetChatMember:
 			return map[string]any{
 				"status":                "administrator",
-				telegramProfileHostUser: map[string]any{"id": 7, "is_bot": false, adminTestJSONFirstName: adminTestUserName},
+				telegramProfileHostUser: map[string]any{"id": 7, adminTestJSONIsBot: false, adminTestJSONFirstName: adminTestUserName},
 				"can_manage_chat":       true,
 				"can_promote_members":   false,
 				"can_restrict_members":  true,
@@ -305,7 +306,7 @@ func TestGroupLangRemainsAdminOnly(t *testing.T) {
 		case adminTestMethodGetChatMember:
 			return map[string]any{
 				"status":                "member",
-				telegramProfileHostUser: map[string]any{"id": 7, "is_bot": false, adminTestJSONFirstName: adminTestUserName},
+				telegramProfileHostUser: map[string]any{"id": 7, adminTestJSONIsBot: false, adminTestJSONFirstName: adminTestUserName},
 			}
 		default:
 			t.Fatalf("unexpected telegram method: %s", method)
@@ -369,7 +370,7 @@ func newAdminTestBotAPI(t *testing.T, handler func(method string, r *http.Reques
 		case "getMe":
 			result = map[string]any{
 				"id":                   1,
-				"is_bot":               true,
+				adminTestJSONIsBot:     true,
 				adminTestJSONFirstName: "Test",
 				"username":             "testbot",
 			}

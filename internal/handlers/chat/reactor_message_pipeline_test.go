@@ -157,7 +157,7 @@ func TestSpamVoteCallbackUsesSpamCaseChatSettings(t *testing.T) {
 		case "getChatMember":
 			return map[string]any{
 				"status": "member",
-				"user":   map[string]any{"id": 300, "is_bot": false, "first_name": "Voter"},
+				"user":   map[string]any{"id": 300, testJSONIsBot: false, testJSONFirstName: "Voter"},
 			}
 		case "answerCallbackQuery":
 			callbackAnswered = true
@@ -166,10 +166,10 @@ func TestSpamVoteCallbackUsesSpamCaseChatSettings(t *testing.T) {
 			editSent = true
 			return map[string]any{
 				"message_id": 400,
-				"date":       0,
-				"chat": map[string]any{
+				testJSONDate: 0,
+				logFieldChat: map[string]any{
 					"id":   900,
-					"type": "channel",
+					"type": testChatTypeChannel,
 				},
 			}
 		default:
@@ -214,7 +214,7 @@ func TestSpamVoteCallbackUsesSpamCaseChatSettings(t *testing.T) {
 	}, &testBanService{}, false)
 	reactor := NewReactor(service, botAPI, dbClient, dbClient, &testBanService{}, spamControl, nil, Config{})
 
-	logChat := &api.Chat{ID: 900, Type: "channel"}
+	logChat := &api.Chat{ID: 900, Type: testChatTypeChannel}
 	voter := &api.User{ID: 300, FirstName: "Voter"}
 	update := &api.Update{
 		CallbackQuery: &api.CallbackQuery{
@@ -285,7 +285,7 @@ func TestHandleMessageExternalQuoteHeuristic(t *testing.T) {
 		Text:      "попробуйте работает",
 		ExternalReply: &api.ExternalReplyInfo{
 			Origin: api.MessageOrigin{Type: api.MessageOriginChannel},
-			Chat:   &api.Chat{ID: 999, Type: "channel"},
+			Chat:   &api.Chat{ID: 999, Type: testChatTypeChannel},
 		},
 		Quote: &api.TextQuote{Text: "цитата"},
 	}
@@ -322,9 +322,9 @@ func TestHandleMessageCleanLeftUserRememberedAsKnownNonMember(t *testing.T) {
 		case testTelegramMethodGetChatMember:
 			return map[string]any{
 				"user": map[string]any{
-					"id":         200,
-					"is_bot":     false,
-					"first_name": "User",
+					"id":              200,
+					testJSONIsBot:     false,
+					testJSONFirstName: testFirstNameUser,
 				},
 				"status": "left",
 			}
@@ -356,7 +356,7 @@ func TestHandleMessageCleanLeftUserRememberedAsKnownNonMember(t *testing.T) {
 
 	chat := &api.Chat{ID: 100, Type: "supergroup"}
 	user := &api.User{ID: 200}
-	msg := &api.Message{MessageID: 11, Chat: *chat, From: user, Text: "hello there"}
+	msg := &api.Message{MessageID: 11, Chat: *chat, From: user, Text: testMessageText}
 	settings := &db.Settings{LLMFirstMessageEnabled: true, CommunityVotingEnabled: true}
 
 	if err := r.handleMessage(context.Background(), msg, chat, user, settings); err != nil {
@@ -385,9 +385,9 @@ func TestHandleMessageNotSpammerOverrideBypassesBanAndLLM(t *testing.T) {
 		case testTelegramMethodGetChatMember:
 			return map[string]any{
 				"user": map[string]any{
-					"id":         200,
-					"is_bot":     false,
-					"first_name": "User",
+					"id":              200,
+					testJSONIsBot:     false,
+					testJSONFirstName: testFirstNameUser,
 				},
 				"status": "member",
 			}
@@ -427,7 +427,7 @@ func TestHandleMessageNotSpammerOverrideBypassesBanAndLLM(t *testing.T) {
 		MessageID: 10,
 		Chat:      *chat,
 		From:      user,
-		Text:      "hello there",
+		Text:      testMessageText,
 	}
 	settings := &db.Settings{LLMFirstMessageEnabled: true, CommunityVotingEnabled: true}
 
@@ -502,7 +502,7 @@ func TestHandleMessageChatAdministratorBypassesBanAndLLM(t *testing.T) {
 	}
 
 	chat := &api.Chat{ID: 100, Type: "supergroup"}
-	user := &api.User{ID: 200, FirstName: "Admin"}
+	user := &api.User{ID: 200, FirstName: testFirstNameAdmin}
 	msg := &api.Message{MessageID: 14, Chat: *chat, From: user, Text: "реклама от админа"}
 	settings := &db.Settings{LLMFirstMessageEnabled: true, CommunityVotingEnabled: true}
 
@@ -583,7 +583,7 @@ func TestHandleMessageLinkedChannelSenderBypassesSpamPipeline(t *testing.T) {
 		Chat:      *chat,
 		SenderChat: &api.Chat{
 			ID:    -200,
-			Type:  "channel",
+			Type:  testChatTypeChannel,
 			Title: "Linked Channel",
 		},
 		Text: "рекламный пост связанного канала",
@@ -627,9 +627,9 @@ func TestHandleMessageKnownNonMemberBypassesFirstMessageChecks(t *testing.T) {
 		case testTelegramMethodGetChatMember:
 			return map[string]any{
 				"user": map[string]any{
-					"id":         200,
-					"is_bot":     false,
-					"first_name": "User",
+					"id":              200,
+					testJSONIsBot:     false,
+					testJSONFirstName: testFirstNameUser,
 				},
 				"status": "left",
 			}
@@ -670,7 +670,7 @@ func TestHandleMessageKnownNonMemberBypassesFirstMessageChecks(t *testing.T) {
 		Text:      "reply from guest",
 		ExternalReply: &api.ExternalReplyInfo{
 			Origin: api.MessageOrigin{Type: api.MessageOriginChannel},
-			Chat:   &api.Chat{ID: 999, Type: "channel"},
+			Chat:   &api.Chat{ID: 999, Type: testChatTypeChannel},
 		},
 	}
 	settings := &db.Settings{LLMFirstMessageEnabled: true, CommunityVotingEnabled: true}
@@ -763,7 +763,7 @@ func TestHandleMessageExternalQuoteHeuristicDoesNotTriggerForNonFirstMessage(t *
 		Text:      "попробуйте работает",
 		ExternalReply: &api.ExternalReplyInfo{
 			Origin: api.MessageOrigin{Type: api.MessageOriginChannel},
-			Chat:   &api.Chat{ID: 999, Type: "channel"},
+			Chat:   &api.Chat{ID: 999, Type: testChatTypeChannel},
 		},
 	}
 	settings := &db.Settings{LLMFirstMessageEnabled: true, CommunityVotingEnabled: true}
@@ -796,9 +796,9 @@ func TestHandleMessageCleanMemberInsertsMemberInsteadOfKnownNonMember(t *testing
 		case testTelegramMethodGetChatMember:
 			return map[string]any{
 				"user": map[string]any{
-					"id":         200,
-					"is_bot":     false,
-					"first_name": "User",
+					"id":              200,
+					testJSONIsBot:     false,
+					testJSONFirstName: testFirstNameUser,
 				},
 				"status": "member",
 			}
@@ -830,7 +830,7 @@ func TestHandleMessageCleanMemberInsertsMemberInsteadOfKnownNonMember(t *testing
 
 	chat := &api.Chat{ID: 100, Type: "supergroup"}
 	user := &api.User{ID: 200}
-	msg := &api.Message{MessageID: 13, Chat: *chat, From: user, Text: "hello there"}
+	msg := &api.Message{MessageID: 13, Chat: *chat, From: user, Text: testMessageText}
 	settings := &db.Settings{LLMFirstMessageEnabled: true, CommunityVotingEnabled: true}
 
 	if err := r.handleMessage(context.Background(), msg, chat, user, settings); err != nil {
@@ -937,7 +937,7 @@ func TestDetectFirstMessageExternalQuoteHeuristic(t *testing.T) {
 		Chat: api.Chat{ID: 100, Type: "supergroup"},
 		ExternalReply: &api.ExternalReplyInfo{
 			Origin: api.MessageOrigin{Type: api.MessageOriginChannel},
-			Chat:   &api.Chat{ID: 999, Type: "channel"},
+			Chat:   &api.Chat{ID: 999, Type: testChatTypeChannel},
 		},
 		Quote:         &api.TextQuote{Text: "quote"},
 		ForwardOrigin: &api.MessageOrigin{Type: api.MessageOriginChannel},

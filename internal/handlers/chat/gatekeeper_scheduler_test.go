@@ -171,9 +171,9 @@ func TestProcessNewChatMembersNotSpammerOverrideBypassesBanCheck(t *testing.T) {
 		case testTelegramMethodGetChatMember:
 			return map[string]any{
 				"user": map[string]any{
-					"id":         200,
-					"is_bot":     false,
-					"first_name": "User",
+					"id":              200,
+					testJSONIsBot:     false,
+					testJSONFirstName: testFirstNameUser,
 				},
 				"status": "member",
 			}

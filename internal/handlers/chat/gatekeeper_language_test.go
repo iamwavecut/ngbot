@@ -62,13 +62,13 @@ func TestStartJoinRequestWebAppChallengeStoresUserLanguage(t *testing.T) {
 		bot:        botAPI,
 		s:          &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI, language: "en"}, settings: webAppSettings()},
 		store:      store,
-		config:     &config.Config{GatekeeperWebApp: config.GatekeeperWebApp{PublicURL: "https://guard.example"}},
+		config:     &config.Config{GatekeeperWebApp: config.GatekeeperWebApp{PublicURL: testWebAppURL}},
 		banChecker: &testGatekeeperBanChecker{},
 	}
 
 	req := &api.ChatJoinRequest{
 		Chat:       api.Chat{ID: -100123, Type: "supergroup"},
-		From:       api.User{ID: 42, FirstName: "Neo", LanguageCode: "ru"},
+		From:       api.User{ID: 42, FirstName: testFirstNameNeo, LanguageCode: "ru"},
 		UserChatID: 9001,
 		QueryID:    "join-query",
 	}
@@ -93,9 +93,9 @@ func TestUnopenedWebAppFallbackCarriesUserLanguage(t *testing.T) {
 		case testTelegramMethodGetChat:
 			switch r.Form.Get("chat_id") {
 			case "9001":
-				return map[string]any{"id": 9001, "type": "private", "first_name": "Neo"}
+				return map[string]any{"id": 9001, "type": "private", testJSONFirstName: testFirstNameNeo}
 			case "-100123":
-				return map[string]any{"id": -100123, "type": "supergroup", "title": "Wave Club"}
+				return map[string]any{"id": -100123, "type": "supergroup", "title": testGroupTitle}
 			default:
 				t.Fatalf("unexpected getChat chat_id: %q", r.Form.Get("chat_id"))
 				return nil
@@ -114,11 +114,11 @@ func TestUnopenedWebAppFallbackCarriesUserLanguage(t *testing.T) {
 		UserID:             42,
 		ChatID:             -100123,
 		Status:             db.ChallengeStatusPending,
-		SuccessUUID:        "correct-choice",
+		SuccessUUID:        testCorrectChoice,
 		WebAppToken:        "tok",
 		JoinRequestQueryID: "join-query",
 		CaptchaPrompt:      "poodle",
-		CaptchaOptionsJSON: `[{"id":"correct-choice","symbol":"A"},{"id":"wrong-choice","symbol":"B"}]`,
+		CaptchaOptionsJSON: testCaptchaOptionsJSON,
 		UserLanguage:       "ru",
 		CreatedAt:          time.Now().Add(-30 * time.Second),
 		ExpiresAt:          time.Now().Add(2 * time.Minute),

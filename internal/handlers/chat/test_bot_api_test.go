@@ -11,6 +11,32 @@ import (
 	api "github.com/OvyFlash/telegram-bot-api"
 )
 
+const (
+	testFirstNameUser      = "User"
+	testFirstNameNeo       = "Neo"
+	testFirstNameAdmin     = "Admin"
+	testFirstNameActor     = "Actor"
+	testFirstNameTarget    = "Target"
+	testFirstNameBad       = "Bad"
+	testGroupTitle         = "Wave Club"
+	testSpamChannelTitle   = "Spam Channel"
+	testGreetingTemplate   = "GREETING {user} to {chat_title}"
+	testWebAppURL          = "https://guard.example"
+	testCorrectChoice      = "correct-choice"
+	testCaptchaOptionsJSON = `[{"id":"correct-choice","symbol":"A"},{"id":"wrong-choice","symbol":"B"}]`
+	testJoinRequestDecline = "decline"
+	testWebAppFormChoice   = "choice"
+	testWebAppFormInitData = "init_data"
+	testEntityBotCommand   = "bot_command"
+	testVoteBanCommand     = "/voteban"
+	testJSONIsBot          = "is_bot"
+	testJSONFirstName      = "first_name"
+	testJSONDate           = "date"
+	testJSONDescription    = "description"
+	testChatTypeChannel    = "channel"
+	testMessageText        = "hello there"
+)
+
 type testBotAPIError struct {
 	code        int
 	description string
@@ -34,10 +60,10 @@ func newTestBotAPIWithErrors(t *testing.T, handler func(method string, r *http.R
 			if err := json.NewEncoder(w).Encode(map[string]any{
 				"ok": true,
 				"result": map[string]any{
-					"id":         1,
-					"is_bot":     true,
-					"first_name": "Test",
-					"username":   "testbot",
+					"id":              1,
+					testJSONIsBot:     true,
+					testJSONFirstName: "Test",
+					"username":        "testbot",
 				},
 			}); err != nil {
 				t.Fatalf("encode getMe response: %v", err)
@@ -50,9 +76,9 @@ func newTestBotAPIWithErrors(t *testing.T, handler func(method string, r *http.R
 		w.Header().Set("Content-Type", "application/json")
 		if forcedErr, ok := result.(*testBotAPIError); ok {
 			if err := json.NewEncoder(w).Encode(map[string]any{
-				"ok":          false,
-				"error_code":  forcedErr.code,
-				"description": forcedErr.description,
+				"ok":                false,
+				"error_code":        forcedErr.code,
+				testJSONDescription: forcedErr.description,
 			}); err != nil {
 				t.Fatalf("encode forced error response: %v", err)
 			}
@@ -60,9 +86,9 @@ func newTestBotAPIWithErrors(t *testing.T, handler func(method string, r *http.R
 		}
 		if code, forced := failures[method]; forced && code != 0 {
 			if err := json.NewEncoder(w).Encode(map[string]any{
-				"ok":          false,
-				"error_code":  code,
-				"description": method + " forced failure",
+				"ok":                false,
+				"error_code":        code,
+				testJSONDescription: method + " forced failure",
 			}); err != nil {
 				t.Fatalf("encode error response: %v", err)
 			}
