@@ -33,8 +33,8 @@ func (r *Runtime) Start(ctx context.Context) error {
 			continue
 		}
 		if err := component.Start(ctx); err != nil {
-			_ = stopComponents(ctx, started)
-			return fmt.Errorf("start component: %w", err)
+			startErr := fmt.Errorf("start component: %w", err)
+			return errors.Join(startErr, stopComponents(ctx, started))
 		}
 		started = append(started, component)
 	}

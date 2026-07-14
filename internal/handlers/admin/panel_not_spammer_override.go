@@ -13,6 +13,8 @@ import (
 
 const spamCaseStatusFalsePositive = "false_positive"
 
+const telegramProfileHostUser = "user"
+
 type parsedNotSpammerReference struct {
 	MatchType  string
 	MatchValue string
@@ -68,7 +70,7 @@ func parseNotSpammerReferenceURL(raw string) (*parsedNotSpammerReference, error)
 
 func parseTGProfileReference(parsedURL *url.URL) (*parsedNotSpammerReference, error) {
 	switch strings.ToLower(parsedURL.Host) {
-	case "user":
+	case telegramProfileHostUser:
 		userID, ok := parsePositiveUserID(parsedURL.Query().Get("id"))
 		if !ok {
 			return nil, fmt.Errorf("invalid user id")
@@ -151,7 +153,7 @@ func (a *Admin) rehabilitateNotSpammerUser(ctx context.Context, chatID int64, us
 		_ = a.banService.UnmuteUser(ctx, chatID, userID)
 	}
 
-	member, err := a.getChatMember(chatID, userID)
+	member, err := a.getChatMember(ctx, chatID, userID)
 	if err != nil || member == nil {
 		return
 	}

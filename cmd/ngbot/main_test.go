@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -12,7 +13,17 @@ import (
 	"time"
 
 	api "github.com/OvyFlash/telegram-bot-api"
+	"github.com/iamwavecut/ngbot/internal/bot"
+	"github.com/iamwavecut/ngbot/internal/config"
 )
+
+type testUpdateHandler struct {
+	name string
+}
+
+func (*testUpdateHandler) Handle(context.Context, *api.Update, *api.Chat, *api.User) (bool, error) {
+	return true, nil
+}
 
 func TestConfigureUpdatesRequestsMessageReactionsOnly(t *testing.T) {
 	t.Parallel()
@@ -23,6 +34,48 @@ func TestConfigureUpdatesRequestsMessageReactionsOnly(t *testing.T) {
 	}
 	if slices.Contains(updates, "message_reaction_count") {
 		t.Fatalf("did not expect message_reaction_count updates, got %#v", updates)
+	}
+}
+
+func TestMaskConfigurationRedactsCredentialsCompletely(t *testing.T) {
+	t.Parallel()
+
+	cfg := &config.Config{
+		TelegramAPIToken: "telegram-prefix-secret-suffix",
+		LLM: config.LLM{
+			APIKey: "llm-prefix-secret-suffix",
+		},
+	}
+
+	masked := maskConfiguration(cfg)
+	if masked.TelegramAPIToken != redactedConfigurationValue {
+		t.Fatalf("telegram token = %q", masked.TelegramAPIToken)
+	}
+	if masked.LLM.APIKey != redactedConfigurationValue {
+		t.Fatalf("llm key = %q", masked.LLM.APIKey)
+	}
+}
+
+func TestSelectUpdateHandlersPreservesConfiguredOrder(t *testing.T) {
+	t.Parallel()
+
+	admin := &testUpdateHandler{name: handlerAdmin}
+	gatekeeper := &testUpdateHandler{name: handlerGatekeeper}
+	reactor := &testUpdateHandler{name: handlerReactor}
+	available := map[string]bot.Handler{
+		handlerAdmin:      admin,
+		handlerGatekeeper: gatekeeper,
+		handlerReactor:    reactor,
+		"disabled":        nil,
+	}
+
+	got := selectUpdateHandlers(
+		[]string{handlerAdmin, "unknown", handlerGatekeeper, "disabled", handlerReactor},
+		available,
+	)
+	want := []bot.Handler{admin, gatekeeper, reactor}
+	if !slices.Equal(got, want) {
+		t.Fatalf("selected handlers = %#v, want %#v", got, want)
 	}
 }
 
@@ -64,12 +117,16 @@ func TestAnnounceBotCommandsRegistersPrivateHelp(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	botAPI, err := api.NewBotAPIWithClient("TEST_TOKEN", fmt.Sprintf("%s/bot%%s/%%s", server.URL), server.Client())
+	botAPI, err := api.NewBotAPIWithOptions(
+		"TEST_TOKEN",
+		api.WithAPIEndpoint(fmt.Sprintf("%s/bot%%s/%%s", server.URL)),
+		api.WithHTTPClient(server.Client()),
+	)
 	if err != nil {
 		t.Fatalf("new bot api: %v", err)
 	}
 
-	if err := announceBotCommands(botAPI); err != nil {
+	if err := announceBotCommands(context.Background(), botAPI); err != nil {
 		t.Fatalf("announce bot commands: %v", err)
 	}
 
@@ -78,19 +135,19 @@ func TestAnnounceBotCommandsRegistersPrivateHelp(t *testing.T) {
 	}
 
 	private := commandsForScope(t, calls, "all_private_chats")
-	if !slices.Equal(private, []api.BotCommand{{Command: "help", Description: "Show bot help"}}) {
+	if !slices.Equal(private, []api.BotCommand{{Command: privateHelpCommand, Description: privateHelpCommandDescription}}) {
 		t.Fatalf("private commands = %#v", private)
 	}
 
 	group := commandsForScope(t, calls, "all_group_chats")
-	if !slices.Equal(group, []api.BotCommand{{Command: "voteban", Description: "Report spam with community voting"}}) {
+	if !slices.Equal(group, []api.BotCommand{{Command: voteBanCommand, Description: voteBanCommandDescription}}) {
 		t.Fatalf("group commands = %#v", group)
 	}
 
 	admin := commandsForScope(t, calls, "all_chat_administrators")
 	wantAdmin := []api.BotCommand{
-		{Command: "voteban", Description: "Report spam with community voting"},
-		{Command: "settings", Description: "Bot settings"},
+		{Command: voteBanCommand, Description: voteBanCommandDescription},
+		{Command: adminSettingsCommand, Description: adminSettingsCommandDescription},
 	}
 	if !slices.Equal(admin, wantAdmin) {
 		t.Fatalf("admin commands = %#v", admin)

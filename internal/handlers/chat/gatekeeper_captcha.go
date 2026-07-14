@@ -47,7 +47,7 @@ func (g *Gatekeeper) createCaptchaButtons(userID int64, successUUID string, lang
 		captchaIndex = g.createCaptchaIndex("en")
 	}
 	if len(captchaIndex) == 0 {
-		fallback := [2]string{"🍎", "apple"}
+		fallback := [2]string{"🍎", captchaFallbackWord}
 		return []api.InlineKeyboardButton{
 			api.NewInlineKeyboardButtonData(fallback[0], strconv.FormatInt(userID, 10)+";"+successUUID),
 		}, fallback

@@ -3,13 +3,14 @@ package handlers
 import "time"
 
 const (
-	panelExamplesPageSize = 5
-	panelLanguagePageSize = 6
-	panelPreviewMaxLen    = 80
-	panelMaxInputLen      = 4096
-	panelLLMExamplesCap   = 20
-	panelValueInherit     = "inherit"
-	panelChatTypePrivate  = "private"
+	panelExamplesPageSize   = 5
+	panelLanguagePageSize   = 6
+	panelPreviewMaxLen      = 80
+	panelMaxInputLen        = 4096
+	panelLLMExamplesCap     = 20
+	panelValueInherit       = "inherit"
+	panelChatTypePrivate    = "private"
+	panelChatTypeSupergroup = "supergroup"
 )
 
 var (

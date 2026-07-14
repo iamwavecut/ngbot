@@ -6,6 +6,8 @@ import (
 	"github.com/iamwavecut/ngbot/internal/db"
 )
 
+const normalizedTestUsername = "some_user"
+
 func TestParseNotSpammerReference(t *testing.T) {
 	t.Parallel()
 
@@ -19,13 +21,13 @@ func TestParseNotSpammerReference(t *testing.T) {
 			name:      "username with at",
 			input:     "@Some_User",
 			wantType:  db.NotSpammerMatchTypeUsername,
-			wantValue: "some_user",
+			wantValue: normalizedTestUsername,
 		},
 		{
 			name:      "username without at",
 			input:     "Some_User",
 			wantType:  db.NotSpammerMatchTypeUsername,
-			wantValue: "some_user",
+			wantValue: normalizedTestUsername,
 		},
 		{
 			name:      "numeric user id",
@@ -37,25 +39,25 @@ func TestParseNotSpammerReference(t *testing.T) {
 			name:      "tme profile",
 			input:     "https://t.me/Some_User",
 			wantType:  db.NotSpammerMatchTypeUsername,
-			wantValue: "some_user",
+			wantValue: normalizedTestUsername,
 		},
 		{
 			name:      "bare tme profile",
 			input:     "t.me/Some_User",
 			wantType:  db.NotSpammerMatchTypeUsername,
-			wantValue: "some_user",
+			wantValue: normalizedTestUsername,
 		},
 		{
 			name:      "telegram me profile",
 			input:     "https://telegram.me/Some_User",
 			wantType:  db.NotSpammerMatchTypeUsername,
-			wantValue: "some_user",
+			wantValue: normalizedTestUsername,
 		},
 		{
 			name:      "tg resolve profile",
 			input:     "tg://resolve?domain=Some_User",
 			wantType:  db.NotSpammerMatchTypeUsername,
-			wantValue: "some_user",
+			wantValue: normalizedTestUsername,
 		},
 		{
 			name:      "tg user id profile",

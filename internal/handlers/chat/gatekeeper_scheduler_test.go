@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"testing"
 	"time"
@@ -14,6 +15,22 @@ type testGatekeeperStore struct {
 	joiners      []*db.RecentJoiner
 	processed    []testProcessedJoiner
 	isNotSpammer bool
+}
+
+func TestTelegramActionAlreadyAppliedRecognizesRecoveredJoinQuery(t *testing.T) {
+	t.Parallel()
+
+	for _, message := range []string{
+		"Bad Request: query is too old and response timeout expired or query ID is invalid",
+		"Bad Request: QUERY_ID_INVALID",
+	} {
+		if !isTelegramActionAlreadyApplied(errors.New(message)) {
+			t.Fatalf("expected recovered join query error to be idempotent: %q", message)
+		}
+	}
+	if isTelegramActionAlreadyApplied(errors.New("Bad Request: chat admin required")) {
+		t.Fatal("unexpected transient or permission error classified as already applied")
+	}
 }
 
 type testProcessedJoiner struct {
@@ -42,12 +59,44 @@ func (s *testGatekeeperStore) GetPassedJoinRequestChallengeByChatUser(context.Co
 	return nil, nil
 }
 
-func (s *testGatekeeperStore) UpdateChallenge(context.Context, *db.Challenge) error {
-	return nil
+func (s *testGatekeeperStore) RecordWrongAttempt(context.Context, string, int) (int, string, bool, error) {
+	return 0, "", false, nil
 }
 
-func (s *testGatekeeperStore) DeleteChallenge(context.Context, int64, int64, int64) error {
-	return nil
+func (s *testGatekeeperStore) ClaimForApproval(context.Context, string) (bool, error) {
+	return false, nil
+}
+
+func (s *testGatekeeperStore) BeginDMFallback(context.Context, string) (bool, error) {
+	return false, nil
+}
+
+func (s *testGatekeeperStore) AttachChallengeMessage(context.Context, string, string, int) (bool, error) {
+	return false, nil
+}
+
+func (s *testGatekeeperStore) AttachJoinMessage(context.Context, string, string, int) (bool, error) {
+	return false, nil
+}
+
+func (s *testGatekeeperStore) PrepareDMFallback(context.Context, string, string, string, time.Time) (bool, error) {
+	return false, nil
+}
+
+func (s *testGatekeeperStore) CompleteExternalAction(context.Context, string, string, string, time.Time) (bool, error) {
+	return false, nil
+}
+
+func (s *testGatekeeperStore) ScheduleChallengeRetry(context.Context, string, string, time.Time, string) (bool, error) {
+	return false, nil
+}
+
+func (s *testGatekeeperStore) DeleteChallengeInstance(context.Context, string, string) (bool, error) {
+	return false, nil
+}
+
+func (s *testGatekeeperStore) GetDueChallenges(context.Context, time.Time) ([]*db.Challenge, error) {
+	return nil, nil
 }
 
 func (s *testGatekeeperStore) GetExpiredChallenges(context.Context, time.Time) ([]*db.Challenge, error) {
@@ -56,14 +105,6 @@ func (s *testGatekeeperStore) GetExpiredChallenges(context.Context, time.Time) (
 
 func (s *testGatekeeperStore) MarkWebAppChallengeOpened(context.Context, string, time.Time) error {
 	return nil
-}
-
-func (s *testGatekeeperStore) ClaimWebAppChallengeForFallback(context.Context, int64, int64, int64) (bool, error) {
-	return false, nil
-}
-
-func (s *testGatekeeperStore) ClaimWebAppChallengeForApproval(context.Context, string) (bool, error) {
-	return false, nil
 }
 
 func (s *testGatekeeperStore) GetUnopenedWebAppChallenges(context.Context, time.Time) ([]*db.Challenge, error) {
@@ -154,6 +195,7 @@ func TestProcessNewChatMembersNotSpammerOverrideBypassesBanCheck(t *testing.T) {
 	}
 	banChecker := &testGatekeeperBanChecker{}
 	gatekeeper := &Gatekeeper{
+		bot:        botAPI,
 		s:          &testBotService{botAPI: botAPI},
 		store:      store,
 		config:     &config.Config{},

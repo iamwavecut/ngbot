@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Check formatting
+        run: test -z "$(go tool gofumpt -l .)"
+      - name: Check modules
+        run: go mod tidy -diff
+      - name: Check whitespace
+        run: git diff --check
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test ./...
+      - name: Race test
+        run: go test -race ./...
+      - name: Shuffle test
+        run: go test -shuffle=on ./...
+      - name: Lint
+        run: go tool golangci-lint run --enable=unused --enable=unparam --enable=ineffassign --enable=goconst ./...
+      - name: Vulnerability scan
+        run: go tool govulncheck ./...
+      - name: Build container
+        run: docker build .

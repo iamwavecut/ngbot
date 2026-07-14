@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/iamwavecut/ngbot/internal/adapters/llm"
 	log "github.com/sirupsen/logrus"
@@ -25,11 +26,11 @@ func TestSpamDetectorIncludesExtraExamplesInPrompt(t *testing.T) {
 	llmStub := &spamDetectorTestLLM{
 		response: llm.ChatCompletionResponse{
 			Choices: []llm.ChatCompletionChoice{
-				{Message: llm.ChatCompletionMessage{Role: "assistant", Content: "0"}},
+				{Message: llm.ChatCompletionMessage{Role: llm.RoleAssistant, Content: "0"}},
 			},
 		},
 	}
-	detector := NewSpamDetector(llmStub, log.New().WithField("test", "spam_detector"))
+	detector := NewSpamDetector(llmStub, log.New().WithField("test", "spam_detector"), time.Minute)
 
 	candidate := "candidate message"
 	extra := "custom spam example"
@@ -51,19 +52,19 @@ func TestSpamDetectorIncludesExtraExamplesInPrompt(t *testing.T) {
 		t.Fatalf("expected built-in few-shot example prefix to be cacheable")
 	}
 	tail := llmStub.lastMessages[len(llmStub.lastMessages)-3:]
-	if tail[0].Role != "user" || tail[0].Content != extra {
+	if tail[0].Role != llm.RoleUser || tail[0].Content != extra {
 		t.Fatalf("expected extra example user message, got %#v", tail[0])
 	}
 	if tail[0].Cacheable {
 		t.Fatalf("expected extra example user message to stay live")
 	}
-	if tail[1].Role != "assistant" || tail[1].Content != "1" {
+	if tail[1].Role != llm.RoleAssistant || tail[1].Content != "1" {
 		t.Fatalf("expected extra example assistant response \"1\", got %#v", tail[1])
 	}
 	if tail[1].Cacheable {
 		t.Fatalf("expected extra example assistant response to stay live")
 	}
-	if tail[2].Role != "user" || tail[2].Content != candidate {
+	if tail[2].Role != llm.RoleUser || tail[2].Content != candidate {
 		t.Fatalf("expected candidate message at tail, got %#v", tail[2])
 	}
 	if tail[2].Cacheable {
@@ -77,11 +78,11 @@ func TestSpamDetectorUsesReportedPromptForReportedSpam(t *testing.T) {
 	llmStub := &spamDetectorTestLLM{
 		response: llm.ChatCompletionResponse{
 			Choices: []llm.ChatCompletionChoice{
-				{Message: llm.ChatCompletionMessage{Role: "assistant", Content: "1"}},
+				{Message: llm.ChatCompletionMessage{Role: llm.RoleAssistant, Content: "1"}},
 			},
 		},
 	}
-	detector := NewSpamDetector(llmStub, log.New().WithField("test", "spam_detector"))
+	detector := NewSpamDetector(llmStub, log.New().WithField("test", "spam_detector"), time.Minute)
 
 	candidate := "reported message"
 	result, err := detector.IsReportedSpam(context.Background(), candidate, nil)

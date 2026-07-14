@@ -13,6 +13,9 @@ import (
 func (c *sqliteClient) UpsertChatManager(ctx context.Context, manager *db.ChatManager) error {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
+	if err := c.ensureChat(ctx, manager.ChatID); err != nil {
+		return err
+	}
 
 	query := `
 		INSERT INTO chat_managers (chat_id, user_id, can_manage_chat, can_promote_members, can_restrict_members, updated_at)
@@ -23,7 +26,8 @@ func (c *sqliteClient) UpsertChatManager(ctx context.Context, manager *db.ChatMa
 		can_restrict_members = ?,
 		updated_at = ?
 	`
-	_, err := c.db.ExecContext(ctx, query,
+	_, err := c.db.ExecContext(
+		ctx, query,
 		manager.ChatID,
 		manager.UserID,
 		manager.CanManageChat,
@@ -63,6 +67,9 @@ func (c *sqliteClient) GetChatManager(ctx context.Context, chatID int64, userID 
 func (c *sqliteClient) SetChatBotMembership(ctx context.Context, membership *db.ChatBotMembership) error {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
+	if err := c.ensureChat(ctx, membership.ChatID); err != nil {
+		return err
+	}
 
 	query := `
 		INSERT INTO chat_bot_membership (chat_id, is_member, updated_at)
@@ -71,7 +78,8 @@ func (c *sqliteClient) SetChatBotMembership(ctx context.Context, membership *db.
 		is_member = ?,
 		updated_at = ?
 	`
-	_, err := c.db.ExecContext(ctx, query,
+	_, err := c.db.ExecContext(
+		ctx, query,
 		membership.ChatID,
 		membership.IsMember,
 		membership.UpdatedAt,
@@ -102,12 +110,16 @@ func (c *sqliteClient) GetChatBotMembership(ctx context.Context, chatID int64) (
 func (c *sqliteClient) CreateAdminPanelSession(ctx context.Context, session *db.AdminPanelSession) (*db.AdminPanelSession, error) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
+	if err := c.ensureChat(ctx, session.ChatID); err != nil {
+		return nil, err
+	}
 
 	query := `
 		INSERT INTO admin_panel_sessions (user_id, chat_id, page, state_json, message_id, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
 	`
-	result, err := c.db.ExecContext(ctx, query,
+	result, err := c.db.ExecContext(
+		ctx, query,
 		session.UserID,
 		session.ChatID,
 		session.Page,
@@ -195,7 +207,8 @@ func (c *sqliteClient) UpdateAdminPanelSession(ctx context.Context, session *db.
 		SET page = ?, state_json = ?, message_id = ?, updated_at = ?
 		WHERE id = ?
 	`
-	_, err := c.db.ExecContext(ctx, query,
+	_, err := c.db.ExecContext(
+		ctx, query,
 		session.Page,
 		session.StateJSON,
 		session.MessageID,
@@ -231,7 +244,7 @@ func (c *sqliteClient) GetExpiredAdminPanelSessions(ctx context.Context, before 
 	if err != nil {
 		return nil, fmt.Errorf("failed to query expired admin panel sessions: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var sessions []*db.AdminPanelSession
 	for rows.Next() {
@@ -295,6 +308,9 @@ func (c *sqliteClient) DeleteAdminPanelCommandsBySession(ctx context.Context, se
 func (c *sqliteClient) CreateChatSpamExample(ctx context.Context, example *db.ChatSpamExample) (*db.ChatSpamExample, error) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
+	if err := c.ensureChat(ctx, example.ChatID); err != nil {
+		return nil, err
+	}
 
 	query := `
 		INSERT INTO chat_spam_examples (chat_id, text, created_by_user_id, created_at)
@@ -310,6 +326,13 @@ func (c *sqliteClient) CreateChatSpamExample(ctx context.Context, example *db.Ch
 	}
 	example.ID = id
 	return example, nil
+}
+
+func (c *sqliteClient) ensureChat(ctx context.Context, chatID int64) error {
+	if _, err := c.db.ExecContext(ctx, `INSERT INTO chats (id) VALUES (?) ON CONFLICT(id) DO NOTHING`, chatID); err != nil {
+		return fmt.Errorf("ensure chat %d: %w", chatID, err)
+	}
+	return nil
 }
 
 func (c *sqliteClient) GetChatSpamExample(ctx context.Context, id int64) (*db.ChatSpamExample, error) {
@@ -342,7 +365,7 @@ func (c *sqliteClient) ListChatSpamExamples(ctx context.Context, chatID int64, l
 	if err != nil {
 		return nil, fmt.Errorf("failed to list chat spam examples: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var examples []*db.ChatSpamExample
 	for rows.Next() {

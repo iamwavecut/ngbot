@@ -6,9 +6,46 @@ import (
 	"testing"
 
 	api "github.com/OvyFlash/telegram-bot-api"
+	"github.com/iamwavecut/ngbot/internal/config"
 	"github.com/iamwavecut/ngbot/internal/db"
 	moderation "github.com/iamwavecut/ngbot/internal/handlers/moderation"
 )
+
+func TestDiagnosticCommandAuthorization(t *testing.T) {
+	t.Parallel()
+
+	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
+		if method != testTelegramMethodGetChatMember {
+			t.Fatalf("unexpected bot method: %s", method)
+		}
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("parse form: %v", err)
+		}
+		if r.Form.Get("user_id") == "100" {
+			return testChatMemberResponse("administrator", false, false, false)
+		}
+		return testChatMemberResponse("member", false, false, false)
+	})
+	reactor := &Reactor{
+		bot:    botAPI,
+		config: Config{SpamControl: config.SpamControl{DebugUserID: 42}},
+	}
+	privateChat := &api.Chat{ID: 42, Type: "private"}
+	groupChat := &api.Chat{ID: -100, Type: "supergroup"}
+
+	if !reactor.diagnosticCommandAllowed(t.Context(), privateChat, &api.User{ID: 42}) {
+		t.Fatal("configured debug user should be authorized in private chat")
+	}
+	if reactor.diagnosticCommandAllowed(t.Context(), privateChat, &api.User{ID: 99}) {
+		t.Fatal("non-debug user should be denied in private chat")
+	}
+	if !reactor.diagnosticCommandAllowed(t.Context(), groupChat, &api.User{ID: 100}) {
+		t.Fatal("source-chat administrator should be authorized")
+	}
+	if reactor.diagnosticCommandAllowed(t.Context(), groupChat, &api.User{ID: 101}) {
+		t.Fatal("regular source-chat member should be denied")
+	}
+}
 
 func TestCommandTargetsCurrentBot(t *testing.T) {
 	t.Parallel()
@@ -163,6 +200,7 @@ func TestVoteBanCommandRoutesByRestrictPermissionAfterReportCheck(t *testing.T) 
 					botAPI:   botAPI,
 					language: "en",
 				},
+				bot:          botAPI,
 				spamDetector: detector,
 				processBanned: func(_ context.Context, gotMsg *api.Message, gotChat *api.Chat, lang string) (*moderation.ProcessingResult, error) {
 					bannedCalls++
@@ -254,6 +292,7 @@ func TestVoteBanCommandCommunityVotingDisabledSkipsProcessing(t *testing.T) {
 			botAPI:   botAPI,
 			language: "en",
 		},
+		bot:          botAPI,
 		spamDetector: &testSpamDetector{reportedResult: boolPtr(false)},
 		processBanned: func(context.Context, *api.Message, *api.Chat, string) (*moderation.ProcessingResult, error) {
 			bannedCalls++
@@ -301,6 +340,7 @@ func TestBanCommandIsIgnored(t *testing.T) {
 		s: &testBotService{
 			botAPI: botAPI,
 		},
+		bot: botAPI,
 	}
 
 	if err := reactor.handleCommand(context.Background(), msg, chat, actor, &db.Settings{CommunityVotingEnabled: true}); err != nil {
@@ -346,6 +386,7 @@ func TestVoteBanCommandWithoutReplySendsUsageHelp(t *testing.T) {
 			botAPI:   botAPI,
 			language: "en",
 		},
+		bot: botAPI,
 	}
 
 	if err := reactor.voteBanCommand(context.Background(), command, chat, actor, &db.Settings{CommunityVotingEnabled: true}); err != nil {
@@ -398,6 +439,7 @@ func TestVoteBanCommandLLMSpamBansImmediatelyAndDeletesReportMessage(t *testing.
 			botAPI:   botAPI,
 			language: "en",
 		},
+		bot:          botAPI,
 		spamDetector: &testSpamDetector{reportedResult: boolPtr(true)},
 		processBanned: func(_ context.Context, gotMsg *api.Message, gotChat *api.Chat, lang string) (*moderation.ProcessingResult, error) {
 			bannedCalls++
@@ -458,6 +500,7 @@ func TestMessageMentionCurrentBotTriggersReportFlow(t *testing.T) {
 			language: "en",
 			settings: &db.Settings{CommunityVotingEnabled: true},
 		},
+		bot:          botAPI,
 		store:        &testReactorStore{},
 		spamDetector: &testSpamDetector{reportedResult: boolPtr(false)},
 		processReported: func(_ context.Context, gotMsg *api.Message, gotReport *api.Message, gotChat *api.Chat, lang string) (*moderation.ProcessingResult, error) {

@@ -59,6 +59,7 @@ func TestStartJoinRequestWebAppChallengeStoresUserLanguage(t *testing.T) {
 
 	store := newGatekeeperFlowStore()
 	gatekeeper := &Gatekeeper{
+		bot:        botAPI,
 		s:          &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI, language: "en"}, settings: webAppSettings()},
 		store:      store,
 		config:     &config.Config{GatekeeperWebApp: config.GatekeeperWebApp{PublicURL: "https://guard.example"}},
@@ -127,6 +128,7 @@ func TestUnopenedWebAppFallbackCarriesUserLanguage(t *testing.T) {
 	}
 
 	gatekeeper := &Gatekeeper{
+		bot: botAPI,
 		s: &gatekeeperTestService{
 			testBotService: testBotService{botAPI: botAPI, language: "en"},
 			settings: &db.Settings{

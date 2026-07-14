@@ -30,7 +30,7 @@ func Init() {
 		log.WithField("error", err.Error()).Errorln("cant load translations")
 		return
 	}
-	if err := yaml.Unmarshal(i18n, &(state.translations)); err != nil {
+	if err := yaml.Unmarshal(i18n, &state.translations); err != nil {
 		log.WithField("error", err.Error()).Errorln("cant unmarshal translations")
 		return
 	}
@@ -52,7 +52,7 @@ func GetLanguagesList() []string {
 }
 
 func Get(key, lang string) string {
-	if "en" == lang {
+	if lang == "en" {
 		return key
 	}
 	if res, ok := state.translations[key][strings.ToUpper(lang)]; ok {

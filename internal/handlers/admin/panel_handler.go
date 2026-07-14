@@ -37,7 +37,7 @@ func (a *Admin) handleSettingsCommand(ctx context.Context, msg *api.Message, cha
 	if chat.Type == panelChatTypePrivate {
 		reply := api.NewMessage(chat.ID, i18n.Get("Please run /settings in the group first", lang))
 		reply.DisableNotification = true
-		_, _ = a.s.GetBot().Send(reply)
+		_, _ = bot.Send(ctx, a.bot, reply)
 		return nil
 	}
 	if chat.Type != "group" && chat.Type != "supergroup" {
@@ -56,13 +56,13 @@ func (a *Admin) handleSettingsCommand(ctx context.Context, msg *api.Message, cha
 	stopTyping := a.startTyping(ctx, chat.ID)
 	defer stopTyping()
 
-	placeholder, err := a.sendPlaceholder(chat.ID, lang)
+	placeholder, err := a.sendPlaceholder(ctx, chat.ID, lang)
 	if err != nil {
 		a.handleBotMembershipError(ctx, chat.ID, err)
 		return nil
 	}
 
-	member, err := a.getChatMember(chat.ID, user.ID)
+	member, err := a.getChatMember(ctx, chat.ID, user.ID)
 	if err != nil {
 		a.handleBotMembershipError(ctx, chat.ID, err)
 		_ = a.deleteGroupMessage(ctx, chat.ID, msg.MessageID)
@@ -89,7 +89,7 @@ func (a *Admin) handleSettingsCommand(ctx context.Context, msg *api.Message, cha
 	}
 
 	encodedChatID := encodeChatID(chat.ID)
-	link := fmt.Sprintf("https://t.me/%s?start=settings_%s", a.s.GetBot().Self.UserName, encodedChatID)
+	link := fmt.Sprintf("https://t.me/%s?start=settings_%s", a.bot.Self.UserName, encodedChatID)
 	text := i18n.Get("Open settings in private chat", lang)
 
 	delPayload := fmt.Sprintf("del_%s_%s", encodedChatID, encodeMessageID(msg.MessageID))
@@ -102,7 +102,7 @@ func (a *Admin) handleSettingsCommand(ctx context.Context, msg *api.Message, cha
 
 	edit := api.NewEditMessageText(chat.ID, placeholder.MessageID, text)
 	edit.ReplyMarkup = &keyboard
-	if _, err := a.s.GetBot().Send(edit); err != nil {
+	if _, err := bot.Send(ctx, a.bot, edit); err != nil {
 		a.handleBotMembershipError(ctx, chat.ID, err)
 		return nil
 	}
@@ -125,7 +125,7 @@ func (a *Admin) handleStartSettings(ctx context.Context, msg *api.Message, chat 
 	defer stopTyping()
 
 	lang := a.s.GetLanguage(ctx, chat.ID, user)
-	placeholder, err := a.sendPlaceholder(chat.ID, lang)
+	placeholder, err := a.sendPlaceholder(ctx, chat.ID, lang)
 	if err != nil {
 		return nil
 	}
@@ -133,7 +133,7 @@ func (a *Admin) handleStartSettings(ctx context.Context, msg *api.Message, chat 
 	encodedChatID := strings.TrimPrefix(payload, "settings_")
 	targetChatID, err := decodeChatID(encodedChatID)
 	if err != nil {
-		_ = a.editMessage(chat.ID, placeholder.MessageID, i18n.Get("No access", lang), nil)
+		_ = a.editMessage(ctx, chat.ID, placeholder.MessageID, i18n.Get("No access", lang), nil)
 		return nil
 	}
 
@@ -142,7 +142,7 @@ func (a *Admin) handleStartSettings(ctx context.Context, msg *api.Message, chat 
 		entry.WithField("error", err.Error()).Error("failed to load bot membership")
 	}
 	if membership == nil || !membership.IsMember {
-		_ = a.editMessage(chat.ID, placeholder.MessageID, i18n.Get("Please run /settings in the group first", lang), nil)
+		_ = a.editMessage(ctx, chat.ID, placeholder.MessageID, i18n.Get("Please run /settings in the group first", lang), nil)
 		return nil
 	}
 
@@ -151,18 +151,18 @@ func (a *Admin) handleStartSettings(ctx context.Context, msg *api.Message, chat 
 		entry.WithField("error", err.Error()).Error("failed to load chat manager")
 	}
 	if manager == nil {
-		_ = a.editMessage(chat.ID, placeholder.MessageID, i18n.Get("No access", lang), nil)
+		_ = a.editMessage(ctx, chat.ID, placeholder.MessageID, i18n.Get("No access", lang), nil)
 		return nil
 	}
 
-	member, err := a.getChatMember(targetChatID, user.ID)
+	member, err := a.getChatMember(ctx, targetChatID, user.ID)
 	if err != nil {
 		a.handleBotMembershipError(ctx, targetChatID, err)
-		_ = a.editMessage(chat.ID, placeholder.MessageID, i18n.Get("No access", lang), nil)
+		_ = a.editMessage(ctx, chat.ID, placeholder.MessageID, i18n.Get("No access", lang), nil)
 		return nil
 	}
 	if !permissions.IsManager(member) {
-		_ = a.editMessage(chat.ID, placeholder.MessageID, i18n.Get("No access", lang), nil)
+		_ = a.editMessage(ctx, chat.ID, placeholder.MessageID, i18n.Get("No access", lang), nil)
 		return nil
 	}
 
@@ -177,12 +177,12 @@ func (a *Admin) handleStartSettings(ctx context.Context, msg *api.Message, chat 
 	settings, err := a.s.GetSettings(ctx, targetChatID)
 	if err != nil {
 		entry.WithField("error", err.Error()).Error("failed to load settings")
-		_ = a.editMessage(chat.ID, placeholder.MessageID, i18n.Get("No access", lang), nil)
+		_ = a.editMessage(ctx, chat.ID, placeholder.MessageID, i18n.Get("No access", lang), nil)
 		return nil
 	}
 
 	chatTitle := ""
-	targetChat, err := a.s.GetBot().GetChat(api.ChatInfoConfig{
+	targetChat, err := bot.GetChat(ctx, a.bot, api.ChatInfoConfig{
 		ChatConfig: api.ChatConfig{
 			ChatID: targetChatID,
 		},
@@ -206,7 +206,7 @@ func (a *Admin) handleStartSettings(ctx context.Context, msg *api.Message, chat 
 	session, err = a.store.CreateAdminPanelSession(ctx, session)
 	if err != nil {
 		entry.WithField("error", err.Error()).Error("failed to create admin panel session")
-		_ = a.editMessage(chat.ID, placeholder.MessageID, i18n.Get("No access", lang), nil)
+		_ = a.editMessage(ctx, chat.ID, placeholder.MessageID, i18n.Get("No access", lang), nil)
 		return nil
 	}
 	state.SessionID = session.ID
@@ -239,12 +239,12 @@ func (a *Admin) handlePanelCallback(ctx context.Context, cq *api.CallbackQuery, 
 		if cq.Message != nil {
 			lang = a.s.GetLanguage(ctx, cq.Message.Chat.ID, user)
 		}
-		a.answerCallback(cq.ID, i18n.Get("Session expired", lang))
+		a.answerCallback(ctx, cq.ID, i18n.Get("Session expired", lang))
 		return true, nil
 	}
 
 	if session.UserID != user.ID {
-		a.answerCallback(cq.ID, i18n.Get("No access", a.s.GetLanguage(ctx, session.ChatID, user)))
+		a.answerCallback(ctx, cq.ID, i18n.Get("No access", a.s.GetLanguage(ctx, session.ChatID, user)))
 		return true, nil
 	}
 
@@ -262,7 +262,7 @@ func (a *Admin) handlePanelCallback(ctx context.Context, cq *api.CallbackQuery, 
 	}
 
 	if command.Action == panelActionCloseConfirm {
-		a.answerCallback(cq.ID, "")
+		a.answerCallback(ctx, cq.ID, "")
 		return true, a.closePanelSession(ctx, session)
 	}
 
@@ -274,7 +274,7 @@ func (a *Admin) handlePanelCallback(ctx context.Context, cq *api.CallbackQuery, 
 		return true, err
 	}
 
-	a.answerCallback(cq.ID, "")
+	a.answerCallback(ctx, cq.ID, "")
 	return true, a.renderAndUpdatePanel(ctx, session, state, session.MessageID)
 }
 
@@ -343,7 +343,7 @@ func (a *Admin) handlePanelInput(ctx context.Context, msg *api.Message, chat *ap
 		}
 
 		if session.MessageID != 0 {
-			_ = bot.DeleteChatMessage(ctx, a.s.GetBot(), user.ID, session.MessageID)
+			_ = bot.DeleteChatMessage(ctx, a.bot, user.ID, session.MessageID)
 		}
 
 		state.Page = panelPageExamplesList
@@ -351,7 +351,7 @@ func (a *Admin) handlePanelInput(ctx context.Context, msg *api.Message, chat *ap
 		state.PromptError = ""
 		state.SelectedExampleID = 0
 
-		newMsg, err := a.sendPlaceholder(user.ID, state.Language)
+		newMsg, err := a.sendPlaceholder(ctx, user.ID, state.Language)
 		if err != nil {
 			return true, err
 		}
@@ -388,7 +388,7 @@ func (a *Admin) handlePanelInput(ctx context.Context, msg *api.Message, chat *ap
 		}
 
 		if session.MessageID != 0 {
-			_ = bot.DeleteChatMessage(ctx, a.s.GetBot(), user.ID, session.MessageID)
+			_ = bot.DeleteChatMessage(ctx, a.bot, user.ID, session.MessageID)
 		}
 
 		state.Page = panelPageIndulgenceList
@@ -396,7 +396,7 @@ func (a *Admin) handlePanelInput(ctx context.Context, msg *api.Message, chat *ap
 		state.PromptError = ""
 		state.SelectedIndulgenceID = 0
 
-		newMsg, err := a.sendPlaceholder(user.ID, state.Language)
+		newMsg, err := a.sendPlaceholder(ctx, user.ID, state.Language)
 		if err != nil {
 			return true, err
 		}

@@ -9,8 +9,6 @@ import (
 	api "github.com/OvyFlash/telegram-bot-api"
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
-
-	"github.com/iamwavecut/ngbot/internal/config"
 )
 
 const (
@@ -60,25 +58,16 @@ const (
 	MessageTypeChatBoost         MessageType = "chat_boost"
 )
 
-var registeredHandlers = make(map[string]Handler)
-
-func RegisterUpdateHandler(title string, handler Handler) {
-	registeredHandlers[title] = handler
-}
-
-func NewUpdateProcessor(s Service) *UpdateProcessor {
-	enabledHandlers := make([]Handler, 0)
-	for _, handlerName := range config.Get().EnabledHandlers {
-		if _, ok := registeredHandlers[handlerName]; !ok || registeredHandlers[handlerName] == nil {
-			log.Warnf("no registered handler: %s", handlerName)
-			continue
+func NewUpdateProcessor(s Service, handlers ...Handler) *UpdateProcessor {
+	updateHandlers := make([]Handler, 0, len(handlers))
+	for _, handler := range handlers {
+		if handler != nil {
+			updateHandlers = append(updateHandlers, handler)
 		}
-		enabledHandlers = append(enabledHandlers, registeredHandlers[handlerName])
 	}
-
 	return &UpdateProcessor{
 		s:              s,
-		updateHandlers: enabledHandlers,
+		updateHandlers: updateHandlers,
 	}
 }
 
@@ -168,7 +157,7 @@ func DeleteChatMessage(ctx context.Context, bot *api.BotAPI, chatID int64, messa
 	case <-ctx.Done():
 		return ctx.Err()
 	default:
-		if _, err := bot.Request(api.NewDeleteMessage(chatID, messageID)); err != nil {
+		if _, err := bot.RequestWithContext(ctx, api.NewDeleteMessage(chatID, messageID)); err != nil {
 			return err
 		}
 		return nil
@@ -180,7 +169,7 @@ func BanUserFromChat(ctx context.Context, bot *api.BotAPI, userID int64, chatID 
 	case <-ctx.Done():
 		return ctx.Err()
 	default:
-		if _, err := bot.Request(api.BanChatMemberConfig{
+		if _, err := bot.RequestWithContext(ctx, api.BanChatMemberConfig{
 			ChatMemberConfig: api.ChatMemberConfig{
 				ChatConfig: api.ChatConfig{
 					ChatID: chatID,
@@ -201,7 +190,7 @@ func RestrictChatting(ctx context.Context, bot *api.BotAPI, userID int64, chatID
 	case <-ctx.Done():
 		return ctx.Err()
 	default:
-		if _, err := bot.Request(api.RestrictChatMemberConfig{
+		if _, err := bot.RequestWithContext(ctx, api.RestrictChatMemberConfig{
 			ChatMemberConfig: api.ChatMemberConfig{
 				ChatConfig: api.ChatConfig{
 					ChatID: chatID,
@@ -237,7 +226,7 @@ func UnrestrictChatting(ctx context.Context, bot *api.BotAPI, userID int64, chat
 	case <-ctx.Done():
 		return ctx.Err()
 	default:
-		if _, err := bot.Request(api.RestrictChatMemberConfig{
+		if _, err := bot.RequestWithContext(ctx, api.RestrictChatMemberConfig{
 			ChatMemberConfig: api.ChatMemberConfig{
 				ChatConfig: api.ChatConfig{
 					ChatID: chatID,
@@ -273,7 +262,7 @@ func ApproveJoinRequest(ctx context.Context, bot *api.BotAPI, userID int64, chat
 	case <-ctx.Done():
 		return ctx.Err()
 	default:
-		if _, err := bot.Request(api.ApproveChatJoinRequestConfig{
+		if _, err := bot.RequestWithContext(ctx, api.ApproveChatJoinRequestConfig{
 			ChatConfig: api.ChatConfig{
 				ChatID: chatID,
 			},
@@ -290,7 +279,7 @@ func DeclineJoinRequest(ctx context.Context, bot *api.BotAPI, userID int64, chat
 	case <-ctx.Done():
 		return ctx.Err()
 	default:
-		if _, err := bot.Request(api.DeclineChatJoinRequest{
+		if _, err := bot.RequestWithContext(ctx, api.DeclineChatJoinRequest{
 			ChatConfig: api.ChatConfig{
 				ChatID: chatID,
 			},
@@ -303,27 +292,17 @@ func DeclineJoinRequest(ctx context.Context, bot *api.BotAPI, userID int64, chat
 }
 
 func AnswerJoinRequestQuery(ctx context.Context, bot *api.BotAPI, queryID string, result string) error {
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	default:
-		if _, err := bot.AnswerChatJoinRequestQuery(api.NewAnswerChatJoinRequestQuery(queryID, result)); err != nil {
-			return errors.WithMessage(err, "cant answer join request query")
-		}
-		return nil
+	if _, err := bot.RequestWithContext(ctx, api.NewAnswerChatJoinRequestQuery(queryID, result)); err != nil {
+		return errors.WithMessage(err, "cant answer join request query")
 	}
+	return nil
 }
 
 func SendJoinRequestWebApp(ctx context.Context, bot *api.BotAPI, queryID string, webAppURL string) error {
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	default:
-		if _, err := bot.SendChatJoinRequestWebApp(api.NewSendChatJoinRequestWebApp(queryID, webAppURL)); err != nil {
-			return errors.WithMessage(err, "cant send join request web app")
-		}
-		return nil
+	if _, err := bot.RequestWithContext(ctx, api.NewSendChatJoinRequestWebApp(queryID, webAppURL)); err != nil {
+		return errors.WithMessage(err, "cant send join request web app")
 	}
+	return nil
 }
 
 func GetUN(user *api.User) string {

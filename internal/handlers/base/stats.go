@@ -12,7 +12,7 @@ import (
 
 type StatsStore interface {
 	GetKV(ctx context.Context, key string) (string, error)
-	SetKV(ctx context.Context, key string, value string) error
+	IncrementKVInt(ctx context.Context, key string, delta int) error
 }
 
 type ChatStatsSummary struct {
@@ -46,17 +46,7 @@ func IncrementDailyStatAt(ctx context.Context, store StatsStore, chatID int64, m
 	}
 
 	key := StatsKey(chatID, now, metric)
-	raw, err := store.GetKV(ctx, key)
-	if err != nil {
-		return err
-	}
-
-	value, err := parseStatValue(raw)
-	if err != nil {
-		return fmt.Errorf("parse stat value for %s: %w", key, err)
-	}
-
-	return store.SetKV(ctx, key, strconv.Itoa(value+1))
+	return store.IncrementKVInt(ctx, key, 1)
 }
 
 func LoadStatsSummary(ctx context.Context, store StatsStore, chatID int64, now time.Time, days int) (ChatStatsSummary, error) {

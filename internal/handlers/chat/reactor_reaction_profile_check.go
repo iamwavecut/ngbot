@@ -15,10 +15,10 @@ const reactionProfileMessagesLimit = 10
 
 func (r *Reactor) handleMessageReaction(ctx context.Context, reaction *api.MessageReactionUpdated, chat *api.Chat, settings *db.Settings) (bool, error) {
 	entry := r.getLogEntry().WithFields(log.Fields{
-		"method":     "handleMessageReaction",
-		"messageID":  reaction.MessageID,
-		"chat_id":    chat.ID,
-		"chat_title": chat.Title,
+		logFieldMethod: "handleMessageReaction",
+		"messageID":    reaction.MessageID,
+		logFieldChatID: chat.ID,
+		"chat_title":   chat.Title,
 	})
 
 	if settings != nil && !settings.ReactionProfileCheckEnabled {
@@ -47,9 +47,9 @@ func (r *Reactor) handleMessageReaction(ctx context.Context, reaction *api.Messa
 
 func (r *Reactor) moderateReactionUser(ctx context.Context, reaction *api.MessageReactionUpdated, chat *api.Chat, user *api.User, entry *log.Entry) error {
 	entry = entry.WithFields(log.Fields{
-		"actor_type": "user",
-		"actor_id":   user.ID,
-		"username":   user.UserName,
+		"actor_type":     actorTypeUser,
+		"actor_id":       user.ID,
+		logFieldUsername: user.UserName,
 	})
 
 	isMember, err := r.s.IsMember(ctx, chat.ID, user.ID)
@@ -70,7 +70,7 @@ func (r *Reactor) moderateReactionUser(ctx context.Context, reaction *api.Messag
 		return nil
 	}
 
-	member, err := r.s.GetBot().GetChatMember(api.GetChatMemberConfig{
+	member, err := bot.GetChatMember(ctx, r.bot, api.GetChatMemberConfig{
 		ChatConfigWithUser: api.ChatConfigWithUser{
 			ChatConfig: api.ChatConfig{ChatID: chat.ID},
 			UserID:     user.ID,
@@ -95,7 +95,7 @@ func (r *Reactor) moderateReactionUser(ctx context.Context, reaction *api.Messag
 		return r.punishReactionUser(ctx, chat.ID, reaction.MessageID, user.ID, entry)
 	}
 
-	profileText := r.buildReactionUserProfileText(user, entry)
+	profileText := r.buildReactionUserProfileText(ctx, user, entry)
 	if strings.TrimSpace(profileText) == "" {
 		entry.Debug("reaction user profile has no moderation signal")
 		return nil
@@ -125,11 +125,15 @@ func (r *Reactor) moderateReactionUser(ctx context.Context, reaction *api.Messag
 
 func (r *Reactor) moderateReactionActorChat(ctx context.Context, chat *api.Chat, actorChat *api.Chat, entry *log.Entry) error {
 	entry = entry.WithFields(log.Fields{
-		"actor_type": "chat",
-		"actor_id":   actorChat.ID,
-		"username":   actorChat.UserName,
+		"actor_type":     actorTypeChat,
+		"actor_id":       actorChat.ID,
+		logFieldUsername: actorChat.UserName,
 	})
-	profileText := r.buildReactionActorChatProfileText(actorChat, entry)
+	if reason, trusted := r.trustedSenderChatIdentity(ctx, actorChat, chat, false, entry); trusted {
+		entry.WithField("reason", reason).Debug("skipping trusted reaction actor chat")
+		return nil
+	}
+	profileText := r.buildReactionActorChatProfileText(ctx, actorChat, entry)
 	if strings.TrimSpace(profileText) == "" {
 		entry.Debug("reaction actor chat profile has no moderation signal")
 		return nil
@@ -144,13 +148,13 @@ func (r *Reactor) moderateReactionActorChat(ctx context.Context, chat *api.Chat,
 		return nil
 	}
 
-	if _, err := r.s.GetBot().DeleteAllMessageReactions(api.DeleteAllMessageReactionsConfig{
+	if _, err := bot.RequestBool(ctx, r.bot, api.DeleteAllMessageReactionsConfig{
 		ChatConfig:  api.ChatConfig{ChatID: chat.ID},
 		ActorChatID: actorChat.ID,
 	}); err != nil {
 		return fmt.Errorf("delete all actor chat reactions: %w", err)
 	}
-	if _, err := r.s.GetBot().Request(api.BanChatSenderChatConfig{
+	if _, err := r.bot.RequestWithContext(ctx, api.BanChatSenderChatConfig{
 		ChatConfig:   api.ChatConfig{ChatID: chat.ID},
 		SenderChatID: actorChat.ID,
 	}); err != nil {
@@ -161,20 +165,20 @@ func (r *Reactor) moderateReactionActorChat(ctx context.Context, chat *api.Chat,
 }
 
 func (r *Reactor) punishReactionUser(ctx context.Context, chatID int64, messageID int, userID int64, entry *log.Entry) error {
-	if _, err := r.s.GetBot().DeleteAllMessageReactions(api.DeleteAllMessageReactionsConfig{
+	if _, err := bot.RequestBool(ctx, r.bot, api.DeleteAllMessageReactionsConfig{
 		ChatConfig: api.ChatConfig{ChatID: chatID},
 		UserID:     userID,
 	}); err != nil {
 		return fmt.Errorf("delete all user reactions: %w", err)
 	}
-	if err := bot.BanUserFromChat(ctx, r.s.GetBot(), userID, chatID, 0); err != nil {
+	if err := bot.BanUserFromChat(ctx, r.bot, userID, chatID, 0); err != nil {
 		return fmt.Errorf("ban reaction user: %w", err)
 	}
 	entry.WithField("messageID", messageID).Info("Successfully banned reaction user")
 	return nil
 }
 
-func (r *Reactor) buildReactionUserProfileText(user *api.User, entry *log.Entry) string {
+func (r *Reactor) buildReactionUserProfileText(ctx context.Context, user *api.User, entry *log.Entry) string {
 	parts := []string{
 		"Reaction author profile:",
 		"Name: " + bot.GetFullName(user),
@@ -183,7 +187,7 @@ func (r *Reactor) buildReactionUserProfileText(user *api.User, entry *log.Entry)
 		parts = append(parts, "Username: @"+user.UserName)
 	}
 
-	info, err := r.s.GetBot().GetChat(api.ChatInfoConfig{ChatConfig: api.ChatConfig{ChatID: user.ID}})
+	info, err := bot.GetChat(ctx, r.bot, api.ChatInfoConfig{ChatConfig: api.ChatConfig{ChatID: user.ID}})
 	if err != nil {
 		entry.WithError(err).Debug("failed to get reaction user profile")
 	} else {
@@ -193,7 +197,7 @@ func (r *Reactor) buildReactionUserProfileText(user *api.User, entry *log.Entry)
 		}
 	}
 
-	messages, err := r.s.GetBot().GetUserPersonalChatMessages(api.UserPersonalChatMessagesConfig{
+	messages, err := bot.GetUserPersonalChatMessages(ctx, r.bot, api.UserPersonalChatMessagesConfig{
 		UserID: user.ID,
 		Limit:  reactionProfileMessagesLimit,
 	})
@@ -214,7 +218,7 @@ func (r *Reactor) buildReactionUserProfileText(user *api.User, entry *log.Entry)
 	return strings.Join(parts, "\n")
 }
 
-func (r *Reactor) buildReactionActorChatProfileText(actorChat *api.Chat, entry *log.Entry) string {
+func (r *Reactor) buildReactionActorChatProfileText(ctx context.Context, actorChat *api.Chat, entry *log.Entry) string {
 	parts := []string{
 		"Reaction actor chat profile:",
 	}
@@ -222,7 +226,7 @@ func (r *Reactor) buildReactionActorChatProfileText(actorChat *api.Chat, entry *
 		parts = append(parts, short)
 	}
 
-	info, err := r.s.GetBot().GetChat(api.ChatInfoConfig{ChatConfig: api.ChatConfig{ChatID: actorChat.ID}})
+	info, err := bot.GetChat(ctx, r.bot, api.ChatInfoConfig{ChatConfig: api.ChatConfig{ChatID: actorChat.ID}})
 	if err != nil {
 		entry.WithError(err).Debug("failed to get reaction actor chat profile")
 	} else {

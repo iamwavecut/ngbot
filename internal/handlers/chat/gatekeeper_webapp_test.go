@@ -27,7 +27,7 @@ func TestJoinCaptchaAnswerApprovesMatchingTokenUserAndChoice(t *testing.T) {
 	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
 		recorder.record(t, method, r)
 		switch method {
-		case testTelegramMethodJoinRequestQuery:
+		case testTelegramMethodJoinRequestQuery, testTelegramMethodBanChatMember:
 			return true
 		default:
 			t.Fatalf("unexpected bot method: %s", method)
@@ -42,6 +42,7 @@ func TestJoinCaptchaAnswerApprovesMatchingTokenUserAndChoice(t *testing.T) {
 	}
 
 	gatekeeper := &Gatekeeper{
+		bot:        botAPI,
 		s:          &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI, language: "en"}, settings: webAppSettings()},
 		store:      store,
 		config:     &config.Config{},
@@ -95,7 +96,7 @@ func TestHandleJoinCaptchaAnswerConflictsWhenAlreadyClaimed(t *testing.T) {
 		t.Fatalf("create challenge: %v", err)
 	}
 
-	claimed, err := store.ClaimWebAppChallengeForApproval(t.Context(), challenge.WebAppToken)
+	claimed, err := store.ClaimForApproval(t.Context(), challenge.ChallengeID)
 	if err != nil {
 		t.Fatalf("first claim: %v", err)
 	}
@@ -103,11 +104,11 @@ func TestHandleJoinCaptchaAnswerConflictsWhenAlreadyClaimed(t *testing.T) {
 		t.Fatal("expected first approval claim to win")
 	}
 	got := store.onlyChallenge(t)
-	if got.Status != db.ChallengeStatusPassedWaitingMemberJoin {
-		t.Fatalf("expected status to become passed after claim, got %q", got.Status)
+	if got.Status != db.ChallengeStatusApproveQueryPending {
+		t.Fatalf("expected status to become approval-pending after claim, got %q", got.Status)
 	}
 
-	claimed, err = store.ClaimWebAppChallengeForApproval(t.Context(), challenge.WebAppToken)
+	claimed, err = store.ClaimForApproval(t.Context(), challenge.ChallengeID)
 	if err != nil {
 		t.Fatalf("second claim: %v", err)
 	}
@@ -125,7 +126,7 @@ func TestHandleJoinCaptchaAnswerConflictsWhenAlreadyClaimed(t *testing.T) {
 		t.Fatalf("create fallback-claimed challenge: %v", err)
 	}
 
-	claimed, err = store.ClaimWebAppChallengeForApproval(t.Context(), fallback.WebAppToken)
+	claimed, err = store.ClaimForApproval(t.Context(), fallback.ChallengeID)
 	if err != nil {
 		t.Fatalf("claim against fallback-claimed row: %v", err)
 	}
@@ -151,6 +152,7 @@ func TestTestJoinCaptchaCommandSendsWebAppButton(t *testing.T) {
 	botAPI.Self.UserName = "testbot"
 	store := newGatekeeperFlowStore()
 	gatekeeper := &Gatekeeper{
+		bot:    botAPI,
 		s:      &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI, language: "en"}, settings: webAppSettings()},
 		store:  store,
 		config: &config.Config{GatekeeperWebApp: config.GatekeeperWebApp{PublicURL: "https://guard.example"}},
@@ -203,6 +205,7 @@ func TestJoinCaptchaAnswerCompletesTestChallengeWithoutJoinQueryAnswer(t *testin
 		t.Fatalf("create challenge: %v", err)
 	}
 	gatekeeper := &Gatekeeper{
+		bot:        botAPI,
 		s:          &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI, language: "en"}, settings: webAppSettings()},
 		store:      store,
 		config:     &config.Config{},
@@ -589,6 +592,7 @@ func TestJoinCaptchaAnswerRejectsInvalidInitData(t *testing.T) {
 		t.Fatalf("create challenge: %v", err)
 	}
 	gatekeeper := &Gatekeeper{
+		bot:        botAPI,
 		s:          &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI, language: "en"}, settings: webAppSettings()},
 		store:      store,
 		config:     &config.Config{},
@@ -629,6 +633,7 @@ func TestJoinCaptchaAnswerRejectsWrongUser(t *testing.T) {
 		t.Fatalf("create challenge: %v", err)
 	}
 	gatekeeper := &Gatekeeper{
+		bot:        botAPI,
 		s:          &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI, language: "en"}, settings: webAppSettings()},
 		store:      store,
 		config:     &config.Config{},
@@ -669,6 +674,7 @@ func TestJoinCaptchaAnswerIncrementsWrongChoiceWithoutAnsweringQuery(t *testing.
 		t.Fatalf("create challenge: %v", err)
 	}
 	gatekeeper := &Gatekeeper{
+		bot:        botAPI,
 		s:          &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI, language: "en"}, settings: webAppSettings()},
 		store:      store,
 		config:     &config.Config{},
@@ -729,6 +735,7 @@ func TestJoinCaptchaAnswerUsesChallengeLocaleForVisibleErrors(t *testing.T) {
 		t.Fatalf("create challenge: %v", err)
 	}
 	gatekeeper := &Gatekeeper{
+		bot:        botAPI,
 		s:          &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI, language: "en"}, settings: webAppSettings()},
 		store:      store,
 		config:     &config.Config{},
@@ -765,7 +772,7 @@ func TestJoinCaptchaAnswerBlocksAfterTooManyWrongChoices(t *testing.T) {
 	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
 		recorder.record(t, method, r)
 		switch method {
-		case testTelegramMethodJoinRequestQuery:
+		case testTelegramMethodJoinRequestQuery, testTelegramMethodBanChatMember:
 			return true
 		default:
 			t.Fatalf("unexpected bot method: %s", method)
@@ -779,6 +786,7 @@ func TestJoinCaptchaAnswerBlocksAfterTooManyWrongChoices(t *testing.T) {
 		t.Fatalf("create challenge: %v", err)
 	}
 	gatekeeper := &Gatekeeper{
+		bot:        botAPI,
 		s:          &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI, language: "en"}, settings: webAppSettings()},
 		store:      store,
 		config:     &config.Config{},
@@ -825,7 +833,7 @@ func TestJoinCaptchaAnswerDeclinesExpiredChallenge(t *testing.T) {
 	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
 		recorder.record(t, method, r)
 		switch method {
-		case testTelegramMethodJoinRequestQuery:
+		case testTelegramMethodJoinRequestQuery, testTelegramMethodBanChatMember:
 			return true
 		default:
 			t.Fatalf("unexpected bot method: %s", method)
@@ -838,6 +846,7 @@ func TestJoinCaptchaAnswerDeclinesExpiredChallenge(t *testing.T) {
 		t.Fatalf("create challenge: %v", err)
 	}
 	gatekeeper := &Gatekeeper{
+		bot:        botAPI,
 		s:          &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI, language: "en"}, settings: webAppSettings()},
 		store:      store,
 		config:     &config.Config{},
@@ -877,7 +886,7 @@ func TestJoinCaptchaAnswerDeclinesExpiredChallenge(t *testing.T) {
 	}
 }
 
-func TestStartJoinRequestWebAppChallengeQueuesOnSendFailure(t *testing.T) {
+func TestStartJoinRequestWebAppChallengeFallsBackDurablyOnSendFailure(t *testing.T) {
 	t.Parallel()
 
 	recorder := &botRequestRecorder{}
@@ -886,8 +895,13 @@ func TestStartJoinRequestWebAppChallengeQueuesOnSendFailure(t *testing.T) {
 		switch method {
 		case testTelegramMethodSendJoinWebApp:
 			return nil
-		case testTelegramMethodJoinRequestQuery:
-			return true
+		case testTelegramMethodGetChat:
+			if r.Form.Get("chat_id") == "9001" {
+				return map[string]any{"id": 9001, "type": "private", "first_name": "Neo"}
+			}
+			return map[string]any{"id": -100123, "type": "supergroup", "title": "Wave Club"}
+		case testTelegramMethodSendMessage:
+			return recorder.nextSendMessageResult()
 		default:
 			t.Fatalf("unexpected bot method: %s", method)
 			return nil
@@ -898,6 +912,7 @@ func TestStartJoinRequestWebAppChallengeQueuesOnSendFailure(t *testing.T) {
 
 	store := newGatekeeperFlowStore()
 	gatekeeper := &Gatekeeper{
+		bot: botAPI,
 		s: &gatekeeperTestService{
 			testBotService: testBotService{botAPI: botAPI, language: "en"},
 			settings:       webAppSettings(),
@@ -919,16 +934,18 @@ func TestStartJoinRequestWebAppChallengeQueuesOnSendFailure(t *testing.T) {
 		t.Fatal("expected non-nil error from startJoinRequestWebAppChallenge when send fails")
 	}
 
-	if len(store.challenges) != 0 {
-		t.Fatalf("expected challenge row to be deleted after send failure, got %d rows", len(store.challenges))
+	if len(store.challenges) != 1 {
+		t.Fatalf("expected durable fallback challenge after send failure, got %d rows", len(store.challenges))
 	}
-
-	queryAnswers := recorder.byMethod(testTelegramMethodJoinRequestQuery)
-	if len(queryAnswers) != 1 {
-		t.Fatalf("expected exactly one answerChatJoinRequestQuery call, got %d", len(queryAnswers))
+	challenge := store.onlyChallenge(t)
+	if challenge.Status != db.ChallengeStatusPending || challenge.JoinRequestQueryID != req.QueryID || challenge.WebAppToken != "" {
+		t.Fatalf("unexpected fallback state: %#v", challenge)
 	}
-	if got := queryAnswers[0].form.Get("result"); got != "queue" {
-		t.Fatalf("expected queue result on send failure, got %q", got)
+	if challenge.ChallengeMessageID == 0 {
+		t.Fatal("expected fallback message binding")
+	}
+	if len(recorder.byMethod(testTelegramMethodJoinRequestQuery)) != 0 {
+		t.Fatal("join request query must remain durable until the CAPTCHA resolves")
 	}
 }
 
@@ -1002,6 +1019,7 @@ func TestHandleJoinCaptchaAnswerRejectsStaleInitData(t *testing.T) {
 	}
 
 	gatekeeper := &Gatekeeper{
+		bot:        botAPI,
 		s:          &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI, language: "en"}, settings: webAppSettings()},
 		store:      store,
 		config:     &config.Config{},
@@ -1024,7 +1042,7 @@ func TestHandleJoinCaptchaAnswerRejectsStaleInitData(t *testing.T) {
 	}
 }
 
-func TestHandleJoinCaptchaAnswerKeepsPendingWhenApproveFails(t *testing.T) {
+func TestHandleJoinCaptchaAnswerPersistsApprovalRetryWhenApproveFails(t *testing.T) {
 	t.Parallel()
 
 	botAPI := newTestBotAPIWithErrors(t, func(method string, r *http.Request) any {
@@ -1047,6 +1065,7 @@ func TestHandleJoinCaptchaAnswerKeepsPendingWhenApproveFails(t *testing.T) {
 	}
 
 	gatekeeper := &Gatekeeper{
+		bot:        botAPI,
 		s:          &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI, language: "en"}, settings: webAppSettings()},
 		store:      store,
 		config:     &config.Config{},
@@ -1068,8 +1087,11 @@ func TestHandleJoinCaptchaAnswerKeepsPendingWhenApproveFails(t *testing.T) {
 		t.Fatalf("expected 502, got %d: %s", rr.Code, rr.Body.String())
 	}
 	got := store.onlyChallenge(t)
-	if got.Status != db.ChallengeStatusPending {
-		t.Fatalf("expected status to remain pending, got %q", got.Status)
+	if got.Status != db.ChallengeStatusApproveQueryPending {
+		t.Fatalf("expected durable approval state, got %q", got.Status)
+	}
+	if got.AttemptCount != 1 || !got.NextAttemptAt.Valid || got.LastError == "" {
+		t.Fatalf("expected persisted retry metadata, got %#v", got)
 	}
 }
 
@@ -1080,7 +1102,7 @@ func TestHandleJoinCaptchaAnswerDeclinesKnownBannedUser(t *testing.T) {
 	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
 		recorder.record(t, method, r)
 		switch method {
-		case testTelegramMethodJoinRequestQuery:
+		case testTelegramMethodJoinRequestQuery, testTelegramMethodBanChatMember:
 			return true
 		default:
 			t.Fatalf("unexpected bot method: %s", method)
@@ -1099,6 +1121,7 @@ func TestHandleJoinCaptchaAnswerDeclinesKnownBannedUser(t *testing.T) {
 		knownBanned: map[int64]bool{challenge.UserID: true},
 	}
 	gatekeeper := &Gatekeeper{
+		bot:        botAPI,
 		s:          &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI, language: "en"}, settings: webAppSettings()},
 		store:      store,
 		config:     &config.Config{},

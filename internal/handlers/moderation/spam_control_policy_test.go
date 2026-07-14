@@ -33,7 +33,7 @@ func TestResolveStatusFromVotes(t *testing.T) {
 			votes:       []*db.SpamVote{{Vote: true}},
 			required:    3,
 			timedOut:    true,
-			wantStatus:  "false_positive",
+			wantStatus:  db.SpamCaseStatusFalsePositive,
 			wantResolve: true,
 		},
 		{
@@ -55,7 +55,7 @@ func TestResolveStatusFromVotes(t *testing.T) {
 			},
 			required:    2,
 			timedOut:    true,
-			wantStatus:  "false_positive",
+			wantStatus:  db.SpamCaseStatusFalsePositive,
 			wantResolve: true,
 		},
 		{
@@ -79,7 +79,7 @@ func TestResolveStatusFromVotes(t *testing.T) {
 			},
 			required:    2,
 			timedOut:    false,
-			wantStatus:  "false_positive",
+			wantStatus:  db.SpamCaseStatusFalsePositive,
 			wantResolve: true,
 		},
 	}
@@ -147,7 +147,7 @@ func TestCreateInChatNotificationDoesNotEnableMarkdown(t *testing.T) {
 
 	sc := &SpamControl{}
 	msg := &api.Message{
-		Chat: api.Chat{ID: -100, Type: "supergroup"},
+		Chat: api.Chat{ID: -100, Type: moderationTestSupergroup},
 		From: &api.User{
 			ID:        200,
 			FirstName: "A_B [broken",

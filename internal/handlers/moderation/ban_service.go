@@ -29,9 +29,18 @@ const (
 	banServiceHTTPTimeout = 10 * time.Second
 	banServiceMaxRetries  = 3
 	banServiceRetryStep   = 300 * time.Millisecond
+	banlistHourlyTTL      = 26 * time.Hour
+	banlistOnlineTTL      = 24 * time.Hour
+
+	banlistFeedDaily  = "daily"
+	banlistFeedHourly = "hourly"
+	banlistFeedOnline = "online"
 
 	kvKeyLastDailyFetch  = "last_daily_fetch"
 	kvKeyLastHourlyFetch = "last_hourly_fetch"
+	logFieldProvider     = "provider"
+	logFieldUserID       = "user_id"
+	logFieldError        = "error"
 )
 
 type BanService interface {
@@ -49,7 +58,7 @@ type BanService interface {
 type banStore interface {
 	GetKV(ctx context.Context, key string) (string, error)
 	SetKV(ctx context.Context, key string, value string) error
-	UpsertBanlist(ctx context.Context, userIDs []int64) error
+	ApplyBanlistSource(ctx context.Context, provider, feedType, generation string, userIDs []int64, seenAt time.Time, expiresAt *time.Time, replace bool) error
 	GetBanlist(ctx context.Context) (map[int64]struct{}, error)
 	AddRestriction(ctx context.Context, restriction *db.UserRestriction) error
 	RemoveRestriction(ctx context.Context, chatID int64, userID int64) error
@@ -116,12 +125,15 @@ func (s *defaultBanService) Start(ctx context.Context) error {
 	if s.started {
 		return nil
 	}
+	if err := s.loadKnownBannedFromDB(ctx); err != nil {
+		return fmt.Errorf("load known banned from db: %w", err)
+	}
 
 	runCtx, cancel := context.WithCancel(ctx)
 	s.runCancel = cancel
 
 	s.workersWg.Go(func() {
-		if err := s.bootstrap(runCtx); err != nil && !errorsIsCanceled(err) {
+		if err := s.refreshKnownBanned(runCtx); err != nil && !errorsIsCanceled(err) {
 			log.WithError(err).Error("Failed to bootstrap known banned users")
 		}
 	})
@@ -135,8 +147,8 @@ func (s *defaultBanService) Start(ctx context.Context) error {
 			case <-runCtx.Done():
 				return
 			case <-ticker.C:
-				if err := s.fetchHourlyIfNeeded(runCtx); err != nil && !errorsIsCanceled(err) {
-					log.WithError(err).Error("Failed to fetch known banned users hourly")
+				if err := s.refreshKnownBanned(runCtx); err != nil && !errorsIsCanceled(err) {
+					log.WithError(err).Error("Failed to refresh known banned users")
 				}
 			}
 		}
@@ -178,7 +190,10 @@ func (s *defaultBanService) bootstrap(ctx context.Context) error {
 	if err := s.loadKnownBannedFromDB(ctx); err != nil {
 		return fmt.Errorf("load known banned from db: %w", err)
 	}
+	return s.refreshKnownBanned(ctx)
+}
 
+func (s *defaultBanService) refreshKnownBanned(ctx context.Context) error {
 	lastDailyFetch, err := s.getLastDailyFetch(ctx)
 	if err != nil {
 		log.WithError(err).Error("Failed to get last daily fetch time")
@@ -196,17 +211,6 @@ func (s *defaultBanService) bootstrap(ctx context.Context) error {
 		return s.FetchKnownBanned(ctx)
 	}
 	return nil
-}
-
-func (s *defaultBanService) fetchHourlyIfNeeded(ctx context.Context) error {
-	lastFetch, err := s.getLastHourlyFetch(ctx)
-	if err != nil {
-		return fmt.Errorf("get last hourly fetch: %w", err)
-	}
-	if !lastFetch.IsZero() && time.Since(lastFetch) < time.Hour {
-		return nil
-	}
-	return s.FetchKnownBanned(ctx)
 }
 
 func (s *defaultBanService) IsKnownBanned(userID int64) bool {
@@ -267,15 +271,15 @@ func (s *defaultBanService) CheckBan(ctx context.Context, userID int64) (bool, e
 				return false, ctx.Err()
 			}
 			log.WithFields(log.Fields{
-				"provider": result.provider,
-				"user_id":  userID,
-				"error":    result.err.Error(),
+				logFieldProvider: result.provider,
+				logFieldUserID:   userID,
+				logFieldError:    result.err.Error(),
 			}).Warn("external ban check failed open")
 			continue
 		}
 		if result.banned {
 			cancel()
-			s.rememberKnownBanned(ctx, userID)
+			s.rememberKnownBanned(ctx, userID, result.provider)
 			return true, nil
 		}
 	}
@@ -295,7 +299,7 @@ func checkLoLsBan(ctx context.Context, client *http.Client, urlTemplate string, 
 	if err != nil {
 		return false, fmt.Errorf("failed to send request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return false, fmt.Errorf("unexpected status code %d", resp.StatusCode)
@@ -328,7 +332,7 @@ func checkCASBan(ctx context.Context, client *http.Client, urlTemplate string, u
 	if err != nil {
 		return false, fmt.Errorf("failed to send request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return false, fmt.Errorf("unexpected status code %d", resp.StatusCode)
@@ -362,16 +366,36 @@ func (s *defaultBanService) loadKnownBannedFromDB(ctx context.Context) error {
 	return nil
 }
 
-func (s *defaultBanService) rememberKnownBanned(ctx context.Context, userID int64) {
+func (s *defaultBanService) rememberKnownBanned(ctx context.Context, userID int64, provider string) {
 	s.markKnownBanned(userID)
 	if s.db == nil {
 		return
 	}
-	if err := s.db.UpsertBanlist(ctx, []int64{userID}); err != nil {
+	seenAt := time.Now().UTC()
+	expiresAt := seenAt.Add(banlistOnlineTTL)
+	if err := s.db.ApplyBanlistSource(
+		ctx,
+		provider,
+		banlistFeedOnline,
+		newBanlistGeneration(),
+		[]int64{userID},
+		seenAt,
+		&expiresAt,
+		false,
+	); err != nil {
 		log.WithFields(log.Fields{
-			"user_id": userID,
-			"error":   err.Error(),
+			logFieldUserID:   userID,
+			logFieldProvider: provider,
+			logFieldError:    err.Error(),
 		}).Error("failed to persist online banned user")
+		return
+	}
+	if err := s.loadKnownBannedFromDB(ctx); err != nil {
+		log.WithFields(log.Fields{
+			logFieldUserID:   userID,
+			logFieldProvider: provider,
+			logFieldError:    err.Error(),
+		}).Error("failed to reload online banned user")
 	}
 }
 

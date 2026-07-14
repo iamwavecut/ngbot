@@ -2,8 +2,11 @@ package handlers
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/iamwavecut/ngbot/internal/adapters"
 	"github.com/iamwavecut/ngbot/internal/adapters/llm"
@@ -13,8 +16,9 @@ import (
 )
 
 type spamDetector struct {
-	llm    adapters.LLM
-	logger *log.Entry
+	llm            adapters.LLM
+	logger         *log.Entry
+	requestTimeout time.Duration
 }
 
 type example struct {
@@ -132,21 +136,33 @@ https://t.me/shop_6o11rU_bot?start=2521`, Response: 1},
 	{Message: "Хай. Устали от быстрого заpаботка и пустых обещаний? Давайте лучше рaботать с реальными резyльтатами. Мы предлагаем стабильнoе нaправление, где можно полyчать от 800 дoлларов в неделю с отличной перcпективой ростa. Пишите плюс в личные сообщения и я дам всё необходимое", Response: 1},
 }
 
-func NewSpamDetector(llm adapters.LLM, logger *log.Entry) *spamDetector {
+func NewSpamDetector(llm adapters.LLM, logger *log.Entry, requestTimeout time.Duration) *spamDetector {
+	if requestTimeout <= 0 {
+		requestTimeout = 45 * time.Second
+	}
 	return &spamDetector{
-		llm:    llm,
-		logger: logger,
+		llm:            llm,
+		logger:         logger,
+		requestTimeout: requestTimeout,
 	}
 }
 
 func (d *spamDetector) IsSpam(ctx context.Context, message string, extraExamples []string) (*bool, error) {
-	d.logger.WithField("message", message).Debug("checking spam")
+	d.logger.WithFields(messageLogFields(message)).Debug("checking spam")
 	return d.checkWithPrompt(ctx, spamDetectionPrompt, message, extraExamples)
 }
 
 func (d *spamDetector) IsReportedSpam(ctx context.Context, message string, extraExamples []string) (*bool, error) {
-	d.logger.WithField("message", message).Debug("checking reported spam")
+	d.logger.WithFields(messageLogFields(message)).Debug("checking reported spam")
 	return d.checkWithPrompt(ctx, reportedSpamDetectionPrompt, message, extraExamples)
+}
+
+func messageLogFields(message string) log.Fields {
+	digest := sha256.Sum256([]byte(message))
+	return log.Fields{
+		"message_length": len(message),
+		"message_digest": hex.EncodeToString(digest[:8]),
+	}
 }
 
 func (d *spamDetector) checkWithPrompt(ctx context.Context, prompt string, message string, extraExamples []string) (*bool, error) {
@@ -191,8 +207,11 @@ func (d *spamDetector) checkWithPrompt(ctx context.Context, prompt string, messa
 		Content: message,
 	})
 
+	requestCtx, cancel := context.WithTimeout(ctx, d.requestTimeout)
+	defer cancel()
+
 	resp, err := d.llm.ChatCompletion(
-		ctx,
+		requestCtx,
 		messagesChain,
 	)
 	if err != nil {
@@ -214,13 +233,14 @@ func (d *spamDetector) checkWithPrompt(ctx context.Context, prompt string, messa
 		return -1
 	}, choice)
 
-	if cleanedChoice == "1" {
+	switch cleanedChoice {
+	case "1":
 		return tool.Ptr(true), nil
-	} else if cleanedChoice == "0" {
+	case "0":
 		return tool.Ptr(false), nil
+	default:
+		return nil, errors.New("unknown response from LLM: " + cleanedChoice + " (" + choice + ")")
 	}
-
-	return nil, errors.New("unknown response from LLM: " + cleanedChoice + " (" + choice + ")")
 }
 
 const spamDetectionPrompt = `Ты ассистент для обнаружения спама, анализирующий сообщения на различных языках. Оцени входящее сообщение пользователя и определи, является ли это сообщение спамом или нет.

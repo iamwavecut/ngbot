@@ -74,11 +74,12 @@ func TestHandleMessageReactionModeratesUnknownUserProfileSpam(t *testing.T) {
 
 	reactor := &Reactor{
 		s:            &testBotService{botAPI: botAPI, settings: settings},
+		bot:          botAPI,
 		store:        &testReactorStore{},
 		spamDetector: detector,
 		banService:   &testBanService{},
-		lastResults:  make(map[int64]*MessageProcessingResult),
-		resultOrder:  make([]int64, 0, maxLastResults),
+		lastResults:  make(map[messageResultKey]*MessageProcessingResult),
+		resultOrder:  make([]messageResultKey, 0, maxLastResults),
 	}
 
 	update := &api.Update{
@@ -149,11 +150,12 @@ func TestHandleMessageReactionRemembersUnknownUserProfileNotSpam(t *testing.T) {
 
 	reactor := &Reactor{
 		s:            &testBotService{botAPI: botAPI, settings: settings},
+		bot:          botAPI,
 		store:        store,
 		spamDetector: detector,
 		banService:   &testBanService{},
-		lastResults:  make(map[int64]*MessageProcessingResult),
-		resultOrder:  make([]int64, 0, maxLastResults),
+		lastResults:  make(map[messageResultKey]*MessageProcessingResult),
+		resultOrder:  make([]messageResultKey, 0, maxLastResults),
 	}
 
 	update := &api.Update{
@@ -204,11 +206,12 @@ func TestHandleMessageReactionSkipsKnownMemberAfterTelegramMembershipCheck(t *te
 
 	reactor := &Reactor{
 		s:            service,
+		bot:          service.GetBot(),
 		store:        &testReactorStore{},
 		spamDetector: detector,
 		banService:   &testBanService{},
-		lastResults:  make(map[int64]*MessageProcessingResult),
-		resultOrder:  make([]int64, 0, maxLastResults),
+		lastResults:  make(map[messageResultKey]*MessageProcessingResult),
+		resultOrder:  make([]messageResultKey, 0, maxLastResults),
 	}
 
 	update := &api.Update{
@@ -247,8 +250,8 @@ func TestHandleMessageReactionSkipsRememberedNonMember(t *testing.T) {
 		store:        &testReactorStore{knownNonMember: true},
 		spamDetector: detector,
 		banService:   &testBanService{},
-		lastResults:  make(map[int64]*MessageProcessingResult),
-		resultOrder:  make([]int64, 0, maxLastResults),
+		lastResults:  make(map[messageResultKey]*MessageProcessingResult),
+		resultOrder:  make([]messageResultKey, 0, maxLastResults),
 	}
 
 	update := &api.Update{
@@ -288,8 +291,16 @@ func TestHandleMessageReactionModeratesActorChatProfileSpam(t *testing.T) {
 
 		switch method {
 		case testTelegramMethodGetChat:
-			if got := r.Form.Get("chat_id"); got != "-100777" {
-				t.Fatalf("expected actor chat lookup, got chat_id %q", got)
+			switch got := r.Form.Get("chat_id"); got {
+			case "-100123":
+				return map[string]any{
+					"id":    -100123,
+					"type":  "supergroup",
+					"title": "Wave Club",
+				}
+			case "-100777":
+			default:
+				t.Fatalf("unexpected chat lookup: %q", got)
 			}
 			return map[string]any{
 				"id":          -100777,
@@ -322,11 +333,12 @@ func TestHandleMessageReactionModeratesActorChatProfileSpam(t *testing.T) {
 
 	reactor := &Reactor{
 		s:            &testBotService{botAPI: botAPI, settings: settings},
+		bot:          botAPI,
 		store:        &testReactorStore{},
 		spamDetector: detector,
 		banService:   &testBanService{},
-		lastResults:  make(map[int64]*MessageProcessingResult),
-		resultOrder:  make([]int64, 0, maxLastResults),
+		lastResults:  make(map[messageResultKey]*MessageProcessingResult),
+		resultOrder:  make([]messageResultKey, 0, maxLastResults),
 	}
 
 	update := &api.Update{
@@ -372,8 +384,8 @@ func TestHandleMessageReactionSkipsWhenReactionProfileCheckDisabled(t *testing.T
 		store:        &testReactorStore{},
 		spamDetector: detector,
 		banService:   &testBanService{},
-		lastResults:  make(map[int64]*MessageProcessingResult),
-		resultOrder:  make([]int64, 0, maxLastResults),
+		lastResults:  make(map[messageResultKey]*MessageProcessingResult),
+		resultOrder:  make([]messageResultKey, 0, maxLastResults),
 	}
 
 	update := &api.Update{
@@ -409,8 +421,8 @@ func TestHandleMessageReactionSkipsReactionRemoval(t *testing.T) {
 		store:        &testReactorStore{},
 		spamDetector: detector,
 		banService:   &testBanService{},
-		lastResults:  make(map[int64]*MessageProcessingResult),
-		resultOrder:  make([]int64, 0, maxLastResults),
+		lastResults:  make(map[messageResultKey]*MessageProcessingResult),
+		resultOrder:  make([]messageResultKey, 0, maxLastResults),
 	}
 
 	update := &api.Update{

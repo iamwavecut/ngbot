@@ -18,7 +18,16 @@ import (
 
 	"github.com/iamwavecut/ngbot/internal/db"
 	"github.com/iamwavecut/ngbot/internal/db/sqlite"
+	handlersbase "github.com/iamwavecut/ngbot/internal/handlers/base"
 	"github.com/iamwavecut/ngbot/internal/i18n"
+)
+
+const (
+	adminTestUserName            = "User"
+	adminTestMethodSendMessage   = "sendMessage"
+	adminTestMethodGetChatMember = "getChatMember"
+	adminTestJSONType            = "type"
+	adminTestJSONFirstName       = "first_name"
 )
 
 type adminTelegramCall struct {
@@ -44,7 +53,7 @@ func TestPrivateHelpCommandsSendLocalizedMarkdownHelp(t *testing.T) {
 		calls = append(calls, adminTelegramCall{method: method, form: form})
 		mu.Unlock()
 		switch method {
-		case "sendMessage":
+		case adminTestMethodSendMessage:
 			return sentMessageResult(form)
 		default:
 			t.Fatalf("unexpected telegram method: %s", method)
@@ -52,7 +61,7 @@ func TestPrivateHelpCommandsSendLocalizedMarkdownHelp(t *testing.T) {
 		}
 	})
 
-	admin := NewAdmin(testAdminService{db: client, bot: botAPI}, nil)
+	admin := NewAdmin(testAdminService{db: client, bot: botAPI}, botAPI, client, client, nil)
 	for _, text := range []string{"/help", "/start", "/start help", "/start unknown"} {
 		msg := adminCommandMessage(123, panelChatTypePrivate, 77, text)
 		proceed, err := admin.Handle(ctx, &api.Update{Message: msg}, &msg.Chat, msg.From)
@@ -71,7 +80,7 @@ func TestPrivateHelpCommandsSendLocalizedMarkdownHelp(t *testing.T) {
 	}
 	firstText := calls[0].form.Get("text")
 	for _, call := range calls {
-		if call.method != "sendMessage" {
+		if call.method != adminTestMethodSendMessage {
 			t.Fatalf("unexpected method: %s", call.method)
 		}
 		if call.form.Get("parse_mode") != api.ModeMarkdownV2 {
@@ -112,29 +121,29 @@ func TestStartSettingsPayloadStillUsesSettingsFlow(t *testing.T) {
 		methods = append(methods, method)
 		mu.Unlock()
 		switch method {
-		case "sendMessage":
+		case adminTestMethodSendMessage:
 			return sentMessageResult(form)
 		case "sendChatAction":
 			return true
 		case "editMessageText":
 			return map[string]any{
 				"message_id": mustFormInt(form.Get("message_id")),
-				"chat":       map[string]any{"id": mustFormInt64(form.Get("chat_id")), "type": panelChatTypePrivate},
+				"chat":       map[string]any{"id": mustFormInt64(form.Get("chat_id")), adminTestJSONType: panelChatTypePrivate},
 				"text":       form.Get("text"),
 			}
-		case "getChatMember":
+		case adminTestMethodGetChatMember:
 			return map[string]any{
-				"status":               "administrator",
-				"user":                 map[string]any{"id": 7, "is_bot": false, "first_name": "User"},
-				"can_manage_chat":      true,
-				"can_promote_members":  false,
-				"can_restrict_members": true,
+				"status":                "administrator",
+				telegramProfileHostUser: map[string]any{"id": 7, "is_bot": false, adminTestJSONFirstName: adminTestUserName},
+				"can_manage_chat":       true,
+				"can_promote_members":   false,
+				"can_restrict_members":  true,
 			}
 		case "getChat":
 			return map[string]any{
-				"id":    targetChatID,
-				"type":  "supergroup",
-				"title": "Target",
+				"id":              targetChatID,
+				adminTestJSONType: panelChatTypeSupergroup,
+				"title":           "Target",
 			}
 		default:
 			t.Fatalf("unexpected telegram method: %s", method)
@@ -142,7 +151,7 @@ func TestStartSettingsPayloadStillUsesSettingsFlow(t *testing.T) {
 		}
 	})
 
-	admin := NewAdmin(testAdminService{db: client, bot: botAPI}, nil)
+	admin := NewAdmin(testAdminService{db: client, bot: botAPI}, botAPI, client, client, nil)
 	msg := adminCommandMessage(7, panelChatTypePrivate, 88, "/start settings_"+encodeChatID(targetChatID))
 	proceed, err := admin.Handle(ctx, &api.Update{Message: msg}, &msg.Chat, msg.From)
 	if err != nil {
@@ -177,7 +186,7 @@ func TestGroupHelpSendsPrivateBridgeAndDeletesMessages(t *testing.T) {
 		calls = append(calls, adminTelegramCall{method: method, form: form})
 		mu.Unlock()
 		switch method {
-		case "sendMessage":
+		case adminTestMethodSendMessage:
 			result := sentMessageResult(form)
 			result["message_id"] = 700
 			return result
@@ -189,9 +198,9 @@ func TestGroupHelpSendsPrivateBridgeAndDeletesMessages(t *testing.T) {
 		}
 	})
 
-	admin := NewAdmin(testAdminService{db: client, bot: botAPI}, nil)
+	admin := NewAdmin(testAdminService{db: client, bot: botAPI}, botAPI, client, client, nil)
 	admin.temporaryMessageTTL = 10 * time.Millisecond
-	msg := adminCommandMessage(-100, "supergroup", 44, "/help")
+	msg := adminCommandMessage(-100, panelChatTypeSupergroup, 44, "/help")
 	proceed, err := admin.Handle(ctx, &api.Update{Message: msg}, &msg.Chat, msg.From)
 	if err != nil {
 		t.Fatalf("handle group help: %v", err)
@@ -208,7 +217,7 @@ func TestGroupHelpSendsPrivateBridgeAndDeletesMessages(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	send := firstAdminCall(t, calls, "sendMessage")
+	send := firstAdminCall(t, calls, adminTestMethodSendMessage)
 	if send.form.Get("parse_mode") != api.ModeMarkdownV2 {
 		t.Fatalf("parse mode = %q, want %q", send.form.Get("parse_mode"), api.ModeMarkdownV2)
 	}
@@ -241,9 +250,9 @@ func TestPrivateLangIsAvailableWithoutAdminCheck(t *testing.T) {
 		methods = append(methods, method)
 		mu.Unlock()
 		switch method {
-		case "sendMessage":
+		case adminTestMethodSendMessage:
 			return sentMessageResult(form)
-		case "getChatMember":
+		case adminTestMethodGetChatMember:
 			t.Fatalf("private /lang must not call getChatMember")
 			return nil
 		default:
@@ -252,7 +261,7 @@ func TestPrivateLangIsAvailableWithoutAdminCheck(t *testing.T) {
 		}
 	})
 
-	admin := NewAdmin(testAdminService{db: client, bot: botAPI}, nil)
+	admin := NewAdmin(testAdminService{db: client, bot: botAPI}, botAPI, client, client, nil)
 	msg := adminCommandMessage(123, panelChatTypePrivate, 55, "/lang ru")
 	proceed, err := admin.Handle(ctx, &api.Update{Message: msg}, &msg.Chat, msg.From)
 	if err != nil {
@@ -272,7 +281,7 @@ func TestPrivateLangIsAvailableWithoutAdminCheck(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if !slices.Contains(methods, "sendMessage") {
+	if !slices.Contains(methods, adminTestMethodSendMessage) {
 		t.Fatalf("expected confirmation message, got methods %v", methods)
 	}
 }
@@ -293,10 +302,10 @@ func TestGroupLangRemainsAdminOnly(t *testing.T) {
 		methods = append(methods, method)
 		mu.Unlock()
 		switch method {
-		case "getChatMember":
+		case adminTestMethodGetChatMember:
 			return map[string]any{
-				"status": "member",
-				"user":   map[string]any{"id": 7, "is_bot": false, "first_name": "User"},
+				"status":                "member",
+				telegramProfileHostUser: map[string]any{"id": 7, "is_bot": false, adminTestJSONFirstName: adminTestUserName},
 			}
 		default:
 			t.Fatalf("unexpected telegram method: %s", method)
@@ -304,7 +313,7 @@ func TestGroupLangRemainsAdminOnly(t *testing.T) {
 		}
 	})
 
-	admin := NewAdmin(testAdminService{db: client, bot: botAPI}, nil)
+	admin := NewAdmin(testAdminService{db: client, bot: botAPI}, botAPI, client, client, nil)
 	msg := adminCommandMessage(-100, "group", 56, "/lang ru")
 	proceed, err := admin.Handle(ctx, &api.Update{Message: msg}, &msg.Chat, msg.From)
 	if err != nil {
@@ -324,12 +333,20 @@ func TestGroupLangRemainsAdminOnly(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if !slices.Equal(methods, []string{"getChatMember"}) {
+	if !slices.Equal(methods, []string{adminTestMethodGetChatMember}) {
 		t.Fatalf("methods = %v, want only getChatMember", methods)
 	}
 }
 
-func newAdminTestDB(t *testing.T, ctx context.Context) db.Client {
+type adminTestDB interface {
+	adminStore
+	handlersbase.StatsStore
+	Close() error
+	GetSettings(ctx context.Context, chatID int64) (*db.Settings, error)
+	SetSettings(ctx context.Context, settings *db.Settings) error
+}
+
+func newAdminTestDB(t *testing.T, ctx context.Context) adminTestDB {
 	t.Helper()
 
 	client, err := sqlite.NewSQLiteClient(ctx, t.TempDir(), "test.db")
@@ -351,10 +368,10 @@ func newAdminTestBotAPI(t *testing.T, handler func(method string, r *http.Reques
 		switch method {
 		case "getMe":
 			result = map[string]any{
-				"id":         1,
-				"is_bot":     true,
-				"first_name": "Test",
-				"username":   "testbot",
+				"id":                   1,
+				"is_bot":               true,
+				adminTestJSONFirstName: "Test",
+				"username":             "testbot",
 			}
 		default:
 			result = handler(method, r)
@@ -370,7 +387,11 @@ func newAdminTestBotAPI(t *testing.T, handler func(method string, r *http.Reques
 	}))
 	t.Cleanup(server.Close)
 
-	botAPI, err := api.NewBotAPIWithClient("TEST_TOKEN", fmt.Sprintf("%s/bot%%s/%%s", server.URL), server.Client())
+	botAPI, err := api.NewBotAPIWithOptions(
+		"TEST_TOKEN",
+		api.WithAPIEndpoint(fmt.Sprintf("%s/bot%%s/%%s", server.URL)),
+		api.WithHTTPClient(server.Client()),
+	)
 	if err != nil {
 		t.Fatalf("new test bot api: %v", err)
 	}
@@ -395,7 +416,7 @@ func adminCommandMessage(chatID int64, chatType string, messageID int, text stri
 		MessageID: messageID,
 		Text:      text,
 		Chat:      api.Chat{ID: chatID, Type: chatType},
-		From:      &api.User{ID: 7, IsBot: false, FirstName: "User"},
+		From:      &api.User{ID: 7, IsBot: false, FirstName: adminTestUserName},
 		Entities: []api.MessageEntity{
 			{Type: "bot_command", Offset: 0, Length: len(command)},
 		},
@@ -405,7 +426,7 @@ func adminCommandMessage(chatID int64, chatType string, messageID int, text stri
 func sentMessageResult(form url.Values) map[string]any {
 	return map[string]any{
 		"message_id": 100,
-		"chat":       map[string]any{"id": mustFormInt64(form.Get("chat_id")), "type": panelChatTypePrivate},
+		"chat":       map[string]any{"id": mustFormInt64(form.Get("chat_id")), adminTestJSONType: panelChatTypePrivate},
 		"text":       form.Get("text"),
 	}
 }

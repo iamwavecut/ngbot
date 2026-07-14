@@ -15,12 +15,15 @@ import (
 
 	"github.com/iamwavecut/ngbot/internal/bot"
 	"github.com/iamwavecut/ngbot/internal/db"
+	handlersbase "github.com/iamwavecut/ngbot/internal/handlers/base"
 	"github.com/iamwavecut/ngbot/internal/i18n"
 )
 
 type Admin struct {
 	s          bot.Service
+	bot        *api.BotAPI
 	store      adminStore
+	stats      handlersbase.StatsStore
 	banService moderation.BanService
 	languages  []string
 	runCtx     context.Context
@@ -33,6 +36,8 @@ type Admin struct {
 }
 
 type adminStore interface {
+	GetKV(ctx context.Context, key string) (string, error)
+	SetKV(ctx context.Context, key string, value string) error
 	SetChatBotMembership(ctx context.Context, membership *db.ChatBotMembership) error
 	GetChatBotMembership(ctx context.Context, chatID int64) (*db.ChatBotMembership, error)
 	UpsertChatManager(ctx context.Context, manager *db.ChatManager) error
@@ -66,12 +71,14 @@ type adminStore interface {
 	UpdateSpamCase(ctx context.Context, sc *db.SpamCase) error
 }
 
-func NewAdmin(s bot.Service, banService moderation.BanService) *Admin {
+func NewAdmin(s bot.Service, botAPI *api.BotAPI, store adminStore, stats handlersbase.StatsStore, banService moderation.BanService) *Admin {
 	entry := log.WithField("object", "Admin").WithField("method", "NewAdmin")
 
 	a := &Admin{
 		s:                   s,
-		store:               s.GetDB(),
+		bot:                 botAPI,
+		store:               store,
+		stats:               stats,
 		banService:          banService,
 		languages:           i18n.GetLanguagesList(),
 		temporaryMessageTTL: time.Minute,
@@ -166,7 +173,7 @@ func (a *Admin) Handle(ctx context.Context, u *api.Update, chat *api.Chat, user 
 			isAdmin := chat.Type == panelChatTypePrivate
 			if !isAdmin {
 				var err error
-				isAdmin, err = a.isAdmin(chat.ID, user.ID)
+				isAdmin, err = a.isAdmin(ctx, chat.ID, user.ID)
 				if err != nil {
 					entry.WithField("error", err.Error()).Error("can't check admin status")
 					return true, err
@@ -220,7 +227,7 @@ func (a *Admin) handleLangCommand(ctx context.Context, msg *api.Message, isAdmin
 		)
 		msg.ParseMode = api.ModeMarkdown
 		msg.DisableNotification = true
-		_, _ = a.s.GetBot().Send(msg)
+		_, _ = bot.Send(ctx, a.bot, msg)
 		return false, nil
 	}
 
@@ -241,7 +248,7 @@ func (a *Admin) handleLangCommand(ctx context.Context, msg *api.Message, isAdmin
 	}
 
 	entry.Debug("language set successfully")
-	_, _ = a.s.GetBot().Send(api.NewMessage(
+	_, _ = bot.Send(ctx, a.bot, api.NewMessage(
 		msg.Chat.ID,
 		i18n.Get("Language set successfully", language),
 	))
@@ -249,9 +256,9 @@ func (a *Admin) handleLangCommand(ctx context.Context, msg *api.Message, isAdmin
 	return false, nil
 }
 
-func (a *Admin) isAdmin(chatID, userID int64) (bool, error) {
-	b := a.s.GetBot()
-	chatMember, err := b.GetChatMember(api.GetChatMemberConfig{
+func (a *Admin) isAdmin(ctx context.Context, chatID, userID int64) (bool, error) {
+	b := a.bot
+	chatMember, err := bot.GetChatMember(ctx, b, api.GetChatMemberConfig{
 		ChatConfigWithUser: api.ChatConfigWithUser{
 			UserID: userID,
 			ChatConfig: api.ChatConfig{

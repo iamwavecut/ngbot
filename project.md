@@ -1,3 +1,5 @@
+> **Historical document.** This diagram predates the durable Gatekeeper/moderation state machines and keyed update dispatcher. Use `docs/CODEBASE_MAP.md` and the current code for operational behavior.
+
 ```mermaid
 graph TD
     %% Nodes Definition

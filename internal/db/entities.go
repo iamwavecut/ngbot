@@ -3,8 +3,6 @@ package db
 import (
 	"database/sql"
 	"time"
-
-	"github.com/iamwavecut/ngbot/internal/config"
 )
 
 type (
@@ -29,18 +27,22 @@ type (
 	}
 
 	SpamCase struct {
-		ID                    int64      `db:"id"`
-		ChatID                int64      `db:"chat_id"`
-		UserID                int64      `db:"user_id"`
-		MessageID             int        `db:"message_id"`
-		MessageText           string     `db:"message_text"`
-		CreatedAt             time.Time  `db:"created_at"`
-		ChannelUsername       string     `db:"channel_username"`
-		ChannelPostID         int        `db:"channel_post_id"`
-		NotificationMessageID int        `db:"notification_message_id"`
-		PreVoteRestricted     bool       `db:"pre_vote_restricted"`
-		Status                string     `db:"status"` // pending, spam, false_positive
-		ResolvedAt            *time.Time `db:"resolved_at"`
+		ID                    int64        `db:"id"`
+		ChatID                int64        `db:"chat_id"`
+		UserID                int64        `db:"user_id"`
+		MessageID             int          `db:"message_id"`
+		MessageText           string       `db:"message_text"`
+		CreatedAt             time.Time    `db:"created_at"`
+		ChannelUsername       string       `db:"channel_username"`
+		ChannelPostID         int          `db:"channel_post_id"`
+		NotificationMessageID int          `db:"notification_message_id"`
+		PreVoteRestricted     bool         `db:"pre_vote_restricted"`
+		Status                string       `db:"status"` // pending, spam, false_positive
+		ResolvedAt            *time.Time   `db:"resolved_at"`
+		ResolveAt             *time.Time   `db:"resolve_at"`
+		NextAttemptAt         sql.NullTime `db:"next_attempt_at"`
+		AttemptCount          int          `db:"attempt_count"`
+		LastError             string       `db:"last_error"`
 	}
 
 	SpamCaseReportMessage struct {
@@ -69,6 +71,7 @@ type (
 	}
 
 	Challenge struct {
+		ChallengeID        string       `db:"challenge_id"`
 		CommChatID         int64        `db:"comm_chat_id"`
 		UserID             int64        `db:"user_id"`
 		ChatID             int64        `db:"chat_id"`
@@ -85,6 +88,9 @@ type (
 		ExpiresAt          time.Time    `db:"expires_at"`
 		WebAppOpenedAt     sql.NullTime `db:"web_app_opened_at"`
 		UserLanguage       string       `db:"user_language"`
+		NextAttemptAt      sql.NullTime `db:"next_attempt_at"`
+		AttemptCount       int          `db:"attempt_count"`
+		LastError          string       `db:"last_error"`
 	}
 
 	ChatManager struct {
@@ -154,15 +160,24 @@ const (
 	ChallengeStatusPending                 = "pending"
 	ChallengeStatusPassedWaitingMemberJoin = "passed_waiting_member_join"
 	ChallengeStatusWebAppFallbackPending   = "web_app_fallback_pending"
+	ChallengeStatusApproveQueryPending     = "approve_query_pending"
+	ChallengeStatusApproveMemberPending    = "approve_member_pending"
+	ChallengeStatusUnrestrictPending       = "unrestrict_pending"
+	ChallengeStatusRejectPending           = "reject_pending"
+	SpamCaseStatusPending                  = "pending"
+	SpamCaseStatusResolvingSpam            = "resolving_spam"
+	SpamCaseStatusResolvingFalsePositive   = "resolving_false_positive"
+	SpamCaseStatusSpam                     = "spam"
+	SpamCaseStatusFalsePositive            = "false_positive"
 )
 
 // GetLanguage Returns chat's set language
 func (cm *Settings) GetLanguage() (string, error) {
 	if cm == nil {
-		return config.Get().DefaultLanguage, nil
+		return "en", nil
 	}
 	if cm.Language == "" {
-		return config.Get().DefaultLanguage, nil
+		return "en", nil
 	}
 	return cm.Language, nil
 }
@@ -172,8 +187,7 @@ func (cm *Settings) GetChallengeTimeout() time.Duration {
 	if cm == nil {
 		return defaultChallengeTimeout
 	}
-	cm.ChallengeTimeout = normalizeTimeoutNS(cm.ChallengeTimeout, defaultChallengeTimeout)
-	return time.Duration(cm.ChallengeTimeout)
+	return time.Duration(normalizeTimeoutNS(cm.ChallengeTimeout, defaultChallengeTimeout))
 }
 
 // GetRejectTimeout Returns chat entry reject timeout duration
@@ -181,8 +195,7 @@ func (cm *Settings) GetRejectTimeout() time.Duration {
 	if cm == nil {
 		return defaultRejectTimeout
 	}
-	cm.RejectTimeout = normalizeTimeoutNS(cm.RejectTimeout, defaultRejectTimeout)
-	return time.Duration(cm.RejectTimeout)
+	return time.Duration(normalizeTimeoutNS(cm.RejectTimeout, defaultRejectTimeout))
 }
 
 func normalizeTimeoutNS(value int64, fallback time.Duration) int64 {

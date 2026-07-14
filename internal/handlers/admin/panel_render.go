@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -14,13 +13,6 @@ import (
 	"github.com/iamwavecut/ngbot/internal/i18n"
 )
 
-const (
-	panelGreetingPlaceholderUser           = "{user}"
-	panelGreetingPlaceholderChatTitle      = "{chat_title}"
-	panelGreetingPlaceholderChatLinkTitled = "{chat_link_titled}"
-	panelGreetingPlaceholderTimeout        = "{timeout}"
-)
-
 func (a *Admin) renderHome(ctx context.Context, session *db.AdminPanelSession, state *panelState) (string, *api.InlineKeyboardMarkup, error) {
 	lang := state.Language
 	title := i18n.Get("Settings", lang)
@@ -28,14 +20,15 @@ func (a *Admin) renderHome(ctx context.Context, session *db.AdminPanelSession, s
 	if chatTitle == "" {
 		chatTitle = i18n.Get("Unknown chat", lang)
 	}
-	body := fmt.Sprintf("%s\n\n%s: %s\n%s: %d",
+	body := fmt.Sprintf(
+		"%s\n\n%s: %s\n%s: %d",
 		title,
 		i18n.Get("Chat", lang),
 		chatTitle,
 		i18n.Get("Chat ID", lang),
 		state.ChatID,
 	)
-	if summary, err := handlersbase.LoadStatsSummary(ctx, a.s.GetDB(), session.ChatID, time.Now(), 7); err == nil {
+	if summary, err := handlersbase.LoadStatsSummary(ctx, a.stats, session.ChatID, time.Now(), 7); err == nil {
 		body += "\n\n" + handlersbase.FormatStatsSummary(lang, summary)
 	}
 	body = appendPanelHelp(body, lang, i18n.Get("What this is: main navigation for chat moderation settings. Where used: private admin panel opened from /settings. Value meaning: buttons open categories, and category pages contain actual controls.", lang))
@@ -96,7 +89,8 @@ func (a *Admin) renderHome(ctx context.Context, session *db.AdminPanelSession, s
 		}
 		rows = append(rows, api.NewInlineKeyboardRow(recommendedBtn))
 	}
-	rows = append(rows,
+	rows = append(
+		rows,
 		api.NewInlineKeyboardRow(languageBtn),
 		api.NewInlineKeyboardRow(gatekeeperBtn),
 		api.NewInlineKeyboardRow(llmBtn),
@@ -127,9 +121,9 @@ func (a *Admin) renderLanguageList(ctx context.Context, session *db.AdminPanelSe
 	builder := strings.Builder{}
 	builder.WriteString(i18n.Get("Language", lang))
 	builder.WriteString("\n")
-	builder.WriteString(fmt.Sprintf(i18n.Get("Page %d/%d", lang), state.LanguagePage+1, totalPages))
+	fmt.Fprintf(&builder, i18n.Get("Page %d/%d", lang), state.LanguagePage+1, totalPages)
 	builder.WriteString(" • ")
-	builder.WriteString(fmt.Sprintf(i18n.Get("Total languages: %d", lang), len(allLanguages)))
+	fmt.Fprintf(&builder, i18n.Get("Total languages: %d", lang), len(allLanguages))
 	builder.WriteString("\n\n")
 	if len(pageLangs) == 0 {
 		builder.WriteString(i18n.Get("No languages available", lang))
@@ -342,7 +336,7 @@ func (a *Admin) renderGatekeeperGreeting(ctx context.Context, session *db.AdminP
 	builder := strings.Builder{}
 	builder.WriteString(i18n.Get("Greeting Settings", lang))
 	builder.WriteString("\n\n")
-	builder.WriteString(fmt.Sprintf("%s %s\n\n", statusEmoji(state.Features.GatekeeperGreetingEnabled), i18n.Get("Greeting", lang)))
+	fmt.Fprintf(&builder, "%s %s\n\n", statusEmoji(state.Features.GatekeeperGreetingEnabled), i18n.Get("Greeting", lang))
 	builder.WriteString(i18n.Get("Greeting Preview", lang))
 	builder.WriteString("\n")
 	preview := renderGreetingPreviewQuote(state)
@@ -622,13 +616,13 @@ func (a *Admin) renderIndulgenceList(ctx context.Context, session *db.AdminPanel
 	builder := strings.Builder{}
 	builder.WriteString(i18n.Get("Indulgence", lang))
 	builder.WriteString("\n")
-	builder.WriteString(fmt.Sprintf(i18n.Get("Page %d/%d", lang), state.ListPage+1, totalPages))
+	fmt.Fprintf(&builder, i18n.Get("Page %d/%d", lang), state.ListPage+1, totalPages)
 	builder.WriteString("\n\n")
 	if len(overrides) == 0 {
 		builder.WriteString(i18n.Get("No indulgence entries yet", lang))
 	} else {
 		for i, override := range overrides {
-			builder.WriteString(fmt.Sprintf("%d. %s", i+1, notSpammerReferenceLabel(override)))
+			fmt.Fprintf(&builder, "%d. %s", i+1, notSpammerReferenceLabel(override))
 			builder.WriteString("\n")
 		}
 	}
@@ -926,195 +920,4 @@ func (a *Admin) renderConfirmClose(ctx context.Context, session *db.AdminPanelSe
 	}
 	keyboard := api.NewInlineKeyboardMarkup(api.NewInlineKeyboardRow(confirmBtn, cancelBtn))
 	return text, &keyboard, nil
-}
-
-func (a *Admin) commandButton(ctx context.Context, sessionID int64, label string, cmd panelCommand) (api.InlineKeyboardButton, error) {
-	payload, err := a.createPanelCommand(ctx, sessionID, cmd)
-	if err != nil {
-		return api.InlineKeyboardButton{}, err
-	}
-	return api.NewInlineKeyboardButtonData(label, payload), nil
-}
-
-func (a *Admin) navRow(ctx context.Context, sessionID int64, prevAction string, nextAction string, hasPrev bool, hasNext bool) ([]api.InlineKeyboardButton, error) {
-	row := make([]api.InlineKeyboardButton, 0, 3)
-	if hasPrev {
-		prevBtn, err := a.commandButton(ctx, sessionID, "⬅️", panelCommand{Action: prevAction})
-		if err != nil {
-			return nil, err
-		}
-		row = append(row, prevBtn)
-	}
-	backBtn, err := a.commandButton(ctx, sessionID, "↩️", panelCommand{Action: panelActionBack})
-	if err != nil {
-		return nil, err
-	}
-	row = append(row, backBtn)
-	if hasNext {
-		nextBtn, err := a.commandButton(ctx, sessionID, "➡️", panelCommand{Action: nextAction})
-		if err != nil {
-			return nil, err
-		}
-		row = append(row, nextBtn)
-	}
-	return api.NewInlineKeyboardRow(row...), nil
-}
-
-func (a *Admin) createPanelCommand(ctx context.Context, sessionID int64, cmd panelCommand) (string, error) {
-	payload, err := jsonMarshalCommand(cmd)
-	if err != nil {
-		return "", err
-	}
-	created, err := a.store.CreateAdminPanelCommand(ctx, &db.AdminPanelCommand{
-		SessionID: sessionID,
-		Payload:   payload,
-		CreatedAt: time.Now(),
-	})
-	if err != nil {
-		return "", err
-	}
-	sessionEnc := encodeUint64Min(uint64(sessionID))
-	commandEnc := encodeUint64Min(uint64(created.ID))
-	return sessionEnc + "_" + commandEnc, nil
-}
-
-func jsonMarshalCommand(cmd panelCommand) (string, error) {
-	data, err := json.Marshal(cmd)
-	if err != nil {
-		return "", err
-	}
-	return string(data), nil
-}
-
-func panelDurationLabel(duration time.Duration) string {
-	if duration <= 0 {
-		return "0s"
-	}
-	if duration%time.Minute == 0 {
-		return fmt.Sprintf("%dm", int(duration/time.Minute))
-	}
-	if duration%time.Second == 0 {
-		return fmt.Sprintf("%ds", int(duration/time.Second))
-	}
-	return duration.String()
-}
-
-func panelVotingTimeoutStateLabel(lang string, overrideNS int64) string {
-	if overrideNS == int64(db.SettingsOverrideInherit) {
-		return i18n.Get("Inherit", lang)
-	}
-	return panelDurationLabel(time.Duration(overrideNS))
-}
-
-func panelVotingIntStateLabel(lang string, value int, zeroNoCap bool) string {
-	if value == db.SettingsOverrideInherit {
-		return i18n.Get("Inherit", lang)
-	}
-	if zeroNoCap && value == 0 {
-		return i18n.Get("No cap", lang)
-	}
-	return fmt.Sprintf("%d", value)
-}
-
-func panelSelectLabel(selected bool, label string) string {
-	if selected {
-		return "✅ " + label
-	}
-	return label
-}
-
-func panelHelpBlock(lang string, help string) string {
-	return fmt.Sprintf("%s\n%s", i18n.Get("Help", lang), help)
-}
-
-func appendPanelHelp(base string, lang string, help string) string {
-	return base + "\n\n" + panelHelpBlock(lang, help)
-}
-
-func renderGreetingPreviewQuote(state *panelState) string {
-	if state == nil {
-		return ""
-	}
-	text := strings.TrimSpace(db.StripGatekeeperGreetingTemplateSyntax(state.GatekeeperGreetingText))
-	if text == "" {
-		return ""
-	}
-
-	chatTitle := state.ChatTitle
-	if chatTitle == "" {
-		chatTitle = "Chat"
-	}
-
-	text = strings.ReplaceAll(text, panelGreetingPlaceholderUser, fmt.Sprintf("[User](tg://user?id=%d)", state.UserID))
-	text = strings.ReplaceAll(text, panelGreetingPlaceholderChatTitle, chatTitle)
-	text = strings.ReplaceAll(text, panelGreetingPlaceholderChatLinkTitled, chatTitle)
-	text = strings.ReplaceAll(text, panelGreetingPlaceholderTimeout, panelDurationLabel(time.Duration(state.ChallengeTimeout)))
-
-	lines := strings.Split(text, "\n")
-	for i, line := range lines {
-		lines[i] = "> " + line
-	}
-	return strings.Join(lines, "\n")
-}
-
-func chunkButtons(buttons []api.InlineKeyboardButton, perRow int) [][]api.InlineKeyboardButton {
-	if len(buttons) == 0 {
-		return nil
-	}
-	var rows [][]api.InlineKeyboardButton
-	for i := 0; i < len(buttons); i += perRow {
-		end := min(i+perRow, len(buttons))
-		rows = append(rows, api.NewInlineKeyboardRow(buttons[i:end]...))
-	}
-	return rows
-}
-
-func languageLabel(code string) string {
-	name := i18n.GetLanguageName(code)
-	return fmt.Sprintf("%s (%s)", name, code)
-}
-
-func statusEmoji(enabled bool) string {
-	if enabled {
-		return "✅"
-	}
-	return "⬜"
-}
-
-func makePreview(text string, maxLen int) string {
-	normalized := strings.ReplaceAll(text, "\n", " ")
-	normalized = strings.TrimSpace(normalized)
-	normalized = strings.Join(strings.Fields(normalized), " ")
-	runes := []rune(normalized)
-	if len(runes) <= maxLen {
-		return normalized
-	}
-	return string(runes[:maxLen]) + "..."
-}
-
-func pageCount(total int, pageSize int) int {
-	if total <= 0 {
-		return 1
-	}
-	return (total + pageSize - 1) / pageSize
-}
-
-func clampPage(page int, totalPages int) int {
-	if totalPages <= 0 {
-		return 0
-	}
-	if page < 0 {
-		return 0
-	}
-	if page >= totalPages {
-		return totalPages - 1
-	}
-	return page
-}
-
-func minInt(a int, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }

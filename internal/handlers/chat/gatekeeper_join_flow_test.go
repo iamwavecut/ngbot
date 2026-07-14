@@ -13,6 +13,7 @@ import (
 	api "github.com/OvyFlash/telegram-bot-api"
 	"github.com/iamwavecut/ngbot/internal/config"
 	"github.com/iamwavecut/ngbot/internal/db"
+	"github.com/pborman/uuid"
 )
 
 type recordedBotRequest struct {
@@ -79,8 +80,140 @@ func newGatekeeperFlowStore() *gatekeeperFlowStore {
 }
 
 func (s *gatekeeperFlowStore) CreateChallenge(_ context.Context, challenge *db.Challenge) (*db.Challenge, error) {
+	if challenge.ChallengeID == "" {
+		challenge.ChallengeID = uuid.New()
+	}
 	s.challenges[s.challengeKey(challenge.CommChatID, challenge.UserID, challenge.ChatID)] = cloneChallenge(challenge)
 	return challenge, nil
+}
+
+func (s *gatekeeperFlowStore) RecordWrongAttempt(_ context.Context, challengeID string, maxAttempts int) (int, string, bool, error) {
+	key, challenge := s.challengeByID(challengeID)
+	if challenge == nil || challenge.Status != db.ChallengeStatusPending {
+		return 0, "", false, nil
+	}
+	clone := *challenge
+	clone.Attempts++
+	if clone.Attempts >= maxAttempts {
+		clone.Status = db.ChallengeStatusRejectPending
+	}
+	s.challenges[key] = &clone
+	return clone.Attempts, clone.Status, true, nil
+}
+
+func (s *gatekeeperFlowStore) ClaimForApproval(_ context.Context, challengeID string) (bool, error) {
+	return s.transition(challengeID, db.ChallengeStatusPending, db.ChallengeStatusApproveQueryPending, time.Time{}), nil
+}
+
+func (s *gatekeeperFlowStore) BeginDMFallback(_ context.Context, challengeID string) (bool, error) {
+	_, challenge := s.challengeByID(challengeID)
+	if challenge == nil || challenge.WebAppToken == "" || challenge.JoinRequestQueryID == "" || challenge.WebAppOpenedAt.Valid {
+		return false, nil
+	}
+	return s.transition(challengeID, db.ChallengeStatusPending, db.ChallengeStatusWebAppFallbackPending, time.Time{}), nil
+}
+
+func (s *gatekeeperFlowStore) AttachChallengeMessage(_ context.Context, challengeID, expectedStatus string, messageID int) (bool, error) {
+	key, challenge := s.challengeByID(challengeID)
+	if challenge == nil || challenge.Status != expectedStatus {
+		return false, nil
+	}
+	clone := *challenge
+	clone.ChallengeMessageID = messageID
+	s.challenges[key] = &clone
+	return true, nil
+}
+
+func (s *gatekeeperFlowStore) AttachJoinMessage(_ context.Context, challengeID, expectedStatus string, messageID int) (bool, error) {
+	key, challenge := s.challengeByID(challengeID)
+	if challenge == nil || challenge.Status != expectedStatus || challenge.JoinMessageID != 0 {
+		return false, nil
+	}
+	clone := *challenge
+	clone.JoinMessageID = messageID
+	s.challenges[key] = &clone
+	return true, nil
+}
+
+func (s *gatekeeperFlowStore) PrepareDMFallback(_ context.Context, challengeID, successUUID, userLanguage string, expiresAt time.Time) (bool, error) {
+	key, challenge := s.challengeByID(challengeID)
+	if challenge == nil || challenge.Status != db.ChallengeStatusWebAppFallbackPending {
+		return false, nil
+	}
+	clone := *challenge
+	clone.SuccessUUID = successUUID
+	clone.UserLanguage = userLanguage
+	clone.ExpiresAt = expiresAt
+	clone.WebAppToken = ""
+	clone.ChallengeMessageID = 0
+	clone.Attempts = 0
+	s.challenges[key] = &clone
+	return true, nil
+}
+
+func (s *gatekeeperFlowStore) CompleteExternalAction(_ context.Context, challengeID, expectedStatus, nextStatus string, expiresAt time.Time) (bool, error) {
+	return s.transition(challengeID, expectedStatus, nextStatus, expiresAt), nil
+}
+
+func (s *gatekeeperFlowStore) ScheduleChallengeRetry(_ context.Context, challengeID, expectedStatus string, nextAttemptAt time.Time, lastError string) (bool, error) {
+	key, challenge := s.challengeByID(challengeID)
+	if challenge == nil || challenge.Status != expectedStatus {
+		return false, nil
+	}
+	clone := *challenge
+	clone.NextAttemptAt = sql.NullTime{Time: nextAttemptAt, Valid: !nextAttemptAt.IsZero()}
+	clone.AttemptCount++
+	clone.LastError = lastError
+	s.challenges[key] = &clone
+	return true, nil
+}
+
+func (s *gatekeeperFlowStore) DeleteChallengeInstance(_ context.Context, challengeID, expectedStatus string) (bool, error) {
+	key, challenge := s.challengeByID(challengeID)
+	if challenge == nil || challenge.Status != expectedStatus {
+		return false, nil
+	}
+	delete(s.challenges, key)
+	return true, nil
+}
+
+func (s *gatekeeperFlowStore) GetDueChallenges(_ context.Context, now time.Time) ([]*db.Challenge, error) {
+	due := make([]*db.Challenge, 0)
+	for _, challenge := range s.challenges {
+		if isPendingChallengeAction(challenge.Status) && challenge.NextAttemptAt.Valid && !challenge.NextAttemptAt.Time.After(now) {
+			due = append(due, cloneChallenge(challenge))
+		}
+	}
+	return due, nil
+}
+
+func (s *gatekeeperFlowStore) challengeByID(challengeID string) (string, *db.Challenge) {
+	for key, challenge := range s.challenges {
+		if challenge.ChallengeID == challengeID {
+			return key, challenge
+		}
+	}
+	return "", nil
+}
+
+func (s *gatekeeperFlowStore) transition(challengeID, expectedStatus, nextStatus string, expiresAt time.Time) bool {
+	key, challenge := s.challengeByID(challengeID)
+	if challenge == nil || challenge.Status != expectedStatus {
+		return false
+	}
+	clone := *challenge
+	clone.Status = nextStatus
+	clone.NextAttemptAt = sql.NullTime{}
+	if isPendingChallengeAction(nextStatus) {
+		clone.NextAttemptAt = sql.NullTime{Time: time.Now(), Valid: true}
+	}
+	clone.AttemptCount = 0
+	clone.LastError = ""
+	if !expiresAt.IsZero() {
+		clone.ExpiresAt = expiresAt
+	}
+	s.challenges[key] = &clone
+	return true
 }
 
 func (s *gatekeeperFlowStore) GetChallengeByMessage(_ context.Context, commChatID, userID int64, challengeMessageID int) (*db.Challenge, error) {
@@ -133,16 +266,6 @@ func (s *gatekeeperFlowStore) GetPassedJoinRequestChallengeByChatUser(_ context.
 	return cloneChallenge(latest), nil
 }
 
-func (s *gatekeeperFlowStore) UpdateChallenge(_ context.Context, challenge *db.Challenge) error {
-	s.challenges[s.challengeKey(challenge.CommChatID, challenge.UserID, challenge.ChatID)] = cloneChallenge(challenge)
-	return nil
-}
-
-func (s *gatekeeperFlowStore) DeleteChallenge(_ context.Context, commChatID, userID, chatID int64) error {
-	delete(s.challenges, s.challengeKey(commChatID, userID, chatID))
-	return nil
-}
-
 func (s *gatekeeperFlowStore) GetExpiredChallenges(_ context.Context, now time.Time) ([]*db.Challenge, error) {
 	expired := make([]*db.Challenge, 0)
 	for _, challenge := range s.challenges {
@@ -163,35 +286,6 @@ func (s *gatekeeperFlowStore) MarkWebAppChallengeOpened(_ context.Context, token
 		}
 	}
 	return nil
-}
-
-func (s *gatekeeperFlowStore) ClaimWebAppChallengeForFallback(_ context.Context, commChatID, userID, chatID int64) (bool, error) {
-	key := s.challengeKey(commChatID, userID, chatID)
-	challenge, ok := s.challenges[key]
-	if !ok {
-		return false, nil
-	}
-	if challenge.Status != db.ChallengeStatusPending || challenge.WebAppToken == "" ||
-		challenge.JoinRequestQueryID == "" || challenge.WebAppOpenedAt.Valid {
-		return false, nil
-	}
-	clone := *challenge
-	clone.Status = db.ChallengeStatusWebAppFallbackPending
-	s.challenges[key] = &clone
-	return true, nil
-}
-
-func (s *gatekeeperFlowStore) ClaimWebAppChallengeForApproval(_ context.Context, token string) (bool, error) {
-	for key, challenge := range s.challenges {
-		if challenge.WebAppToken == token && challenge.WebAppToken != "" &&
-			challenge.Status == db.ChallengeStatusPending {
-			clone := *challenge
-			clone.Status = db.ChallengeStatusPassedWaitingMemberJoin
-			s.challenges[key] = &clone
-			return true, nil
-		}
-	}
-	return false, nil
 }
 
 func (s *gatekeeperFlowStore) GetUnopenedWebAppChallenges(_ context.Context, deadline time.Time) ([]*db.Challenge, error) {
@@ -361,6 +455,7 @@ func TestBannedChatJoinRequestDeclinesAndBansBeforeCaptcha(t *testing.T) {
 	}
 	banChecker := &testGatekeeperBanChecker{banned: true}
 	gatekeeper := &Gatekeeper{
+		bot:        botAPI,
 		s:          &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI, language: "en"}, settings: settings},
 		store:      store,
 		config:     &config.Config{},
@@ -410,7 +505,7 @@ func TestBannedChatJoinRequestQueryDeclinesAndBansBeforeCaptcha(t *testing.T) {
 		recorder.record(t, method, r)
 
 		switch method {
-		case testTelegramMethodJoinRequestQuery:
+		case testTelegramMethodJoinRequestQuery, testTelegramMethodBanChatMember:
 			return true
 		default:
 			t.Fatalf("unexpected bot method before captcha: %s", method)
@@ -428,6 +523,7 @@ func TestBannedChatJoinRequestQueryDeclinesAndBansBeforeCaptcha(t *testing.T) {
 	}
 	banChecker := &testGatekeeperBanChecker{banned: true}
 	gatekeeper := &Gatekeeper{
+		bot:        botAPI,
 		s:          &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI, language: "en"}, settings: settings},
 		store:      store,
 		config:     &config.Config{},
@@ -496,6 +592,7 @@ func TestJoinRequestCaptchaUsesWebAppQueryWhenAvailable(t *testing.T) {
 		ChallengeTimeout:              (3 * time.Minute).Nanoseconds(),
 	}
 	gatekeeper := &Gatekeeper{
+		bot:        botAPI,
 		s:          &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI, language: "en"}, settings: settings},
 		store:      store,
 		config:     &config.Config{GatekeeperWebApp: config.GatekeeperWebApp{PublicURL: "https://guard.example"}},
@@ -598,6 +695,7 @@ func TestBannedChatMemberSkipsCaptchaAndDeletesKnownJoinArtifacts(t *testing.T) 
 	}
 	banChecker := &testGatekeeperBanChecker{banned: true}
 	gatekeeper := &Gatekeeper{
+		bot:        botAPI,
 		s:          &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI, language: "en"}, settings: settings},
 		store:      store,
 		config:     &config.Config{},
@@ -638,6 +736,49 @@ func TestBannedChatMemberSkipsCaptchaAndDeletesKnownJoinArtifacts(t *testing.T) 
 	}
 }
 
+func TestFailedChallengeActivationRetainsDurableUnrestrictRetry(t *testing.T) {
+	t.Parallel()
+
+	restrictCalls := 0
+	botAPI := newTestBotAPIWithErrors(t, func(method string, _ *http.Request) any {
+		switch method {
+		case testTelegramMethodRestrictChatMember:
+			restrictCalls++
+			if restrictCalls == 1 {
+				return true
+			}
+			return &testBotAPIError{code: http.StatusBadGateway, description: "temporary unrestrict failure"}
+		case testTelegramMethodSendMessage:
+			return &testBotAPIError{code: http.StatusBadGateway, description: "temporary send failure"}
+		default:
+			t.Fatalf("unexpected bot method: %s", method)
+			return nil
+		}
+	}, nil)
+
+	store := newGatekeeperFlowStore()
+	settings := &db.Settings{
+		GatekeeperCaptchaEnabled:      true,
+		GatekeeperCaptchaOptionsCount: 3,
+		ChallengeTimeout:              time.Minute.Nanoseconds(),
+	}
+	service := &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI, language: "en"}, settings: settings}
+	gatekeeper := NewGatekeeper(service, botAPI, store, nil, &config.Config{}, &testGatekeeperBanChecker{})
+	chat := &api.Chat{ID: -100123, Type: "supergroup", Title: "Wave Club"}
+	user := &api.User{ID: 42, FirstName: "Neo", LanguageCode: "en"}
+
+	if err := gatekeeper.startChallenge(context.Background(), nil, user, chat, chat.ID, chat.ID, settings); err == nil {
+		t.Fatal("expected challenge activation failure")
+	}
+	challenge := store.onlyChallenge(t)
+	if challenge.Status != db.ChallengeStatusUnrestrictPending || challenge.AttemptCount != 1 || !challenge.NextAttemptAt.Valid || challenge.LastError == "" {
+		t.Fatalf("expected durable unrestrict retry after partial activation, got %#v", challenge)
+	}
+	if restrictCalls != 2 {
+		t.Fatalf("expected initial restriction and compensation attempt, got %d calls", restrictCalls)
+	}
+}
+
 func TestBannedNewChatMembersDeletesJoinMessageAndSkipsBackfill(t *testing.T) {
 	t.Parallel()
 
@@ -668,6 +809,7 @@ func TestBannedNewChatMembersDeletesJoinMessageAndSkipsBackfill(t *testing.T) {
 	}
 	banChecker := &testGatekeeperBanChecker{banned: true}
 	gatekeeper := &Gatekeeper{
+		bot:        botAPI,
 		s:          &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI, language: "en"}, settings: settings},
 		store:      store,
 		config:     &config.Config{},
@@ -737,6 +879,7 @@ func TestBannedBotNewChatMembersDeletesJoinMessageAndSkipsCaptcha(t *testing.T) 
 	}
 	banChecker := &testGatekeeperBanChecker{banned: true}
 	gatekeeper := &Gatekeeper{
+		bot:        botAPI,
 		s:          &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI, language: "en"}, settings: settings},
 		store:      store,
 		config:     &config.Config{},
@@ -793,8 +936,8 @@ func TestJoinRequestCaptchaSuccessHandoffSkipsSecondCaptchaAndSendsGreetingOnce(
 			}
 		case "approveChatJoinRequest":
 			handoffChallenge := store.onlyChallenge(t)
-			if handoffChallenge.Status != db.ChallengeStatusPassedWaitingMemberJoin {
-				t.Fatalf("expected handoff status before approve, got %q", handoffChallenge.Status)
+			if handoffChallenge.Status != db.ChallengeStatusApproveMemberPending {
+				t.Fatalf("expected durable approval claim before Telegram effect, got %q", handoffChallenge.Status)
 			}
 			return true
 		case testTelegramMethodSendMessage:
@@ -816,6 +959,7 @@ func TestJoinRequestCaptchaSuccessHandoffSkipsSecondCaptchaAndSendsGreetingOnce(
 		ChallengeTimeout:              (3 * time.Minute).Nanoseconds(),
 	}
 	gatekeeper := &Gatekeeper{
+		bot:        botAPI,
 		s:          &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI, language: "en"}, settings: settings},
 		store:      store,
 		config:     &config.Config{},
@@ -960,6 +1104,7 @@ func TestJoinRequestCaptchaSuccessHandoffSkipsPublicCaptchaWithoutViaJoinRequest
 		ChallengeTimeout:              (3 * time.Minute).Nanoseconds(),
 	}
 	gatekeeper := &Gatekeeper{
+		bot:        botAPI,
 		s:          &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI, language: "en"}, settings: settings},
 		store:      store,
 		config:     &config.Config{},
@@ -1031,6 +1176,7 @@ func TestManualJoinRequestApprovalSkipsPublicCaptchaAndSendsOnlyGreeting(t *test
 	}
 	store := newGatekeeperFlowStore()
 	gatekeeper := &Gatekeeper{
+		bot:        botAPI,
 		s:          &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI, language: "en"}, settings: settings},
 		store:      store,
 		config:     &config.Config{},
@@ -1106,6 +1252,7 @@ func TestDirectJoinCaptchaIncludesGreetingImmediatelyAndBackfillsJoinMessageID(t
 	}
 	store := newGatekeeperFlowStore()
 	gatekeeper := &Gatekeeper{
+		bot:        botAPI,
 		s:          &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI, language: "en"}, settings: settings},
 		store:      store,
 		config:     &config.Config{},
@@ -1196,6 +1343,7 @@ func TestDirectJoinCaptchaUsesMarkdownV2ForNormalizedGreetingTemplate(t *testing
 	}
 	store := newGatekeeperFlowStore()
 	gatekeeper := &Gatekeeper{
+		bot:        botAPI,
 		s:          &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI, language: "en"}, settings: settings},
 		store:      store,
 		config:     &config.Config{},
@@ -1282,6 +1430,7 @@ func TestNonJoinRequestChatMemberJoinsStillStartPublicCaptcha(t *testing.T) {
 			}
 			store := newGatekeeperFlowStore()
 			gatekeeper := &Gatekeeper{
+				bot:        botAPI,
 				s:          &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI, language: "en"}, settings: settings},
 				store:      store,
 				config:     &config.Config{},
@@ -1324,6 +1473,7 @@ func TestJoinRequestGreetingWithoutCaptchaLeavesManualReviewUntouched(t *testing
 	}
 	store := newGatekeeperFlowStore()
 	gatekeeper := &Gatekeeper{
+		bot:        botAPI,
 		s:          &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI, language: "en"}, settings: settings},
 		store:      store,
 		config:     &config.Config{},
@@ -1372,6 +1522,7 @@ func TestJoinRequestQueryWithoutCaptchaQueuesManualReview(t *testing.T) {
 	}
 	store := newGatekeeperFlowStore()
 	gatekeeper := &Gatekeeper{
+		bot:        botAPI,
 		s:          &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI, language: "en"}, settings: settings},
 		store:      store,
 		config:     &config.Config{GatekeeperWebApp: config.GatekeeperWebApp{PublicURL: "https://guard.example"}},
@@ -1456,6 +1607,7 @@ func TestProcessExpiredJoinRequestChallengesCleanupWithoutApproval(t *testing.T)
 			}
 
 			gatekeeper := &Gatekeeper{
+				bot:        botAPI,
 				s:          &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI, language: "en"}, settings: tc.settings},
 				store:      store,
 				config:     &config.Config{},
@@ -1536,6 +1688,7 @@ func TestProcessExpiredJoinRequestWebAppChallengeFallsBackToDM(t *testing.T) {
 	}
 
 	gatekeeper := &Gatekeeper{
+		bot: botAPI,
 		s: &gatekeeperTestService{
 			testBotService: testBotService{botAPI: botAPI, language: "en"},
 			settings: &db.Settings{
@@ -1591,7 +1744,7 @@ func TestProcessExpiredJoinRequestDMFallbackChallengeRejects(t *testing.T) {
 				"type":  "supergroup",
 				"title": "Wave Club",
 			}
-		case testTelegramMethodDeleteMessage, testTelegramMethodBanChatMember, testTelegramMethodDeclineJoinRequest:
+		case testTelegramMethodDeleteMessage, testTelegramMethodBanChatMember, testTelegramMethodJoinRequestQuery:
 			return true
 		case testTelegramMethodSendMessage:
 			return recorder.nextSendMessageResult()
@@ -1618,6 +1771,7 @@ func TestProcessExpiredJoinRequestDMFallbackChallengeRejects(t *testing.T) {
 	}
 
 	gatekeeper := &Gatekeeper{
+		bot: botAPI,
 		s: &gatekeeperTestService{
 			testBotService: testBotService{botAPI: botAPI, language: "en"},
 			settings: &db.Settings{
@@ -1641,11 +1795,11 @@ func TestProcessExpiredJoinRequestDMFallbackChallengeRejects(t *testing.T) {
 	if len(recorder.byMethod(testTelegramMethodBanChatMember)) != 1 {
 		t.Fatalf("expected one ban, got %d", len(recorder.byMethod(testTelegramMethodBanChatMember)))
 	}
-	if len(recorder.byMethod(testTelegramMethodDeclineJoinRequest)) != 1 {
-		t.Fatalf("expected one join request decline, got %d", len(recorder.byMethod(testTelegramMethodDeclineJoinRequest)))
+	if len(recorder.byMethod(testTelegramMethodJoinRequestQuery)) != 1 {
+		t.Fatalf("expected one durable join request query decline, got %d", len(recorder.byMethod(testTelegramMethodJoinRequestQuery)))
 	}
-	if len(recorder.byMethod(testTelegramMethodSendMessage)) != 1 {
-		t.Fatalf("expected one reject DM, got %d", len(recorder.byMethod(testTelegramMethodSendMessage)))
+	if len(recorder.byMethod(testTelegramMethodSendMessage)) != 0 {
+		t.Fatalf("expected no non-durable reject message, got %d", len(recorder.byMethod(testTelegramMethodSendMessage)))
 	}
 	if len(store.challenges) != 0 {
 		t.Fatalf("expected expired fallback challenge cleanup to remove the row, got %d", len(store.challenges))
@@ -1705,6 +1859,7 @@ func TestProcessUnopenedWebAppChallengeFallsBackEarly(t *testing.T) {
 	}
 
 	gatekeeper := &Gatekeeper{
+		bot: botAPI,
 		s: &gatekeeperTestService{
 			testBotService: testBotService{botAPI: botAPI, language: "en"},
 			settings: &db.Settings{
@@ -1762,6 +1917,7 @@ func TestProcessUnopenedWebAppChallengeSkipsOpened(t *testing.T) {
 	}
 
 	gatekeeper := &Gatekeeper{
+		bot: botAPI,
 		s: &gatekeeperTestService{
 			testBotService: testBotService{botAPI: botAPI, language: "en"},
 			settings: &db.Settings{
@@ -1811,6 +1967,7 @@ func TestProcessUnopenedWebAppChallengeSkipsAlreadyPassed(t *testing.T) {
 	}
 
 	gatekeeper := &Gatekeeper{
+		bot: botAPI,
 		s: &gatekeeperTestService{
 			testBotService: testBotService{botAPI: botAPI, language: "en"},
 			settings: &db.Settings{
@@ -1889,6 +2046,7 @@ func TestProcessExpiredRecoversFallbackPendingChallenge(t *testing.T) {
 	}
 
 	gatekeeper := &Gatekeeper{
+		bot: botAPI,
 		s: &gatekeeperTestService{
 			testBotService: testBotService{botAPI: botAPI, language: "en"},
 			settings: &db.Settings{
@@ -1947,6 +2105,7 @@ func TestProcessExpiredPassedWebAppChallengeCleansUpWithoutPenalty(t *testing.T)
 	}
 
 	gatekeeper := &Gatekeeper{
+		bot: botAPI,
 		s: &gatekeeperTestService{
 			testBotService: testBotService{botAPI: botAPI, language: "en"},
 			settings: &db.Settings{
@@ -1990,7 +2149,7 @@ func TestFallbackClaimedWebAppChallengeDeclinesWhenTargetChatUnavailable(t *test
 				t.Fatalf("unexpected getChat chat_id: %q", r.Form.Get("chat_id"))
 				return nil
 			}
-		case testTelegramMethodJoinRequestQuery:
+		case testTelegramMethodJoinRequestQuery, testTelegramMethodBanChatMember:
 			return true
 		default:
 			t.Fatalf("unexpected bot method: %s", method)
@@ -2017,6 +2176,7 @@ func TestFallbackClaimedWebAppChallengeDeclinesWhenTargetChatUnavailable(t *test
 	}
 
 	gatekeeper := &Gatekeeper{
+		bot:        botAPI,
 		s:          &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI, language: "en"}, settings: webAppSettings()},
 		store:      store,
 		config:     &config.Config{},

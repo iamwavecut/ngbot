@@ -8,6 +8,8 @@ import (
 	"github.com/iamwavecut/ngbot/internal/db"
 )
 
+const recentJoinerTestUsername = "neo"
+
 func TestAddChatRecentJoinerUpsertsMessageIDFromZeroToServiceMessage(t *testing.T) {
 	t.Parallel()
 
@@ -24,7 +26,7 @@ func TestAddChatRecentJoinerUpsertsMessageIDFromZeroToServiceMessage(t *testing.
 	if _, err := client.AddChatRecentJoiner(ctx, &db.RecentJoiner{
 		ChatID:        100,
 		UserID:        200,
-		Username:      "neo",
+		Username:      recentJoinerTestUsername,
 		JoinedAt:      firstJoinAt,
 		JoinMessageID: 0,
 	}); err != nil {
@@ -66,7 +68,7 @@ func TestAddChatRecentJoinerUpsertKeepsExistingMessageIDWhenNewValueIsZero(t *te
 	if _, err := client.AddChatRecentJoiner(ctx, &db.RecentJoiner{
 		ChatID:        100,
 		UserID:        200,
-		Username:      "neo",
+		Username:      recentJoinerTestUsername,
 		JoinedAt:      time.Now().Add(-time.Minute),
 		JoinMessageID: 55,
 	}); err != nil {
@@ -105,7 +107,7 @@ func TestAddChatRecentJoinerRejoinResetsProcessedAndSpamFlags(t *testing.T) {
 	if _, err := client.AddChatRecentJoiner(ctx, &db.RecentJoiner{
 		ChatID:        100,
 		UserID:        200,
-		Username:      "neo",
+		Username:      recentJoinerTestUsername,
 		JoinedAt:      time.Now().Add(-2 * time.Minute),
 		JoinMessageID: 55,
 	}); err != nil {

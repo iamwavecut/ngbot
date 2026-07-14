@@ -3,10 +3,12 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path"
+	"strings"
 	"testing"
 	"time"
 
@@ -18,14 +20,6 @@ import (
 
 type testModerationService struct {
 	botAPI *api.BotAPI
-}
-
-func (s *testModerationService) GetBot() *api.BotAPI {
-	return s.botAPI
-}
-
-func (s *testModerationService) GetDB() db.Client {
-	return nil
 }
 
 func (s *testModerationService) IsMember(context.Context, int64, int64) (bool, error) {
@@ -59,6 +53,9 @@ type testModerationStore struct {
 	processedJoiners      [][3]int64
 	deletedKnownNonMember [][2]int64
 	reportMessages        []*db.SpamCaseReportMessage
+	members               []int64
+	membersErr            error
+	presentationErr       error
 }
 
 func (s *testModerationStore) CreateSpamCase(_ context.Context, sc *db.SpamCase) (*db.SpamCase, error) {
@@ -73,8 +70,40 @@ func (s *testModerationStore) UpdateSpamCase(_ context.Context, sc *db.SpamCase)
 	return nil
 }
 
+func (s *testModerationStore) UpdateSpamCasePresentation(_ context.Context, sc *db.SpamCase) error {
+	if s.presentationErr != nil {
+		return s.presentationErr
+	}
+	if s.spamCase == nil {
+		return nil
+	}
+	s.spamCase.ChannelUsername = sc.ChannelUsername
+	s.spamCase.ChannelPostID = sc.ChannelPostID
+	s.spamCase.NotificationMessageID = sc.NotificationMessageID
+	return nil
+}
+
+func (s *testModerationStore) SetSpamCaseResolveAt(_ context.Context, caseID int64, resolveAt time.Time) (bool, error) {
+	if s.spamCase == nil || s.spamCase.ID != caseID || s.spamCase.Status != db.SpamCaseStatusPending || s.spamCase.ResolveAt != nil {
+		return false, nil
+	}
+	s.spamCase.ResolveAt = &resolveAt
+	return true, nil
+}
+
 func (s *testModerationStore) GetSpamCase(context.Context, int64) (*db.SpamCase, error) {
 	return s.spamCase, nil
+}
+
+func (s *testModerationStore) GetPendingSpamCases(context.Context) ([]*db.SpamCase, error) {
+	if s.spamCase != nil && s.spamCase.Status == db.SpamCaseStatusPending {
+		return []*db.SpamCase{s.spamCase}, nil
+	}
+	return nil, nil
+}
+
+func (s *testModerationStore) GetDueSpamCases(context.Context, time.Time) ([]*db.SpamCase, error) {
+	return nil, nil
 }
 
 func (s *testModerationStore) GetActiveSpamCase(context.Context, int64, int64) (*db.SpamCase, error) {
@@ -98,12 +127,58 @@ func (s *testModerationStore) AddSpamVote(context.Context, *db.SpamVote) error {
 	return nil
 }
 
+func (s *testModerationStore) AddVoteIfPending(_ context.Context, vote *db.SpamVote) (int, int, bool, error) {
+	if s.spamCase == nil || s.spamCase.Status != db.SpamCaseStatusPending {
+		return 0, 0, false, nil
+	}
+	s.votes = append(s.votes, vote)
+	notSpam, spam := 0, 0
+	for _, recorded := range s.votes {
+		if recorded.Vote {
+			notSpam++
+		} else {
+			spam++
+		}
+	}
+	return notSpam, spam, true, nil
+}
+
 func (s *testModerationStore) GetSpamVotes(context.Context, int64) ([]*db.SpamVote, error) {
 	return s.votes, nil
 }
 
+func (s *testModerationStore) ClaimSpamCaseResolution(_ context.Context, caseID int64, requiredVoters int, timedOut bool, _ time.Time) (*db.SpamCase, bool, error) {
+	if s.spamCase == nil || s.spamCase.ID != caseID || s.spamCase.Status != db.SpamCaseStatusPending {
+		return nil, false, nil
+	}
+	status, resolve := resolveStatusFromVotes(s.votes, requiredVoters, timedOut)
+	if !resolve {
+		return nil, false, nil
+	}
+	if status == db.SpamCaseStatusSpam {
+		s.spamCase.Status = db.SpamCaseStatusResolvingSpam
+	} else {
+		s.spamCase.Status = db.SpamCaseStatusResolvingFalsePositive
+	}
+	copyCase := *s.spamCase
+	return &copyCase, true, nil
+}
+
+func (s *testModerationStore) FinalizeSpamCaseResolution(_ context.Context, caseID int64, expectedStatus, terminalStatus, _ string, resolvedAt time.Time) (bool, error) {
+	if s.spamCase == nil || s.spamCase.ID != caseID || s.spamCase.Status != expectedStatus {
+		return false, nil
+	}
+	s.spamCase.Status = terminalStatus
+	s.spamCase.ResolvedAt = &resolvedAt
+	return true, nil
+}
+
+func (s *testModerationStore) ScheduleSpamCaseRetry(context.Context, int64, string, time.Time, string) (bool, error) {
+	return true, nil
+}
+
 func (s *testModerationStore) GetMembers(context.Context, int64) ([]int64, error) {
-	return nil, nil
+	return s.members, s.membersErr
 }
 
 func (s *testModerationStore) GetChatRecentJoiners(_ context.Context, chatID int64) ([]*db.RecentJoiner, error) {
@@ -142,6 +217,20 @@ func (s *testModerationStore) GetSpamCaseReportMessages(context.Context, int64) 
 
 func (s *testModerationStore) DeleteSpamCaseReportMessages(context.Context, int64) error {
 	s.reportMessages = nil
+	return nil
+}
+
+func (s *testModerationStore) GetDueSpamCaseReportMessages(context.Context, time.Time) ([]*db.SpamCaseReportMessage, error) {
+	return s.reportMessages, nil
+}
+
+func (s *testModerationStore) DeleteSpamCaseReportMessage(_ context.Context, caseID, chatID int64, messageID int) error {
+	for i, message := range s.reportMessages {
+		if message.CaseID == caseID && message.ChatID == chatID && message.MessageID == messageID {
+			s.reportMessages = append(s.reportMessages[:i], s.reportMessages[i+1:]...)
+			break
+		}
+	}
 	return nil
 }
 
@@ -193,10 +282,10 @@ func newModerationTestBotAPI(t *testing.T, handler func(method string, r *http.R
 		switch method {
 		case "getMe":
 			result = map[string]any{
-				"id":         1,
-				"is_bot":     true,
-				"first_name": "Test",
-				"username":   "testbot",
+				"id":                        1,
+				moderationTestJSONIsBot:     true,
+				moderationTestJSONFirstName: "Test",
+				"username":                  "testbot",
 			}
 		default:
 			result = handler(method, r)
@@ -212,7 +301,11 @@ func newModerationTestBotAPI(t *testing.T, handler func(method string, r *http.R
 	}))
 	t.Cleanup(server.Close)
 
-	botAPI, err := api.NewBotAPIWithClient("TEST_TOKEN", fmt.Sprintf("%s/bot%%s/%%s", server.URL), server.Client())
+	botAPI, err := api.NewBotAPIWithOptions(
+		"TEST_TOKEN",
+		api.WithAPIEndpoint(fmt.Sprintf("%s/bot%%s/%%s", server.URL)),
+		api.WithHTTPClient(server.Client()),
+	)
 	if err != nil {
 		t.Fatalf("new test bot api: %v", err)
 	}
@@ -228,11 +321,11 @@ func TestProcessBannedMessageClearsKnownNonMember(t *testing.T) {
 			return true
 		case testTelegramMethodSendMessage:
 			return map[string]any{
-				"message_id": 700,
-				"date":       0,
-				"chat": map[string]any{
-					"id":   100,
-					"type": "supergroup",
+				moderationTestJSONMessageID: 700,
+				moderationTestJSONDate:      0,
+				moderationTestJSONChat: map[string]any{
+					"id":                   100,
+					moderationTestJSONType: moderationTestSupergroup,
 				},
 			}
 		default:
@@ -244,6 +337,7 @@ func TestProcessBannedMessageClearsKnownNonMember(t *testing.T) {
 	store := &testModerationStore{}
 	sc := &SpamControl{
 		s:          &testModerationService{botAPI: botAPI},
+		bot:        botAPI,
 		store:      store,
 		config:     config.SpamControl{SuspectNotificationTimeout: time.Millisecond},
 		banService: &testModerationBanService{},
@@ -251,7 +345,7 @@ func TestProcessBannedMessageClearsKnownNonMember(t *testing.T) {
 
 	msg := &api.Message{
 		MessageID: 1,
-		Chat:      api.Chat{ID: 100, Type: "supergroup"},
+		Chat:      api.Chat{ID: 100, Type: moderationTestSupergroup},
 		From:      &api.User{ID: 200, UserName: "guest"},
 		Text:      "spam message",
 	}
@@ -288,11 +382,11 @@ func TestProcessReportedMessageStartsVotingWithoutDeletingOrMuting(t *testing.T)
 				t.Fatal("expected voting prompt to reply to the reported message")
 			}
 			return map[string]any{
-				"message_id": 700,
-				"date":       0,
-				"chat": map[string]any{
-					"id":   100,
-					"type": "supergroup",
+				moderationTestJSONMessageID: 700,
+				moderationTestJSONDate:      0,
+				moderationTestJSONChat: map[string]any{
+					"id":                   100,
+					moderationTestJSONType: moderationTestSupergroup,
 				},
 			}
 		default:
@@ -306,16 +400,17 @@ func TestProcessReportedMessageStartsVotingWithoutDeletingOrMuting(t *testing.T)
 		s: &testModerationService{
 			botAPI: botAPI,
 		},
+		bot:        botAPI,
 		store:      store,
 		config:     config.SpamControl{VotingTimeoutMinutes: time.Hour, MinVoters: 1},
 		banService: banService,
 	}
 
-	chat := &api.Chat{ID: 100, Type: "supergroup"}
+	chat := &api.Chat{ID: 100, Type: moderationTestSupergroup}
 	target := &api.Message{
 		MessageID: 40,
 		Chat:      *chat,
-		From:      &api.User{ID: 200, FirstName: "Target"},
+		From:      &api.User{ID: 200, FirstName: moderationTestTargetName},
 		Text:      "reported text",
 	}
 	report := &api.Message{
@@ -359,17 +454,17 @@ func TestProcessBannedBotMessageDeletesRecentJoinServiceMessage(t *testing.T) {
 			if err := r.ParseForm(); err != nil {
 				t.Fatalf("parse form: %v", err)
 			}
-			deletedMessageIDs = append(deletedMessageIDs, r.Form.Get("message_id"))
+			deletedMessageIDs = append(deletedMessageIDs, r.Form.Get(moderationTestJSONMessageID))
 			return true
 		case testTelegramMethodBanChatMember:
 			return true
 		case testTelegramMethodSendMessage:
 			return map[string]any{
-				"message_id": 700,
-				"date":       0,
-				"chat": map[string]any{
-					"id":   -100,
-					"type": "group",
+				moderationTestJSONMessageID: 700,
+				moderationTestJSONDate:      0,
+				moderationTestJSONChat: map[string]any{
+					"id":                   -100,
+					moderationTestJSONType: "group",
 				},
 			}
 		default:
@@ -389,6 +484,7 @@ func TestProcessBannedBotMessageDeletesRecentJoinServiceMessage(t *testing.T) {
 	}
 	sc := &SpamControl{
 		s:          &testModerationService{botAPI: botAPI},
+		bot:        botAPI,
 		store:      store,
 		config:     config.SpamControl{SuspectNotificationTimeout: time.Hour},
 		banService: &testModerationBanService{},
@@ -428,7 +524,7 @@ func TestResolveCaseSpamClearsKnownNonMember(t *testing.T) {
 			if err := r.ParseForm(); err != nil {
 				t.Fatalf("parse form: %v", err)
 			}
-			deletedMessageIDs = append(deletedMessageIDs, r.Form.Get("message_id"))
+			deletedMessageIDs = append(deletedMessageIDs, r.Form.Get(moderationTestJSONMessageID))
 			return true
 		default:
 			t.Fatalf("unexpected bot method: %s", method)
@@ -459,6 +555,7 @@ func TestResolveCaseSpamClearsKnownNonMember(t *testing.T) {
 	}
 	sc := &SpamControl{
 		s:          &testModerationService{botAPI: botAPI},
+		bot:        botAPI,
 		store:      store,
 		config:     config.SpamControl{MinVoters: 1},
 		banService: &testModerationBanService{},
@@ -505,7 +602,7 @@ func TestResolveReportedCaseSpamDeletesTargetAndKeepsReportMessage(t *testing.T)
 			if err := r.ParseForm(); err != nil {
 				t.Fatalf("parse form: %v", err)
 			}
-			deletedMessageIDs = append(deletedMessageIDs, r.Form.Get("message_id"))
+			deletedMessageIDs = append(deletedMessageIDs, r.Form.Get(moderationTestJSONMessageID))
 			return true
 		case "editMessageReplyMarkup":
 			return true
@@ -538,6 +635,7 @@ func TestResolveReportedCaseSpamDeletesTargetAndKeepsReportMessage(t *testing.T)
 	}
 	sc := &SpamControl{
 		s:          &testModerationService{botAPI: botAPI},
+		bot:        botAPI,
 		store:      store,
 		config:     config.SpamControl{MinVoters: 1},
 		banService: &testModerationBanService{},
@@ -547,11 +645,11 @@ func TestResolveReportedCaseSpamDeletesTargetAndKeepsReportMessage(t *testing.T)
 		t.Fatalf("ResolveCase returned error: %v", err)
 	}
 
-	if len(deletedMessageIDs) != 1 || deletedMessageIDs[0] != "40" {
-		t.Fatalf("expected only target message delete, got %#v", deletedMessageIDs)
+	if len(deletedMessageIDs) != 2 || deletedMessageIDs[0] != "40" || deletedMessageIDs[1] != "70" {
+		t.Fatalf("expected target and completed voting prompt deletes, got %#v", deletedMessageIDs)
 	}
-	if len(store.reportMessages) != 0 {
-		t.Fatalf("expected report message artifacts to be cleared, got %#v", store.reportMessages)
+	if len(store.reportMessages) != 1 {
+		t.Fatalf("expected report artifact to remain queued for ten-minute retention, got %#v", store.reportMessages)
 	}
 }
 
@@ -565,7 +663,7 @@ func TestResolveReportedCaseFalsePositiveKeepsTargetAndReportMessage(t *testing.
 			if err := r.ParseForm(); err != nil {
 				t.Fatalf("parse form: %v", err)
 			}
-			deletedMessageIDs = append(deletedMessageIDs, r.Form.Get("message_id"))
+			deletedMessageIDs = append(deletedMessageIDs, r.Form.Get(moderationTestJSONMessageID))
 			return true
 		case "editMessageReplyMarkup":
 			return true
@@ -598,6 +696,7 @@ func TestResolveReportedCaseFalsePositiveKeepsTargetAndReportMessage(t *testing.
 	banService := &testModerationBanService{}
 	sc := &SpamControl{
 		s:          &testModerationService{botAPI: botAPI},
+		bot:        botAPI,
 		store:      store,
 		config:     config.SpamControl{MinVoters: 1},
 		banService: banService,
@@ -607,14 +706,83 @@ func TestResolveReportedCaseFalsePositiveKeepsTargetAndReportMessage(t *testing.
 		t.Fatalf("ResolveCase returned error: %v", err)
 	}
 
-	if len(deletedMessageIDs) != 0 {
-		t.Fatalf("expected no immediate message deletes, got %#v", deletedMessageIDs)
+	if len(deletedMessageIDs) != 1 || deletedMessageIDs[0] != "70" {
+		t.Fatalf("expected only completed voting prompt delete, got %#v", deletedMessageIDs)
 	}
 	if banService.unmuteCalls != 0 {
 		t.Fatalf("expected report-first false positive not to unmute, got %d unmute calls", banService.unmuteCalls)
 	}
-	if len(store.reportMessages) != 0 {
-		t.Fatalf("expected report message artifacts to be cleared, got %#v", store.reportMessages)
+	if len(store.reportMessages) != 1 {
+		t.Fatalf("expected report artifact to remain queued for ten-minute retention, got %#v", store.reportMessages)
+	}
+}
+
+func TestRecordVoteRejectsLogChannelOutsider(t *testing.T) {
+	t.Parallel()
+
+	botAPI := newModerationTestBotAPI(t, func(method string, _ *http.Request) any {
+		switch method {
+		case "getChatMember":
+			return map[string]any{
+				"status":               "left",
+				moderationTestJSONUser: map[string]any{"id": 300, moderationTestJSONIsBot: false, moderationTestJSONFirstName: "Outsider"},
+			}
+		default:
+			t.Fatalf("unexpected bot method: %s", method)
+			return nil
+		}
+	})
+	store := &testModerationStore{spamCase: &db.SpamCase{
+		ID:        55,
+		ChatID:    -100,
+		UserID:    200,
+		Status:    db.SpamCaseStatusPending,
+		CreatedAt: time.Now(),
+	}}
+	sc := &SpamControl{
+		s:          &testModerationService{botAPI: botAPI},
+		bot:        botAPI,
+		store:      store,
+		config:     config.SpamControl{MinVoters: 2},
+		banService: &testModerationBanService{},
+	}
+
+	_, _, err := sc.RecordVote(context.Background(), 55, 300, false)
+	if !errors.Is(err, ErrVoterNotEligible) {
+		t.Fatalf("expected outsider rejection, got %v", err)
+	}
+	if len(store.votes) != 0 {
+		t.Fatalf("outsider vote reached persistence: %#v", store.votes)
+	}
+}
+
+func TestMembersFailureDefersResolution(t *testing.T) {
+	t.Parallel()
+
+	store := &testModerationStore{
+		spamCase: &db.SpamCase{
+			ID:        55,
+			ChatID:    -100,
+			UserID:    200,
+			Status:    db.SpamCaseStatusPending,
+			CreatedAt: time.Now(),
+		},
+		votes:      []*db.SpamVote{{Vote: false}},
+		membersErr: errors.New("membership unavailable"),
+	}
+	sc := &SpamControl{
+		s:          &testModerationService{},
+		store:      store,
+		config:     config.SpamControl{MinVoters: 1, MinVotersPercentage: 10},
+		banService: &testModerationBanService{},
+	}
+
+	err := sc.ResolveCase(context.Background(), 55, true)
+	if err == nil || !strings.Contains(err.Error(), "membership unavailable") {
+		t.Fatalf("expected membership failure, got %v", err)
+	}
+	if store.spamCase.Status != db.SpamCaseStatusPending {
+		t.Fatalf("membership failure resolved the case: %#v", store.spamCase)
 	}
 }
 

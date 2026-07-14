@@ -31,7 +31,7 @@ func (a *Admin) cleanupExpiredPanels(ctx context.Context) {
 	}
 	for _, session := range sessions {
 		if session.MessageID != 0 {
-			_ = bot.DeleteChatMessage(ctx, a.s.GetBot(), session.UserID, session.MessageID)
+			_ = bot.DeleteChatMessage(ctx, a.bot, session.UserID, session.MessageID)
 		}
 		_ = a.store.DeleteAdminPanelSession(ctx, session.ID)
 	}

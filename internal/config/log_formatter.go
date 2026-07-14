@@ -49,10 +49,7 @@ func (f *NbFormatter) Format(entry *log.Entry) ([]byte, error) {
 	}
 
 	for k, val := range entry.Data {
-		var s string
-		if m, err := json.Marshal(val); err == nil {
-			s = string(m)
-		}
+		s := formatLogValue(val)
 		if s == "" {
 			continue
 		}
@@ -65,7 +62,24 @@ func (f *NbFormatter) Format(entry *log.Entry) ([]byte, error) {
 		output += fmt.Sprintf(" \x1b[%dm%s\x1b[0m=\x1b[%dm%s\x1b[0m", cyan, k, valueColor, s)
 	}
 	output += fmt.Sprintf(" \x1b[%dm%s\x1b[0m=\x1b[%dm\"%s\"\x1b[0m", cyan, "msg", lightGreen, entry.Message)
-	output = strings.Replace(output, "\r", "\\r", -1)
-	output = strings.Replace(output, "\n", "\\n", -1) + "\n"
+	output = strings.ReplaceAll(output, "\r", "\\r")
+	output = strings.ReplaceAll(output, "\n", "\\n") + "\n"
 	return []byte(Redact(output)), nil
+}
+
+func formatLogValue(value any) string {
+	switch value := value.(type) {
+	case error:
+		encoded, _ := json.Marshal(value.Error())
+		return string(encoded)
+	case fmt.Stringer:
+		encoded, _ := json.Marshal(value.String())
+		return string(encoded)
+	default:
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			return ""
+		}
+		return string(encoded)
+	}
 }

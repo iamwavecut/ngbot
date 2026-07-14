@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	api "github.com/OvyFlash/telegram-bot-api"
+	"github.com/iamwavecut/ngbot/internal/bot"
 	"github.com/iamwavecut/ngbot/internal/db"
 )
 
@@ -17,14 +18,14 @@ func (a *Admin) renderAndUpdatePanel(ctx context.Context, session *db.AdminPanel
 	if err := a.savePanelState(ctx, session, state); err != nil {
 		return err
 	}
-	if err := a.editMessage(session.UserID, messageID, text, markup); err != nil {
+	if err := a.editMessage(ctx, session.UserID, messageID, text, markup); err != nil {
 		if isMessageNotModifiedError(err) {
 			return nil
 		}
 		msg := api.NewMessage(session.UserID, text)
 		msg.DisableNotification = true
 		msg.ReplyMarkup = markup
-		sent, sendErr := a.s.GetBot().Send(msg)
+		sent, sendErr := bot.Send(ctx, a.bot, msg)
 		if sendErr == nil {
 			session.MessageID = sent.MessageID
 			if err := a.savePanelState(ctx, session, state); err != nil {

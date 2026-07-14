@@ -22,7 +22,7 @@ func TestServiceGetSettingsCreatesDefaults(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = dbClient.Close() })
 
-	service := bot.NewService(ctx, &api.BotAPI{}, dbClient, log.NewEntry(log.New()))
+	service := bot.NewService(ctx, &api.BotAPI{}, dbClient, "en", log.NewEntry(log.New()))
 	settings, err := service.GetSettings(ctx, -1001234567890)
 	if err != nil {
 		t.Fatalf("get settings: %v", err)
@@ -55,7 +55,7 @@ func TestServiceStartStop(t *testing.T) {
 		t.Fatalf("new sqlite client: %v", err)
 	}
 
-	service := bot.NewService(ctx, &api.BotAPI{}, dbClient, log.NewEntry(log.New()))
+	service := bot.NewService(ctx, &api.BotAPI{}, dbClient, "en", log.NewEntry(log.New()))
 	if err := service.Start(ctx); err != nil {
 		t.Fatalf("start service: %v", err)
 	}

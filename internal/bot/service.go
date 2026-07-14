@@ -3,14 +3,12 @@ package bot
 import (
 	"context"
 	"fmt"
-	"maps"
 	"sync"
 	"time"
 
 	api "github.com/OvyFlash/telegram-bot-api"
 	"golang.org/x/sync/errgroup"
 
-	"github.com/iamwavecut/ngbot/internal/config"
 	"github.com/iamwavecut/ngbot/internal/db"
 	"github.com/iamwavecut/ngbot/internal/i18n"
 	"github.com/iamwavecut/tool"
@@ -20,11 +18,12 @@ import (
 
 type service struct {
 	bot             *api.BotAPI
-	dbClient        db.Client
+	dbClient        serviceStore
 	memberCache     map[int64]map[int64]time.Time
 	settingsCache   map[int64]*db.Settings
 	cacheMutex      sync.RWMutex
 	cacheExpiration time.Duration
+	defaultLanguage string
 	log             *logrus.Entry
 	ctx             context.Context
 	cancel          context.CancelFunc
@@ -33,7 +32,18 @@ type service struct {
 	started         bool
 }
 
-func NewService(ctx context.Context, bot *api.BotAPI, dbClient db.Client, log *logrus.Entry) *service {
+type serviceStore interface {
+	Close() error
+	IsMember(ctx context.Context, chatID, userID int64) (bool, error)
+	InsertMember(ctx context.Context, chatID, userID int64) error
+	DeleteMember(ctx context.Context, chatID, userID int64) error
+	GetAllMembers(ctx context.Context) (map[int64][]int64, error)
+	GetSettings(ctx context.Context, chatID int64) (*db.Settings, error)
+	GetAllSettings(ctx context.Context) (map[int64]*db.Settings, error)
+	SetSettings(ctx context.Context, settings *db.Settings) error
+}
+
+func NewService(ctx context.Context, bot *api.BotAPI, dbClient serviceStore, defaultLanguage string, log *logrus.Entry) *service {
 	ctx, cancel := context.WithCancel(ctx)
 	s := &service{
 		bot:             bot,
@@ -41,6 +51,7 @@ func NewService(ctx context.Context, bot *api.BotAPI, dbClient db.Client, log *l
 		memberCache:     make(map[int64]map[int64]time.Time),
 		settingsCache:   make(map[int64]*db.Settings),
 		cacheExpiration: 5 * time.Minute,
+		defaultLanguage: defaultLanguage,
 		log:             log,
 		ctx:             ctx,
 		cancel:          cancel,
@@ -86,14 +97,6 @@ func (s *service) Start(ctx context.Context) error {
 	return nil
 }
 
-func (s *service) GetBot() *api.BotAPI {
-	return s.bot
-}
-
-func (s *service) GetDB() db.Client {
-	return s.dbClient
-}
-
 func (s *service) IsMember(ctx context.Context, chatID, userID int64) (bool, error) {
 	select {
 	case <-ctx.Done():
@@ -124,7 +127,7 @@ func (s *service) IsMember(ctx context.Context, chatID, userID int64) (bool, err
 		}
 
 		if isMember {
-			chatMember, err := s.bot.GetChatMember(api.GetChatMemberConfig{
+			chatMember, err := GetChatMember(ctx, s.bot, api.GetChatMemberConfig{
 				ChatConfigWithUser: api.ChatConfigWithUser{
 					ChatConfig: api.ChatConfig{
 						ChatID: chatID,
@@ -164,7 +167,7 @@ func (s *service) InsertMember(ctx context.Context, chatID, userID int64) error 
 	case <-ctx.Done():
 		return ctx.Err()
 	default:
-		chatMember, err := s.bot.GetChatMember(api.GetChatMemberConfig{
+		chatMember, err := GetChatMember(ctx, s.bot, api.GetChatMemberConfig{
 			ChatConfigWithUser: api.ChatConfigWithUser{
 				ChatConfig: api.ChatConfig{
 					ChatID: chatID,
@@ -223,7 +226,7 @@ func (s *service) GetSettings(ctx context.Context, chatID int64) (*db.Settings, 
 	s.cacheMutex.RLock()
 	if settings, ok := s.settingsCache[chatID]; ok {
 		s.cacheMutex.RUnlock()
-		return settings, nil
+		return cloneSettings(settings), nil
 	}
 	s.cacheMutex.RUnlock()
 
@@ -246,21 +249,28 @@ func (s *service) GetSettings(ctx context.Context, chatID int64) (*db.Settings, 
 	}
 
 	s.cacheMutex.Lock()
-	s.settingsCache[chatID] = settings
+	if _, exists := s.settingsCache[chatID]; !exists {
+		s.settingsCache[chatID] = cloneSettings(settings)
+	}
+	settings = cloneSettings(s.settingsCache[chatID])
 	s.cacheMutex.Unlock()
 
 	return settings, nil
 }
 
 func (s *service) SetSettings(ctx context.Context, settings *db.Settings) error {
-	err := s.dbClient.SetSettings(ctx, settings)
+	if settings == nil {
+		return errors.New("settings are nil")
+	}
+	snapshot := cloneSettings(settings)
+	err := s.dbClient.SetSettings(ctx, snapshot)
 	if err != nil {
 		return err
 	}
 
 	s.cacheMutex.Lock()
 	defer s.cacheMutex.Unlock()
-	s.settingsCache[settings.ID] = settings
+	s.settingsCache[snapshot.ID] = cloneSettings(snapshot)
 
 	return nil
 }
@@ -293,7 +303,11 @@ func (s *service) warmupCache(ctx context.Context) error {
 			return fmt.Errorf("failed to warmup settings cache: %w", err)
 		}
 		s.cacheMutex.Lock()
-		maps.Copy(s.settingsCache, settings)
+		for chatID, loaded := range settings {
+			if _, exists := s.settingsCache[chatID]; !exists {
+				s.settingsCache[chatID] = cloneSettings(loaded)
+			}
+		}
 		s.cacheMutex.Unlock()
 		return nil
 	})
@@ -317,6 +331,14 @@ func (s *service) warmupCache(ctx context.Context) error {
 		"settingsCount": settingsCount,
 	}).Info("Cache warmed up successfully")
 	return nil
+}
+
+func cloneSettings(settings *db.Settings) *db.Settings {
+	if settings == nil {
+		return nil
+	}
+	clone := *settings
+	return &clone
 }
 
 func (s *service) getLogEntry() *logrus.Entry {
@@ -365,7 +387,7 @@ func (s *service) GetLanguage(ctx context.Context, chatID int64, user *api.User)
 	if user != nil && tool.In(user.LanguageCode, i18n.GetLanguagesList()...) {
 		return user.LanguageCode
 	}
-	return config.Get().DefaultLanguage
+	return s.defaultLanguage
 }
 
 func (s *service) CleanupLeftMembers(ctx context.Context) error {
@@ -389,7 +411,7 @@ func (s *service) CleanupLeftMembers(ctx context.Context) error {
 				return ctx.Err()
 			case <-throttle.C:
 
-				chatMember, err := s.bot.GetChatMember(api.GetChatMemberConfig{
+				chatMember, err := GetChatMember(ctx, s.bot, api.GetChatMemberConfig{
 					ChatConfigWithUser: api.ChatConfigWithUser{
 						ChatConfig: api.ChatConfig{
 							ChatID: chatID,

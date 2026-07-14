@@ -57,7 +57,11 @@ func TestBanUserFromChatRevokesMessages(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	botAPI, err := api.NewBotAPIWithClient("TEST_TOKEN", fmt.Sprintf("%s/bot%%s/%%s", server.URL), server.Client())
+	botAPI, err := api.NewBotAPIWithOptions(
+		"TEST_TOKEN",
+		api.WithAPIEndpoint(fmt.Sprintf("%s/bot%%s/%%s", server.URL)),
+		api.WithHTTPClient(server.Client()),
+	)
 	if err != nil {
 		t.Fatalf("new bot api: %v", err)
 	}

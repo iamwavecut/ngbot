@@ -105,13 +105,13 @@ func TestCheckCASBanPositiveAndNotFound(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Query().Get("user_id") {
+		switch r.URL.Query().Get(logFieldUserID) {
 		case "123":
 			_, _ = w.Write([]byte(`{"ok":true,"result":{"reasons":[2],"offenses":1}}`))
 		case "456":
 			_, _ = w.Write([]byte(`{"ok":false,"description":"Record not found."}`))
 		default:
-			t.Fatalf("unexpected user id: %s", r.URL.Query().Get("user_id"))
+			t.Fatalf("unexpected user id: %s", r.URL.Query().Get(logFieldUserID))
 		}
 	}))
 	t.Cleanup(server.Close)
@@ -173,8 +173,12 @@ func TestCheckBanRacesProvidersAndPersistsOnlinePositive(t *testing.T) {
 	if !svc.IsKnownBanned(789) {
 		t.Fatal("expected online positive to be stored in memory")
 	}
-	if !store.hasUpserted(789) {
-		t.Fatalf("expected online positive to be persisted, got %#v", store.upserted)
+	if !store.hasSource(banlistSourceKey{provider: "fast-positive", feedType: banlistFeedOnline}, 789) {
+		t.Fatalf("expected online positive to be persisted, got %#v", store.sourceCalls)
+	}
+	call := store.sourceCalls[0]
+	if call.expiresAt == nil || call.expiresAt.Sub(call.seenAt) != banlistOnlineTTL {
+		t.Fatalf("expected online positive TTL %s, got %#v", banlistOnlineTTL, call.expiresAt)
 	}
 }
 
@@ -217,6 +221,9 @@ func TestFetchKnownBannedDailyAppliesPartialProviderSuccess(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	store := newRecordingBanStore()
+	failedKey := banlistSourceKey{provider: "fail", feedType: banlistFeedDaily}
+	store.sources[failedKey] = map[int64]*time.Time{400: nil}
+	store.banlist[400] = struct{}{}
 	svc := &defaultBanService{
 		db:          store,
 		httpClient:  server.Client(),
@@ -236,24 +243,48 @@ func TestFetchKnownBannedDailyAppliesPartialProviderSuccess(t *testing.T) {
 	if err := svc.FetchKnownBannedDaily(context.Background()); err != nil {
 		t.Fatalf("fetch known banned daily: %v", err)
 	}
-	if !store.hasUpserted(300) {
-		t.Fatalf("expected successful provider ID to be persisted, got %#v", store.upserted)
+	if !store.hasSource(banlistSourceKey{provider: "ok", feedType: banlistFeedDaily}, 300) {
+		t.Fatalf("expected successful provider ID to be persisted, got %#v", store.sourceCalls)
 	}
 	if !svc.IsKnownBanned(300) {
 		t.Fatal("expected successful provider ID to be loaded into memory")
 	}
+	if !svc.IsKnownBanned(400) {
+		t.Fatal("expected failed provider's prior snapshot to remain effective")
+	}
+	if _, ok := store.sources[failedKey][400]; !ok {
+		t.Fatal("expected failed provider snapshot to remain unchanged")
+	}
+	if got := store.kv[kvKeyLastDailyFetch]; got != "" {
+		t.Fatalf("partial refresh moved retry timestamp: %q", got)
+	}
 }
 
 type recordingBanStore struct {
-	kv       map[string]string
-	banlist  map[int64]struct{}
-	upserted []int64
+	kv          map[string]string
+	banlist     map[int64]struct{}
+	sources     map[banlistSourceKey]map[int64]*time.Time
+	sourceCalls []banlistSourceCall
+}
+
+type banlistSourceKey struct {
+	provider string
+	feedType string
+}
+
+type banlistSourceCall struct {
+	key       banlistSourceKey
+	userIDs   []int64
+	seenAt    time.Time
+	expiresAt *time.Time
+	replace   bool
 }
 
 func newRecordingBanStore() *recordingBanStore {
 	return &recordingBanStore{
 		kv:      make(map[string]string),
 		banlist: make(map[int64]struct{}),
+		sources: make(map[banlistSourceKey]map[int64]*time.Time),
 	}
 }
 
@@ -266,10 +297,41 @@ func (s *recordingBanStore) SetKV(_ context.Context, key string, value string) e
 	return nil
 }
 
-func (s *recordingBanStore) UpsertBanlist(_ context.Context, userIDs []int64) error {
-	s.upserted = append(s.upserted, userIDs...)
+func (s *recordingBanStore) ApplyBanlistSource(
+	_ context.Context,
+	provider, feedType, _ string,
+	userIDs []int64,
+	seenAt time.Time,
+	expiresAt *time.Time,
+	replace bool,
+) error {
+	key := banlistSourceKey{provider: provider, feedType: feedType}
+	call := banlistSourceCall{
+		key:       key,
+		userIDs:   append([]int64(nil), userIDs...),
+		seenAt:    seenAt,
+		expiresAt: expiresAt,
+		replace:   replace,
+	}
+	s.sourceCalls = append(s.sourceCalls, call)
+	if replace || s.sources[key] == nil {
+		s.sources[key] = make(map[int64]*time.Time)
+	}
 	for _, userID := range userIDs {
-		s.banlist[userID] = struct{}{}
+		s.sources[key][userID] = expiresAt
+	}
+	s.banlist = make(map[int64]struct{})
+	for sourceKey, source := range s.sources {
+		for userID, expiry := range source {
+			if expiry != nil && !expiry.After(seenAt) {
+				delete(source, userID)
+				continue
+			}
+			s.banlist[userID] = struct{}{}
+		}
+		if len(source) == 0 {
+			delete(s.sources, sourceKey)
+		}
 	}
 	return nil
 }
@@ -294,13 +356,9 @@ func (s *recordingBanStore) GetActiveRestriction(context.Context, int64, int64) 
 	return nil, nil
 }
 
-func (s *recordingBanStore) hasUpserted(userID int64) bool {
-	for _, upserted := range s.upserted {
-		if upserted == userID {
-			return true
-		}
-	}
-	return false
+func (s *recordingBanStore) hasSource(key banlistSourceKey, userID int64) bool {
+	_, ok := s.sources[key][userID]
+	return ok
 }
 
 func TestCheckBanFailsOpenOnProviderErrors(t *testing.T) {

@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -24,8 +25,8 @@ func TestCreateInChatNotificationRepliesToOriginalMessageWithCappedQuote(t *test
 	msg := &api.Message{
 		MessageID:       40,
 		MessageThreadID: 7,
-		Chat:            api.Chat{ID: -100, Type: "supergroup"},
-		From:            &api.User{ID: 200, FirstName: "Target"},
+		Chat:            api.Chat{ID: -100, Type: moderationTestSupergroup},
+		From:            &api.User{ID: 200, FirstName: moderationTestTargetName},
 		Text:            longText,
 	}
 
@@ -62,8 +63,8 @@ func TestCreateChannelNotificationRepliesToOriginalCaption(t *testing.T) {
 	msg := &api.Message{
 		MessageID:       41,
 		MessageThreadID: 8,
-		Chat:            api.Chat{ID: -100, Type: "supergroup"},
-		From:            &api.User{ID: 200, FirstName: "Target"},
+		Chat:            api.Chat{ID: -100, Type: moderationTestSupergroup},
+		From:            &api.User{ID: 200, FirstName: moderationTestTargetName},
 		Caption:         "caption spam",
 	}
 
@@ -106,11 +107,11 @@ func TestProcessSpamMessageSendsNotificationBeforeDeleteAndRetriesWithoutRejecte
 			return testAPIResponse{
 				OK: true,
 				Result: map[string]any{
-					"message_id": 700,
-					"date":       0,
-					"chat": map[string]any{
-						"id":   -100,
-						"type": "supergroup",
+					moderationTestJSONMessageID: 700,
+					moderationTestJSONDate:      0,
+					moderationTestJSONChat: map[string]any{
+						"id":                   -100,
+						moderationTestJSONType: moderationTestSupergroup,
 					},
 				},
 			}
@@ -125,6 +126,7 @@ func TestProcessSpamMessageSendsNotificationBeforeDeleteAndRetriesWithoutRejecte
 	store := &testModerationStore{}
 	sc := &SpamControl{
 		s:          &testModerationService{botAPI: botAPI},
+		bot:        botAPI,
 		store:      store,
 		config:     config.SpamControl{SuspectNotificationTimeout: time.Hour},
 		banService: &testModerationBanService{},
@@ -132,8 +134,8 @@ func TestProcessSpamMessageSendsNotificationBeforeDeleteAndRetriesWithoutRejecte
 	msg := &api.Message{
 		MessageID:       40,
 		MessageThreadID: 7,
-		Chat:            api.Chat{ID: -100, Type: "supergroup"},
-		From:            &api.User{ID: 200, FirstName: "Target"},
+		Chat:            api.Chat{ID: -100, Type: moderationTestSupergroup},
+		From:            &api.User{ID: 200, FirstName: moderationTestTargetName},
 		Text:            "spam text",
 	}
 
@@ -161,6 +163,128 @@ func TestProcessSpamMessageSendsNotificationBeforeDeleteAndRetriesWithoutRejecte
 	}
 }
 
+func TestVotingSurfaceFallbackPrecedesDestructiveModeration(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name             string
+		fallbackSucceeds bool
+		wantError        bool
+		wantMuteCalls    int
+		wantDeletes      int
+	}{
+		{name: "in-chat fallback succeeds", fallbackSucceeds: true, wantMuteCalls: 1, wantDeletes: 1},
+		{name: "all voting surfaces fail", wantError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			deleteCalls := 0
+			botAPI := newModerationRetryTestBotAPI(t, func(method string, r *http.Request) testAPIResponse {
+				if err := r.ParseForm(); err != nil {
+					t.Fatalf("parse form: %v", err)
+				}
+				switch method {
+				case testTelegramMethodSendMessage:
+					if strings.HasPrefix(r.Form.Get("chat_id"), "@") || !test.fallbackSucceeds {
+						return testAPIResponse{OK: false, Description: "Bad Request: voting surface unavailable"}
+					}
+					return testAPIResponse{OK: true, Result: map[string]any{
+						moderationTestJSONMessageID: 701,
+						moderationTestJSONDate:      0,
+						moderationTestJSONChat:      map[string]any{"id": -100, moderationTestJSONType: moderationTestSupergroup},
+					}}
+				case testTelegramMethodDeleteMessage:
+					deleteCalls++
+					return testAPIResponse{OK: true, Result: true}
+				default:
+					t.Fatalf("unexpected bot method: %s", method)
+					return testAPIResponse{OK: true}
+				}
+			})
+			store := &testModerationStore{}
+			banService := &testModerationBanService{}
+			sc := &SpamControl{
+				s:          &testModerationService{botAPI: botAPI},
+				bot:        botAPI,
+				store:      store,
+				config:     config.SpamControl{LogChannelUsername: "log_channel", VotingTimeoutMinutes: time.Minute},
+				banService: banService,
+			}
+			msg := &api.Message{
+				MessageID: 40,
+				Chat:      api.Chat{ID: -100, Type: moderationTestSupergroup},
+				From:      &api.User{ID: 200, FirstName: moderationTestTargetName},
+				Text:      "candidate",
+			}
+
+			_, err := sc.ProcessSpamMessage(context.Background(), msg, &msg.Chat, "en")
+			if (err != nil) != test.wantError {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if banService.muteCalls != test.wantMuteCalls {
+				t.Fatalf("mute calls = %d, want %d", banService.muteCalls, test.wantMuteCalls)
+			}
+			if deleteCalls != test.wantDeletes {
+				t.Fatalf("delete calls = %d, want %d", deleteCalls, test.wantDeletes)
+			}
+			if test.fallbackSucceeds && (store.spamCase == nil || store.spamCase.NotificationMessageID != 701 || store.spamCase.ChannelPostID != 0) {
+				t.Fatalf("expected in-chat fallback presentation, got %#v", store.spamCase)
+			}
+		})
+	}
+}
+
+func TestVotingSurfacePersistenceFailureCompensatesBeforeModeration(t *testing.T) {
+	t.Parallel()
+
+	deletedMessageIDs := make([]string, 0, 1)
+	botAPI := newModerationRetryTestBotAPI(t, func(method string, r *http.Request) testAPIResponse {
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("parse form: %v", err)
+		}
+		switch method {
+		case testTelegramMethodSendMessage:
+			return testAPIResponse{OK: true, Result: map[string]any{
+				moderationTestJSONMessageID: 701,
+				moderationTestJSONDate:      0,
+				moderationTestJSONChat:      map[string]any{"id": -100, moderationTestJSONType: moderationTestSupergroup},
+			}}
+		case testTelegramMethodDeleteMessage:
+			deletedMessageIDs = append(deletedMessageIDs, r.Form.Get("message_id"))
+			return testAPIResponse{OK: true, Result: true}
+		default:
+			t.Fatalf("unexpected bot method: %s", method)
+			return testAPIResponse{OK: true}
+		}
+	})
+	store := &testModerationStore{presentationErr: errors.New("database unavailable")}
+	banService := &testModerationBanService{}
+	sc := &SpamControl{
+		s:          &testModerationService{botAPI: botAPI},
+		bot:        botAPI,
+		store:      store,
+		config:     config.SpamControl{VotingTimeoutMinutes: time.Minute},
+		banService: banService,
+	}
+	msg := &api.Message{
+		MessageID: 40,
+		Chat:      api.Chat{ID: -100, Type: moderationTestSupergroup},
+		From:      &api.User{ID: 200, FirstName: moderationTestTargetName},
+		Text:      "candidate",
+	}
+
+	if _, err := sc.ProcessSpamMessage(context.Background(), msg, &msg.Chat, "en"); err == nil {
+		t.Fatal("expected voting surface persistence failure")
+	}
+	if banService.muteCalls != 0 {
+		t.Fatalf("mute started before durable voting surface: %d calls", banService.muteCalls)
+	}
+	if len(deletedMessageIDs) != 1 || deletedMessageIDs[0] != "701" {
+		t.Fatalf("expected only voting prompt compensation, got deleted message ids %v", deletedMessageIDs)
+	}
+}
+
 type testAPIResponse struct {
 	OK          bool
 	Result      any
@@ -178,10 +302,10 @@ func newModerationRetryTestBotAPI(t *testing.T, handler func(method string, r *h
 		switch method {
 		case "getMe":
 			response.Result = map[string]any{
-				"id":         1,
-				"is_bot":     true,
-				"first_name": "Test",
-				"username":   "testbot",
+				"id":                        1,
+				moderationTestJSONIsBot:     true,
+				moderationTestJSONFirstName: "Test",
+				"username":                  "testbot",
 			}
 		default:
 			response = handler(method, r)
@@ -203,7 +327,11 @@ func newModerationRetryTestBotAPI(t *testing.T, handler func(method string, r *h
 	}))
 	t.Cleanup(server.Close)
 
-	botAPI, err := api.NewBotAPIWithClient("TEST_TOKEN", fmt.Sprintf("%s/bot%%s/%%s", server.URL), server.Client())
+	botAPI, err := api.NewBotAPIWithOptions(
+		"TEST_TOKEN",
+		api.WithAPIEndpoint(fmt.Sprintf("%s/bot%%s/%%s", server.URL)),
+		api.WithHTTPClient(server.Client()),
+	)
 	if err != nil {
 		t.Fatalf("new test bot api: %v", err)
 	}

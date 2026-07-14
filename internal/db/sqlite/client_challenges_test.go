@@ -3,11 +3,231 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/iamwavecut/ngbot/internal/db"
 )
+
+func TestChallengeGenerationRejectsStaleOperations(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	client, err := NewSQLiteClient(ctx, t.TempDir(), "test.db")
+	if err != nil {
+		t.Fatalf("new sqlite client: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+
+	now := time.Now()
+	first := &db.Challenge{
+		CommChatID:  1,
+		UserID:      2,
+		ChatID:      3,
+		Status:      db.ChallengeStatusPending,
+		SuccessUUID: "first",
+		CreatedAt:   now,
+		ExpiresAt:   now.Add(time.Minute),
+	}
+	if _, err := client.CreateChallenge(ctx, first); err != nil {
+		t.Fatalf("create first challenge: %v", err)
+	}
+	second := &db.Challenge{
+		CommChatID:  first.CommChatID,
+		UserID:      first.UserID,
+		ChatID:      first.ChatID,
+		Status:      db.ChallengeStatusPending,
+		SuccessUUID: "second",
+		CreatedAt:   now.Add(time.Second),
+		ExpiresAt:   now.Add(2 * time.Minute),
+	}
+	if _, err := client.CreateChallenge(ctx, second); err != nil {
+		t.Fatalf("create replacement challenge: %v", err)
+	}
+	if first.ChallengeID == second.ChallengeID {
+		t.Fatalf("expected a new generation token, got %q", first.ChallengeID)
+	}
+
+	if deleted, err := client.DeleteChallengeInstance(ctx, first.ChallengeID, db.ChallengeStatusPending); err != nil || deleted {
+		t.Fatalf("stale delete affected replacement: deleted=%t err=%v", deleted, err)
+	}
+	if _, _, updated, err := client.RecordWrongAttempt(ctx, first.ChallengeID, 3); err != nil || updated {
+		t.Fatalf("stale answer affected replacement: updated=%t err=%v", updated, err)
+	}
+
+	loaded, err := client.GetChallengeByChatUser(ctx, second.ChatID, second.UserID)
+	if err != nil {
+		t.Fatalf("load replacement: %v", err)
+	}
+	if loaded == nil || loaded.ChallengeID != second.ChallengeID || loaded.SuccessUUID != second.SuccessUUID || loaded.Attempts != 0 {
+		t.Fatalf("replacement challenge was changed: %#v", loaded)
+	}
+}
+
+func TestChallengeCorrectWrongRaceHasSingleTerminalOwner(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	client, err := NewSQLiteClient(ctx, t.TempDir(), "test.db")
+	if err != nil {
+		t.Fatalf("new sqlite client: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+
+	for iteration := range 32 {
+		now := time.Now()
+		challenge := &db.Challenge{
+			CommChatID:  int64(iteration + 1),
+			UserID:      42,
+			ChatID:      -100 - int64(iteration),
+			Status:      db.ChallengeStatusPending,
+			SuccessUUID: "correct",
+			Attempts:    2,
+			CreatedAt:   now,
+			ExpiresAt:   now.Add(time.Minute),
+		}
+		if _, err := client.CreateChallenge(ctx, challenge); err != nil {
+			t.Fatalf("iteration %d create challenge: %v", iteration, err)
+		}
+
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		var claimed, wrongUpdated bool
+		var claimErr, wrongErr error
+		wg.Go(func() {
+			<-start
+			claimed, claimErr = client.ClaimForApproval(ctx, challenge.ChallengeID)
+		})
+		wg.Go(func() {
+			<-start
+			_, _, wrongUpdated, wrongErr = client.RecordWrongAttempt(ctx, challenge.ChallengeID, 3)
+		})
+		close(start)
+		wg.Wait()
+		if claimErr != nil || wrongErr != nil {
+			t.Fatalf("iteration %d race errors: claim=%v wrong=%v", iteration, claimErr, wrongErr)
+		}
+		if claimed == wrongUpdated {
+			t.Fatalf("iteration %d expected exactly one terminal owner: claimed=%t wrong=%t", iteration, claimed, wrongUpdated)
+		}
+
+		loaded, err := client.GetChallengeByChatUser(ctx, challenge.ChatID, challenge.UserID)
+		if err != nil {
+			t.Fatalf("iteration %d load challenge: %v", iteration, err)
+		}
+		if claimed && (loaded.Status != db.ChallengeStatusApproveQueryPending || loaded.Attempts != 2) {
+			t.Fatalf("iteration %d approved challenge was resurrected or mutated: %#v", iteration, loaded)
+		}
+		if wrongUpdated && (loaded.Status != db.ChallengeStatusRejectPending || loaded.Attempts != 3) {
+			t.Fatalf("iteration %d wrong attempt was lost: %#v", iteration, loaded)
+		}
+	}
+}
+
+func TestDueChallengeRetrySurvivesReopen(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	client, err := NewSQLiteClient(ctx, dataDir, "test.db")
+	if err != nil {
+		t.Fatalf("new sqlite client: %v", err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	challenge := &db.Challenge{
+		CommChatID:         1,
+		UserID:             2,
+		ChatID:             3,
+		Status:             db.ChallengeStatusPending,
+		SuccessUUID:        "correct",
+		JoinRequestQueryID: "query",
+		CreatedAt:          now,
+		ExpiresAt:          now.Add(time.Minute),
+	}
+	if _, err := client.CreateChallenge(ctx, challenge); err != nil {
+		t.Fatalf("create challenge: %v", err)
+	}
+	if claimed, err := client.ClaimForApproval(ctx, challenge.ChallengeID); err != nil || !claimed {
+		t.Fatalf("claim challenge: claimed=%t err=%v", claimed, err)
+	}
+	retryAt := now.Add(30 * time.Second)
+	if scheduled, err := client.ScheduleChallengeRetry(ctx, challenge.ChallengeID, db.ChallengeStatusApproveQueryPending, retryAt, "temporary failure"); err != nil || !scheduled {
+		t.Fatalf("schedule retry: scheduled=%t err=%v", scheduled, err)
+	}
+	if err := client.Close(); err != nil {
+		t.Fatalf("close first client: %v", err)
+	}
+
+	reopened, err := NewSQLiteClient(ctx, dataDir, "test.db")
+	if err != nil {
+		t.Fatalf("reopen sqlite client: %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	before, err := reopened.GetDueChallenges(ctx, retryAt.Add(-time.Second))
+	if err != nil {
+		t.Fatalf("get retries before due: %v", err)
+	}
+	if len(before) != 0 {
+		t.Fatalf("retry became due too early: %#v", before)
+	}
+	after, err := reopened.GetDueChallenges(ctx, retryAt.Add(time.Second))
+	if err != nil {
+		t.Fatalf("get due retries after reopen: %v", err)
+	}
+	if len(after) != 1 || after[0].ChallengeID != challenge.ChallengeID || after[0].AttemptCount != 1 || after[0].LastError == "" {
+		t.Fatalf("durable retry metadata was not recovered: %#v", after)
+	}
+}
+
+func TestChallengeRetryExhaustionRetainsRowAndStopsPolling(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	client, err := NewSQLiteClient(ctx, t.TempDir(), "test.db")
+	if err != nil {
+		t.Fatalf("new sqlite client: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+
+	now := time.Now().UTC().Truncate(time.Second)
+	challenge := &db.Challenge{
+		CommChatID: 1,
+		UserID:     2,
+		ChatID:     3,
+		Status:     db.ChallengeStatusPending,
+		CreatedAt:  now,
+		ExpiresAt:  now.Add(time.Minute),
+	}
+	if _, err := client.CreateChallenge(ctx, challenge); err != nil {
+		t.Fatalf("create challenge: %v", err)
+	}
+	changed, err := client.CompleteExternalAction(ctx, challenge.ChallengeID, db.ChallengeStatusPending, db.ChallengeStatusRejectPending, time.Time{})
+	if err != nil || !changed {
+		t.Fatalf("claim durable action: changed=%t err=%v", changed, err)
+	}
+	due, err := client.GetDueChallenges(ctx, time.Now().Add(time.Second))
+	if err != nil || len(due) != 1 {
+		t.Fatalf("durable action was not recoverable after claim: due=%#v err=%v", due, err)
+	}
+	if scheduled, err := client.ScheduleChallengeRetry(ctx, challenge.ChallengeID, db.ChallengeStatusRejectPending, time.Time{}, "retries exhausted"); err != nil || !scheduled {
+		t.Fatalf("persist retry exhaustion: scheduled=%t err=%v", scheduled, err)
+	}
+	due, err = client.GetDueChallenges(ctx, time.Now().Add(24*time.Hour))
+	if err != nil {
+		t.Fatalf("get due challenges after exhaustion: %v", err)
+	}
+	if len(due) != 0 {
+		t.Fatalf("exhausted challenge remained in polling queue: %#v", due)
+	}
+	retained, err := client.GetChallengeByChatUser(ctx, challenge.ChatID, challenge.UserID)
+	if err != nil {
+		t.Fatalf("get retained challenge: %v", err)
+	}
+	if retained == nil || retained.Status != db.ChallengeStatusRejectPending || retained.AttemptCount != 1 || retained.NextAttemptAt.Valid || retained.LastError == "" {
+		t.Fatalf("exhausted challenge metadata was not retained: %#v", retained)
+	}
+}
 
 func TestChallengesSupportParallelJoinRequestsPerUser(t *testing.T) {
 	t.Parallel()
@@ -102,11 +322,9 @@ func TestChallengeStatusLookupAndExpiryLifecycle(t *testing.T) {
 		t.Fatalf("unexpected challenge status: got %q want %q", gotByChatUser.Status, db.ChallengeStatusPending)
 	}
 
-	challenge.Status = db.ChallengeStatusPassedWaitingMemberJoin
-	challenge.ChallengeMessageID = 0
-	challenge.ExpiresAt = now.Add(5 * time.Minute)
-	if err := client.UpdateChallenge(ctx, challenge); err != nil {
-		t.Fatalf("update challenge: %v", err)
+	changed, err := client.CompleteExternalAction(ctx, challenge.ChallengeID, db.ChallengeStatusPending, db.ChallengeStatusPassedWaitingMemberJoin, now.Add(5*time.Minute))
+	if err != nil || !changed {
+		t.Fatalf("transition challenge: changed=%t err=%v", changed, err)
 	}
 
 	gotByChatUser, err = client.GetChallengeByChatUser(ctx, challenge.ChatID, challenge.UserID)
@@ -222,18 +440,6 @@ func TestChallengeUserLanguageRoundTrip(t *testing.T) {
 	if loaded == nil || loaded.UserLanguage != "ru" {
 		t.Fatalf("expected user_language ru to round-trip, got %#v", loaded)
 	}
-
-	loaded.UserLanguage = "de"
-	if err := client.UpdateChallenge(ctx, loaded); err != nil {
-		t.Fatalf("update challenge: %v", err)
-	}
-	reloaded, err := client.GetChallengeByChatUser(ctx, challenge.ChatID, challenge.UserID)
-	if err != nil {
-		t.Fatalf("reload challenge: %v", err)
-	}
-	if reloaded == nil || reloaded.UserLanguage != "de" {
-		t.Fatalf("expected updated user_language de, got %#v", reloaded)
-	}
 }
 
 func TestWebAppChallengeClaimAndOpen(t *testing.T) {
@@ -270,7 +476,7 @@ func TestWebAppChallengeClaimAndOpen(t *testing.T) {
 			t.Fatalf("create challenge: %v", err)
 		}
 
-		claimed, err := client.ClaimWebAppChallengeForFallback(ctx, challenge.CommChatID, challenge.UserID, challenge.ChatID)
+		claimed, err := client.BeginDMFallback(ctx, challenge.ChallengeID)
 		if err != nil {
 			t.Fatalf("first claim: %v", err)
 		}
@@ -289,7 +495,7 @@ func TestWebAppChallengeClaimAndOpen(t *testing.T) {
 			t.Fatalf("expected status %q after claim, got %q", db.ChallengeStatusWebAppFallbackPending, got.Status)
 		}
 
-		claimed, err = client.ClaimWebAppChallengeForFallback(ctx, challenge.CommChatID, challenge.UserID, challenge.ChatID)
+		claimed, err = client.BeginDMFallback(ctx, challenge.ChallengeID)
 		if err != nil {
 			t.Fatalf("second claim: %v", err)
 		}
@@ -304,7 +510,7 @@ func TestWebAppChallengeClaimAndOpen(t *testing.T) {
 			t.Fatalf("create challenge: %v", err)
 		}
 
-		claimed, err := client.ClaimWebAppChallengeForApproval(ctx, "token-approve")
+		claimed, err := client.ClaimForApproval(ctx, challenge.ChallengeID)
 		if err != nil {
 			t.Fatalf("first approval claim: %v", err)
 		}
@@ -319,11 +525,11 @@ func TestWebAppChallengeClaimAndOpen(t *testing.T) {
 		if got == nil {
 			t.Fatal("expected challenge to still exist")
 		}
-		if got.Status != db.ChallengeStatusPassedWaitingMemberJoin {
-			t.Fatalf("expected status %q after approval claim, got %q", db.ChallengeStatusPassedWaitingMemberJoin, got.Status)
+		if got.Status != db.ChallengeStatusApproveQueryPending {
+			t.Fatalf("expected status %q after approval claim, got %q", db.ChallengeStatusApproveQueryPending, got.Status)
 		}
 
-		claimed, err = client.ClaimWebAppChallengeForApproval(ctx, "token-approve")
+		claimed, err = client.ClaimForApproval(ctx, challenge.ChallengeID)
 		if err != nil {
 			t.Fatalf("second approval claim: %v", err)
 		}
@@ -338,7 +544,7 @@ func TestWebAppChallengeClaimAndOpen(t *testing.T) {
 			t.Fatalf("create challenge: %v", err)
 		}
 
-		claimed, err := client.ClaimWebAppChallengeForFallback(ctx, challenge.CommChatID, challenge.UserID, challenge.ChatID)
+		claimed, err := client.BeginDMFallback(ctx, challenge.ChallengeID)
 		if err != nil {
 			t.Fatalf("fallback claim: %v", err)
 		}
@@ -346,7 +552,7 @@ func TestWebAppChallengeClaimAndOpen(t *testing.T) {
 			t.Fatal("expected fallback claim to win")
 		}
 
-		claimed, err = client.ClaimWebAppChallengeForApproval(ctx, "token-approve-fallback")
+		claimed, err = client.ClaimForApproval(ctx, challenge.ChallengeID)
 		if err != nil {
 			t.Fatalf("approval claim after fallback: %v", err)
 		}
@@ -374,7 +580,7 @@ func TestWebAppChallengeClaimAndOpen(t *testing.T) {
 			t.Fatalf("mark opened: %v", err)
 		}
 
-		claimed, err := client.ClaimWebAppChallengeForFallback(ctx, challenge.CommChatID, challenge.UserID, challenge.ChatID)
+		claimed, err := client.BeginDMFallback(ctx, challenge.ChallengeID)
 		if err != nil {
 			t.Fatalf("claim after open: %v", err)
 		}

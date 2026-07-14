@@ -18,17 +18,17 @@ func (a *Admin) handleHelpCommand(ctx context.Context, msg *api.Message, chat *a
 		return nil
 	}
 	if chat.Type == panelChatTypePrivate {
-		return a.sendPrivateHelp(msg.Chat.ID, lang)
+		return a.sendPrivateHelp(ctx, msg.Chat.ID, lang)
 	}
 	return a.sendGroupHelpBridge(ctx, msg, lang)
 }
 
-func (a *Admin) sendPrivateHelp(chatID int64, lang string) error {
+func (a *Admin) sendPrivateHelp(ctx context.Context, chatID int64, lang string) error {
 	help := api.NewMessage(chatID, a.renderHelpMarkdown(lang))
 	help.ParseMode = api.ModeMarkdownV2
 	help.DisableNotification = true
 	help.LinkPreviewOptions.IsDisabled = true
-	_, err := a.s.GetBot().Send(help)
+	_, err := bot.Send(ctx, a.bot, help)
 	return err
 }
 
@@ -51,7 +51,7 @@ func (a *Admin) sendGroupHelpBridge(ctx context.Context, msg *api.Message, lang 
 	)
 	reply.ReplyMarkup = &keyboard
 
-	sent, err := a.s.GetBot().Send(reply)
+	sent, err := bot.Send(ctx, a.bot, reply)
 	if err != nil {
 		return err
 	}
@@ -150,7 +150,7 @@ func markdownV2Code(text string) string {
 }
 
 func (a *Admin) botUsername() string {
-	b := a.s.GetBot()
+	b := a.bot
 	if b == nil || b.Self.UserName == "" {
 		return "bot"
 	}
@@ -169,7 +169,7 @@ func (a *Admin) deleteMessageAfter(chatID int64, messageID int, delay time.Durat
 		return
 	}
 	a.scheduleAfter(delay, func(runCtx context.Context) {
-		if err := bot.DeleteChatMessage(runCtx, a.s.GetBot(), chatID, messageID); err != nil {
+		if err := bot.DeleteChatMessage(runCtx, a.bot, chatID, messageID); err != nil {
 			log.WithField("error", err.Error()).WithField("chat_id", chatID).WithField("message_id", messageID).Error("failed to delete scheduled admin message")
 		}
 	})

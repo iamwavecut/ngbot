@@ -87,7 +87,7 @@ func TestToggleFeatureTogglesReactionProfileCheck(t *testing.T) {
 		t.Fatalf("set settings: %v", err)
 	}
 
-	admin := &Admin{s: testAdminService{db: client}}
+	admin := &Admin{s: testAdminService{db: client}, store: client}
 	state := newPanelState(7, 42, "chat", settings)
 	session := &db.AdminPanelSession{ChatID: 42}
 
@@ -125,7 +125,18 @@ func TestRenderPanelFallsBackUnknownPageToHome(t *testing.T) {
 	admin := &Admin{s: testAdminService{db: client}, store: client}
 	state := newPanelState(7, 42, "chat", settings)
 	state.Page = panelPage("ReactionModeration")
-	session := &db.AdminPanelSession{ID: 1, ChatID: 42}
+	now := time.Now()
+	session, err := client.CreateAdminPanelSession(ctx, &db.AdminPanelSession{
+		UserID:    7,
+		ChatID:    42,
+		Page:      string(panelPageHome),
+		StateJSON: `{}`,
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+	if err != nil {
+		t.Fatalf("create panel session: %v", err)
+	}
 
 	if _, _, err := admin.renderPanel(ctx, session, &state); err != nil {
 		t.Fatalf("render panel: %v", err)
@@ -161,7 +172,7 @@ func TestRecommendedProtectionShowsOnlyOnFirstSettingsLaunch(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = client.Close() })
 
-	admin := &Admin{s: testAdminService{db: client}}
+	admin := &Admin{s: testAdminService{db: client}, store: client}
 	state := newPanelState(7, 42, "chat", db.DefaultSettings(42))
 
 	show, err := admin.shouldShowRecommendedProtection(ctx, &state)
@@ -191,7 +202,7 @@ func TestRecommendedProtectionStaysHiddenAfterSettingsUpdate(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = client.Close() })
 
-	admin := &Admin{s: testAdminService{db: client}}
+	admin := &Admin{s: testAdminService{db: client}, store: client}
 	settings := db.DefaultSettings(42)
 	settings.Language = "ru"
 
@@ -210,16 +221,8 @@ func TestRecommendedProtectionStaysHiddenAfterSettingsUpdate(t *testing.T) {
 }
 
 type testAdminService struct {
-	db  db.Client
+	db  adminTestDB
 	bot *api.BotAPI
-}
-
-func (s testAdminService) GetBot() *api.BotAPI {
-	return s.bot
-}
-
-func (s testAdminService) GetDB() db.Client {
-	return s.db
 }
 
 func (s testAdminService) IsMember(context.Context, int64, int64) (bool, error) {

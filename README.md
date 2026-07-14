@@ -39,17 +39,24 @@ cd ngbot
 ```
 3. Copy the example environment file and configure it:
 ```bash
+cp compose.yaml.dist compose.yaml
 cp .env.example .env
 # Edit .env with your favorite editor and set required variables
 ```
-4. Start the bot:
+4. Create the writable data directory from `compose.yaml` and give the distroless `nonroot` user ownership:
+```bash
+sudo install -d -m 0700 -o 65532 -g 65532 /home/username/.ngbot
+```
+The image runs as UID/GID `65532:65532`; update the bind-mount `device` path in `compose.yaml` before starting it.
+5. Start the bot:
 ```bash
 docker compose up -d
 ```
-5. Optional for join-request Mini App CAPTCHA: set `NG_GATEKEEPER_WEBAPP_PUBLIC_URL=https://antifraud.rtfm.rsvp`, point Caddy at `deploy/caddy/ngbot-webapp.Caddyfile`, then restart Compose.
-6. Add your bot to chat and give it **Ban**, **Delete**, and **Invite** permissions.
-7. Optional: Change bot language with `/lang <code>` (e.g., `/lang ru`).
-8. Optional: Open `/settings` as a group admin and apply `Recommended Protection`.
+6. Optional for join-request Mini App CAPTCHA: set `NG_GATEKEEPER_WEBAPP_PUBLIC_URL=https://antifraud.rtfm.rsvp`, point Caddy at `deploy/caddy/ngbot-webapp.Caddyfile`, then restart Compose.
+7. Add your bot to chat and give it **Ban**, **Delete**, and **Invite** permissions.
+8. Optional: Change bot language with `/lang <code>` (e.g., `/lang ru`).
+9. Optional: Set `NG_SPAM_DEBUG_USER_ID` to your Telegram user ID for private `/testspam` and `/skipreason`; source-chat administrators may use those diagnostics in their chat.
+10. Optional: Open `/settings` as a group admin and apply `Recommended Protection`.
 
 ### Manual Installation
 1. Follow steps 1-3 from Quick Start.
@@ -83,10 +90,12 @@ See [.env.example](.env.example) for a quick reference of all available options.
 | | `NG_GATEKEEPER_WEBAPP_PUBLIC_URL` | Public HTTPS origin for join-request CAPTCHA Mini App | | Absolute URL, e.g. `https://captcha.example.com` |
 | | `NG_GATEKEEPER_WEBAPP_LISTEN_ADDR` | Embedded Mini App server listen address inside the container | `:8080` | Keep `:8080` with the default Compose port mapping |
 | | `NG_GATEKEEPER_WEBAPP_HOST_PORT` | Compose-only localhost port for Caddy reverse proxy | `18080` | Host port bound to `127.0.0.1` |
-| | `NG_LLM_API_MODEL` | LLM model to use | `gpt-4o-mini` | Any valid OpenAI or Gemini model |
+| | `NG_LLM_API_MODEL` | Optional LLM model override | Provider-specific | Any valid OpenAI or Gemini model |
 | | `NG_LLM_API_URL` | OpenAI-compatible API base URL | `https://api.openai.com/v1` | Used when `NG_LLM_API_TYPE=openai` |
 | | `NG_LLM_API_TYPE` | LLM provider | `openai` | `openai`, `gemini` |
+| | `NG_LLM_REQUEST_TIMEOUT` | Maximum duration of one classification request | `45s` | Any positive duration string |
 | | `NG_SPAM_LOG_CHANNEL_USERNAME` | Channel for spam logging | | Any valid channel username |
+| | `NG_SPAM_DEBUG_USER_ID` | User allowed to run diagnostics in private chat | `0` | Telegram user ID |
 | | `NG_SPAM_VERBOSE` | Verbose in-chat notifications | `false` | `true`, `false` |
 | | `NG_SPAM_VOTING_TIMEOUT` | Voting time limit | `5m` | Any valid duration string |
 | | `NG_SPAM_MIN_VOTERS` | Minimum required voters | `2` | Any positive integer |

@@ -22,7 +22,7 @@ func (s *defaultBanService) MuteUser(ctx context.Context, chatID, userID int64) 
 		UseIndependentChatPermissions: true,
 	}
 
-	if _, err := s.bot.Request(config); err != nil {
+	if _, err := s.bot.RequestWithContext(ctx, config); err != nil {
 		return withPrivilegeError(err, "restrict")
 	}
 
@@ -51,7 +51,7 @@ func (s *defaultBanService) UnmuteUser(ctx context.Context, chatID, userID int64
 		UseIndependentChatPermissions: true,
 	}
 
-	if _, err := s.bot.Request(config); err != nil {
+	if _, err := s.bot.RequestWithContext(ctx, config); err != nil {
 		return withPrivilegeError(err, "unrestrict")
 	}
 
@@ -75,7 +75,7 @@ func (s *defaultBanService) BanUserWithMessage(ctx context.Context, chatID, user
 		UntilDate:      expiresAt.Unix(),
 		RevokeMessages: true,
 	}
-	if _, err := s.bot.Request(config); err != nil {
+	if _, err := s.bot.RequestWithContext(ctx, config); err != nil {
 		return withPrivilegeError(err, "ban")
 	}
 
@@ -102,7 +102,7 @@ func (s *defaultBanService) UnbanUser(ctx context.Context, chatID, userID int64)
 		},
 	}
 
-	if _, err := s.bot.Request(config); err != nil {
+	if _, err := s.bot.RequestWithContext(ctx, config); err != nil {
 		return fmt.Errorf("failed to unban user: %w", err)
 	}
 

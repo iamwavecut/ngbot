@@ -127,14 +127,14 @@ func (a *Admin) replaceExistingSession(ctx context.Context, userID int64, chatID
 		return nil
 	}
 	if session.MessageID != 0 {
-		_ = bot.DeleteChatMessage(ctx, a.s.GetBot(), userID, session.MessageID)
+		_ = bot.DeleteChatMessage(ctx, a.bot, userID, session.MessageID)
 	}
 	return a.store.DeleteAdminPanelSession(ctx, session.ID)
 }
 
 func (a *Admin) closePanelSession(ctx context.Context, session *db.AdminPanelSession) error {
 	if session.MessageID != 0 {
-		_ = bot.DeleteChatMessage(ctx, a.s.GetBot(), session.UserID, session.MessageID)
+		_ = bot.DeleteChatMessage(ctx, a.bot, session.UserID, session.MessageID)
 	}
 	return a.store.DeleteAdminPanelSession(ctx, session.ID)
 }

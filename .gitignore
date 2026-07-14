@@ -4,6 +4,9 @@ ngbot
 !**/*.go
 /.*
 !.env.example
+!/.github/
+!/.github/workflows/
+!/.github/workflows/*.yml
 dbconfig.yml
 .env
 compose.yaml

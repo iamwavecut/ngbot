@@ -6,6 +6,8 @@ import (
 	api "github.com/OvyFlash/telegram-bot-api"
 )
 
+const administratorStatus = "administrator"
+
 func TestCanRestrictMembers(t *testing.T) {
 	t.Parallel()
 
@@ -31,7 +33,7 @@ func TestCanRestrictMembers(t *testing.T) {
 		{
 			name: "administrator with restrict permission",
 			member: &api.ChatMember{
-				Status:             "administrator",
+				Status:             administratorStatus,
 				CanRestrictMembers: true,
 			},
 			want: true,
@@ -39,7 +41,7 @@ func TestCanRestrictMembers(t *testing.T) {
 		{
 			name: "administrator with manage permission only",
 			member: &api.ChatMember{
-				Status:        "administrator",
+				Status:        administratorStatus,
 				CanManageChat: true,
 			},
 			want: false,
@@ -47,7 +49,7 @@ func TestCanRestrictMembers(t *testing.T) {
 		{
 			name: "administrator with promote permission only",
 			member: &api.ChatMember{
-				Status:            "administrator",
+				Status:            administratorStatus,
 				CanPromoteMembers: true,
 			},
 			want: false,

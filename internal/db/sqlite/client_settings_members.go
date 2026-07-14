@@ -64,7 +64,7 @@ func (c *sqliteClient) GetAllSettings(ctx context.Context) (map[int64]*db.Settin
 	if err != nil {
 		return nil, fmt.Errorf("failed to query all settings: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	res := make(map[int64]*db.Settings)
 	for rows.Next() {
@@ -86,68 +86,54 @@ func (c *sqliteClient) SetSettings(ctx context.Context, settings *db.Settings) e
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
-	settings.Enabled = settings.GatekeeperEnabled
-	settings.GatekeeperCaptchaOptionsCount = normalizeGatekeeperCaptchaOptionsCount(settings.GatekeeperCaptchaOptionsCount)
-	settings.CommunityVotingTimeoutOverrideNS = normalizeVotingOverrideInt64(settings.CommunityVotingTimeoutOverrideNS)
-	settings.CommunityVotingMinVotersOverride = normalizeVotingOverrideInt(settings.CommunityVotingMinVotersOverride)
-	settings.CommunityVotingMaxVotersOverride = normalizeVotingOverrideInt(settings.CommunityVotingMaxVotersOverride)
-	settings.CommunityVotingMinVotersPercentOverride = normalizeVotingOverrideInt(settings.CommunityVotingMinVotersPercentOverride)
+	normalized := *settings
+	normalized.Enabled = normalized.GatekeeperEnabled
+	normalized.GatekeeperCaptchaOptionsCount = normalizeGatekeeperCaptchaOptionsCount(normalized.GatekeeperCaptchaOptionsCount)
+	normalized.CommunityVotingTimeoutOverrideNS = normalizeVotingOverrideInt64(normalized.CommunityVotingTimeoutOverrideNS)
+	normalized.CommunityVotingMinVotersOverride = normalizeVotingOverrideInt(normalized.CommunityVotingMinVotersOverride)
+	normalized.CommunityVotingMaxVotersOverride = normalizeVotingOverrideInt(normalized.CommunityVotingMaxVotersOverride)
+	normalized.CommunityVotingMinVotersPercentOverride = normalizeVotingOverrideInt(normalized.CommunityVotingMinVotersPercentOverride)
 
 	query := `
 		INSERT INTO chats (id, language, enabled, gatekeeper_enabled, gatekeeper_captcha_enabled, gatekeeper_greeting_enabled, gatekeeper_captcha_options_count, gatekeeper_greeting_text, llm_first_message_enabled, reaction_profile_check_enabled, community_voting_enabled, community_voting_timeout_override_ns, community_voting_min_voters_override, community_voting_max_voters_override, community_voting_min_voters_percent_override, challenge_timeout, reject_timeout)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
-		language = ?,
-		enabled = ?,
-		gatekeeper_enabled = ?,
-		gatekeeper_captcha_enabled = ?,
-		gatekeeper_greeting_enabled = ?,
-		gatekeeper_captcha_options_count = ?,
-		gatekeeper_greeting_text = ?,
-		llm_first_message_enabled = ?,
-		reaction_profile_check_enabled = ?,
-		community_voting_enabled = ?,
-		community_voting_timeout_override_ns = ?,
-		community_voting_min_voters_override = ?,
-		community_voting_max_voters_override = ?,
-		community_voting_min_voters_percent_override = ?,
-		challenge_timeout = ?,
-		reject_timeout = ?
+		language = excluded.language,
+		enabled = excluded.enabled,
+		gatekeeper_enabled = excluded.gatekeeper_enabled,
+		gatekeeper_captcha_enabled = excluded.gatekeeper_captcha_enabled,
+		gatekeeper_greeting_enabled = excluded.gatekeeper_greeting_enabled,
+		gatekeeper_captcha_options_count = excluded.gatekeeper_captcha_options_count,
+		gatekeeper_greeting_text = excluded.gatekeeper_greeting_text,
+		llm_first_message_enabled = excluded.llm_first_message_enabled,
+		reaction_profile_check_enabled = excluded.reaction_profile_check_enabled,
+		community_voting_enabled = excluded.community_voting_enabled,
+		community_voting_timeout_override_ns = excluded.community_voting_timeout_override_ns,
+		community_voting_min_voters_override = excluded.community_voting_min_voters_override,
+		community_voting_max_voters_override = excluded.community_voting_max_voters_override,
+		community_voting_min_voters_percent_override = excluded.community_voting_min_voters_percent_override,
+		challenge_timeout = excluded.challenge_timeout,
+		reject_timeout = excluded.reject_timeout
 	`
-	_, err := c.db.ExecContext(ctx, query,
-		settings.ID,
-		settings.Language,
-		settings.Enabled,
-		settings.GatekeeperEnabled,
-		settings.GatekeeperCaptchaEnabled,
-		settings.GatekeeperGreetingEnabled,
-		settings.GatekeeperCaptchaOptionsCount,
-		settings.GatekeeperGreetingText,
-		settings.LLMFirstMessageEnabled,
-		settings.ReactionProfileCheckEnabled,
-		settings.CommunityVotingEnabled,
-		settings.CommunityVotingTimeoutOverrideNS,
-		settings.CommunityVotingMinVotersOverride,
-		settings.CommunityVotingMaxVotersOverride,
-		settings.CommunityVotingMinVotersPercentOverride,
-		settings.ChallengeTimeout,
-		settings.RejectTimeout,
-		settings.Language,
-		settings.Enabled,
-		settings.GatekeeperEnabled,
-		settings.GatekeeperCaptchaEnabled,
-		settings.GatekeeperGreetingEnabled,
-		settings.GatekeeperCaptchaOptionsCount,
-		settings.GatekeeperGreetingText,
-		settings.LLMFirstMessageEnabled,
-		settings.ReactionProfileCheckEnabled,
-		settings.CommunityVotingEnabled,
-		settings.CommunityVotingTimeoutOverrideNS,
-		settings.CommunityVotingMinVotersOverride,
-		settings.CommunityVotingMaxVotersOverride,
-		settings.CommunityVotingMinVotersPercentOverride,
-		settings.ChallengeTimeout,
-		settings.RejectTimeout,
+	_, err := c.db.ExecContext(
+		ctx, query,
+		normalized.ID,
+		normalized.Language,
+		normalized.Enabled,
+		normalized.GatekeeperEnabled,
+		normalized.GatekeeperCaptchaEnabled,
+		normalized.GatekeeperGreetingEnabled,
+		normalized.GatekeeperCaptchaOptionsCount,
+		normalized.GatekeeperGreetingText,
+		normalized.LLMFirstMessageEnabled,
+		normalized.ReactionProfileCheckEnabled,
+		normalized.CommunityVotingEnabled,
+		normalized.CommunityVotingTimeoutOverrideNS,
+		normalized.CommunityVotingMinVotersOverride,
+		normalized.CommunityVotingMaxVotersOverride,
+		normalized.CommunityVotingMinVotersPercentOverride,
+		normalized.ChallengeTimeout,
+		normalized.RejectTimeout,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to set settings: %w", err)
@@ -206,7 +192,7 @@ func (c *sqliteClient) InsertMembers(ctx context.Context, chatID int64, userIDs 
 	if err != nil {
 		return err
 	}
-	defer stmt.Close()
+	defer func() { _ = stmt.Close() }()
 
 	for _, userID := range userIDs {
 		if _, err = stmt.Exec(chatID, userID); err != nil {
@@ -255,7 +241,7 @@ func (c *sqliteClient) GetAllMembers(ctx context.Context) (map[int64][]int64, er
 	if err != nil {
 		return nil, fmt.Errorf("failed to query settings: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	members := make(map[int64][]int64)
 	for rows.Next() {

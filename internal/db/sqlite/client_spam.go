@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/iamwavecut/ngbot/internal/db"
 	log "github.com/sirupsen/logrus"
@@ -13,7 +14,8 @@ import (
 const spamCaseColumns = `
 	id, chat_id, user_id, message_id, message_text, created_at,
 	channel_username, channel_post_id, notification_message_id,
-	pre_vote_restricted, status, resolved_at
+	pre_vote_restricted, status, resolved_at, resolve_at,
+	next_attempt_at, attempt_count, last_error
 `
 
 func (s *sqliteClient) AddRestriction(ctx context.Context, restriction *db.UserRestriction) error {
@@ -23,8 +25,13 @@ func (s *sqliteClient) AddRestriction(ctx context.Context, restriction *db.UserR
 	query := `
 		INSERT INTO user_restrictions (user_id, chat_id, restricted_at, expires_at, reason)
 		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(chat_id, user_id) DO UPDATE SET
+			restricted_at = excluded.restricted_at,
+			expires_at = excluded.expires_at,
+			reason = excluded.reason
 	`
-	_, err := s.db.ExecContext(ctx, query,
+	_, err := s.db.ExecContext(
+		ctx, query,
 		restriction.UserID,
 		restriction.ChatID,
 		restriction.RestrictedAt,
@@ -49,10 +56,11 @@ func (s *sqliteClient) CreateSpamCase(ctx context.Context, sc *db.SpamCase) (*db
 
 	query := `
 		INSERT INTO spam_cases (chat_id, user_id, message_id, message_text, created_at, channel_username, channel_post_id,
-			notification_message_id, pre_vote_restricted, status, resolved_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			notification_message_id, pre_vote_restricted, status, resolved_at, resolve_at, next_attempt_at, attempt_count, last_error)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
-	result, err := s.db.ExecContext(ctx, query,
+	result, err := s.db.ExecContext(
+		ctx, query,
 		sc.ChatID,
 		sc.UserID,
 		sc.MessageID,
@@ -64,8 +72,15 @@ func (s *sqliteClient) CreateSpamCase(ctx context.Context, sc *db.SpamCase) (*db
 		sc.PreVoteRestricted,
 		sc.Status,
 		sc.ResolvedAt,
+		sc.ResolveAt,
+		sc.NextAttemptAt,
+		sc.AttemptCount,
+		sc.LastError,
 	)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
 		return nil, err
 	}
 
@@ -89,10 +104,15 @@ func (s *sqliteClient) UpdateSpamCase(ctx context.Context, sc *db.SpamCase) erro
 			message_id = ?,
 			pre_vote_restricted = ?,
 			status = ?,
-			resolved_at = ?
+			resolved_at = ?,
+			resolve_at = ?,
+			next_attempt_at = ?,
+			attempt_count = ?,
+			last_error = ?
 		WHERE id = ?
 	`
-	_, err := s.db.ExecContext(ctx, query,
+	_, err := s.db.ExecContext(
+		ctx, query,
 		sc.ChannelUsername,
 		sc.ChannelPostID,
 		sc.NotificationMessageID,
@@ -100,9 +120,51 @@ func (s *sqliteClient) UpdateSpamCase(ctx context.Context, sc *db.SpamCase) erro
 		sc.PreVoteRestricted,
 		sc.Status,
 		sc.ResolvedAt,
+		sc.ResolveAt,
+		sc.NextAttemptAt,
+		sc.AttemptCount,
+		sc.LastError,
 		sc.ID,
 	)
 	return err
+}
+
+func (s *sqliteClient) UpdateSpamCasePresentation(ctx context.Context, sc *db.SpamCase) error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE spam_cases
+		SET channel_username = ?, channel_post_id = ?, notification_message_id = ?
+		WHERE id = ? AND status = ?
+	`, sc.ChannelUsername, sc.ChannelPostID, sc.NotificationMessageID, sc.ID, db.SpamCaseStatusPending)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected != 1 {
+		return errors.New("spam case is no longer pending")
+	}
+	return nil
+}
+
+func (s *sqliteClient) SetSpamCaseResolveAt(ctx context.Context, caseID int64, resolveAt time.Time) (bool, error) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE spam_cases
+		SET resolve_at = ?
+		WHERE id = ? AND status = ? AND resolve_at IS NULL
+	`, resolveAt, caseID, db.SpamCaseStatusPending)
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	return affected == 1, err
 }
 
 func (s *sqliteClient) GetSpamCase(ctx context.Context, id int64) (*db.SpamCase, error) {
@@ -177,6 +239,27 @@ func (s *sqliteClient) GetPendingSpamCases(ctx context.Context) ([]*db.SpamCase,
 	return cases, err
 }
 
+func (s *sqliteClient) GetDueSpamCases(ctx context.Context, now time.Time) ([]*db.SpamCase, error) {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+
+	var cases []*db.SpamCase
+	err := s.db.SelectContext(
+		ctx, &cases, `
+		SELECT `+spamCaseColumns+` FROM spam_cases
+		WHERE (status = ? AND resolve_at IS NOT NULL AND resolve_at <= ?)
+			OR (status IN (?, ?) AND next_attempt_at IS NOT NULL AND next_attempt_at <= ?)
+		ORDER BY COALESCE(next_attempt_at, resolve_at, created_at), id
+	`,
+		db.SpamCaseStatusPending,
+		now,
+		db.SpamCaseStatusResolvingSpam,
+		db.SpamCaseStatusResolvingFalsePositive,
+		now,
+	)
+	return cases, err
+}
+
 func (s *sqliteClient) AddSpamCaseReportMessage(ctx context.Context, message *db.SpamCaseReportMessage) error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
@@ -185,7 +268,8 @@ func (s *sqliteClient) AddSpamCaseReportMessage(ctx context.Context, message *db
 		INSERT OR IGNORE INTO spam_case_report_messages (case_id, chat_id, message_id, created_at)
 		VALUES (?, ?, ?, ?)
 	`
-	_, err := s.db.ExecContext(ctx, query,
+	_, err := s.db.ExecContext(
+		ctx, query,
 		message.CaseID,
 		message.ChatID,
 		message.MessageID,
@@ -215,6 +299,31 @@ func (s *sqliteClient) DeleteSpamCaseReportMessages(ctx context.Context, caseID 
 	return err
 }
 
+func (s *sqliteClient) GetDueSpamCaseReportMessages(ctx context.Context, before time.Time) ([]*db.SpamCaseReportMessage, error) {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+
+	var messages []*db.SpamCaseReportMessage
+	err := s.db.SelectContext(ctx, &messages, `
+		SELECT case_id, chat_id, message_id, created_at
+		FROM spam_case_report_messages
+		WHERE created_at <= ?
+		ORDER BY created_at, case_id, chat_id, message_id
+	`, before)
+	return messages, err
+}
+
+func (s *sqliteClient) DeleteSpamCaseReportMessage(ctx context.Context, caseID, chatID int64, messageID int) error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	_, err := s.db.ExecContext(ctx, `
+		DELETE FROM spam_case_report_messages
+		WHERE case_id = ? AND chat_id = ? AND message_id = ?
+	`, caseID, chatID, messageID)
+	return err
+}
+
 func (s *sqliteClient) AddSpamVote(ctx context.Context, vote *db.SpamVote) error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
@@ -226,13 +335,201 @@ func (s *sqliteClient) AddSpamVote(ctx context.Context, vote *db.SpamVote) error
 		vote = excluded.vote,
 		voted_at = excluded.voted_at
 	`
-	_, err := s.db.ExecContext(ctx, query,
+	_, err := s.db.ExecContext(
+		ctx, query,
 		vote.CaseID,
 		vote.VoterID,
 		vote.Vote,
 		vote.VotedAt,
 	)
 	return err
+}
+
+func (s *sqliteClient) AddVoteIfPending(ctx context.Context, vote *db.SpamVote) (int, int, bool, error) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	tx, err := s.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return 0, 0, false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var pending int
+	if err := tx.GetContext(ctx, &pending, `
+		SELECT COUNT(*) FROM spam_cases WHERE id = ? AND status = ?
+	`, vote.CaseID, db.SpamCaseStatusPending); err != nil {
+		return 0, 0, false, err
+	}
+	if pending != 1 {
+		return 0, 0, false, nil
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO spam_votes (case_id, voter_id, vote, voted_at)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(case_id, voter_id) DO UPDATE SET
+			vote = excluded.vote,
+			voted_at = excluded.voted_at
+	`, vote.CaseID, vote.VoterID, vote.Vote, vote.VotedAt); err != nil {
+		return 0, 0, false, err
+	}
+
+	var counts struct {
+		NotSpam int `db:"not_spam"`
+		Spam    int `db:"spam"`
+	}
+	if err := tx.GetContext(ctx, &counts, `
+		SELECT
+			COALESCE(SUM(CASE WHEN vote THEN 1 ELSE 0 END), 0) AS not_spam,
+			COALESCE(SUM(CASE WHEN vote THEN 0 ELSE 1 END), 0) AS spam
+		FROM spam_votes WHERE case_id = ?
+	`, vote.CaseID); err != nil {
+		return 0, 0, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, 0, false, err
+	}
+	return counts.NotSpam, counts.Spam, true, nil
+}
+
+func (s *sqliteClient) ClaimSpamCaseResolution(
+	ctx context.Context,
+	caseID int64,
+	requiredVoters int,
+	timedOut bool,
+	now time.Time,
+) (*db.SpamCase, bool, error) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	tx, err := s.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return nil, false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var spamCase db.SpamCase
+	if err := tx.GetContext(ctx, &spamCase, `
+		SELECT `+spamCaseColumns+` FROM spam_cases
+		WHERE id = ? AND status = ?
+	`, caseID, db.SpamCaseStatusPending); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	var counts struct {
+		NotSpam int `db:"not_spam"`
+		Spam    int `db:"spam"`
+	}
+	if err := tx.GetContext(ctx, &counts, `
+		SELECT
+			COALESCE(SUM(CASE WHEN vote THEN 1 ELSE 0 END), 0) AS not_spam,
+			COALESCE(SUM(CASE WHEN vote THEN 0 ELSE 1 END), 0) AS spam
+		FROM spam_votes WHERE case_id = ?
+	`, caseID); err != nil {
+		return nil, false, err
+	}
+	total := counts.NotSpam + counts.Spam
+	if total < requiredVoters && !timedOut {
+		return nil, false, nil
+	}
+	if counts.NotSpam == counts.Spam && !timedOut {
+		return nil, false, nil
+	}
+	nextStatus := db.SpamCaseStatusResolvingFalsePositive
+	if counts.Spam > counts.NotSpam && total >= requiredVoters {
+		nextStatus = db.SpamCaseStatusResolvingSpam
+	}
+	result, err := tx.ExecContext(ctx, `
+		UPDATE spam_cases
+		SET status = ?, next_attempt_at = ?, attempt_count = 0, last_error = ''
+		WHERE id = ? AND status = ?
+	`, nextStatus, now, caseID, db.SpamCaseStatusPending)
+	if err != nil {
+		return nil, false, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return nil, false, err
+	}
+	if affected != 1 {
+		return nil, false, nil
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, false, err
+	}
+	spamCase.Status = nextStatus
+	spamCase.NextAttemptAt = sql.NullTime{Time: now, Valid: true}
+	return &spamCase, true, nil
+}
+
+func (s *sqliteClient) FinalizeSpamCaseResolution(
+	ctx context.Context,
+	caseID int64,
+	expectedStatus, terminalStatus, statsKey string,
+	resolvedAt time.Time,
+) (bool, error) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	tx, err := s.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	result, err := tx.ExecContext(ctx, `
+		UPDATE spam_cases
+		SET status = ?, resolved_at = ?, next_attempt_at = NULL, last_error = ''
+		WHERE id = ? AND status = ?
+	`, terminalStatus, resolvedAt, caseID, expectedStatus)
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if affected != 1 {
+		return false, nil
+	}
+	if statsKey != "" {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO kv_store (key, value, updated_at)
+			VALUES (?, '1', datetime('now'))
+			ON CONFLICT(key) DO UPDATE SET
+				value = CAST(CAST(kv_store.value AS INTEGER) + 1 AS TEXT),
+				updated_at = excluded.updated_at
+		`, statsKey); err != nil {
+			return false, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (s *sqliteClient) ScheduleSpamCaseRetry(
+	ctx context.Context,
+	caseID int64,
+	expectedStatus string,
+	nextAttemptAt time.Time,
+	lastError string,
+) (bool, error) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE spam_cases
+		SET next_attempt_at = ?, attempt_count = attempt_count + 1, last_error = ?
+		WHERE id = ? AND status = ?
+	`, nullableTime(nextAttemptAt), lastError, caseID, expectedStatus)
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	return affected == 1, err
 }
 
 func (s *sqliteClient) GetSpamVotes(ctx context.Context, caseID int64) ([]*db.SpamVote, error) {
@@ -259,6 +556,9 @@ func (s *sqliteClient) GetActiveRestriction(ctx context.Context, chatID, userID 
 		ORDER BY restricted_at DESC LIMIT 1
 	`, chatID, userID)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
 		return nil, err
 	}
 	return &restriction, nil
@@ -290,7 +590,8 @@ func (s *sqliteClient) AddChatRecentJoiner(ctx context.Context, joiner *db.Recen
 			processed = FALSE,
 			is_spammer = FALSE
 	`
-	if _, err := s.db.ExecContext(ctx, query,
+	if _, err := s.db.ExecContext(
+		ctx, query,
 		joiner.ChatID,
 		joiner.UserID,
 		joiner.Username,
@@ -378,7 +679,7 @@ func (s *sqliteClient) UpsertBanlist(ctx context.Context, userIDs []int64) error
 	if err != nil {
 		return fmt.Errorf("failed to prepare statement: %w", err)
 	}
-	defer stmt.Close()
+	defer func() { _ = stmt.Close() }()
 
 	for _, userID := range userIDs {
 		if _, err := stmt.ExecContext(ctx, userID); err != nil {
@@ -390,6 +691,68 @@ func (s *sqliteClient) UpsertBanlist(ctx context.Context, userIDs []int64) error
 		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 	rollback = false
+	return nil
+}
+
+func (s *sqliteClient) ApplyBanlistSource(
+	ctx context.Context,
+	provider, feedType, generation string,
+	userIDs []int64,
+	seenAt time.Time,
+	expiresAt *time.Time,
+	replace bool,
+) error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin banlist source transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if replace {
+		if _, err := tx.ExecContext(ctx, `
+			DELETE FROM banlist_sources WHERE provider = ? AND feed_type = ?
+		`, provider, feedType); err != nil {
+			return fmt.Errorf("replace banlist source %s/%s: %w", provider, feedType, err)
+		}
+	}
+	stmt, err := tx.PrepareContext(ctx, `
+		INSERT INTO banlist_sources (user_id, provider, feed_type, generation, last_seen_at, expires_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(user_id, provider, feed_type) DO UPDATE SET
+			generation = excluded.generation,
+			last_seen_at = excluded.last_seen_at,
+			expires_at = excluded.expires_at
+	`)
+	if err != nil {
+		return fmt.Errorf("prepare banlist source insert: %w", err)
+	}
+	defer func() { _ = stmt.Close() }()
+	for _, userID := range userIDs {
+		if _, err := stmt.ExecContext(ctx, userID, provider, feedType, generation, seenAt, expiresAt); err != nil {
+			return fmt.Errorf("insert banlist source user %d: %w", userID, err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM banlist_sources WHERE expires_at IS NOT NULL AND expires_at <= ?
+	`, seenAt); err != nil {
+		return fmt.Errorf("expire banlist sources: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM banlist`); err != nil {
+		return fmt.Errorf("clear effective banlist: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO banlist (user_id)
+		SELECT DISTINCT user_id
+		FROM banlist_sources
+		WHERE expires_at IS NULL OR expires_at > ?
+	`, seenAt); err != nil {
+		return fmt.Errorf("rebuild effective banlist: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit banlist source transaction: %w", err)
+	}
 	return nil
 }
 

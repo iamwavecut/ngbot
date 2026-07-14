@@ -38,3 +38,20 @@ func (s *sqliteClient) SetKV(ctx context.Context, key string, value string) erro
 	}
 	return nil
 }
+
+func (s *sqliteClient) IncrementKVInt(ctx context.Context, key string, delta int) error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO kv_store (key, value, updated_at)
+		VALUES (?, CAST(? AS TEXT), datetime('now'))
+		ON CONFLICT(key) DO UPDATE SET
+		value = CAST(CAST(kv_store.value AS INTEGER) + ? AS TEXT),
+		updated_at = excluded.updated_at
+	`, key, delta, delta)
+	if err != nil {
+		return fmt.Errorf("increment integer value for key %s: %w", key, err)
+	}
+	return nil
+}

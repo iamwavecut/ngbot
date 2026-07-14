@@ -14,8 +14,11 @@ func EnsureDir(path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("expand path %q: %w", path, err)
 	}
-	if err := os.MkdirAll(workDir, os.ModePerm); err != nil {
+	if err := os.MkdirAll(workDir, 0o700); err != nil {
 		return "", fmt.Errorf("create dir %q: %w", workDir, err)
+	}
+	if err := os.Chmod(workDir, 0o700); err != nil {
+		return "", fmt.Errorf("secure dir %q: %w", workDir, err)
 	}
 	absPath, err := filepath.Abs(workDir)
 	if err != nil {

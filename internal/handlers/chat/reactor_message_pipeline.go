@@ -32,6 +32,7 @@ const (
 	messageSkipReasonChatAdministrator   = "User is chat administrator"
 	messageSkipReasonLinkedChannelSender = "Linked channel sender"
 	messageSkipReasonChatSender          = "Chat sender"
+	messageSkipReasonAnonymousSender     = "Unsupported anonymous sender"
 )
 
 func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api.Chat, user *api.User, settings *db.Settings) error {
@@ -41,17 +42,17 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 	}
 
 	entry := r.getLogEntry().WithFields(log.Fields{
-		"chat_id": chat.ID,
-		"user_id": userID,
+		logFieldChatID: chat.ID,
+		logFieldUserID: userID,
 	})
 
 	result := &MessageProcessingResult{
 		Message: msg,
 		Stage:   StageInit,
 	}
-	r.storeLastResult(int64(msg.MessageID), result)
+	r.storeLastResult(chat.ID, msg.MessageID, result)
 
-	if skipReason, trusted := r.trustedSenderChat(msg, chat, entry); trusted {
+	if skipReason, trusted := r.trustedSenderChat(ctx, msg, chat, entry); trusted {
 		result.Stage = StageSpamCheck
 		result.Skipped = true
 		result.SkipReason = skipReason
@@ -60,12 +61,19 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 	}
 
 	if user == nil {
-		return errors.New("nil message user")
+		result.Stage = StageSpamCheck
+		result.Skipped = true
+		result.SkipReason = messageSkipReasonAnonymousSender
+		if msg.SenderChat != nil {
+			entry = entry.WithField("sender_chat_id", msg.SenderChat.ID)
+		}
+		entry.Warn("ignoring unsupported anonymous sender")
+		return nil
 	}
 
 	isMember, err := r.s.IsMember(ctx, chat.ID, user.ID)
 	if err != nil {
-		entry.WithField("error", err.Error()).Error("Failed to check membership")
+		entry.WithField(logFieldError, err.Error()).Error("Failed to check membership")
 		return fmt.Errorf("failed to check membership: %w", err)
 	}
 
@@ -76,7 +84,7 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 		return nil
 	}
 
-	if r.isChatAdministrator(chat.ID, user.ID, entry) {
+	if r.isChatAdministrator(ctx, chat.ID, user.ID, entry) {
 		result.Skipped = true
 		result.SkipReason = messageSkipReasonChatAdministrator
 		return nil
@@ -87,7 +95,7 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 
 	isNotSpammer, err := r.store.IsChatNotSpammer(ctx, chat.ID, user.ID, user.UserName)
 	if err != nil {
-		entry.WithField("error", err.Error()).Error("Failed to check manual not-spammer override")
+		entry.WithField(logFieldError, err.Error()).Error("Failed to check manual not-spammer override")
 		return fmt.Errorf("failed to check manual not-spammer override: %w", err)
 	}
 	if isNotSpammer {
@@ -107,14 +115,14 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 		result.SkipReason = "User is banned"
 		if r.config.SpamControl.DebugUserID != 0 {
 			debugMsg := tool.ExecTemplate(`Banned user: {{ .user_name }} ({{ .user_id }})`, map[string]any{
-				"user_name": bot.GetUN(user),
-				"user_id":   user.ID,
+				"user_name":    bot.GetUN(user),
+				logFieldUserID: user.ID,
 			})
-			_, _ = r.s.GetBot().Send(api.NewMessage(r.config.SpamControl.DebugUserID, debugMsg))
+			_, _ = bot.Send(ctx, r.bot, api.NewMessage(r.config.SpamControl.DebugUserID, debugMsg))
 		}
 		processingResult, err := r.spamControl.ProcessBannedMessage(ctx, msg, chat, language)
 		if err != nil {
-			entry.WithField("error", err.Error()).Error("failed to process banned message")
+			entry.WithField(logFieldError, err.Error()).Error("failed to process banned message")
 			result.Actions.Error = err.Error()
 		} else if processingResult != nil {
 			result.Actions.MessageDeleted = processingResult.MessageDeleted
@@ -134,7 +142,7 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 
 	isKnownNonMember, err := r.store.IsChatKnownNonMember(ctx, chat.ID, user.ID)
 	if err != nil {
-		entry.WithField("error", err.Error()).Error("Failed to check known non-member state")
+		entry.WithField(logFieldError, err.Error()).Error("Failed to check known non-member state")
 		return fmt.Errorf("failed to check known non-member state: %w", err)
 	}
 	if isKnownNonMember {
@@ -158,7 +166,7 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 	if content == "" {
 		result.Skipped = true
 		result.SkipReason = "Empty message content"
-		entry.WithField("message", msg).Warn("empty message content")
+		entry.WithField("message_id", msg.MessageID).Warn("empty message content")
 		return nil
 	}
 
@@ -167,14 +175,14 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 	if heuristic.Triggered {
 		result.SkipReason = "First-message external quote heuristic"
 		result.IsSpam = tool.Ptr(true)
-		if err := handlersbase.IncrementDailyStat(ctx, r.s.GetDB(), chat.ID, handlersbase.StatHeuristicSpam); err != nil {
-			entry.WithField("error", err.Error()).Warn("failed to increment heuristic spam stat")
+		if err := handlersbase.IncrementDailyStat(ctx, r.stats, chat.ID, handlersbase.StatHeuristicSpam); err != nil {
+			entry.WithField(logFieldError, err.Error()).Warn("failed to increment heuristic spam stat")
 		}
 
 		processingResult, processErr := r.processDetectedSpam(ctx, msg, chat, language, settings)
 		if processErr != nil {
 			entry.WithFields(log.Fields{
-				"error":              processErr.Error(),
+				logFieldError:        processErr.Error(),
 				"has_external_reply": heuristic.HasExternalReply,
 				"has_quote":          heuristic.HasQuote,
 				"has_forward_origin": heuristic.HasForwardOrigin,
@@ -220,7 +228,7 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 		if *isSpam {
 			processingResult, processErr := r.processDetectedSpam(ctx, msg, chat, language, settings)
 			if processErr != nil {
-				entry.WithField("error", processErr.Error()).Error("failed to process spam message")
+				entry.WithField(logFieldError, processErr.Error()).Error("failed to process spam message")
 				result.Actions.Error = processErr.Error()
 			} else if processingResult != nil {
 				result.Actions.MessageDeleted = processingResult.MessageDeleted
@@ -276,39 +284,46 @@ func detectFirstMessageExternalQuoteHeuristic(msg *api.Message) firstMessageExte
 	return result
 }
 
-func (r *Reactor) trustedSenderChat(msg *api.Message, chat *api.Chat, entry *log.Entry) (string, bool) {
+func (r *Reactor) trustedSenderChat(ctx context.Context, msg *api.Message, chat *api.Chat, entry *log.Entry) (string, bool) {
 	if msg == nil || chat == nil || msg.SenderChat == nil {
 		return "", false
 	}
-	if msg.SenderChat.ID == chat.ID {
-		return messageSkipReasonChatSender, true
-	}
-	if !msg.SenderChat.IsChannel() {
+	return r.trustedSenderChatIdentity(ctx, msg.SenderChat, chat, msg.IsAutomaticForward, entry)
+}
+
+func (r *Reactor) trustedSenderChatIdentity(ctx context.Context, senderChat *api.Chat, chat *api.Chat, automaticForward bool, entry *log.Entry) (string, bool) {
+	if senderChat == nil || chat == nil {
 		return "", false
 	}
-	if msg.IsAutomaticForward {
+	if senderChat.ID == chat.ID {
+		return messageSkipReasonChatSender, true
+	}
+	if !senderChat.IsChannel() {
+		return "", false
+	}
+	if automaticForward {
 		return messageSkipReasonLinkedChannelSender, true
 	}
 
-	fullChat, err := r.s.GetBot().GetChat(api.ChatInfoConfig{
+	fullChat, err := bot.GetChat(ctx, r.bot, api.ChatInfoConfig{
 		ChatConfig: api.ChatConfig{ChatID: chat.ID},
 	})
 	if err != nil {
-		entry.WithField("error", err.Error()).Warn("failed to verify linked channel sender")
+		entry.WithField(logFieldError, err.Error()).Warn("failed to verify linked channel sender")
 		return "", false
 	}
-	return messageSkipReasonLinkedChannelSender, fullChat.LinkedChatID == msg.SenderChat.ID
+	return messageSkipReasonLinkedChannelSender, fullChat.LinkedChatID == senderChat.ID
 }
 
-func (r *Reactor) isChatAdministrator(chatID int64, userID int64, entry *log.Entry) bool {
-	member, err := r.s.GetBot().GetChatMember(api.GetChatMemberConfig{
+func (r *Reactor) isChatAdministrator(ctx context.Context, chatID int64, userID int64, entry *log.Entry) bool {
+	member, err := bot.GetChatMember(ctx, r.bot, api.GetChatMemberConfig{
 		ChatConfigWithUser: api.ChatConfigWithUser{
 			ChatConfig: api.ChatConfig{ChatID: chatID},
 			UserID:     userID,
 		},
 	})
 	if err != nil {
-		entry.WithField("error", err.Error()).Warn("failed to verify message sender administrator status")
+		entry.WithField(logFieldError, err.Error()).Warn("failed to verify message sender administrator status")
 		return false
 	}
 	return member.IsCreator() || member.IsAdministrator()
@@ -333,8 +348,8 @@ func (r *Reactor) checkMessageForSpam(ctx context.Context, chatID int64, content
 	examples := r.loadSpamExamples(ctx, chatID)
 	isSpam, err := r.spamDetector.IsSpam(ctx, contentAltered, examples)
 	if err == nil {
-		if statErr := handlersbase.IncrementDailyStat(ctx, r.s.GetDB(), chatID, handlersbase.StatLLMChecked); statErr != nil {
-			r.getLogEntry().WithField("error", statErr.Error()).Warn("failed to increment LLM checked stat")
+		if statErr := handlersbase.IncrementDailyStat(ctx, r.stats, chatID, handlersbase.StatLLMChecked); statErr != nil {
+			r.getLogEntry().WithField(logFieldError, statErr.Error()).Warn("failed to increment LLM checked stat")
 		}
 	}
 	if r.config.SpamControl.DebugUserID != 0 {
@@ -347,7 +362,7 @@ Is Spam result: {{ .isSpam -}}
 			"content": content,
 			"isSpam":  isSpam,
 		})
-		_, _ = r.s.GetBot().Send(api.NewMessage(r.config.SpamControl.DebugUserID, debugMsg))
+		_, _ = bot.Send(ctx, r.bot, api.NewMessage(r.config.SpamControl.DebugUserID, debugMsg))
 	}
 
 	return isSpam, err
@@ -371,8 +386,8 @@ func (r *Reactor) checkReportedMessageForSpam(ctx context.Context, chatID int64,
 	}
 	isSpam, err := r.spamDetector.IsReportedSpam(ctx, contentAltered, examples)
 	if err == nil {
-		if statErr := handlersbase.IncrementDailyStat(ctx, r.s.GetDB(), chatID, handlersbase.StatLLMChecked); statErr != nil {
-			r.getLogEntry().WithField("error", statErr.Error()).Warn("failed to increment reported LLM checked stat")
+		if statErr := handlersbase.IncrementDailyStat(ctx, r.stats, chatID, handlersbase.StatLLMChecked); statErr != nil {
+			r.getLogEntry().WithField(logFieldError, statErr.Error()).Warn("failed to increment reported LLM checked stat")
 		}
 	}
 	return isSpam, err
@@ -381,7 +396,7 @@ func (r *Reactor) checkReportedMessageForSpam(ctx context.Context, chatID int64,
 func (r *Reactor) loadSpamExamples(ctx context.Context, chatID int64) []string {
 	examples, err := r.store.ListChatSpamExamples(ctx, chatID, maxSpamExamples, 0)
 	if err != nil {
-		r.getLogEntry().WithField("error", err.Error()).Error("failed to load spam examples")
+		r.getLogEntry().WithField(logFieldError, err.Error()).Error("failed to load spam examples")
 		return nil
 	}
 	texts := make([]string, 0, len(examples))
@@ -396,7 +411,7 @@ func (r *Reactor) loadSpamExamples(ctx context.Context, chatID int64) []string {
 }
 
 func (r *Reactor) handleKnownNonMember(ctx context.Context, chat *api.Chat, user *api.User, entry *log.Entry) (string, bool) {
-	chatMember, err := r.s.GetBot().GetChatMember(api.GetChatMemberConfig{
+	chatMember, err := bot.GetChatMember(ctx, r.bot, api.GetChatMemberConfig{
 		ChatConfigWithUser: api.ChatConfigWithUser{
 			ChatConfig: api.ChatConfig{
 				ChatID: chat.ID,
@@ -405,13 +420,13 @@ func (r *Reactor) handleKnownNonMember(ctx context.Context, chat *api.Chat, user
 		},
 	})
 	if err != nil {
-		entry.WithField("error", err.Error()).Warn("failed to verify known non-member state, trusting stored memory")
+		entry.WithField(logFieldError, err.Error()).Warn("failed to verify known non-member state, trusting stored memory")
 		return messageSkipReasonRememberedNonMember, true
 	}
 
 	if chatMember.WasKicked() {
 		if deleteErr := r.store.DeleteChatKnownNonMember(ctx, chat.ID, user.ID); deleteErr != nil {
-			entry.WithField("error", deleteErr.Error()).Error("failed to delete kicked known non-member")
+			entry.WithField(logFieldError, deleteErr.Error()).Error("failed to delete kicked known non-member")
 		}
 		return "", false
 	}
@@ -421,22 +436,22 @@ func (r *Reactor) handleKnownNonMember(ctx context.Context, chat *api.Chat, user
 	}
 
 	entry.WithFields(log.Fields{
-		"user_id": user.ID,
-		"chat_id": chat.ID,
+		logFieldUserID: user.ID,
+		logFieldChatID: chat.ID,
 	}).Info("Promoting remembered non-member to member")
 
 	if insertErr := r.s.InsertMember(ctx, chat.ID, user.ID); insertErr != nil {
-		entry.WithField("error", insertErr.Error()).Error("failed to insert promoted member")
+		entry.WithField(logFieldError, insertErr.Error()).Error("failed to insert promoted member")
 		return messageSkipReasonRememberedNonMember, true
 	}
 	if deleteErr := r.store.DeleteChatKnownNonMember(ctx, chat.ID, user.ID); deleteErr != nil {
-		entry.WithField("error", deleteErr.Error()).Error("failed to delete promoted known non-member")
+		entry.WithField(logFieldError, deleteErr.Error()).Error("failed to delete promoted known non-member")
 	}
 	return messageSkipReasonAlreadyMember, true
 }
 
 func (r *Reactor) rememberAuthorIfPossible(ctx context.Context, chat *api.Chat, user *api.User, entry *log.Entry) error {
-	chatMember, err := r.s.GetBot().GetChatMember(api.GetChatMemberConfig{
+	chatMember, err := bot.GetChatMember(ctx, r.bot, api.GetChatMemberConfig{
 		ChatConfigWithUser: api.ChatConfigWithUser{
 			ChatConfig: api.ChatConfig{
 				ChatID: chat.ID,
@@ -445,43 +460,43 @@ func (r *Reactor) rememberAuthorIfPossible(ctx context.Context, chat *api.Chat, 
 		},
 	})
 	if err != nil {
-		entry.WithField("error", err.Error()).Error("failed to get chat member")
+		entry.WithField(logFieldError, err.Error()).Error("failed to get chat member")
 		return err
 	}
 
 	if chatMember.WasKicked() {
 		if deleteErr := r.store.DeleteChatKnownNonMember(ctx, chat.ID, user.ID); deleteErr != nil {
-			entry.WithField("error", deleteErr.Error()).Error("failed to delete kicked known non-member")
+			entry.WithField(logFieldError, deleteErr.Error()).Error("failed to delete kicked known non-member")
 		}
 		entry.WithFields(log.Fields{
-			"user_id": user.ID,
-			"chat_id": chat.ID,
+			logFieldUserID: user.ID,
+			logFieldChatID: chat.ID,
 		}).Info("User was kicked from the chat, skipping author memory update")
 		return nil
 	}
 
 	if chatMember.HasLeft() {
 		entry.WithFields(log.Fields{
-			"user_id": user.ID,
-			"chat_id": chat.ID,
+			logFieldUserID: user.ID,
+			logFieldChatID: chat.ID,
 		}).Info("Remembering user as known non-member after spam check")
 		if upsertErr := r.store.UpsertChatKnownNonMember(ctx, &db.ChatKnownNonMember{
 			ChatID: chat.ID,
 			UserID: user.ID,
 		}); upsertErr != nil {
-			entry.WithField("error", upsertErr.Error()).Error("failed to upsert known non-member")
+			entry.WithField(logFieldError, upsertErr.Error()).Error("failed to upsert known non-member")
 		}
 		return nil
 	}
 
 	entry.WithFields(log.Fields{
-		"user_id": user.ID,
-		"chat_id": chat.ID,
+		logFieldUserID: user.ID,
+		logFieldChatID: chat.ID,
 	}).Info("Adding user as member after spam check")
 	if insertErr := r.s.InsertMember(ctx, chat.ID, user.ID); insertErr != nil {
-		entry.WithField("error", insertErr.Error()).Error("failed to insert member")
+		entry.WithField(logFieldError, insertErr.Error()).Error("failed to insert member")
 	} else if deleteErr := r.store.DeleteChatKnownNonMember(ctx, chat.ID, user.ID); deleteErr != nil {
-		entry.WithField("error", deleteErr.Error()).Error("failed to delete known non-member after member insert")
+		entry.WithField(logFieldError, deleteErr.Error()).Error("failed to delete known non-member after member insert")
 	}
 
 	return nil

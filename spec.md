@@ -1,5 +1,7 @@
 # Bot Settings Panel Spec (Telegram Keyboards)
 
+> **Historical document.** This specification records the original panel design. Callback compatibility is retained, but current behavior and invariants are documented in `docs/CODEBASE_MAP.md` and the code.
+
 This document specifies the admin panel UX and behavior for per-chat feature toggles using Telegram Bot API keyboards.
 
 ## Goals

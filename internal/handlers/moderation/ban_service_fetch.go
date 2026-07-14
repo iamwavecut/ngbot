@@ -11,35 +11,26 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pborman/uuid"
 	log "github.com/sirupsen/logrus"
 )
 
-func fetchProviderURLs(ctx context.Context, client *http.Client, providers []banlistProvider, urlsForProvider func(banlistProvider) []string) (map[int64]struct{}, error) {
+func fetchProviderSnapshot(ctx context.Context, client *http.Client, provider banlistProvider, urls []string) (map[int64]struct{}, error) {
 	results := make(map[int64]struct{})
-	var failures []error
-	successes := 0
-
-	for _, provider := range providers {
-		for _, url := range urlsForProvider(provider) {
-			ids, err := fetchURLWithRetry(ctx, client, url)
-			if err != nil {
-				failures = append(failures, fmt.Errorf("%s %s: %w", provider.name, url, err))
-				continue
-			}
-			successes++
-			for userID := range ids {
-				results[userID] = struct{}{}
-			}
+	for _, url := range urls {
+		ids, err := fetchURLWithRetry(ctx, client, url)
+		if err != nil {
+			return nil, fmt.Errorf("%s %s: %w", provider.name, url, err)
+		}
+		for userID := range ids {
+			results[userID] = struct{}{}
 		}
 	}
-
-	if successes == 0 && len(failures) > 0 {
-		return nil, errors.Join(failures...)
-	}
-	for _, failure := range failures {
-		log.WithError(failure).Warn("failed to fetch external banlist source")
-	}
 	return results, nil
+}
+
+func newBanlistGeneration() string {
+	return uuid.New()
 }
 
 func fetchURLWithRetry(ctx context.Context, client *http.Client, url string) (map[int64]struct{}, error) {
@@ -76,7 +67,7 @@ func fetchURL(ctx context.Context, client *http.Client, url string) (map[int64]s
 	if err != nil {
 		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return nil, fmt.Errorf("unexpected status code %d", resp.StatusCode)
@@ -102,7 +93,7 @@ func fetchURL(ctx context.Context, client *http.Client, url string) (map[int64]s
 			continue
 		}
 		switch strings.ToLower(userIDStr) {
-		case "id", "user_id":
+		case "id", logFieldUserID:
 			continue
 		}
 		userID, err := strconv.ParseInt(userIDStr, 10, 64)
@@ -153,58 +144,98 @@ func (s *defaultBanService) updateLastHourlyFetch(ctx context.Context) error {
 }
 
 func (s *defaultBanService) FetchKnownBannedDaily(ctx context.Context) error {
-	results, err := fetchProviderURLs(ctx, s.httpClient, s.banlistProviders(), func(provider banlistProvider) []string {
-		return provider.dailyURLs
-	})
-	if err != nil {
-		return fmt.Errorf("failed to fetch known banned daily: %w", err)
-	}
-
-	userIDs := make([]int64, 0, len(results))
-	for userID := range results {
-		userIDs = append(userIDs, userID)
-	}
-	if err := s.db.UpsertBanlist(ctx, userIDs); err != nil {
-		return fmt.Errorf("failed to upsert banlist: %w", err)
-	}
-	fullBanlist, err := s.db.GetBanlist(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to get banlist: %w", err)
-	}
-	s.setKnownBanned(fullBanlist)
-	log.WithField("count", len(fullBanlist)).Debug("fetched known banned ids daily")
-
-	if err := s.updateLastDailyFetch(ctx); err != nil {
-		log.WithError(err).Error("Failed to update last daily fetch time")
-	}
-
-	return nil
+	return s.fetchKnownBannedFeed(
+		ctx,
+		banlistFeedDaily,
+		func(provider banlistProvider) []string { return provider.dailyURLs },
+		0,
+		true,
+		s.updateLastDailyFetch,
+	)
 }
 
 func (s *defaultBanService) FetchKnownBanned(ctx context.Context) error {
-	results, err := fetchProviderURLs(ctx, s.httpClient, s.banlistProviders(), func(provider banlistProvider) []string {
-		return provider.hourlyURLs
-	})
-	if err != nil {
-		return fmt.Errorf("failed to fetch known banned hourly: %w", err)
+	return s.fetchKnownBannedFeed(
+		ctx,
+		banlistFeedHourly,
+		func(provider banlistProvider) []string { return provider.hourlyURLs },
+		banlistHourlyTTL,
+		false,
+		s.updateLastHourlyFetch,
+	)
+}
+
+func (s *defaultBanService) fetchKnownBannedFeed(
+	ctx context.Context,
+	feedType string,
+	urlsForProvider func(banlistProvider) []string,
+	ttl time.Duration,
+	replace bool,
+	updateLastFetch func(context.Context) error,
+) error {
+	seenAt := time.Now().UTC()
+	configured := 0
+	succeeded := 0
+	var failures []error
+	for _, provider := range s.banlistProviders() {
+		urls := urlsForProvider(provider)
+		if len(urls) == 0 {
+			continue
+		}
+		configured++
+		results, err := fetchProviderSnapshot(ctx, s.httpClient, provider, urls)
+		if err != nil {
+			failures = append(failures, err)
+			continue
+		}
+		userIDs := make([]int64, 0, len(results))
+		for userID := range results {
+			userIDs = append(userIDs, userID)
+		}
+		var expiresAt *time.Time
+		if ttl > 0 {
+			expiry := seenAt.Add(ttl)
+			expiresAt = &expiry
+		}
+		if err := s.db.ApplyBanlistSource(
+			ctx,
+			provider.name,
+			feedType,
+			newBanlistGeneration(),
+			userIDs,
+			seenAt,
+			expiresAt,
+			replace,
+		); err != nil {
+			failures = append(failures, fmt.Errorf("apply %s %s snapshot: %w", provider.name, feedType, err))
+			continue
+		}
+		succeeded++
 	}
-	userIDs := make([]int64, 0, len(results))
-	for userID := range results {
-		userIDs = append(userIDs, userID)
+	if configured == 0 {
+		return nil
 	}
-	if err := s.db.UpsertBanlist(ctx, userIDs); err != nil {
-		return fmt.Errorf("failed to upsert banlist: %w", err)
+	if succeeded == 0 {
+		return fmt.Errorf("fetch known banned %s: %w", feedType, errors.Join(failures...))
 	}
 	fullBanlist, err := s.db.GetBanlist(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to get banlist: %w", err)
+		return fmt.Errorf("get effective %s banlist: %w", feedType, err)
 	}
 	s.setKnownBanned(fullBanlist)
-	log.WithField("count", len(fullBanlist)).Debug("fetched known banned ids hourly")
-
-	if err := s.updateLastHourlyFetch(ctx); err != nil {
-		log.WithError(err).Error("Failed to update last hourly fetch time")
+	log.WithFields(log.Fields{
+		"count":      len(fullBanlist),
+		"feed_type":  feedType,
+		"providers":  configured,
+		"successful": succeeded,
+	}).Debug("fetched known banned ids")
+	for _, failure := range failures {
+		log.WithError(failure).Warn("failed to refresh external banlist provider")
 	}
-
+	if succeeded == configured {
+		if err := updateLastFetch(ctx); err != nil {
+			log.WithError(err).Error("Failed to update banlist fetch time")
+		}
+	}
 	return nil
 }

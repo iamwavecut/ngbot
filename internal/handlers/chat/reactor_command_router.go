@@ -17,20 +17,54 @@ import (
 )
 
 func (r *Reactor) handleCommand(ctx context.Context, msg *api.Message, chat *api.Chat, user *api.User, settings *db.Settings) error {
-	if !commandTargetsCurrentBot(msg, r.s.GetBot().Self.UserName) {
+	if !commandTargetsCurrentBot(msg, r.bot.Self.UserName) {
 		return nil
 	}
 
 	switch msg.Command() {
 	case "testspam":
+		if !r.diagnosticCommandAllowed(ctx, chat, user) {
+			return r.rejectDiagnosticCommand(ctx, msg)
+		}
 		return r.testSpamCommand(ctx, msg, chat)
 	case "skipreason":
-		return r.skipReasonCommand(msg, chat)
+		if !r.diagnosticCommandAllowed(ctx, chat, user) {
+			return r.rejectDiagnosticCommand(ctx, msg)
+		}
+		return r.skipReasonCommand(ctx, msg, chat)
 	case "voteban":
 		return r.voteBanCommand(ctx, msg, chat, user, settings)
 	}
 
 	return nil
+}
+
+func (r *Reactor) diagnosticCommandAllowed(ctx context.Context, chat *api.Chat, user *api.User) bool {
+	if user == nil {
+		return false
+	}
+	if r.config.SpamControl.DebugUserID != 0 && user.ID == r.config.SpamControl.DebugUserID {
+		return true
+	}
+	if chat == nil || chat.Type == telegramChatTypePrivate {
+		return false
+	}
+	member, err := bot.GetChatMember(ctx, r.bot, api.GetChatMemberConfig{
+		ChatConfigWithUser: api.ChatConfigWithUser{
+			ChatConfig: api.ChatConfig{ChatID: chat.ID},
+			UserID:     user.ID,
+		},
+	})
+	if err != nil {
+		r.getLogEntry().WithError(err).Warn("failed to authorize diagnostic command")
+		return false
+	}
+	return member.IsCreator() || member.IsAdministrator()
+}
+
+func (r *Reactor) rejectDiagnosticCommand(ctx context.Context, msg *api.Message) error {
+	err := r.sendTemporaryReply(ctx, msg, "This diagnostic command is restricted to chat administrators.")
+	return err
 }
 
 func commandTargetsCurrentBot(msg *api.Message, botUserName string) bool {
@@ -112,28 +146,28 @@ func (r *Reactor) testSpamCommand(ctx context.Context, msg *api.Message, chat *a
 	responseMsg.ReplyParameters.MessageID = msg.MessageID
 	responseMsg.ReplyParameters.ChatID = chat.ID
 	responseMsg.MessageThreadID = msg.MessageThreadID
-	_, _ = r.s.GetBot().Send(responseMsg)
+	_, _ = bot.Send(ctx, r.bot, responseMsg)
 
 	return nil
 }
 
-func (r *Reactor) skipReasonCommand(msg *api.Message, chat *api.Chat) error {
+func (r *Reactor) skipReasonCommand(ctx context.Context, msg *api.Message, chat *api.Chat) error {
 	if msg.ReplyToMessage == nil {
 		responseMsg := api.NewMessage(chat.ID, "Please reply to a message to see its skip reason")
 		responseMsg.ReplyParameters.MessageID = msg.MessageID
 		responseMsg.ReplyParameters.ChatID = chat.ID
 		responseMsg.MessageThreadID = msg.MessageThreadID
-		_, _ = r.s.GetBot().Send(responseMsg)
+		_, _ = bot.Send(ctx, r.bot, responseMsg)
 		return nil
 	}
 
-	result := r.GetLastProcessingResult(int64(msg.ReplyToMessage.MessageID))
+	result := r.GetLastProcessingResult(chat.ID, msg.ReplyToMessage.MessageID)
 	if result == nil {
 		responseMsg := api.NewMessage(chat.ID, "No processing information available for this message")
 		responseMsg.ReplyParameters.MessageID = msg.MessageID
 		responseMsg.ReplyParameters.ChatID = chat.ID
 		responseMsg.MessageThreadID = msg.MessageThreadID
-		_, _ = r.s.GetBot().Send(responseMsg)
+		_, _ = bot.Send(ctx, r.bot, responseMsg)
 		return nil
 	}
 
@@ -152,25 +186,25 @@ func (r *Reactor) skipReasonCommand(msg *api.Message, chat *api.Chat) error {
 	if msg.Chat.IsForum {
 		responseMsg.MessageThreadID = msg.MessageThreadID
 	}
-	_, _ = r.s.GetBot().Send(responseMsg)
+	_, _ = bot.Send(ctx, r.bot, responseMsg)
 
 	return nil
 }
 
 func (r *Reactor) voteBanCommand(ctx context.Context, msg *api.Message, chat *api.Chat, user *api.User, settings *db.Settings) error {
 	entry := r.getLogEntry().WithFields(log.Fields{
-		"method": "voteBanCommand",
-		"chatID": chat.ID,
-		"userID": user.ID,
+		logFieldMethod: "voteBanCommand",
+		"chatID":       chat.ID,
+		"userID":       user.ID,
 	})
 
-	if msg.Chat.Type == "private" {
-		_, _ = r.sendTemporaryReply(ctx, msg, i18n.Get("This command can only be used in groups", r.s.GetLanguage(ctx, chat.ID, user)))
+	if msg.Chat.Type == telegramChatTypePrivate {
+		_ = r.sendTemporaryReply(ctx, msg, i18n.Get("This command can only be used in groups", r.s.GetLanguage(ctx, chat.ID, user)))
 		return nil
 	}
 
 	if msg.ReplyToMessage == nil || msg.ReplyToMessage.From == nil {
-		_, _ = r.sendTemporaryReply(ctx, msg, i18n.Get("Use /voteban or mention me in reply to a spam message to start a vote.", r.s.GetLanguage(ctx, chat.ID, user)))
+		_ = r.sendTemporaryReply(ctx, msg, i18n.Get("Use /voteban or mention me in reply to a spam message to start a vote.", r.s.GetLanguage(ctx, chat.ID, user)))
 		return nil
 	}
 
@@ -190,7 +224,7 @@ func (r *Reactor) voteBanCommand(ctx context.Context, msg *api.Message, chat *ap
 			entry.WithError(err).Error("Failed to delete member")
 		}
 		if result != nil && result.UserBanned {
-			_, _ = r.sendTemporaryReply(ctx, msg, i18n.Get("Reported message was confirmed as spam. The user was banned.", language))
+			_ = r.sendTemporaryReply(ctx, msg, i18n.Get("Reported message was confirmed as spam. The user was banned.", language))
 		}
 		r.deleteReportMessage(ctx, msg)
 		return nil
@@ -210,7 +244,7 @@ func (r *Reactor) voteBanCommand(ctx context.Context, msg *api.Message, chat *ap
 	}
 
 	if settings != nil && !settings.CommunityVotingEnabled {
-		_, _ = r.sendTemporaryReply(ctx, msg, i18n.Get("Community voting is disabled", language))
+		_ = r.sendTemporaryReply(ctx, msg, i18n.Get("Community voting is disabled", language))
 		return nil
 	}
 
@@ -223,7 +257,7 @@ func (r *Reactor) voteBanCommand(ctx context.Context, msg *api.Message, chat *ap
 }
 
 func (r *Reactor) reporterCanRestrictMembers(ctx context.Context, chatID int64, userID int64) bool {
-	member, err := r.s.GetBot().GetChatMember(api.GetChatMemberConfig{
+	member, err := bot.GetChatMember(ctx, r.bot, api.GetChatMemberConfig{
 		ChatConfigWithUser: api.ChatConfigWithUser{
 			ChatConfig: api.ChatConfig{
 				ChatID: chatID,
@@ -238,7 +272,7 @@ func (r *Reactor) reporterCanRestrictMembers(ctx context.Context, chatID int64, 
 	return permissions.CanRestrictMembers(&member)
 }
 
-func (r *Reactor) sendTemporaryReply(ctx context.Context, msg *api.Message, text string) (*api.Message, error) {
+func (r *Reactor) sendTemporaryReply(ctx context.Context, msg *api.Message, text string) error {
 	responseMsg := api.NewMessage(msg.Chat.ID, text)
 	responseMsg.ReplyParameters.MessageID = msg.MessageID
 	responseMsg.ReplyParameters.ChatID = msg.Chat.ID
@@ -246,21 +280,21 @@ func (r *Reactor) sendTemporaryReply(ctx context.Context, msg *api.Message, text
 	responseMsg.MessageThreadID = msg.MessageThreadID
 	responseMsg.DisableNotification = true
 	responseMsg.LinkPreviewOptions.IsDisabled = true
-	sent, err := r.s.GetBot().Send(responseMsg)
+	sent, err := bot.Send(ctx, r.bot, responseMsg)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if r.spamControl != nil && sent.MessageID != 0 {
 		r.spamControl.DeleteMessageAfter(msg.Chat.ID, sent.MessageID, time.Minute)
 	}
-	return &sent, nil
+	return nil
 }
 
 func (r *Reactor) deleteReportMessage(ctx context.Context, msg *api.Message) {
 	if msg == nil {
 		return
 	}
-	if err := bot.DeleteChatMessage(ctx, r.s.GetBot(), msg.Chat.ID, msg.MessageID); err != nil {
+	if err := bot.DeleteChatMessage(ctx, r.bot, msg.Chat.ID, msg.MessageID); err != nil {
 		r.getLogEntry().WithError(err).WithField("chatID", msg.Chat.ID).WithField("messageID", msg.MessageID).Debug("failed to delete report message")
 	}
 }

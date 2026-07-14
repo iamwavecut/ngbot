@@ -69,7 +69,7 @@ func (a *Admin) shouldShowRecommendedProtection(ctx context.Context, state *pane
 		return false, nil
 	}
 
-	handled, err := a.s.GetDB().GetKV(ctx, recommendedProtectionHandledKey(state.ChatID))
+	handled, err := a.store.GetKV(ctx, recommendedProtectionHandledKey(state.ChatID))
 	if err != nil {
 		return false, err
 	}
@@ -92,7 +92,7 @@ func (a *Admin) shouldShowRecommendedProtection(ctx context.Context, state *pane
 }
 
 func (a *Admin) markRecommendedProtectionHandled(ctx context.Context, chatID int64) error {
-	return a.s.GetDB().SetKV(ctx, recommendedProtectionHandledKey(chatID), "1")
+	return a.store.SetKV(ctx, recommendedProtectionHandledKey(chatID), "1")
 }
 
 func recommendedProtectionHandledKey(chatID int64) string {

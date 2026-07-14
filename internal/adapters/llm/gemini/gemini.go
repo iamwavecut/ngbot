@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"iter"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/iamwavecut/ngbot/internal/adapters"
@@ -27,6 +28,8 @@ type API struct {
 	generateContent generateContentFunc
 	createCache     createCacheFunc
 	listCaches      listCachesFunc
+	cacheMutex      sync.Mutex
+	localCaches     map[string]*genai.CachedContent
 }
 
 type promptSegments struct {
@@ -45,6 +48,8 @@ const (
 	defaultCacheTTL        = 6 * time.Hour
 	cacheDisplayPrefix     = "ngbot-spam-"
 	cacheHashLength        = 12
+	logFieldCacheName      = "cache_name"
+	logFieldCacheDisplay   = "display"
 )
 
 func NewGemini(apiKey, model string, logger *log.Entry) (adapters.LLM, error) {
@@ -90,6 +95,7 @@ func (g *API) ChatCompletion(ctx context.Context, messages []llm.ChatCompletionM
 
 	var resp *genai.GenerateContentResponse
 	if len(segments.cachedContents) > 0 {
+		fingerprint := cacheFingerprint(g.model, segments.systemInstruction, segments.cacheablePrefix)
 		cache, cacheErr := g.loadOrCreateCache(ctx, segments)
 		if cacheErr != nil {
 			g.logger.WithField("error", cacheErr.Error()).Warn("failed to prepare Gemini explicit cache, falling back to uncached request")
@@ -110,18 +116,19 @@ func (g *API) ChatCompletion(ctx context.Context, messages []llm.ChatCompletionM
 					return toChatCompletionResponse(resp), nil
 				}
 				g.logger.WithFields(log.Fields{
-					"cache_name": cache.Name,
-					"display":    cache.DisplayName,
+					logFieldCacheName:    cache.Name,
+					logFieldCacheDisplay: cache.DisplayName,
 				}).Warn("Gemini cached response was empty, retrying without cache")
 			}
 			if err != nil && !isCacheUseError(err) {
 				return llm.ChatCompletionResponse{}, fmt.Errorf("generate gemini content with cache: %w", err)
 			}
 			if err != nil {
+				g.invalidateLocalCache(fingerprint, cache.Name)
 				g.logger.WithFields(log.Fields{
-					"cache_name": cache.Name,
-					"display":    cache.DisplayName,
-					"error":      err.Error(),
+					logFieldCacheName:    cache.Name,
+					logFieldCacheDisplay: cache.DisplayName,
+					"error":              err.Error(),
 				}).Warn("Gemini explicit cache could not be used, retrying without cache")
 			}
 		}
@@ -193,17 +200,23 @@ func toGeminiContent(message llm.ChatCompletionMessage) (*genai.Content, error) 
 func (g *API) loadOrCreateCache(ctx context.Context, segments promptSegments) (*genai.CachedContent, error) {
 	fingerprint := cacheFingerprint(g.model, segments.systemInstruction, segments.cacheablePrefix)
 	displayName := cacheDisplayPrefix + fingerprint
+	g.cacheMutex.Lock()
+	defer g.cacheMutex.Unlock()
+	if cache := g.localCaches[fingerprint]; cacheIsUsable(cache, time.Now()) {
+		return cache, nil
+	}
 
 	cache, err := g.findCacheByDisplayName(ctx, displayName)
 	if err != nil {
 		return nil, fmt.Errorf("find Gemini explicit cache: %w", err)
 	}
 	if cache != nil {
+		g.rememberLocalCache(fingerprint, cache)
 		g.logger.WithFields(log.Fields{
-			"cache_name":  cache.Name,
-			"display":     cache.DisplayName,
-			"expire_time": cache.ExpireTime,
-			"fingerprint": fingerprint,
+			logFieldCacheName:    cache.Name,
+			logFieldCacheDisplay: cache.DisplayName,
+			"expire_time":        cache.ExpireTime,
+			"fingerprint":        fingerprint,
 		}).Debug("reusing Gemini explicit cache")
 		return cache, nil
 	}
@@ -223,16 +236,37 @@ func (g *API) loadOrCreateCache(ctx context.Context, segments promptSegments) (*
 	if cache.ExpireTime.IsZero() {
 		cache.ExpireTime = time.Now().Add(defaultCacheTTL)
 	}
+	g.rememberLocalCache(fingerprint, cache)
 
 	g.logger.WithFields(log.Fields{
-		"cache_name":   cache.Name,
-		"display":      cache.DisplayName,
-		"expire_time":  cache.ExpireTime,
-		"fingerprint":  fingerprint,
-		"cached_count": len(segments.cachedContents),
+		logFieldCacheName:    cache.Name,
+		logFieldCacheDisplay: cache.DisplayName,
+		"expire_time":        cache.ExpireTime,
+		"fingerprint":        fingerprint,
+		"cached_count":       len(segments.cachedContents),
 	}).Info("created Gemini explicit cache")
 
 	return cache, nil
+}
+
+func (g *API) rememberLocalCache(fingerprint string, cache *genai.CachedContent) {
+	if g.localCaches == nil {
+		g.localCaches = make(map[string]*genai.CachedContent)
+	}
+	g.localCaches[fingerprint] = cache
+}
+
+func (g *API) invalidateLocalCache(fingerprint, cacheName string) {
+	g.cacheMutex.Lock()
+	defer g.cacheMutex.Unlock()
+	cache := g.localCaches[fingerprint]
+	if cache == nil || cacheName == "" || cache.Name == cacheName {
+		delete(g.localCaches, fingerprint)
+	}
+}
+
+func cacheIsUsable(cache *genai.CachedContent, now time.Time) bool {
+	return cache != nil && cache.Name != "" && (cache.ExpireTime.IsZero() || cache.ExpireTime.After(now))
 }
 
 func (g *API) findCacheByDisplayName(ctx context.Context, displayName string) (*genai.CachedContent, error) {

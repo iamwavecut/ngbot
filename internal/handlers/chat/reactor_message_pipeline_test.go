@@ -31,10 +31,6 @@ func (s *testBotService) GetBot() *api.BotAPI {
 	return &api.BotAPI{}
 }
 
-func (s *testBotService) GetDB() db.Client {
-	return nil
-}
-
 func (s *testBotService) IsMember(context.Context, int64, int64) (bool, error) {
 	return s.isMember, nil
 }
@@ -135,7 +131,8 @@ func (s *testBanService) UnmuteUser(context.Context, int64, int64) error        
 func (s *testBanService) BanUserWithMessage(context.Context, int64, int64, int) error { return nil }
 func (s *testBanService) UnbanUser(context.Context, int64, int64) error               { return nil }
 func (s *testBanService) IsRestricted(context.Context, int64, int64) (bool, error)    { return false, nil }
-func (s *testBanService) IsKnownBanned(int64) bool                                    { return false }
+
+func (s *testBanService) IsKnownBanned(int64) bool { return false }
 
 type testNotSpammerStore struct {
 	testReactorStore
@@ -157,6 +154,11 @@ func TestSpamVoteCallbackUsesSpamCaseChatSettings(t *testing.T) {
 	var editSent bool
 	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
 		switch method {
+		case "getChatMember":
+			return map[string]any{
+				"status": "member",
+				"user":   map[string]any{"id": 300, "is_bot": false, "first_name": "Voter"},
+			}
 		case "answerCallbackQuery":
 			callbackAnswered = true
 			return true
@@ -203,14 +205,14 @@ func TestSpamVoteCallbackUsesSpamCaseChatSettings(t *testing.T) {
 		t.Fatalf("create spam case: %v", err)
 	}
 
-	service := botservice.NewService(ctx, botAPI, dbClient, log.NewEntry(log.New()))
-	spamControl := moderation.NewSpamControl(service, config.SpamControl{
+	service := botservice.NewService(ctx, botAPI, dbClient, "en", log.NewEntry(log.New()))
+	spamControl := moderation.NewSpamControl(service, botAPI, dbClient, dbClient, config.SpamControl{
 		MinVoters:            2,
 		MaxVoters:            10,
 		MinVotersPercentage:  0,
 		VotingTimeoutMinutes: time.Minute,
 	}, &testBanService{}, false)
-	reactor := NewReactor(service, &testBanService{}, spamControl, nil, Config{})
+	reactor := NewReactor(service, botAPI, dbClient, dbClient, &testBanService{}, spamControl, nil, Config{})
 
 	logChat := &api.Chat{ID: 900, Type: "channel"}
 	voter := &api.User{ID: 300, FirstName: "Voter"}
@@ -259,6 +261,7 @@ func TestHandleMessageExternalQuoteHeuristic(t *testing.T) {
 	processSpamCalls := 0
 	r := &Reactor{
 		s:            service,
+		bot:          service.GetBot(),
 		store:        &testReactorStore{},
 		spamDetector: detector,
 		banService:   &testBanService{},
@@ -270,7 +273,7 @@ func TestHandleMessageExternalQuoteHeuristic(t *testing.T) {
 			t.Fatal("processBanned should not be called")
 			return nil, nil
 		},
-		lastResults: make(map[int64]*MessageProcessingResult),
+		lastResults: make(map[messageResultKey]*MessageProcessingResult),
 	}
 
 	chat := &api.Chat{ID: 100, Type: "supergroup"}
@@ -299,7 +302,7 @@ func TestHandleMessageExternalQuoteHeuristic(t *testing.T) {
 		t.Fatalf("expected processSpam to be called once, got %d", processSpamCalls)
 	}
 
-	result := r.GetLastProcessingResult(int64(msg.MessageID))
+	result := r.GetLastProcessingResult(msg.Chat.ID, msg.MessageID)
 	if result == nil {
 		t.Fatal("expected processing result")
 	}
@@ -336,6 +339,7 @@ func TestHandleMessageCleanLeftUserRememberedAsKnownNonMember(t *testing.T) {
 	detector := &testSpamDetector{result: boolPtr(false)}
 	r := &Reactor{
 		s:            service,
+		bot:          service.GetBot(),
 		store:        store,
 		spamDetector: detector,
 		banService:   &testBanService{},
@@ -347,7 +351,7 @@ func TestHandleMessageCleanLeftUserRememberedAsKnownNonMember(t *testing.T) {
 			t.Fatal("processBanned should not be called")
 			return nil, nil
 		},
-		lastResults: make(map[int64]*MessageProcessingResult),
+		lastResults: make(map[messageResultKey]*MessageProcessingResult),
 	}
 
 	chat := &api.Chat{ID: 100, Type: "supergroup"}
@@ -402,6 +406,7 @@ func TestHandleMessageNotSpammerOverrideBypassesBanAndLLM(t *testing.T) {
 	processSpamCalls := 0
 	r := &Reactor{
 		s:            service,
+		bot:          service.GetBot(),
 		store:        &testNotSpammerStore{isNotSpammer: true},
 		spamDetector: detector,
 		banService:   banService,
@@ -413,7 +418,7 @@ func TestHandleMessageNotSpammerOverrideBypassesBanAndLLM(t *testing.T) {
 			t.Fatal("processBanned should not be called")
 			return nil, nil
 		},
-		lastResults: make(map[int64]*MessageProcessingResult),
+		lastResults: make(map[messageResultKey]*MessageProcessingResult),
 	}
 
 	chat := &api.Chat{ID: 100, Type: "supergroup"}
@@ -443,7 +448,7 @@ func TestHandleMessageNotSpammerOverrideBypassesBanAndLLM(t *testing.T) {
 		t.Fatalf("expected member insertion, got %d", service.insertedMember)
 	}
 
-	result := r.GetLastProcessingResult(int64(msg.MessageID))
+	result := r.GetLastProcessingResult(msg.Chat.ID, msg.MessageID)
 	if result == nil {
 		t.Fatal("expected processing result")
 	}
@@ -481,6 +486,7 @@ func TestHandleMessageChatAdministratorBypassesBanAndLLM(t *testing.T) {
 	processSpamCalls := 0
 	r := &Reactor{
 		s:            service,
+		bot:          service.GetBot(),
 		store:        &testReactorStore{},
 		spamDetector: detector,
 		banService:   banService,
@@ -492,7 +498,7 @@ func TestHandleMessageChatAdministratorBypassesBanAndLLM(t *testing.T) {
 			t.Fatal("processBanned should not be called")
 			return nil, nil
 		},
-		lastResults: make(map[int64]*MessageProcessingResult),
+		lastResults: make(map[messageResultKey]*MessageProcessingResult),
 	}
 
 	chat := &api.Chat{ID: 100, Type: "supergroup"}
@@ -514,7 +520,7 @@ func TestHandleMessageChatAdministratorBypassesBanAndLLM(t *testing.T) {
 		t.Fatalf("expected processSpam not to be called, got %d calls", processSpamCalls)
 	}
 
-	result := r.GetLastProcessingResult(int64(msg.MessageID))
+	result := r.GetLastProcessingResult(msg.Chat.ID, msg.MessageID)
 	if result == nil {
 		t.Fatal("expected processing result")
 	}
@@ -556,6 +562,7 @@ func TestHandleMessageLinkedChannelSenderBypassesSpamPipeline(t *testing.T) {
 	processSpamCalls := 0
 	r := &Reactor{
 		s:            service,
+		bot:          service.GetBot(),
 		store:        &testReactorStore{},
 		spamDetector: detector,
 		banService:   banService,
@@ -567,7 +574,7 @@ func TestHandleMessageLinkedChannelSenderBypassesSpamPipeline(t *testing.T) {
 			t.Fatal("processBanned should not be called")
 			return nil, nil
 		},
-		lastResults: make(map[int64]*MessageProcessingResult),
+		lastResults: make(map[messageResultKey]*MessageProcessingResult),
 	}
 
 	chat := &api.Chat{ID: -100, Type: "supergroup"}
@@ -603,7 +610,7 @@ func TestHandleMessageLinkedChannelSenderBypassesSpamPipeline(t *testing.T) {
 		t.Fatalf("expected processSpam not to be called, got %d calls", processSpamCalls)
 	}
 
-	result := r.GetLastProcessingResult(int64(msg.MessageID))
+	result := r.GetLastProcessingResult(msg.Chat.ID, msg.MessageID)
 	if result == nil {
 		t.Fatal("expected processing result")
 	}
@@ -639,6 +646,7 @@ func TestHandleMessageKnownNonMemberBypassesFirstMessageChecks(t *testing.T) {
 	processSpamCalls := 0
 	r := &Reactor{
 		s:            service,
+		bot:          service.GetBot(),
 		store:        store,
 		spamDetector: detector,
 		banService:   banService,
@@ -650,7 +658,7 @@ func TestHandleMessageKnownNonMemberBypassesFirstMessageChecks(t *testing.T) {
 			t.Fatal("processBanned should not be called")
 			return nil, nil
 		},
-		lastResults: make(map[int64]*MessageProcessingResult),
+		lastResults: make(map[messageResultKey]*MessageProcessingResult),
 	}
 
 	chat := &api.Chat{ID: 100, Type: "supergroup"}
@@ -681,12 +689,46 @@ func TestHandleMessageKnownNonMemberBypassesFirstMessageChecks(t *testing.T) {
 		t.Fatalf("expected ban check to run before bypass, got %d calls", banService.checkBanCalls)
 	}
 
-	result := r.GetLastProcessingResult(int64(msg.MessageID))
+	result := r.GetLastProcessingResult(msg.Chat.ID, msg.MessageID)
 	if result == nil {
 		t.Fatal("expected processing result")
 	}
 	if result.SkipReason != "User is a remembered non-member" {
 		t.Fatalf("unexpected skip reason: %q", result.SkipReason)
+	}
+}
+
+func TestProcessingResultsAreScopedByChat(t *testing.T) {
+	t.Parallel()
+
+	r := &Reactor{lastResults: make(map[messageResultKey]*MessageProcessingResult)}
+	first := &MessageProcessingResult{SkipReason: "first"}
+	second := &MessageProcessingResult{SkipReason: "second"}
+
+	r.storeLastResult(-1001, 7, first)
+	r.storeLastResult(-1002, 7, second)
+
+	if got := r.GetLastProcessingResult(-1001, 7); got != first {
+		t.Fatalf("first chat result = %#v", got)
+	}
+	if got := r.GetLastProcessingResult(-1002, 7); got != second {
+		t.Fatalf("second chat result = %#v", got)
+	}
+}
+
+func TestHandleMessageWithoutUserOrSenderChatSkipsSafely(t *testing.T) {
+	t.Parallel()
+
+	r := &Reactor{lastResults: make(map[messageResultKey]*MessageProcessingResult)}
+	chat := &api.Chat{ID: -1001, Type: "supergroup"}
+	msg := &api.Message{MessageID: 7, Chat: *chat, Text: "anonymous"}
+
+	if err := r.handleMessage(context.Background(), msg, chat, nil, db.DefaultSettings(chat.ID)); err != nil {
+		t.Fatalf("handle anonymous message: %v", err)
+	}
+	result := r.GetLastProcessingResult(chat.ID, msg.MessageID)
+	if result == nil || !result.Skipped || result.SkipReason != messageSkipReasonAnonymousSender {
+		t.Fatalf("expected safe anonymous sender skip, got %#v", result)
 	}
 }
 
@@ -698,6 +740,7 @@ func TestHandleMessageExternalQuoteHeuristicDoesNotTriggerForNonFirstMessage(t *
 	processSpamCalls := 0
 	r := &Reactor{
 		s:            service,
+		bot:          service.GetBot(),
 		store:        &testReactorStore{},
 		spamDetector: detector,
 		banService:   &testBanService{},
@@ -708,7 +751,7 @@ func TestHandleMessageExternalQuoteHeuristicDoesNotTriggerForNonFirstMessage(t *
 		processBanned: func(context.Context, *api.Message, *api.Chat, string) (*moderation.ProcessingResult, error) {
 			return nil, nil
 		},
-		lastResults: make(map[int64]*MessageProcessingResult),
+		lastResults: make(map[messageResultKey]*MessageProcessingResult),
 	}
 
 	chat := &api.Chat{ID: 100, Type: "supergroup"}
@@ -736,7 +779,7 @@ func TestHandleMessageExternalQuoteHeuristicDoesNotTriggerForNonFirstMessage(t *
 		t.Fatalf("expected processSpam not to be called, got %d", processSpamCalls)
 	}
 
-	result := r.GetLastProcessingResult(int64(msg.MessageID))
+	result := r.GetLastProcessingResult(msg.Chat.ID, msg.MessageID)
 	if result == nil {
 		t.Fatal("expected processing result")
 	}
@@ -770,6 +813,7 @@ func TestHandleMessageCleanMemberInsertsMemberInsteadOfKnownNonMember(t *testing
 	detector := &testSpamDetector{result: boolPtr(false)}
 	r := &Reactor{
 		s:            service,
+		bot:          service.GetBot(),
 		store:        store,
 		spamDetector: detector,
 		banService:   &testBanService{},
@@ -781,7 +825,7 @@ func TestHandleMessageCleanMemberInsertsMemberInsteadOfKnownNonMember(t *testing
 			t.Fatal("processBanned should not be called")
 			return nil, nil
 		},
-		lastResults: make(map[int64]*MessageProcessingResult),
+		lastResults: make(map[messageResultKey]*MessageProcessingResult),
 	}
 
 	chat := &api.Chat{ID: 100, Type: "supergroup"}
@@ -851,6 +895,7 @@ func TestHandleMessageExternalQuoteHeuristicFallbacks(t *testing.T) {
 			processSpamCalls := 0
 			r := &Reactor{
 				s:            service,
+				bot:          service.GetBot(),
 				store:        &testReactorStore{},
 				spamDetector: detector,
 				banService:   &testBanService{},
@@ -861,7 +906,7 @@ func TestHandleMessageExternalQuoteHeuristicFallbacks(t *testing.T) {
 				processBanned: func(context.Context, *api.Message, *api.Chat, string) (*moderation.ProcessingResult, error) {
 					return nil, nil
 				},
-				lastResults: make(map[int64]*MessageProcessingResult),
+				lastResults: make(map[messageResultKey]*MessageProcessingResult),
 			}
 
 			chat := &api.Chat{ID: 100, Type: "supergroup"}

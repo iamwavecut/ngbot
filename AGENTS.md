@@ -23,7 +23,7 @@ This document serves as the **single source of truth** for all development rules
     - [Concurrency Rules](#concurrency-rules)
   - [🗄️ Database \& Schema Management](#️-database--schema-management)
     - [Migrations](#migrations)
-    - [SQLC Configuration](#sqlc-configuration)
+    - [Query Layer](#query-layer)
     - [Storage Layer](#storage-layer)
   - [📝 File Editing Strategy](#-file-editing-strategy)
     - [Core Principle](#core-principle)
@@ -116,7 +116,7 @@ For detailed architecture, see [docs/CODEBASE_MAP.md](docs/CODEBASE_MAP.md).
 - **English Only** 🇺🇸: Code and technical reasoning in English.
 
 ### Tool Dependencies
-- **Tool Directive** 🔧: Use Go 1.24+ `tool` directive in `go.mod` for dev tools (sqlc, golangci-lint, etc.).
+- **Tool Directive** 🔧: Use Go 1.24+ `tool` directive in `go.mod` for dev tools (golangci-lint, goimports, etc.).
 - **No tools.go Hack** 🚫: Avoid the `tools.go` blank import pattern.
 - **Refactor tooling** 🛠️:
   - `go tool gorename` — safe, reference-aware renames.
@@ -157,21 +157,24 @@ For detailed architecture, see [docs/CODEBASE_MAP.md](docs/CODEBASE_MAP.md).
 
 ## 🗄️ Database & Schema Management
 
-### Migrations
-- **Location** 📁: `internal/db/sql/migrations/` as numbered SQL files (e.g., `0_init.sql`).
-- **Directives** 📝: Use `+migrate Up/Down`.
-- **Functions** ⚙️: Wrap in `-- +migrate StatementBegin` and `-- +migrate StatementEnd`.
+> **Reality check** ✅: The persistence stack is **SQLite**, not PostgreSQL. There is no `pgx`, no `sqlc`, no `internal/db/sql/`, and no `internal/db/sqlc/` in this repo. The notes below describe what the code actually uses.
 
-### SQLC Configuration
-- **Queries** 📄: Defined in `internal/db/sql/queries.sql`.
-- **Generated Code** 🔧: `internal/db/sqlc/` (`querier.go`, `models.go`, etc.).
-- **Regeneration** ♻️: Run `go generate ./...`.
-- **Embedding** 📎: Use `sqlc.embed` for cleaner structs.
+### Migrations
+- **Location** 📁: `resources/migrations/` as numbered/timestamped plain-SQL files (e.g., `0-init.sql`, `20260613000000-add-gatekeeper-webapp-challenges.sql`).
+- **Embedding** 📎: Embedded via `//go:embed *` in `resources/embed.go` (`resources.FS`).
+- **Runner** 🛠️: `rubenv/sql-migrate` (`EmbedFileSystemMigrationSource`, dialect `"sqlite3"`), applied at startup in `internal/db/sqlite/client.go`.
+- **Direction** ↕️: Every migration uses `-- +migrate Up` and `-- +migrate Down`; never rewrite an applied migration, add a new file instead.
+
+### Query Layer
+- **Driver** 🔌: `modernc.org/sqlite` (pure-Go, CGO-free — enables the distroless static build).
+- **Access** 🧩: Hand-written SQL through `jmoiron/sqlx` (`db:` struct tags, `StructScan`). **No code generation.**
+- **Ports** 🔌: Consumer-owned interfaces live beside `bot.service` and each handler. The concrete SQLite adapter satisfies them structurally; there is no repository-wide database interface.
+- **Concurrency** 🔒: One app-level `sync.RWMutex` on `sqliteClient` (RLock reads, Lock writes) + `SetMaxOpenConns(42)`. Race-sensitive state changes use transactions or atomic compare-and-set (`UPDATE … WHERE status=…` + `RowsAffected()==1`).
 
 ### Storage Layer
-- **Architecture** 🏗️: Interface → Base Postgres → Buffered/Cached → Factory.
-- **Driver** 🔌: PostgreSQL with pgx v5.
-- **Tools** 🛠️: `sqlc` for queries, `sql-migrate` for migrations.
+- **Architecture** 🏗️: Flat — one concrete `sqliteClient` adapter implements consumer-owned ports directly. **No** interface → Postgres → buffered/cached → factory chain.
+- **Caching** ⚡: Lives in `bot.service` (`memberCache` 5-min TTL, `settingsCache` process-lifetime) above persistence — not in a storage decorator.
+- **Value semantics** 🧊: Settings enter and leave the cache as clones; a new snapshot is published only after a successful DB write, and warmup never overwrites a newer cached value.
 
 ---
 

@@ -49,7 +49,8 @@ func (c *sqliteClient) CreateChatNotSpammerOverride(ctx context.Context, overrid
 		INSERT INTO chat_not_spammer_overrides (chat_id, match_type, match_value, created_by_user_id, created_at)
 		VALUES (?, ?, ?, ?, ?)
 	`
-	result, err := c.db.ExecContext(ctx, query,
+	result, err := c.db.ExecContext(
+		ctx, query,
 		override.ChatID,
 		override.MatchType,
 		override.MatchValue,
@@ -102,7 +103,7 @@ func (c *sqliteClient) ListChatNotSpammerOverrides(ctx context.Context, chatID i
 	if err != nil {
 		return nil, fmt.Errorf("failed to list chat not spammer overrides: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var overrides []*db.ChatNotSpammerOverride
 	for rows.Next() {

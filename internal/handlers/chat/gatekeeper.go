@@ -35,6 +35,7 @@ import (
 
 	"github.com/iamwavecut/ngbot/internal/config"
 	"github.com/iamwavecut/ngbot/internal/db"
+	handlersbase "github.com/iamwavecut/ngbot/internal/handlers/base"
 	"github.com/iamwavecut/ngbot/resources"
 
 	api "github.com/OvyFlash/telegram-bot-api"
@@ -67,7 +68,9 @@ type updateType string
 
 type Gatekeeper struct {
 	s          bot.Service
+	bot        *api.BotAPI
 	store      gatekeeperStore
+	stats      handlersbase.StatsStore
 	config     *config.Config
 	banChecker GatekeeperBanChecker
 
@@ -93,12 +96,18 @@ type gatekeeperStore interface {
 	GetChallengeByWebAppToken(ctx context.Context, token string) (*db.Challenge, error)
 	GetChallengeByChatUser(ctx context.Context, chatID, userID int64) (*db.Challenge, error)
 	GetPassedJoinRequestChallengeByChatUser(ctx context.Context, chatID, userID int64) (*db.Challenge, error)
-	UpdateChallenge(ctx context.Context, challenge *db.Challenge) error
-	DeleteChallenge(ctx context.Context, commChatID, userID, chatID int64) error
+	RecordWrongAttempt(ctx context.Context, challengeID string, maxAttempts int) (attempts int, status string, updated bool, err error)
+	ClaimForApproval(ctx context.Context, challengeID string) (bool, error)
+	BeginDMFallback(ctx context.Context, challengeID string) (bool, error)
+	AttachChallengeMessage(ctx context.Context, challengeID, expectedStatus string, messageID int) (bool, error)
+	AttachJoinMessage(ctx context.Context, challengeID, expectedStatus string, messageID int) (bool, error)
+	PrepareDMFallback(ctx context.Context, challengeID, successUUID, userLanguage string, expiresAt time.Time) (bool, error)
+	CompleteExternalAction(ctx context.Context, challengeID, expectedStatus, nextStatus string, expiresAt time.Time) (bool, error)
+	ScheduleChallengeRetry(ctx context.Context, challengeID, expectedStatus string, nextAttemptAt time.Time, lastError string) (bool, error)
+	DeleteChallengeInstance(ctx context.Context, challengeID, expectedStatus string) (bool, error)
+	GetDueChallenges(ctx context.Context, now time.Time) ([]*db.Challenge, error)
 	GetExpiredChallenges(ctx context.Context, now time.Time) ([]*db.Challenge, error)
 	MarkWebAppChallengeOpened(ctx context.Context, token string, openedAt time.Time) error
-	ClaimWebAppChallengeForFallback(ctx context.Context, commChatID, userID, chatID int64) (bool, error)
-	ClaimWebAppChallengeForApproval(ctx context.Context, token string) (bool, error)
 	GetUnopenedWebAppChallenges(ctx context.Context, deadline time.Time) ([]*db.Challenge, error)
 
 	AddChatRecentJoiner(ctx context.Context, joiner *db.RecentJoiner) (*db.RecentJoiner, error)
@@ -116,7 +125,7 @@ var challengeKeys = []string{
 }
 
 var defaultCaptchaVariants = map[string]string{
-	"🍎": "apple",
+	"🍎": captchaFallbackWord,
 	"🐶": "dog",
 	"🚗": "car",
 	"🌟": "star",
@@ -138,12 +147,14 @@ var privateChallengeKeys = []string{
 	"Hi there, %s! Welcome to the group \"%s\"! We need one more thing from you to confirm that you're human - pick %s. If you can't, we might have to let you go. Thanks for your cooperation!",
 }
 
-func NewGatekeeper(s bot.Service, config *config.Config, banChecker GatekeeperBanChecker) *Gatekeeper {
-	entry := log.WithFields(log.Fields{"object": "Gatekeeper", "method": "NewGatekeeper"})
+func NewGatekeeper(s bot.Service, botAPI *api.BotAPI, store gatekeeperStore, stats handlersbase.StatsStore, config *config.Config, banChecker GatekeeperBanChecker) *Gatekeeper {
+	entry := log.WithFields(log.Fields{"object": "Gatekeeper", logFieldMethod: "NewGatekeeper"})
 
 	g := &Gatekeeper{
 		s:          s,
-		store:      s.GetDB(),
+		bot:        botAPI,
+		store:      store,
+		stats:      stats,
 		config:     config,
 		Variants:   map[string]map[string]string{},
 		banChecker: banChecker,
@@ -154,13 +165,13 @@ func NewGatekeeper(s bot.Service, config *config.Config, banChecker GatekeeperBa
 	for _, lang := range langs {
 		challengesData, err := resources.FS.ReadFile(infra.GetResourcesPath("gatekeeper", "challenges", lang+".yml"))
 		if err != nil {
-			entry.WithFields(log.Fields{"error": err, "language": lang}).Error("cant load challenges file for language")
+			entry.WithFields(log.Fields{logFieldError: err, "language": lang}).Error("cant load challenges file for language")
 			continue
 		}
 
 		localVariants := map[string]string{}
 		if err := yaml.Unmarshal(challengesData, &localVariants); err != nil {
-			entry.WithFields(log.Fields{"error": err, "language": lang}).Error("cant unmarshal challenges yaml for language")
+			entry.WithFields(log.Fields{logFieldError: err, "language": lang}).Error("cant unmarshal challenges yaml for language")
 			continue
 		}
 		g.Variants[lang] = localVariants
@@ -196,7 +207,7 @@ func (g *Gatekeeper) Start(ctx context.Context) error {
 				return
 			case <-ticker.C:
 				if err := g.processNewChatMembers(runCtx); err != nil && !errors.Is(err, context.Canceled) {
-					g.getLogEntry().WithField("error", err.Error()).Error("failed to process new chat members")
+					g.getLogEntry().WithField(logFieldError, err.Error()).Error("failed to process new chat members")
 				}
 			}
 		}
@@ -212,7 +223,7 @@ func (g *Gatekeeper) Start(ctx context.Context) error {
 				return
 			case <-ticker.C:
 				if err := g.processExpiredChallenges(runCtx); err != nil && !errors.Is(err, context.Canceled) {
-					g.getLogEntry().WithField("error", err.Error()).Error("failed to process expired challenges")
+					g.getLogEntry().WithField(logFieldError, err.Error()).Error("failed to process expired challenges")
 				}
 			}
 		}
@@ -221,14 +232,20 @@ func (g *Gatekeeper) Start(ctx context.Context) error {
 	g.workerWG.Go(func() {
 		ticker := time.NewTicker(processUnopenedWebAppChallengesPeriod)
 		defer ticker.Stop()
+		if err := g.processDueChallengeActions(runCtx); err != nil && !errors.Is(err, context.Canceled) {
+			g.getLogEntry().WithField(logFieldError, err.Error()).Error("failed to recover durable gatekeeper actions")
+		}
 
 		for {
 			select {
 			case <-runCtx.Done():
 				return
 			case <-ticker.C:
+				if err := g.processDueChallengeActions(runCtx); err != nil && !errors.Is(err, context.Canceled) {
+					g.getLogEntry().WithField(logFieldError, err.Error()).Error("failed to process durable gatekeeper actions")
+				}
 				if err := g.processUnopenedWebAppChallenges(runCtx); err != nil && !errors.Is(err, context.Canceled) {
-					g.getLogEntry().WithField("error", err.Error()).Error("failed to process unopened web app challenges")
+					g.getLogEntry().WithField(logFieldError, err.Error()).Error("failed to process unopened web app challenges")
 				}
 			}
 		}
@@ -278,7 +295,7 @@ func (g *Gatekeeper) Handle(ctx context.Context, u *api.Update, chat *api.Chat, 
 	}
 
 	entry = entry.WithFields(log.Fields{
-		"chat_id": chat.ID,
+		logFieldChatID: chat.ID,
 	})
 
 	if user == nil {
@@ -287,7 +304,7 @@ func (g *Gatekeeper) Handle(ctx context.Context, u *api.Update, chat *api.Chat, 
 	}
 
 	entry = entry.WithFields(log.Fields{
-		"user_id": user.ID,
+		logFieldUserID: user.ID,
 	})
 
 	select {
@@ -295,7 +312,7 @@ func (g *Gatekeeper) Handle(ctx context.Context, u *api.Update, chat *api.Chat, 
 		return false, ctx.Err()
 	default:
 	}
-	if u.Message != nil && u.Message.IsCommand() && commandTargetsCurrentBot(u.Message, g.s.GetBot().Self.UserName) && u.Message.Command() == testJoinCaptchaCommand {
+	if u.Message != nil && u.Message.IsCommand() && commandTargetsCurrentBot(u.Message, g.bot.Self.UserName) && u.Message.Command() == testJoinCaptchaCommand {
 		return false, g.handleTestJoinCaptchaCommand(ctx, u.Message, chat, user)
 	}
 	updateType := g.determineUpdateType(u)

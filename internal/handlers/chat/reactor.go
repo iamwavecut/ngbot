@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 
 	api "github.com/OvyFlash/telegram-bot-api"
 	log "github.com/sirupsen/logrus"
@@ -13,6 +14,7 @@ import (
 	"github.com/iamwavecut/ngbot/internal/bot"
 	"github.com/iamwavecut/ngbot/internal/config"
 	"github.com/iamwavecut/ngbot/internal/db"
+	handlersbase "github.com/iamwavecut/ngbot/internal/handlers/base"
 	moderation "github.com/iamwavecut/ngbot/internal/handlers/moderation"
 	"github.com/iamwavecut/ngbot/internal/i18n"
 )
@@ -54,9 +56,16 @@ type MessageProcessingResult struct {
 	Actions    MessageProcessingActions
 }
 
+type messageResultKey struct {
+	ChatID    int64
+	MessageID int
+}
+
 type Reactor struct {
 	s               bot.Service
+	bot             *api.BotAPI
 	store           reactorStore
+	stats           handlersbase.StatsStore
 	config          Config
 	spamDetector    SpamDetectorInterface
 	banService      moderation.BanService
@@ -64,8 +73,9 @@ type Reactor struct {
 	processSpam     func(ctx context.Context, msg *api.Message, chat *api.Chat, lang string) (*moderation.ProcessingResult, error)
 	processBanned   func(ctx context.Context, msg *api.Message, chat *api.Chat, lang string) (*moderation.ProcessingResult, error)
 	processReported func(ctx context.Context, targetMsg *api.Message, reportMsg *api.Message, chat *api.Chat, lang string) (*moderation.ProcessingResult, error)
-	lastResults     map[int64]*MessageProcessingResult
-	resultOrder     []int64
+	lastResults     map[messageResultKey]*MessageProcessingResult
+	resultOrder     []messageResultKey
+	resultMutex     sync.Mutex
 }
 
 type reactorStore interface {
@@ -76,10 +86,12 @@ type reactorStore interface {
 	DeleteChatKnownNonMember(ctx context.Context, chatID int64, userID int64) error
 }
 
-func NewReactor(s bot.Service, banService moderation.BanService, spamControl *moderation.SpamControl, spamDetector SpamDetectorInterface, config Config) *Reactor {
+func NewReactor(s bot.Service, botAPI *api.BotAPI, store reactorStore, stats handlersbase.StatsStore, banService moderation.BanService, spamControl *moderation.SpamControl, spamDetector SpamDetectorInterface, config Config) *Reactor {
 	r := &Reactor{
 		s:               s,
-		store:           s.GetDB(),
+		bot:             botAPI,
+		store:           store,
+		stats:           stats,
 		config:          config,
 		banService:      banService,
 		spamControl:     spamControl,
@@ -87,15 +99,15 @@ func NewReactor(s bot.Service, banService moderation.BanService, spamControl *mo
 		processSpam:     spamControl.ProcessSpamMessage,
 		processBanned:   spamControl.ProcessBannedMessage,
 		processReported: spamControl.ProcessReportedMessage,
-		lastResults:     make(map[int64]*MessageProcessingResult),
-		resultOrder:     make([]int64, 0, maxLastResults),
+		lastResults:     make(map[messageResultKey]*MessageProcessingResult),
+		resultOrder:     make([]messageResultKey, 0, maxLastResults),
 	}
 	r.getLogEntry().Debug("created new reactor")
 	return r
 }
 
 func (r *Reactor) Handle(ctx context.Context, u *api.Update, chat *api.Chat, user *api.User) (bool, error) {
-	entry := r.getLogEntry().WithFields(log.Fields{"method": "Handle"})
+	entry := r.getLogEntry().WithFields(log.Fields{logFieldMethod: "Handle"})
 	select {
 	case <-ctx.Done():
 		return false, ctx.Err()
@@ -124,22 +136,28 @@ func (r *Reactor) Handle(ctx context.Context, u *api.Update, chat *api.Chat, use
 	}
 
 	if u.Message != nil {
+		if user == nil {
+			if err := r.handleMessage(ctx, u.Message, chat, nil, settings); err != nil {
+				entry.WithError(err).Warn("failed to classify anonymous sender chat message")
+			}
+			return true, nil
+		}
 		if u.Message.IsCommand() {
 			if err := r.handleCommand(ctx, u.Message, chat, user, settings); err != nil {
-				entry.WithField("error", err.Error()).Error("error handling message")
+				entry.WithField(logFieldError, err.Error()).Error("error handling message")
 				return true, err
 			}
 			return true, nil
 		}
-		if messageMentionsCurrentBot(u.Message, r.s.GetBot().Self) {
+		if messageMentionsCurrentBot(u.Message, r.bot.Self) {
 			if err := r.voteBanCommand(ctx, u.Message, chat, user, settings); err != nil {
-				entry.WithField("error", err.Error()).Error("error handling bot mention report")
+				entry.WithField(logFieldError, err.Error()).Error("error handling bot mention report")
 				return true, err
 			}
 			return true, nil
 		}
 		if err := r.handleMessage(ctx, u.Message, chat, user, settings); err != nil {
-			entry.WithField("error", err.Error()).Error("error handling message")
+			entry.WithField(logFieldError, err.Error()).Error("error handling message")
 			return true, err
 		}
 	}
@@ -148,7 +166,10 @@ func (r *Reactor) Handle(ctx context.Context, u *api.Update, chat *api.Chat, use
 }
 
 func (r *Reactor) handleCallbackQuery(ctx context.Context, u *api.Update, chat *api.Chat, user *api.User) (bool, error) {
-	entry := r.getLogEntry().WithFields(log.Fields{"method": "handleCallbackQuery"})
+	entry := r.getLogEntry().WithFields(log.Fields{logFieldMethod: "handleCallbackQuery"})
+	if user == nil {
+		return true, errors.New("spam vote callback has no user")
+	}
 	if !strings.HasPrefix(u.CallbackQuery.Data, "spam_vote:") {
 		return true, nil
 	}
@@ -172,7 +193,7 @@ func (r *Reactor) handleCallbackQuery(ctx context.Context, u *api.Update, chat *
 			if chat != nil {
 				language = r.s.GetLanguage(ctx, chat.ID, user)
 			}
-			_, _ = r.s.GetBot().Request(api.NewCallback(u.CallbackQuery.ID, i18n.Get("Community voting is disabled", language)))
+			_, _ = r.bot.RequestWithContext(ctx, api.NewCallback(u.CallbackQuery.ID, i18n.Get("Community voting is disabled", language)))
 			return true, nil
 		}
 		if errors.Is(err, moderation.ErrSuspectCannotVote) {
@@ -180,10 +201,10 @@ func (r *Reactor) handleCallbackQuery(ctx context.Context, u *api.Update, chat *
 			if chat != nil {
 				language = r.s.GetLanguage(ctx, chat.ID, user)
 			}
-			_, _ = r.s.GetBot().Request(api.NewCallback(u.CallbackQuery.ID, i18n.Get("You cannot vote on your own spam case", language)))
+			_, _ = r.bot.RequestWithContext(ctx, api.NewCallback(u.CallbackQuery.ID, i18n.Get("You cannot vote on your own spam case", language)))
 			return true, nil
 		}
-		entry.WithField("error", err.Error()).Error("failed to record spam vote")
+		entry.WithField(logFieldError, err.Error()).Error("failed to record spam vote")
 		return true, nil
 	}
 
@@ -192,13 +213,13 @@ func (r *Reactor) handleCallbackQuery(ctx context.Context, u *api.Update, chat *
 
 	edit := api.NewEditMessageText(chat.ID, u.CallbackQuery.Message.MessageID, text)
 	edit.ReplyMarkup = u.CallbackQuery.Message.ReplyMarkup
-	if _, err := r.s.GetBot().Send(edit); err != nil {
-		entry.WithField("error", err.Error()).Error("failed to update vote count")
+	if _, err := bot.Send(ctx, r.bot, edit); err != nil {
+		entry.WithField(logFieldError, err.Error()).Error("failed to update vote count")
 	}
 
-	_, err = r.s.GetBot().Request(api.NewCallback(u.CallbackQuery.ID, i18n.Get("✓ Vote recorded", language)))
+	_, err = r.bot.RequestWithContext(ctx, api.NewCallback(u.CallbackQuery.ID, i18n.Get("✓ Vote recorded", language)))
 	if err != nil {
-		entry.WithField("error", err.Error()).Error("failed to acknowledge callback")
+		entry.WithField(logFieldError, err.Error()).Error("failed to acknowledge callback")
 	}
 
 	return true, nil
@@ -246,11 +267,17 @@ func (r *Reactor) getLogEntry() *log.Entry {
 	return log.WithField("object", "Reactor")
 }
 
-func (r *Reactor) storeLastResult(messageID int64, result *MessageProcessingResult) {
-	if _, ok := r.lastResults[messageID]; !ok {
-		r.resultOrder = append(r.resultOrder, messageID)
+func (r *Reactor) storeLastResult(chatID int64, messageID int, result *MessageProcessingResult) {
+	r.resultMutex.Lock()
+	defer r.resultMutex.Unlock()
+	if r.lastResults == nil {
+		r.lastResults = make(map[messageResultKey]*MessageProcessingResult)
 	}
-	r.lastResults[messageID] = result
+	key := messageResultKey{ChatID: chatID, MessageID: messageID}
+	if _, ok := r.lastResults[key]; !ok {
+		r.resultOrder = append(r.resultOrder, key)
+	}
+	r.lastResults[key] = result
 	if len(r.resultOrder) > maxLastResults {
 		oldest := r.resultOrder[0]
 		r.resultOrder = r.resultOrder[1:]
@@ -258,6 +285,8 @@ func (r *Reactor) storeLastResult(messageID int64, result *MessageProcessingResu
 	}
 }
 
-func (r *Reactor) GetLastProcessingResult(messageID int64) *MessageProcessingResult {
-	return r.lastResults[messageID]
+func (r *Reactor) GetLastProcessingResult(chatID int64, messageID int) *MessageProcessingResult {
+	r.resultMutex.Lock()
+	defer r.resultMutex.Unlock()
+	return r.lastResults[messageResultKey{ChatID: chatID, MessageID: messageID}]
 }

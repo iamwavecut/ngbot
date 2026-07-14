@@ -12,16 +12,24 @@ import (
 	"google.golang.org/genai"
 )
 
+const (
+	testSystemPrompt      = "system"
+	testStaticUser        = "static-user"
+	testStaticAnswer      = "static-answer"
+	testCandidate         = "candidate"
+	testExistingCacheName = "cachedContents/existing"
+)
+
 func TestSplitPromptSegmentsUsesContiguousCacheablePrefix(t *testing.T) {
 	t.Parallel()
 
 	segments, err := splitPromptSegments([]llm.ChatCompletionMessage{
-		{Role: llm.RoleSystem, Content: "system", Cacheable: true},
-		{Role: llm.RoleUser, Content: "static-user", Cacheable: true},
-		{Role: llm.RoleAssistant, Content: "static-answer", Cacheable: true},
+		{Role: llm.RoleSystem, Content: testSystemPrompt, Cacheable: true},
+		{Role: llm.RoleUser, Content: testStaticUser, Cacheable: true},
+		{Role: llm.RoleAssistant, Content: testStaticAnswer, Cacheable: true},
 		{Role: llm.RoleUser, Content: "dynamic-example"},
 		{Role: llm.RoleAssistant, Content: "dynamic-answer", Cacheable: true},
-		{Role: llm.RoleUser, Content: "candidate"},
+		{Role: llm.RoleUser, Content: testCandidate},
 	})
 	if err != nil {
 		t.Fatalf("splitPromptSegments returned error: %v", err)
@@ -33,7 +41,7 @@ func TestSplitPromptSegmentsUsesContiguousCacheablePrefix(t *testing.T) {
 	if len(segments.liveContents) != 3 {
 		t.Fatalf("expected three live contents, got %d", len(segments.liveContents))
 	}
-	if got := contentText(segments.systemInstruction); got != "system" {
+	if got := contentText(segments.systemInstruction); got != testSystemPrompt {
 		t.Fatalf("unexpected system instruction text: %q", got)
 	}
 }
@@ -42,9 +50,9 @@ func TestCacheFingerprintIgnoresDynamicTail(t *testing.T) {
 	t.Parallel()
 
 	first, err := splitPromptSegments([]llm.ChatCompletionMessage{
-		{Role: llm.RoleSystem, Content: "system", Cacheable: true},
-		{Role: llm.RoleUser, Content: "static-user", Cacheable: true},
-		{Role: llm.RoleAssistant, Content: "static-answer", Cacheable: true},
+		{Role: llm.RoleSystem, Content: testSystemPrompt, Cacheable: true},
+		{Role: llm.RoleUser, Content: testStaticUser, Cacheable: true},
+		{Role: llm.RoleAssistant, Content: testStaticAnswer, Cacheable: true},
 		{Role: llm.RoleUser, Content: "candidate-a"},
 	})
 	if err != nil {
@@ -52,17 +60,17 @@ func TestCacheFingerprintIgnoresDynamicTail(t *testing.T) {
 	}
 
 	second, err := splitPromptSegments([]llm.ChatCompletionMessage{
-		{Role: llm.RoleSystem, Content: "system", Cacheable: true},
-		{Role: llm.RoleUser, Content: "static-user", Cacheable: true},
-		{Role: llm.RoleAssistant, Content: "static-answer", Cacheable: true},
+		{Role: llm.RoleSystem, Content: testSystemPrompt, Cacheable: true},
+		{Role: llm.RoleUser, Content: testStaticUser, Cacheable: true},
+		{Role: llm.RoleAssistant, Content: testStaticAnswer, Cacheable: true},
 		{Role: llm.RoleUser, Content: "candidate-b"},
 	})
 	if err != nil {
 		t.Fatalf("second splitPromptSegments returned error: %v", err)
 	}
 
-	firstFingerprint := cacheFingerprint("gemini-2.5-flash-lite", first.systemInstruction, first.cacheablePrefix)
-	secondFingerprint := cacheFingerprint("gemini-2.5-flash-lite", second.systemInstruction, second.cacheablePrefix)
+	firstFingerprint := cacheFingerprint(DefaultModel, first.systemInstruction, first.cacheablePrefix)
+	secondFingerprint := cacheFingerprint(DefaultModel, second.systemInstruction, second.cacheablePrefix)
 	if firstFingerprint != secondFingerprint {
 		t.Fatalf("expected identical fingerprints, got %q and %q", firstFingerprint, secondFingerprint)
 	}
@@ -72,31 +80,31 @@ func TestLoadOrCreateCacheReusesMatchingDisplayName(t *testing.T) {
 	t.Parallel()
 
 	segments, err := splitPromptSegments([]llm.ChatCompletionMessage{
-		{Role: llm.RoleSystem, Content: "system", Cacheable: true},
-		{Role: llm.RoleUser, Content: "static-user", Cacheable: true},
-		{Role: llm.RoleUser, Content: "candidate"},
+		{Role: llm.RoleSystem, Content: testSystemPrompt, Cacheable: true},
+		{Role: llm.RoleUser, Content: testStaticUser, Cacheable: true},
+		{Role: llm.RoleUser, Content: testCandidate},
 	})
 	if err != nil {
 		t.Fatalf("splitPromptSegments returned error: %v", err)
 	}
 
-	fingerprint := cacheFingerprint("gemini-2.5-flash-lite", segments.systemInstruction, segments.cacheablePrefix)
+	fingerprint := cacheFingerprint(DefaultModel, segments.systemInstruction, segments.cacheablePrefix)
 	createCalls := 0
 	api := &API{
-		model:  "gemini-2.5-flash-lite",
+		model:  DefaultModel,
 		logger: log.New().WithField("test", "gemini"),
 		listCaches: listedCaches(
 			&genai.CachedContent{
 				Name:        "cachedContents/expired",
 				DisplayName: cacheDisplayPrefix + fingerprint,
-				Model:       "gemini-2.5-flash-lite",
+				Model:       DefaultModel,
 				ExpireTime:  time.Now().Add(-time.Minute),
 				UpdateTime:  time.Now().Add(-2 * time.Minute),
 			},
 			&genai.CachedContent{
-				Name:        "cachedContents/existing",
+				Name:        testExistingCacheName,
 				DisplayName: cacheDisplayPrefix + fingerprint,
-				Model:       "gemini-2.5-flash-lite",
+				Model:       DefaultModel,
 				ExpireTime:  time.Now().Add(time.Hour),
 				UpdateTime:  time.Now(),
 			},
@@ -111,7 +119,7 @@ func TestLoadOrCreateCacheReusesMatchingDisplayName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadOrCreateCache returned error: %v", err)
 	}
-	if got == nil || got.Name != "cachedContents/existing" {
+	if got == nil || got.Name != testExistingCacheName {
 		t.Fatalf("expected existing cache to be reused, got %#v", got)
 	}
 	if createCalls != 0 {
@@ -123,9 +131,9 @@ func TestLoadOrCreateCacheCreatesWhenCacheMissing(t *testing.T) {
 	t.Parallel()
 
 	segments, err := splitPromptSegments([]llm.ChatCompletionMessage{
-		{Role: llm.RoleSystem, Content: "system", Cacheable: true},
-		{Role: llm.RoleUser, Content: "static-user", Cacheable: true},
-		{Role: llm.RoleUser, Content: "candidate"},
+		{Role: llm.RoleSystem, Content: testSystemPrompt, Cacheable: true},
+		{Role: llm.RoleUser, Content: testStaticUser, Cacheable: true},
+		{Role: llm.RoleUser, Content: testCandidate},
 	})
 	if err != nil {
 		t.Fatalf("splitPromptSegments returned error: %v", err)
@@ -133,7 +141,7 @@ func TestLoadOrCreateCacheCreatesWhenCacheMissing(t *testing.T) {
 
 	createCalls := 0
 	api := &API{
-		model:      "gemini-2.5-flash-lite",
+		model:      DefaultModel,
 		logger:     log.New().WithField("test", "gemini"),
 		listCaches: listedCaches(),
 		createCache: func(_ context.Context, _ string, config *genai.CreateCachedContentConfig) (*genai.CachedContent, error) {
@@ -144,7 +152,7 @@ func TestLoadOrCreateCacheCreatesWhenCacheMissing(t *testing.T) {
 			return &genai.CachedContent{
 				Name:        "cachedContents/created",
 				DisplayName: config.DisplayName,
-				Model:       "gemini-2.5-flash-lite",
+				Model:       DefaultModel,
 				ExpireTime:  time.Now().Add(time.Hour),
 			}, nil
 		},
@@ -162,34 +170,84 @@ func TestLoadOrCreateCacheCreatesWhenCacheMissing(t *testing.T) {
 	}
 }
 
-func TestChatCompletionFallsBackWhenCachedContentCannotBeUsed(t *testing.T) {
+func TestLoadOrCreateCacheUsesLocalHandleAfterFirstLookup(t *testing.T) {
 	t.Parallel()
 
 	segments, err := splitPromptSegments([]llm.ChatCompletionMessage{
-		{Role: llm.RoleSystem, Content: "system", Cacheable: true},
-		{Role: llm.RoleUser, Content: "static-user", Cacheable: true},
-		{Role: llm.RoleAssistant, Content: "static-answer", Cacheable: true},
-		{Role: llm.RoleUser, Content: "candidate"},
+		{Role: llm.RoleSystem, Content: testSystemPrompt, Cacheable: true},
+		{Role: llm.RoleUser, Content: testStaticUser, Cacheable: true},
+		{Role: llm.RoleUser, Content: testCandidate},
 	})
 	if err != nil {
 		t.Fatalf("splitPromptSegments returned error: %v", err)
 	}
-	fingerprint := cacheFingerprint("gemini-2.5-flash-lite", segments.systemInstruction, segments.cacheablePrefix)
+	fingerprint := cacheFingerprint(DefaultModel, segments.systemInstruction, segments.cacheablePrefix)
+	listCalls := 0
+	api := &API{
+		model:  DefaultModel,
+		logger: log.New().WithField("test", "gemini"),
+		listCaches: func(context.Context) iter.Seq2[*genai.CachedContent, error] {
+			listCalls++
+			return listedCaches(&genai.CachedContent{
+				Name:        testExistingCacheName,
+				DisplayName: cacheDisplayPrefix + fingerprint,
+				ExpireTime:  time.Now().Add(time.Hour),
+			})(context.Background())
+		},
+	}
+
+	first, err := api.loadOrCreateCache(context.Background(), segments)
+	if err != nil {
+		t.Fatalf("first loadOrCreateCache: %v", err)
+	}
+	second, err := api.loadOrCreateCache(context.Background(), segments)
+	if err != nil {
+		t.Fatalf("second loadOrCreateCache: %v", err)
+	}
+	if first != second {
+		t.Fatal("expected the process-local cache handle to be reused")
+	}
+	if listCalls != 1 {
+		t.Fatalf("remote cache list calls = %d, want 1", listCalls)
+	}
+
+	api.invalidateLocalCache(fingerprint, first.Name)
+	if _, err := api.loadOrCreateCache(context.Background(), segments); err != nil {
+		t.Fatalf("reload after invalidation: %v", err)
+	}
+	if listCalls != 2 {
+		t.Fatalf("remote cache list calls after invalidation = %d, want 2", listCalls)
+	}
+}
+
+func TestChatCompletionFallsBackWhenCachedContentCannotBeUsed(t *testing.T) {
+	t.Parallel()
+
+	segments, err := splitPromptSegments([]llm.ChatCompletionMessage{
+		{Role: llm.RoleSystem, Content: testSystemPrompt, Cacheable: true},
+		{Role: llm.RoleUser, Content: testStaticUser, Cacheable: true},
+		{Role: llm.RoleAssistant, Content: testStaticAnswer, Cacheable: true},
+		{Role: llm.RoleUser, Content: testCandidate},
+	})
+	if err != nil {
+		t.Fatalf("splitPromptSegments returned error: %v", err)
+	}
+	fingerprint := cacheFingerprint(DefaultModel, segments.systemInstruction, segments.cacheablePrefix)
 
 	callCount := 0
 	api := &API{
-		model:      "gemini-2.5-flash-lite",
+		model:      DefaultModel,
 		logger:     log.New().WithField("test", "gemini"),
-		listCaches: listedCaches(&genai.CachedContent{Name: "cachedContents/existing", DisplayName: cacheDisplayPrefix + fingerprint, Model: "gemini-2.5-flash-lite", ExpireTime: time.Now().Add(time.Hour)}),
+		listCaches: listedCaches(&genai.CachedContent{Name: testExistingCacheName, DisplayName: cacheDisplayPrefix + fingerprint, Model: DefaultModel, ExpireTime: time.Now().Add(time.Hour)}),
 		generateContent: func(_ context.Context, _ string, contents []*genai.Content, config *genai.GenerateContentConfig) (*genai.GenerateContentResponse, error) {
 			callCount++
 			if config.CachedContent != "" {
-				if len(contents) != 1 || contentText(contents[0]) != "candidate" {
+				if len(contents) != 1 || contentText(contents[0]) != testCandidate {
 					t.Fatalf("expected cached request to include only candidate content, got %#v", contents)
 				}
 				return nil, fmt.Errorf("cached content expired")
 			}
-			if config.SystemInstruction == nil || contentText(config.SystemInstruction) != "system" {
+			if config.SystemInstruction == nil || contentText(config.SystemInstruction) != testSystemPrompt {
 				t.Fatalf("expected uncached fallback to restore system instruction, got %#v", config.SystemInstruction)
 			}
 			if len(contents) != 3 {
@@ -204,10 +262,10 @@ func TestChatCompletionFallsBackWhenCachedContentCannotBeUsed(t *testing.T) {
 	}
 
 	resp, err := api.ChatCompletion(context.Background(), []llm.ChatCompletionMessage{
-		{Role: llm.RoleSystem, Content: "system", Cacheable: true},
-		{Role: llm.RoleUser, Content: "static-user", Cacheable: true},
-		{Role: llm.RoleAssistant, Content: "static-answer", Cacheable: true},
-		{Role: llm.RoleUser, Content: "candidate"},
+		{Role: llm.RoleSystem, Content: testSystemPrompt, Cacheable: true},
+		{Role: llm.RoleUser, Content: testStaticUser, Cacheable: true},
+		{Role: llm.RoleAssistant, Content: testStaticAnswer, Cacheable: true},
+		{Role: llm.RoleUser, Content: testCandidate},
 	})
 	if err != nil {
 		t.Fatalf("ChatCompletion returned error: %v", err)
@@ -224,30 +282,30 @@ func TestChatCompletionFallsBackWhenCachedResponseIsEmpty(t *testing.T) {
 	t.Parallel()
 
 	segments, err := splitPromptSegments([]llm.ChatCompletionMessage{
-		{Role: llm.RoleSystem, Content: "system", Cacheable: true},
-		{Role: llm.RoleUser, Content: "static-user", Cacheable: true},
-		{Role: llm.RoleAssistant, Content: "static-answer", Cacheable: true},
-		{Role: llm.RoleUser, Content: "candidate"},
+		{Role: llm.RoleSystem, Content: testSystemPrompt, Cacheable: true},
+		{Role: llm.RoleUser, Content: testStaticUser, Cacheable: true},
+		{Role: llm.RoleAssistant, Content: testStaticAnswer, Cacheable: true},
+		{Role: llm.RoleUser, Content: testCandidate},
 	})
 	if err != nil {
 		t.Fatalf("splitPromptSegments returned error: %v", err)
 	}
-	fingerprint := cacheFingerprint("gemini-2.5-flash-lite", segments.systemInstruction, segments.cacheablePrefix)
+	fingerprint := cacheFingerprint(DefaultModel, segments.systemInstruction, segments.cacheablePrefix)
 
 	callCount := 0
 	api := &API{
-		model:      "gemini-2.5-flash-lite",
+		model:      DefaultModel,
 		logger:     log.New().WithField("test", "gemini"),
-		listCaches: listedCaches(&genai.CachedContent{Name: "cachedContents/existing", DisplayName: cacheDisplayPrefix + fingerprint, Model: "gemini-2.5-flash-lite", ExpireTime: time.Now().Add(time.Hour)}),
+		listCaches: listedCaches(&genai.CachedContent{Name: testExistingCacheName, DisplayName: cacheDisplayPrefix + fingerprint, Model: DefaultModel, ExpireTime: time.Now().Add(time.Hour)}),
 		generateContent: func(_ context.Context, _ string, contents []*genai.Content, config *genai.GenerateContentConfig) (*genai.GenerateContentResponse, error) {
 			callCount++
 			if config.CachedContent != "" {
-				if len(contents) != 1 || contentText(contents[0]) != "candidate" {
+				if len(contents) != 1 || contentText(contents[0]) != testCandidate {
 					t.Fatalf("expected cached request to include only candidate content, got %#v", contents)
 				}
 				return &genai.GenerateContentResponse{}, nil
 			}
-			if config.SystemInstruction == nil || contentText(config.SystemInstruction) != "system" {
+			if config.SystemInstruction == nil || contentText(config.SystemInstruction) != testSystemPrompt {
 				t.Fatalf("expected uncached fallback to restore system instruction, got %#v", config.SystemInstruction)
 			}
 			if len(contents) != 3 {
@@ -262,10 +320,10 @@ func TestChatCompletionFallsBackWhenCachedResponseIsEmpty(t *testing.T) {
 	}
 
 	resp, err := api.ChatCompletion(context.Background(), []llm.ChatCompletionMessage{
-		{Role: llm.RoleSystem, Content: "system", Cacheable: true},
-		{Role: llm.RoleUser, Content: "static-user", Cacheable: true},
-		{Role: llm.RoleAssistant, Content: "static-answer", Cacheable: true},
-		{Role: llm.RoleUser, Content: "candidate"},
+		{Role: llm.RoleSystem, Content: testSystemPrompt, Cacheable: true},
+		{Role: llm.RoleUser, Content: testStaticUser, Cacheable: true},
+		{Role: llm.RoleAssistant, Content: testStaticAnswer, Cacheable: true},
+		{Role: llm.RoleUser, Content: testCandidate},
 	})
 	if err != nil {
 		t.Fatalf("ChatCompletion returned error: %v", err)

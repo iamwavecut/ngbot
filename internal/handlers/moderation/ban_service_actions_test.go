@@ -24,7 +24,7 @@ func (s *testBanStore) SetKV(context.Context, string, string) error {
 	return nil
 }
 
-func (s *testBanStore) UpsertBanlist(context.Context, []int64) error {
+func (s *testBanStore) ApplyBanlistSource(context.Context, string, string, string, []int64, time.Time, *time.Time, bool) error {
 	return nil
 }
 
@@ -59,7 +59,7 @@ func TestUnmuteUserSendsExplicitAllowPermissions(t *testing.T) {
 		if got := r.Form.Get("chat_id"); got != "-100" {
 			t.Fatalf("unexpected chat_id: %q", got)
 		}
-		if got := r.Form.Get("user_id"); got != "200" {
+		if got := r.Form.Get(logFieldUserID); got != "200" {
 			t.Fatalf("unexpected user_id: %q", got)
 		}
 		if got := r.Form.Get("until_date"); got != "" && got != strconv.FormatInt(0, 10) {
@@ -107,7 +107,7 @@ func TestBanUserWithMessageRevokesMessages(t *testing.T) {
 		if got := r.Form.Get("chat_id"); got != "-100" {
 			t.Fatalf("chat_id = %q, want -100", got)
 		}
-		if got := r.Form.Get("user_id"); got != "200" {
+		if got := r.Form.Get(logFieldUserID); got != "200" {
 			t.Fatalf("user_id = %q, want 200", got)
 		}
 		if got := r.Form.Get("revoke_messages"); got != "true" {

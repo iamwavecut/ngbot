@@ -3,10 +3,10 @@ package config
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/sethvargo/go-envconfig"
@@ -38,10 +38,11 @@ type (
 	}
 
 	LLM struct {
-		APIKey  string `env:"LLM_API_KEY,required"`
-		Model   string `env:"LLM_API_MODEL,default=gpt-4o-mini"`
-		BaseURL string `env:"LLM_API_URL,default=https://api.openai.com/v1"`
-		Type    string `env:"LLM_API_TYPE,default=openai"`
+		APIKey         string        `env:"LLM_API_KEY,required"`
+		Model          string        `env:"LLM_API_MODEL"`
+		BaseURL        string        `env:"LLM_API_URL,default=https://api.openai.com/v1"`
+		Type           string        `env:"LLM_API_TYPE,default=openai"`
+		RequestTimeout time.Duration `env:"LLM_REQUEST_TIMEOUT,default=45s"`
 	}
 
 	SpamControl struct {
@@ -57,45 +58,25 @@ type (
 	}
 )
 
-var (
-	once         sync.Once
-	globalConfig = &Config{}
-	globalErr    error
-)
-
 func Load() (Config, error) {
-	once.Do(func() {
-		cfg := &Config{}
-		envcfg := envconfig.Config{
-			Lookuper: envconfig.PrefixLookuper("NG_", envconfig.OsLookuper()),
-			Target:   cfg,
-		}
-		if err := envconfig.ProcessWith(context.Background(), &envcfg); err != nil {
-			globalErr = fmt.Errorf("process env config: %w", err)
-			return
-		}
-		home, err := os.UserHomeDir()
-		if err != nil {
-			globalErr = fmt.Errorf("get user home directory: %w", err)
-			return
-		}
-		cfg.DotPath = strings.Replace(cfg.DotPath, "~", home, 1)
-		if err := validateConfig(cfg); err != nil {
-			globalErr = err
-			return
-		}
-		log.Traceln("loaded config")
-		globalConfig = cfg
-	})
-	return *globalConfig, globalErr
-}
-
-func Get() Config {
-	cfg, err := Load()
-	if err != nil {
-		log.WithField("error", err.Error()).Error("cant load config")
+	cfg := &Config{}
+	envcfg := envconfig.Config{
+		Lookuper: envconfig.PrefixLookuper("NG_", envconfig.OsLookuper()),
+		Target:   cfg,
 	}
-	return cfg
+	if err := envconfig.ProcessWith(context.Background(), &envcfg); err != nil {
+		return Config{}, fmt.Errorf("process env config: %w", err)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return Config{}, fmt.Errorf("get user home directory: %w", err)
+	}
+	cfg.DotPath = strings.Replace(cfg.DotPath, "~", home, 1)
+	if err := validateConfig(cfg); err != nil {
+		return Config{}, err
+	}
+	log.Traceln("loaded config")
+	return *cfg, nil
 }
 
 func validateConfig(cfg *Config) error {
@@ -108,14 +89,25 @@ func validateConfig(cfg *Config) error {
 	if cfg.Telegram.RecoveryWindow <= cfg.Telegram.RequestTimeout {
 		return fmt.Errorf("telegram recovery window must be greater than request timeout")
 	}
+	if cfg.LLM.RequestTimeout <= 0 {
+		return fmt.Errorf("llm request timeout must be positive")
+	}
 	if cfg.GatekeeperWebApp.PublicURL != "" {
 		parsed, err := url.Parse(cfg.GatekeeperWebApp.PublicURL)
 		if err != nil || parsed.Scheme == "" || parsed.Host == "" {
 			return fmt.Errorf("gatekeeper web app public url must be an absolute URL")
 		}
-		if parsed.Scheme != "https" && parsed.Scheme != "http" {
-			return fmt.Errorf("gatekeeper web app public url must use http or https")
+		if parsed.Scheme != "https" && (parsed.Scheme != "http" || !isLoopbackHost(parsed.Hostname())) {
+			return fmt.Errorf("gatekeeper web app public url must use https unless it points to loopback")
 		}
 	}
 	return nil
+}
+
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }

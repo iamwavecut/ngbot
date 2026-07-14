@@ -1,5 +1,7 @@
 # Report
 
+> **Historical document.** This batch report describes the original admin-panel implementation and is not the current implementation contract. Use `docs/CODEBASE_MAP.md` and the current code instead.
+
 ## Batch 1
 Done:
 - Added migration 20250201000000-add-admin-panel.sql with new tables and chat flags.

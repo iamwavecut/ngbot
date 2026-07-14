@@ -16,6 +16,7 @@ func TestValidateConfig(t *testing.T) {
 		{
 			name: "valid telegram timings",
 			cfg: Config{
+				LLM: LLM{RequestTimeout: 45 * time.Second},
 				Telegram: Telegram{
 					PollTimeout:    60 * time.Second,
 					RequestTimeout: 75 * time.Second,
@@ -26,6 +27,7 @@ func TestValidateConfig(t *testing.T) {
 		{
 			name: "request timeout must exceed poll timeout",
 			cfg: Config{
+				LLM: LLM{RequestTimeout: 45 * time.Second},
 				Telegram: Telegram{
 					PollTimeout:    60 * time.Second,
 					RequestTimeout: 60 * time.Second,
@@ -37,6 +39,7 @@ func TestValidateConfig(t *testing.T) {
 		{
 			name: "recovery window must exceed request timeout",
 			cfg: Config{
+				LLM: LLM{RequestTimeout: 45 * time.Second},
 				Telegram: Telegram{
 					PollTimeout:    60 * time.Second,
 					RequestTimeout: 75 * time.Second,
@@ -48,6 +51,7 @@ func TestValidateConfig(t *testing.T) {
 		{
 			name: "valid gatekeeper web app public url",
 			cfg: Config{
+				LLM: LLM{RequestTimeout: 45 * time.Second},
 				Telegram: Telegram{
 					PollTimeout:    60 * time.Second,
 					RequestTimeout: 75 * time.Second,
@@ -61,6 +65,7 @@ func TestValidateConfig(t *testing.T) {
 		{
 			name: "gatekeeper web app public url must be absolute",
 			cfg: Config{
+				LLM: LLM{RequestTimeout: 45 * time.Second},
 				Telegram: Telegram{
 					PollTimeout:    60 * time.Second,
 					RequestTimeout: 75 * time.Second,
@@ -68,6 +73,42 @@ func TestValidateConfig(t *testing.T) {
 				},
 				GatekeeperWebApp: GatekeeperWebApp{
 					PublicURL: "/gatekeeper",
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "public http web app url is rejected",
+			cfg: Config{
+				LLM: LLM{RequestTimeout: 45 * time.Second},
+				Telegram: Telegram{
+					PollTimeout:    60 * time.Second,
+					RequestTimeout: 75 * time.Second,
+					RecoveryWindow: 10 * time.Minute,
+				},
+				GatekeeperWebApp: GatekeeperWebApp{PublicURL: "http://guard.example"},
+			},
+			wantErr: true,
+		},
+		{
+			name: "loopback http web app url is accepted",
+			cfg: Config{
+				LLM: LLM{RequestTimeout: 45 * time.Second},
+				Telegram: Telegram{
+					PollTimeout:    60 * time.Second,
+					RequestTimeout: 75 * time.Second,
+					RecoveryWindow: 10 * time.Minute,
+				},
+				GatekeeperWebApp: GatekeeperWebApp{PublicURL: "http://127.0.0.1:8080"},
+			},
+		},
+		{
+			name: "llm request timeout must be positive",
+			cfg: Config{
+				Telegram: Telegram{
+					PollTimeout:    60 * time.Second,
+					RequestTimeout: 75 * time.Second,
+					RecoveryWindow: 10 * time.Minute,
 				},
 			},
 			wantErr: true,

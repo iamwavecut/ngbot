@@ -93,3 +93,22 @@ func TestRuntimeStartFailureStopsStartedComponents(t *testing.T) {
 		t.Fatalf("unexpected events: %v", events)
 	}
 }
+
+func TestRuntimeStartFailureIncludesRollbackFailure(t *testing.T) {
+	t.Parallel()
+
+	startErr := errors.New("start failed")
+	rollbackErr := errors.New("rollback failed")
+	runtime := NewRuntime(
+		&testComponent{name: "started", stopErr: rollbackErr},
+		&testComponent{name: "failed", startErr: startErr},
+	)
+
+	err := runtime.Start(t.Context())
+	if !errors.Is(err, startErr) {
+		t.Fatalf("missing start error: %v", err)
+	}
+	if !errors.Is(err, rollbackErr) {
+		t.Fatalf("missing rollback error: %v", err)
+	}
+}
