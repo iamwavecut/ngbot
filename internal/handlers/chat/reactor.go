@@ -204,6 +204,10 @@ func (r *Reactor) handleCallbackQuery(ctx context.Context, u *api.Update, chat *
 			_, _ = r.bot.RequestWithContext(ctx, api.NewCallback(u.CallbackQuery.ID, i18n.Get("You cannot vote on your own spam case", language)))
 			return true, nil
 		}
+		if errors.Is(err, moderation.ErrSpamCaseClosed) {
+			_, _ = r.bot.RequestWithContext(ctx, api.NewCallback(u.CallbackQuery.ID, ""))
+			return true, nil
+		}
 		entry.WithField(logFieldError, err.Error()).Error("failed to record spam vote")
 		return true, nil
 	}

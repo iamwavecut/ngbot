@@ -150,8 +150,8 @@ func boolPtr(value bool) *bool {
 func TestSpamVoteCallbackUsesSpamCaseChatSettings(t *testing.T) {
 	t.Parallel()
 
-	var callbackAnswered bool
-	var editSent bool
+	var callbackAnswers int
+	var edits int
 	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
 		switch method {
 		case "getChatMember":
@@ -160,10 +160,10 @@ func TestSpamVoteCallbackUsesSpamCaseChatSettings(t *testing.T) {
 				logFieldUser:   map[string]any{"id": 300, testJSONIsBot: false, testJSONFirstName: "Voter"},
 			}
 		case "answerCallbackQuery":
-			callbackAnswered = true
+			callbackAnswers++
 			return true
 		case "editMessageText":
-			editSent = true
+			edits++
 			return map[string]any{
 				logFieldMessageID: 400,
 				testJSONDate:      0,
@@ -240,8 +240,8 @@ func TestSpamVoteCallbackUsesSpamCaseChatSettings(t *testing.T) {
 	if !proceed {
 		t.Fatal("expected callback handler to proceed")
 	}
-	if !callbackAnswered || !editSent {
-		t.Fatalf("expected callback answer and edit, got answer=%v edit=%v", callbackAnswered, editSent)
+	if callbackAnswers != 1 || edits != 1 {
+		t.Fatalf("expected callback answer and edit, got answers=%d edits=%d", callbackAnswers, edits)
 	}
 
 	votes, err := dbClient.GetSpamVotes(ctx, spamCase.ID)
@@ -250,6 +250,20 @@ func TestSpamVoteCallbackUsesSpamCaseChatSettings(t *testing.T) {
 	}
 	if len(votes) != 1 || votes[0].VoterID != voter.ID || votes[0].Vote {
 		t.Fatalf("unexpected votes: %#v", votes)
+	}
+
+	resolvedAt := time.Now()
+	spamCase.Status = db.SpamCaseStatusSpam
+	spamCase.ResolvedAt = &resolvedAt
+	if err := dbClient.UpdateSpamCase(ctx, spamCase); err != nil {
+		t.Fatalf("close spam case: %v", err)
+	}
+	proceed, err = reactor.Handle(ctx, update, logChat, voter)
+	if err != nil || !proceed {
+		t.Fatalf("handle stale callback: proceed=%t err=%v", proceed, err)
+	}
+	if callbackAnswers != 2 || edits != 1 {
+		t.Fatalf("stale callback was not acknowledged quietly: answers=%d edits=%d", callbackAnswers, edits)
 	}
 }
 
