@@ -10,6 +10,12 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+const spamCaseColumns = `
+	id, chat_id, user_id, message_id, message_text, created_at,
+	channel_username, channel_post_id, notification_message_id,
+	pre_vote_restricted, status, resolved_at
+`
+
 func (s *sqliteClient) AddRestriction(ctx context.Context, restriction *db.UserRestriction) error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
@@ -104,7 +110,7 @@ func (s *sqliteClient) GetSpamCase(ctx context.Context, id int64) (*db.SpamCase,
 	defer s.mutex.RUnlock()
 
 	var sc db.SpamCase
-	err := s.db.GetContext(ctx, &sc, `SELECT * FROM spam_cases WHERE id = ?`, id)
+	err := s.db.GetContext(ctx, &sc, `SELECT `+spamCaseColumns+` FROM spam_cases WHERE id = ?`, id)
 	if err != nil {
 		return nil, err
 	}
@@ -117,7 +123,7 @@ func (s *sqliteClient) GetActiveSpamCase(ctx context.Context, chatID, userID int
 
 	var sc db.SpamCase
 	err := s.db.GetContext(ctx, &sc, `
-		SELECT * FROM spam_cases
+		SELECT `+spamCaseColumns+` FROM spam_cases
 		WHERE chat_id = ?
 		AND user_id = ?
 		AND status = 'pending'
@@ -140,7 +146,7 @@ func (s *sqliteClient) GetActiveSpamCaseByMessage(ctx context.Context, chatID, u
 
 	var sc db.SpamCase
 	err := s.db.GetContext(ctx, &sc, `
-		SELECT * FROM spam_cases
+		SELECT `+spamCaseColumns+` FROM spam_cases
 		WHERE chat_id = ?
 		AND user_id = ?
 		AND message_id = ?
@@ -164,7 +170,7 @@ func (s *sqliteClient) GetPendingSpamCases(ctx context.Context) ([]*db.SpamCase,
 
 	var cases []*db.SpamCase
 	err := s.db.SelectContext(ctx, &cases, `
-		SELECT * FROM spam_cases
+		SELECT `+spamCaseColumns+` FROM spam_cases
 		WHERE status = 'pending' AND resolved_at IS NULL
 		ORDER BY created_at DESC
 	`)
