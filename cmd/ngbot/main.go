@@ -222,17 +222,13 @@ func main() {
 }
 
 func buildRuntime(ctx context.Context, cfg *config.Config, errChan chan<- shutdownSignal) (*lifecycle.Runtime, error) {
-	botAPI, err := api.NewBotAPIWithOptions(
+	botAPI, err := newTelegramBotAPI(
 		cfg.TelegramAPIToken,
-		api.WithAPIEndpoint(api.APIEndpoint),
-		api.WithHTTPClient(&http.Client{Timeout: cfg.Telegram.RequestTimeout}),
-		api.WithLogger(log.WithField("context", "bot_api")),
+		api.APIEndpoint,
+		&http.Client{Timeout: cfg.Telegram.RequestTimeout},
 	)
 	if err != nil {
 		return nil, fmt.Errorf("initialize bot API: %w", err)
-	}
-	if log.Level(cfg.LogLevel) == log.TraceLevel {
-		botAPI.Debug = true
 	}
 
 	if err := announceBotCommands(ctx, botAPI); err != nil {
@@ -285,6 +281,20 @@ func buildRuntime(ctx context.Context, cfg *config.Config, errChan chan<- shutdo
 		updateLoop,
 	)
 	return runtime, nil
+}
+
+func newTelegramBotAPI(token, endpoint string, client *http.Client) (*api.BotAPI, error) {
+	botAPI, err := api.NewBotAPIWithOptions(
+		token,
+		api.WithAPIEndpoint(endpoint),
+		api.WithHTTPClient(client),
+		api.WithLogger(log.WithField("context", "bot_api")),
+	)
+	if err != nil {
+		return nil, err
+	}
+	botAPI.Debug = false
+	return botAPI, nil
 }
 
 func selectUpdateHandlers(enabled []string, available map[string]bot.Handler) []bot.Handler {

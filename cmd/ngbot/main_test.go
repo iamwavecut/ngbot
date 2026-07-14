@@ -154,6 +154,35 @@ func TestAnnounceBotCommandsRegistersPrivateHelp(t *testing.T) {
 	}
 }
 
+func TestNewTelegramBotAPIKeepsRawPayloadDebugDisabled(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if method := path.Base(r.URL.Path); method != "getMe" {
+			t.Fatalf("unexpected telegram method: %s", method)
+		}
+		writeTelegramResult(t, w, map[string]any{
+			"id":         1,
+			"is_bot":     true,
+			"first_name": "Test",
+			"username":   "testbot",
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	botAPI, err := newTelegramBotAPI(
+		"TEST_TOKEN",
+		fmt.Sprintf("%s/bot%%s/%%s", server.URL),
+		server.Client(),
+	)
+	if err != nil {
+		t.Fatalf("new telegram bot api: %v", err)
+	}
+	if botAPI.Debug {
+		t.Fatal("raw Telegram request and response logging must remain disabled")
+	}
+}
+
 func writeTelegramResult(t *testing.T, w http.ResponseWriter, result any) {
 	t.Helper()
 	w.Header().Set("Content-Type", "application/json")
