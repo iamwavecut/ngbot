@@ -53,7 +53,7 @@ func (r *botRequestRecorder) byMethod(method string) []recordedBotRequest {
 func (r *botRequestRecorder) nextSendMessageResult() any {
 	r.nextMessageID++
 	return map[string]any{
-		"message_id": r.nextMessageID,
+		logFieldMessageID: r.nextMessageID,
 	}
 }
 
@@ -392,12 +392,12 @@ func newChatMemberJoinUpdate(chat api.Chat, joinedUser api.User, actor api.User)
 			From: actor,
 			OldChatMember: api.ChatMember{
 				User:     &joinedUserCopy,
-				Status:   "left",
+				Status:   testMemberStatusLeft,
 				IsMember: false,
 			},
 			NewChatMember: api.ChatMember{
 				User:     &joinedUserCopy,
-				Status:   "member",
+				Status:   telegramMemberStatus,
 				IsMember: true,
 			},
 		},
@@ -408,7 +408,7 @@ func TestDisabledGatekeeperChatMemberUpdateDoesNotTouchJoinRequest(t *testing.T)
 	t.Parallel()
 
 	user := api.User{ID: 200, FirstName: testFirstNameUser}
-	chat := api.Chat{ID: -100, Type: "supergroup", Title: "Group"}
+	chat := api.Chat{ID: -100, Type: testChatTypeSupergroup, Title: "Group"}
 	gatekeeper := &Gatekeeper{
 		s:          &gatekeeperTestService{testBotService: testBotService{language: "en"}, settings: &db.Settings{GatekeeperEnabled: false}},
 		store:      newGatekeeperFlowStore(),
@@ -429,7 +429,7 @@ func TestBannedChatJoinRequestDeclinesAndBansBeforeCaptcha(t *testing.T) {
 	t.Parallel()
 
 	recorder := &botRequestRecorder{}
-	groupChat := api.Chat{ID: -100123, Type: "supergroup", Title: testGroupTitle, UserName: "waveclub"}
+	groupChat := api.Chat{ID: -100123, Type: testChatTypeSupergroup, Title: testGroupTitle, UserName: testGroupUsername}
 	user := api.User{ID: 42, FirstName: testFirstNameNeo}
 	store := newGatekeeperFlowStore()
 
@@ -497,7 +497,7 @@ func TestBannedChatJoinRequestQueryDeclinesAndBansBeforeCaptcha(t *testing.T) {
 	t.Parallel()
 
 	recorder := &botRequestRecorder{}
-	groupChat := api.Chat{ID: -100123, Type: "supergroup", Title: testGroupTitle, UserName: "waveclub"}
+	groupChat := api.Chat{ID: -100123, Type: testChatTypeSupergroup, Title: testGroupTitle, UserName: testGroupUsername}
 	user := api.User{ID: 42, FirstName: testFirstNameNeo}
 	store := newGatekeeperFlowStore()
 
@@ -535,7 +535,7 @@ func TestBannedChatJoinRequestQueryDeclinesAndBansBeforeCaptcha(t *testing.T) {
 			Chat:       groupChat,
 			From:       user,
 			UserChatID: 9001,
-			QueryID:    "join-query",
+			QueryID:    testJoinQueryID,
 		},
 	}
 	if err := gatekeeper.handleChatJoinRequest(context.Background(), update, settings); err != nil {
@@ -546,7 +546,7 @@ func TestBannedChatJoinRequestQueryDeclinesAndBansBeforeCaptcha(t *testing.T) {
 	if len(queryAnswers) != 1 {
 		t.Fatalf("expected one join request query answer, got %d", len(queryAnswers))
 	}
-	if queryAnswers[0].form.Get("chat_join_request_query_id") != "join-query" {
+	if queryAnswers[0].form.Get("chat_join_request_query_id") != testJoinQueryID {
 		t.Fatalf("unexpected query id: %q", queryAnswers[0].form.Get("chat_join_request_query_id"))
 	}
 	if queryAnswers[0].form.Get("result") != testJoinRequestDecline {
@@ -567,7 +567,7 @@ func TestJoinRequestCaptchaUsesWebAppQueryWhenAvailable(t *testing.T) {
 	t.Parallel()
 
 	recorder := &botRequestRecorder{}
-	groupChat := api.Chat{ID: -100123, Type: "supergroup", Title: testGroupTitle, UserName: "waveclub"}
+	groupChat := api.Chat{ID: -100123, Type: testChatTypeSupergroup, Title: testGroupTitle, UserName: testGroupUsername}
 	user := api.User{ID: 42, FirstName: testFirstNameNeo}
 	store := newGatekeeperFlowStore()
 
@@ -604,7 +604,7 @@ func TestJoinRequestCaptchaUsesWebAppQueryWhenAvailable(t *testing.T) {
 			Chat:       groupChat,
 			From:       user,
 			UserChatID: 9001,
-			QueryID:    "join-query",
+			QueryID:    testJoinQueryID,
 		},
 	}
 	if err := gatekeeper.handleChatJoinRequest(context.Background(), update, settings); err != nil {
@@ -615,7 +615,7 @@ func TestJoinRequestCaptchaUsesWebAppQueryWhenAvailable(t *testing.T) {
 	if len(webApps) != 1 {
 		t.Fatalf("expected one join request web app call, got %d", len(webApps))
 	}
-	if webApps[0].form.Get("chat_join_request_query_id") != "join-query" {
+	if webApps[0].form.Get("chat_join_request_query_id") != testJoinQueryID {
 		t.Fatalf("unexpected query id: %q", webApps[0].form.Get("chat_join_request_query_id"))
 	}
 	webAppURL := webApps[0].form.Get("web_app_url")
@@ -633,7 +633,7 @@ func TestJoinRequestCaptchaUsesWebAppQueryWhenAvailable(t *testing.T) {
 	if challenge.CommChatID != 9001 {
 		t.Fatalf("expected web app challenge communication chat to be user chat id 9001, got %d", challenge.CommChatID)
 	}
-	if challenge.JoinRequestQueryID != "join-query" {
+	if challenge.JoinRequestQueryID != testJoinQueryID {
 		t.Fatalf("unexpected stored query id: %q", challenge.JoinRequestQueryID)
 	}
 	if challenge.WebAppToken == "" {
@@ -651,7 +651,7 @@ func TestBannedChatMemberSkipsCaptchaAndDeletesKnownJoinArtifacts(t *testing.T) 
 	t.Parallel()
 
 	recorder := &botRequestRecorder{}
-	groupChat := api.Chat{ID: -100123, Type: "supergroup", Title: testGroupTitle, UserName: "waveclub"}
+	groupChat := api.Chat{ID: -100123, Type: testChatTypeSupergroup, Title: testGroupTitle, UserName: testGroupUsername}
 	user := api.User{ID: 42, FirstName: testFirstNameNeo}
 	store := newGatekeeperFlowStore()
 	store.joiners[store.joinerKey(groupChat.ID, user.ID)] = &db.RecentJoiner{
@@ -724,7 +724,7 @@ func TestBannedChatMemberSkipsCaptchaAndDeletesKnownJoinArtifacts(t *testing.T) 
 	if len(deleteMessages) != 2 {
 		t.Fatalf("expected challenge and join message cleanup, got %d deletes", len(deleteMessages))
 	}
-	if deleteMessages[0].form.Get("message_id") != "88" || deleteMessages[1].form.Get("message_id") != "77" {
+	if deleteMessages[0].form.Get(logFieldMessageID) != "88" || deleteMessages[1].form.Get(logFieldMessageID) != "77" {
 		t.Fatalf("unexpected delete order/messages: %#v", deleteMessages)
 	}
 	if len(store.challenges) != 0 {
@@ -764,7 +764,7 @@ func TestFailedChallengeActivationRetainsDurableUnrestrictRetry(t *testing.T) {
 	}
 	service := &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI, language: "en"}, settings: settings}
 	gatekeeper := NewGatekeeper(service, botAPI, store, nil, &config.Config{}, &testGatekeeperBanChecker{})
-	chat := &api.Chat{ID: -100123, Type: "supergroup", Title: testGroupTitle}
+	chat := &api.Chat{ID: -100123, Type: testChatTypeSupergroup, Title: testGroupTitle}
 	user := &api.User{ID: 42, FirstName: testFirstNameNeo, LanguageCode: "en"}
 
 	if err := gatekeeper.startChallenge(context.Background(), nil, user, chat, chat.ID, chat.ID, settings); err == nil {
@@ -783,7 +783,7 @@ func TestBannedNewChatMembersDeletesJoinMessageAndSkipsBackfill(t *testing.T) {
 	t.Parallel()
 
 	recorder := &botRequestRecorder{}
-	groupChat := api.Chat{ID: -100123, Type: "supergroup", Title: testGroupTitle, UserName: "waveclub"}
+	groupChat := api.Chat{ID: -100123, Type: testChatTypeSupergroup, Title: testGroupTitle, UserName: testGroupUsername}
 	user := api.User{ID: 42, FirstName: testFirstNameNeo}
 	store := newGatekeeperFlowStore()
 
@@ -837,7 +837,7 @@ func TestBannedNewChatMembersDeletesJoinMessageAndSkipsBackfill(t *testing.T) {
 		t.Fatalf("expected ban to include join message id 77, got %#v", banChecker.bans[0])
 	}
 	deleteMessages := recorder.byMethod(testTelegramMethodDeleteMessage)
-	if len(deleteMessages) != 1 || deleteMessages[0].form.Get("message_id") != "77" {
+	if len(deleteMessages) != 1 || deleteMessages[0].form.Get(logFieldMessageID) != "77" {
 		t.Fatalf("expected join message 77 to be deleted, got %#v", deleteMessages)
 	}
 	if len(recorder.byMethod(testTelegramMethodSendMessage)) != 0 {
@@ -904,7 +904,7 @@ func TestBannedBotNewChatMembersDeletesJoinMessageAndSkipsCaptcha(t *testing.T) 
 		t.Fatalf("expected banned bot cleanup to include join message id 77, got %#v", banChecker.bans)
 	}
 	deleteMessages := recorder.byMethod(testTelegramMethodDeleteMessage)
-	if len(deleteMessages) != 1 || deleteMessages[0].form.Get("message_id") != "77" {
+	if len(deleteMessages) != 1 || deleteMessages[0].form.Get(logFieldMessageID) != "77" {
 		t.Fatalf("expected join message 77 to be deleted, got %#v", deleteMessages)
 	}
 	if len(recorder.byMethod(testTelegramMethodSendMessage)) != 0 {
@@ -920,7 +920,7 @@ func TestJoinRequestCaptchaSuccessHandoffSkipsSecondCaptchaAndSendsGreetingOnce(
 	t.Parallel()
 
 	recorder := &botRequestRecorder{}
-	groupChat := api.Chat{ID: -100123, Type: "supergroup", Title: testGroupTitle, UserName: "waveclub"}
+	groupChat := api.Chat{ID: -100123, Type: testChatTypeSupergroup, Title: testGroupTitle, UserName: testGroupUsername}
 	user := api.User{ID: 42, FirstName: testFirstNameNeo}
 	store := newGatekeeperFlowStore()
 
@@ -931,7 +931,7 @@ func TestJoinRequestCaptchaSuccessHandoffSkipsSecondCaptchaAndSendsGreetingOnce(
 		case testTelegramMethodGetChat:
 			return map[string]any{
 				"id":              9001,
-				"type":            "private",
+				"type":            telegramChatTypePrivate,
 				testJSONFirstName: testFirstNameNeo,
 			}
 		case "approveChatJoinRequest":
@@ -1069,7 +1069,7 @@ func TestJoinRequestCaptchaSuccessHandoffSkipsPublicCaptchaWithoutViaJoinRequest
 	t.Parallel()
 
 	recorder := &botRequestRecorder{}
-	groupChat := api.Chat{ID: -100123, Type: "supergroup", Title: testGroupTitle, UserName: "waveclub"}
+	groupChat := api.Chat{ID: -100123, Type: testChatTypeSupergroup, Title: testGroupTitle, UserName: testGroupUsername}
 	user := api.User{ID: 42, FirstName: testFirstNameNeo}
 	store := newGatekeeperFlowStore()
 
@@ -1080,7 +1080,7 @@ func TestJoinRequestCaptchaSuccessHandoffSkipsPublicCaptchaWithoutViaJoinRequest
 		case testTelegramMethodGetChat:
 			return map[string]any{
 				"id":              9001,
-				"type":            "private",
+				"type":            telegramChatTypePrivate,
 				testJSONFirstName: testFirstNameNeo,
 			}
 		case "approveChatJoinRequest":
@@ -1149,7 +1149,7 @@ func TestManualJoinRequestApprovalSkipsPublicCaptchaAndSendsOnlyGreeting(t *test
 	t.Parallel()
 
 	recorder := &botRequestRecorder{}
-	groupChat := api.Chat{ID: -100123, Type: "supergroup", Title: testGroupTitle, UserName: "waveclub"}
+	groupChat := api.Chat{ID: -100123, Type: testChatTypeSupergroup, Title: testGroupTitle, UserName: testGroupUsername}
 	user := api.User{ID: 42, FirstName: testFirstNameNeo}
 
 	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
@@ -1225,7 +1225,7 @@ func TestDirectJoinCaptchaIncludesGreetingImmediatelyAndBackfillsJoinMessageID(t
 	t.Parallel()
 
 	recorder := &botRequestRecorder{}
-	groupChat := api.Chat{ID: -100123, Type: "supergroup", Title: testGroupTitle, UserName: "waveclub"}
+	groupChat := api.Chat{ID: -100123, Type: testChatTypeSupergroup, Title: testGroupTitle, UserName: testGroupUsername}
 	user := api.User{ID: 42, FirstName: testFirstNameNeo}
 
 	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
@@ -1316,7 +1316,7 @@ func TestDirectJoinCaptchaUsesMarkdownV2ForNormalizedGreetingTemplate(t *testing
 	t.Parallel()
 
 	recorder := &botRequestRecorder{}
-	groupChat := api.Chat{ID: -100123, Type: "supergroup", Title: testGroupTitle, UserName: "waveclub"}
+	groupChat := api.Chat{ID: -100123, Type: testChatTypeSupergroup, Title: testGroupTitle, UserName: testGroupUsername}
 	user := api.User{ID: 42, FirstName: testFirstNameNeo}
 
 	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
@@ -1403,7 +1403,7 @@ func TestNonJoinRequestChatMemberJoinsStillStartPublicCaptcha(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			recorder := &botRequestRecorder{}
-			groupChat := api.Chat{ID: -100123, Type: "supergroup", Title: testGroupTitle, UserName: "waveclub"}
+			groupChat := api.Chat{ID: -100123, Type: testChatTypeSupergroup, Title: testGroupTitle, UserName: testGroupUsername}
 			user := api.User{ID: 42, FirstName: testFirstNameNeo}
 
 			botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
@@ -1482,7 +1482,7 @@ func TestJoinRequestGreetingWithoutCaptchaLeavesManualReviewUntouched(t *testing
 
 	update := &api.Update{
 		ChatJoinRequest: &api.ChatJoinRequest{
-			Chat:       api.Chat{ID: -100123, Type: "supergroup", Title: testGroupTitle},
+			Chat:       api.Chat{ID: -100123, Type: testChatTypeSupergroup, Title: testGroupTitle},
 			From:       api.User{ID: 42, FirstName: testFirstNameNeo},
 			UserChatID: 9001,
 		},
@@ -1531,10 +1531,10 @@ func TestJoinRequestQueryWithoutCaptchaQueuesManualReview(t *testing.T) {
 
 	update := &api.Update{
 		ChatJoinRequest: &api.ChatJoinRequest{
-			Chat:       api.Chat{ID: -100123, Type: "supergroup", Title: testGroupTitle},
+			Chat:       api.Chat{ID: -100123, Type: testChatTypeSupergroup, Title: testGroupTitle},
 			From:       api.User{ID: 42, FirstName: testFirstNameNeo},
 			UserChatID: 9001,
-			QueryID:    "join-query",
+			QueryID:    testJoinQueryID,
 		},
 	}
 	if err := gatekeeper.handleChatJoinRequest(context.Background(), update, settings); err != nil {
@@ -1597,7 +1597,7 @@ func TestProcessExpiredJoinRequestChallengesCleanupWithoutApproval(t *testing.T)
 				UserID:             42,
 				ChatID:             -100123,
 				Status:             db.ChallengeStatusPending,
-				SuccessUUID:        "uuid-expired",
+				SuccessUUID:        testExpiredChallengeID,
 				ChallengeMessageID: 501,
 				CreatedAt:          time.Now().Add(-10 * time.Minute),
 				ExpiresAt:          time.Now().Add(-time.Minute),
@@ -1650,14 +1650,14 @@ func TestProcessExpiredJoinRequestWebAppChallengeFallsBackToDM(t *testing.T) {
 			case "9001":
 				return map[string]any{
 					"id":              9001,
-					"type":            "private",
+					"type":            telegramChatTypePrivate,
 					testJSONFirstName: testFirstNameNeo,
 				}
 			case "-100123":
 				return map[string]any{
-					"id":    -100123,
-					"type":  "supergroup",
-					"title": testGroupTitle,
+					"id":          -100123,
+					"type":        testChatTypeSupergroup,
+					testJSONTitle: testGroupTitle,
 				}
 			default:
 				t.Fatalf("unexpected getChat chat_id: %q", r.Form.Get("chat_id"))
@@ -1677,9 +1677,9 @@ func TestProcessExpiredJoinRequestWebAppChallengeFallsBackToDM(t *testing.T) {
 		UserID:             42,
 		ChatID:             -100123,
 		Status:             db.ChallengeStatusPending,
-		SuccessUUID:        "uuid-expired",
+		SuccessUUID:        testExpiredChallengeID,
 		WebAppToken:        "web-app-token",
-		JoinRequestQueryID: "join-query",
+		JoinRequestQueryID: testJoinQueryID,
 		CreatedAt:          time.Now().Add(-10 * time.Minute),
 		ExpiresAt:          time.Now().Add(-time.Minute),
 	}
@@ -1719,7 +1719,7 @@ func TestProcessExpiredJoinRequestWebAppChallengeFallsBackToDM(t *testing.T) {
 	if challenge.CommChatID != 9001 || challenge.ChatID != -100123 || challenge.UserID != 42 {
 		t.Fatalf("unexpected fallback challenge identity: %#v", challenge)
 	}
-	if challenge.WebAppToken != "" || challenge.JoinRequestQueryID != "join-query" {
+	if challenge.WebAppToken != "" || challenge.JoinRequestQueryID != testJoinQueryID {
 		t.Fatalf("expected fallback challenge to clear web app token and keep query marker, got token=%q query=%q", challenge.WebAppToken, challenge.JoinRequestQueryID)
 	}
 	if challenge.ChallengeMessageID == 0 {
@@ -1740,9 +1740,9 @@ func TestProcessExpiredJoinRequestDMFallbackChallengeRejects(t *testing.T) {
 		switch method {
 		case testTelegramMethodGetChat:
 			return map[string]any{
-				"id":    -100123,
-				"type":  "supergroup",
-				"title": testGroupTitle,
+				"id":          -100123,
+				"type":        testChatTypeSupergroup,
+				testJSONTitle: testGroupTitle,
 			}
 		case testTelegramMethodDeleteMessage, testTelegramMethodBanChatMember, testTelegramMethodJoinRequestQuery:
 			return true
@@ -1760,8 +1760,8 @@ func TestProcessExpiredJoinRequestDMFallbackChallengeRejects(t *testing.T) {
 		UserID:             42,
 		ChatID:             -100123,
 		Status:             db.ChallengeStatusPending,
-		SuccessUUID:        "uuid-expired",
-		JoinRequestQueryID: "join-query",
+		SuccessUUID:        testExpiredChallengeID,
+		JoinRequestQueryID: testJoinQueryID,
 		ChallengeMessageID: 501,
 		CreatedAt:          time.Now().Add(-10 * time.Minute),
 		ExpiresAt:          time.Now().Add(-time.Minute),
@@ -1819,14 +1819,14 @@ func TestProcessUnopenedWebAppChallengeFallsBackEarly(t *testing.T) {
 			case "9001":
 				return map[string]any{
 					"id":              9001,
-					"type":            "private",
+					"type":            telegramChatTypePrivate,
 					testJSONFirstName: testFirstNameNeo,
 				}
 			case "-100123":
 				return map[string]any{
-					"id":    -100123,
-					"type":  "supergroup",
-					"title": testGroupTitle,
+					"id":          -100123,
+					"type":        testChatTypeSupergroup,
+					testJSONTitle: testGroupTitle,
 				}
 			default:
 				t.Fatalf("unexpected getChat chat_id: %q", r.Form.Get("chat_id"))
@@ -1847,8 +1847,8 @@ func TestProcessUnopenedWebAppChallengeFallsBackEarly(t *testing.T) {
 		ChatID:             -100123,
 		Status:             db.ChallengeStatusPending,
 		SuccessUUID:        testCorrectChoice,
-		WebAppToken:        "tok",
-		JoinRequestQueryID: "join-query",
+		WebAppToken:        testToken,
+		JoinRequestQueryID: testJoinQueryID,
 		CaptchaPrompt:      "poodle",
 		CaptchaOptionsJSON: testCaptchaOptionsJSON,
 		CreatedAt:          time.Now().Add(-30 * time.Second),
@@ -1884,7 +1884,7 @@ func TestProcessUnopenedWebAppChallengeFallsBackEarly(t *testing.T) {
 	if challenge.WebAppToken != "" {
 		t.Fatalf("expected web app token cleared after fallback, got %q", challenge.WebAppToken)
 	}
-	if challenge.JoinRequestQueryID != "join-query" {
+	if challenge.JoinRequestQueryID != testJoinQueryID {
 		t.Fatalf("expected query marker preserved, got %q", challenge.JoinRequestQueryID)
 	}
 }
@@ -1904,8 +1904,8 @@ func TestProcessUnopenedWebAppChallengeSkipsOpened(t *testing.T) {
 		ChatID:             -100123,
 		Status:             db.ChallengeStatusPending,
 		SuccessUUID:        testCorrectChoice,
-		WebAppToken:        "tok",
-		JoinRequestQueryID: "join-query",
+		WebAppToken:        testToken,
+		JoinRequestQueryID: testJoinQueryID,
 		CaptchaPrompt:      "poodle",
 		CaptchaOptionsJSON: testCaptchaOptionsJSON,
 		CreatedAt:          time.Now().Add(-30 * time.Second),
@@ -1935,7 +1935,7 @@ func TestProcessUnopenedWebAppChallengeSkipsOpened(t *testing.T) {
 	}
 
 	challenge := store.onlyChallenge(t)
-	if challenge.WebAppToken != "tok" {
+	if challenge.WebAppToken != testToken {
 		t.Fatalf("expected opened challenge to remain untouched, got token %q", challenge.WebAppToken)
 	}
 }
@@ -1955,8 +1955,8 @@ func TestProcessUnopenedWebAppChallengeSkipsAlreadyPassed(t *testing.T) {
 		ChatID:             -100123,
 		Status:             db.ChallengeStatusPassedWaitingMemberJoin,
 		SuccessUUID:        testCorrectChoice,
-		WebAppToken:        "tok",
-		JoinRequestQueryID: "join-query",
+		WebAppToken:        testToken,
+		JoinRequestQueryID: testJoinQueryID,
 		CaptchaPrompt:      "poodle",
 		CaptchaOptionsJSON: testCaptchaOptionsJSON,
 		CreatedAt:          time.Now().Add(-30 * time.Second),
@@ -1988,7 +1988,7 @@ func TestProcessUnopenedWebAppChallengeSkipsAlreadyPassed(t *testing.T) {
 	if challenge.Status != db.ChallengeStatusPassedWaitingMemberJoin {
 		t.Fatalf("expected passed challenge status to be unchanged, got %q", challenge.Status)
 	}
-	if challenge.WebAppToken != "tok" {
+	if challenge.WebAppToken != testToken {
 		t.Fatalf("expected passed challenge token to be unchanged, got %q", challenge.WebAppToken)
 	}
 }
@@ -2006,14 +2006,14 @@ func TestProcessExpiredRecoversFallbackPendingChallenge(t *testing.T) {
 			case "9001":
 				return map[string]any{
 					"id":              9001,
-					"type":            "private",
+					"type":            telegramChatTypePrivate,
 					testJSONFirstName: testFirstNameNeo,
 				}
 			case "-100123":
 				return map[string]any{
-					"id":    -100123,
-					"type":  "supergroup",
-					"title": testGroupTitle,
+					"id":          -100123,
+					"type":        testChatTypeSupergroup,
+					testJSONTitle: testGroupTitle,
 				}
 			default:
 				t.Fatalf("unexpected getChat chat_id: %q", r.Form.Get("chat_id"))
@@ -2034,8 +2034,8 @@ func TestProcessExpiredRecoversFallbackPendingChallenge(t *testing.T) {
 		ChatID:             -100123,
 		Status:             db.ChallengeStatusWebAppFallbackPending,
 		SuccessUUID:        testCorrectChoice,
-		WebAppToken:        "tok",
-		JoinRequestQueryID: "join-query",
+		WebAppToken:        testToken,
+		JoinRequestQueryID: testJoinQueryID,
 		CaptchaPrompt:      "poodle",
 		CaptchaOptionsJSON: testCaptchaOptionsJSON,
 		CreatedAt:          time.Now().Add(-10 * time.Minute),
@@ -2071,7 +2071,7 @@ func TestProcessExpiredRecoversFallbackPendingChallenge(t *testing.T) {
 	if challenge.WebAppToken != "" {
 		t.Fatalf("expected web app token cleared after recovery, got %q", challenge.WebAppToken)
 	}
-	if challenge.JoinRequestQueryID != "join-query" {
+	if challenge.JoinRequestQueryID != testJoinQueryID {
 		t.Fatalf("expected query marker preserved after recovery, got %q", challenge.JoinRequestQueryID)
 	}
 }
@@ -2095,8 +2095,8 @@ func TestProcessExpiredPassedWebAppChallengeCleansUpWithoutPenalty(t *testing.T)
 		UserID:             42,
 		ChatID:             -100123,
 		Status:             db.ChallengeStatusPassedWaitingMemberJoin,
-		WebAppToken:        "tok",
-		JoinRequestQueryID: "join-query",
+		WebAppToken:        testToken,
+		JoinRequestQueryID: testJoinQueryID,
 		CreatedAt:          time.Now().Add(-10 * time.Minute),
 		ExpiresAt:          time.Now().Add(-time.Minute),
 	}
@@ -2140,7 +2140,7 @@ func TestFallbackClaimedWebAppChallengeDeclinesWhenTargetChatUnavailable(t *test
 			case "9001":
 				return map[string]any{
 					"id":              9001,
-					"type":            "private",
+					"type":            telegramChatTypePrivate,
 					testJSONFirstName: testFirstNameNeo,
 				}
 			case "-100123":
@@ -2164,8 +2164,8 @@ func TestFallbackClaimedWebAppChallengeDeclinesWhenTargetChatUnavailable(t *test
 		ChatID:             -100123,
 		Status:             db.ChallengeStatusWebAppFallbackPending,
 		SuccessUUID:        testCorrectChoice,
-		WebAppToken:        "tok",
-		JoinRequestQueryID: "join-query",
+		WebAppToken:        testToken,
+		JoinRequestQueryID: testJoinQueryID,
 		CaptchaPrompt:      "poodle",
 		CaptchaOptionsJSON: testCaptchaOptionsJSON,
 		CreatedAt:          time.Now().Add(-10 * time.Minute),

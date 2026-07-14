@@ -24,14 +24,14 @@ func TestDiagnosticCommandAuthorization(t *testing.T) {
 		if r.Form.Get("user_id") == "100" {
 			return testChatMemberResponse("administrator", false, false, false)
 		}
-		return testChatMemberResponse("member", false, false, false)
+		return testChatMemberResponse(telegramMemberStatus, false, false, false)
 	})
 	reactor := &Reactor{
 		bot:    botAPI,
 		config: Config{SpamControl: config.SpamControl{DebugUserID: 42}},
 	}
-	privateChat := &api.Chat{ID: 42, Type: "private"}
-	groupChat := &api.Chat{ID: -100, Type: "supergroup"}
+	privateChat := &api.Chat{ID: 42, Type: telegramChatTypePrivate}
+	groupChat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
 
 	if !reactor.diagnosticCommandAllowed(t.Context(), privateChat, &api.User{ID: 42}) {
 		t.Fatal("configured debug user should be authorized in private chat")
@@ -156,7 +156,7 @@ func TestVoteBanCommandRoutesByRestrictPermissionAfterReportCheck(t *testing.T) 
 		},
 		{
 			name:         "regular member starts voting",
-			member:       testChatMemberResponse("member", false, false, false),
+			member:       testChatMemberResponse(telegramMemberStatus, false, false, false),
 			wantReported: 1,
 		},
 	}
@@ -174,7 +174,7 @@ func TestVoteBanCommandRoutesByRestrictPermissionAfterReportCheck(t *testing.T) 
 					if err := r.ParseForm(); err != nil {
 						t.Fatalf("parse form: %v", err)
 					}
-					if got := r.Form.Get("message_id"); got != "50" {
+					if got := r.Form.Get(logFieldMessageID); got != "50" {
 						t.Fatalf("unexpected deleted message id: %q", got)
 					}
 					deleteCommandCalls++
@@ -185,7 +185,7 @@ func TestVoteBanCommandRoutesByRestrictPermissionAfterReportCheck(t *testing.T) 
 				}
 			})
 
-			chat := &api.Chat{ID: -100, Type: "supergroup"}
+			chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
 			actor := &api.User{ID: 100, FirstName: testFirstNameActor}
 			target := &api.User{ID: 200, FirstName: testFirstNameTarget}
 			reply := &api.Message{MessageID: 40, Chat: *chat, From: target, Text: "spam text"}
@@ -248,7 +248,7 @@ func TestVoteBanCommandCommunityVotingDisabledSkipsProcessing(t *testing.T) {
 	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
 		switch method {
 		case testTelegramMethodGetChatMember:
-			return testChatMemberResponse("member", false, false, false)
+			return testChatMemberResponse(telegramMemberStatus, false, false, false)
 		case testTelegramMethodSendMessage:
 			if err := r.ParseForm(); err != nil {
 				t.Fatalf("parse form: %v", err)
@@ -258,11 +258,11 @@ func TestVoteBanCommandCommunityVotingDisabledSkipsProcessing(t *testing.T) {
 				t.Fatal("expected disabled voting response to reply to the command")
 			}
 			return map[string]any{
-				"message_id": 70,
-				testJSONDate: 0,
+				logFieldMessageID: 70,
+				testJSONDate:      0,
 				logFieldChat: map[string]any{
 					"id":   -100,
-					"type": "supergroup",
+					"type": testChatTypeSupergroup,
 				},
 			}
 		default:
@@ -271,7 +271,7 @@ func TestVoteBanCommandCommunityVotingDisabledSkipsProcessing(t *testing.T) {
 		}
 	})
 
-	chat := &api.Chat{ID: -100, Type: "supergroup"}
+	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
 	actor := &api.User{ID: 100, FirstName: testFirstNameActor}
 	target := &api.User{ID: 200, FirstName: testFirstNameTarget}
 	command := &api.Message{
@@ -323,7 +323,7 @@ func TestBanCommandIsIgnored(t *testing.T) {
 		t.Fatalf("unexpected bot method: %s", method)
 		return nil
 	})
-	chat := &api.Chat{ID: -100, Type: "supergroup"}
+	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
 	actor := &api.User{ID: 100, FirstName: testFirstNameActor}
 	msg := &api.Message{
 		MessageID: 50,
@@ -366,11 +366,11 @@ func TestVoteBanCommandWithoutReplySendsUsageHelp(t *testing.T) {
 				t.Fatal("expected usage help text")
 			}
 			return map[string]any{
-				"message_id": 70,
-				testJSONDate: 0,
+				logFieldMessageID: 70,
+				testJSONDate:      0,
 				logFieldChat: map[string]any{
 					"id":   -100,
-					"type": "supergroup",
+					"type": testChatTypeSupergroup,
 				},
 			}
 		default:
@@ -378,7 +378,7 @@ func TestVoteBanCommandWithoutReplySendsUsageHelp(t *testing.T) {
 			return nil
 		}
 	})
-	chat := &api.Chat{ID: -100, Type: "supergroup"}
+	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
 	actor := &api.User{ID: 100, FirstName: testFirstNameActor}
 	command := &api.Message{MessageID: 50, Chat: *chat, From: actor, Text: testVoteBanCommand}
 	reactor := &Reactor{
@@ -407,11 +407,11 @@ func TestVoteBanCommandLLMSpamBansImmediatelyAndDeletesReportMessage(t *testing.
 		case testTelegramMethodSendMessage:
 			sendMessageCalls++
 			return map[string]any{
-				"message_id": 70,
-				testJSONDate: 0,
+				logFieldMessageID: 70,
+				testJSONDate:      0,
 				logFieldChat: map[string]any{
 					"id":   -100,
-					"type": "supergroup",
+					"type": testChatTypeSupergroup,
 				},
 			}
 		case testTelegramMethodDeleteMessage:
@@ -419,7 +419,7 @@ func TestVoteBanCommandLLMSpamBansImmediatelyAndDeletesReportMessage(t *testing.
 				t.Fatalf("parse form: %v", err)
 			}
 			deleteMessageCalls++
-			if got := r.Form.Get("message_id"); got != "50" {
+			if got := r.Form.Get(logFieldMessageID); got != "50" {
 				t.Fatalf("expected report message delete, got message_id=%q", got)
 			}
 			return true
@@ -428,7 +428,7 @@ func TestVoteBanCommandLLMSpamBansImmediatelyAndDeletesReportMessage(t *testing.
 			return nil
 		}
 	})
-	chat := &api.Chat{ID: -100, Type: "supergroup"}
+	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
 	actor := &api.User{ID: 100, FirstName: testFirstNameActor}
 	target := &api.User{ID: 200, FirstName: testFirstNameTarget}
 	reply := &api.Message{MessageID: 40, Chat: *chat, From: target, Text: "reported spam text"}
@@ -470,13 +470,13 @@ func TestMessageMentionCurrentBotTriggersReportFlow(t *testing.T) {
 	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
 		switch method {
 		case testTelegramMethodGetChatMember:
-			return testChatMemberResponse("member", false, false, false)
+			return testChatMemberResponse(telegramMemberStatus, false, false, false)
 		default:
 			t.Fatalf("unexpected bot method: %s", method)
 			return nil
 		}
 	})
-	chat := &api.Chat{ID: -100, Type: "supergroup"}
+	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
 	actor := &api.User{ID: 100, FirstName: testFirstNameActor}
 	target := &api.User{ID: 200, FirstName: testFirstNameTarget}
 	reply := &api.Message{MessageID: 40, Chat: *chat, From: target, Text: "reported text"}

@@ -156,7 +156,7 @@ func TestSpamVoteCallbackUsesSpamCaseChatSettings(t *testing.T) {
 		switch method {
 		case "getChatMember":
 			return map[string]any{
-				"status": "member",
+				"status": telegramMemberStatus,
 				"user":   map[string]any{"id": 300, testJSONIsBot: false, testJSONFirstName: "Voter"},
 			}
 		case "answerCallbackQuery":
@@ -165,8 +165,8 @@ func TestSpamVoteCallbackUsesSpamCaseChatSettings(t *testing.T) {
 		case "editMessageText":
 			editSent = true
 			return map[string]any{
-				"message_id": 400,
-				testJSONDate: 0,
+				logFieldMessageID: 400,
+				testJSONDate:      0,
 				logFieldChat: map[string]any{
 					"id":   900,
 					"type": testChatTypeChannel,
@@ -276,7 +276,7 @@ func TestHandleMessageExternalQuoteHeuristic(t *testing.T) {
 		lastResults: make(map[messageResultKey]*MessageProcessingResult),
 	}
 
-	chat := &api.Chat{ID: 100, Type: "supergroup"}
+	chat := &api.Chat{ID: 100, Type: testChatTypeSupergroup}
 	user := &api.User{ID: 200}
 	msg := &api.Message{
 		MessageID: 1,
@@ -326,7 +326,7 @@ func TestHandleMessageCleanLeftUserRememberedAsKnownNonMember(t *testing.T) {
 					testJSONIsBot:     false,
 					testJSONFirstName: testFirstNameUser,
 				},
-				"status": "left",
+				"status": testMemberStatusLeft,
 			}
 		default:
 			t.Fatalf("unexpected bot method: %s", method)
@@ -354,7 +354,7 @@ func TestHandleMessageCleanLeftUserRememberedAsKnownNonMember(t *testing.T) {
 		lastResults: make(map[messageResultKey]*MessageProcessingResult),
 	}
 
-	chat := &api.Chat{ID: 100, Type: "supergroup"}
+	chat := &api.Chat{ID: 100, Type: testChatTypeSupergroup}
 	user := &api.User{ID: 200}
 	msg := &api.Message{MessageID: 11, Chat: *chat, From: user, Text: testMessageText}
 	settings := &db.Settings{LLMFirstMessageEnabled: true, CommunityVotingEnabled: true}
@@ -389,7 +389,7 @@ func TestHandleMessageNotSpammerOverrideBypassesBanAndLLM(t *testing.T) {
 					testJSONIsBot:     false,
 					testJSONFirstName: testFirstNameUser,
 				},
-				"status": "member",
+				"status": telegramMemberStatus,
 			}
 		default:
 			t.Fatalf("unexpected bot method: %s", method)
@@ -421,7 +421,7 @@ func TestHandleMessageNotSpammerOverrideBypassesBanAndLLM(t *testing.T) {
 		lastResults: make(map[messageResultKey]*MessageProcessingResult),
 	}
 
-	chat := &api.Chat{ID: 100, Type: "supergroup"}
+	chat := &api.Chat{ID: 100, Type: testChatTypeSupergroup}
 	user := &api.User{ID: 200, UserName: "override_user"}
 	msg := &api.Message{
 		MessageID: 10,
@@ -501,7 +501,7 @@ func TestHandleMessageChatAdministratorBypassesBanAndLLM(t *testing.T) {
 		lastResults: make(map[messageResultKey]*MessageProcessingResult),
 	}
 
-	chat := &api.Chat{ID: 100, Type: "supergroup"}
+	chat := &api.Chat{ID: 100, Type: testChatTypeSupergroup}
 	user := &api.User{ID: 200, FirstName: testFirstNameAdmin}
 	msg := &api.Message{MessageID: 14, Chat: *chat, From: user, Text: "реклама от админа"}
 	settings := &db.Settings{LLMFirstMessageEnabled: true, CommunityVotingEnabled: true}
@@ -546,8 +546,8 @@ func TestHandleMessageLinkedChannelSenderBypassesSpamPipeline(t *testing.T) {
 			}
 			return map[string]any{
 				"id":             -100,
-				"type":           "supergroup",
-				"title":          "Discussion",
+				"type":           testChatTypeSupergroup,
+				testJSONTitle:    "Discussion",
 				"linked_chat_id": -200,
 			}
 		default:
@@ -577,7 +577,7 @@ func TestHandleMessageLinkedChannelSenderBypassesSpamPipeline(t *testing.T) {
 		lastResults: make(map[messageResultKey]*MessageProcessingResult),
 	}
 
-	chat := &api.Chat{ID: -100, Type: "supergroup"}
+	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
 	msg := &api.Message{
 		MessageID: 15,
 		Chat:      *chat,
@@ -631,7 +631,7 @@ func TestHandleMessageKnownNonMemberBypassesFirstMessageChecks(t *testing.T) {
 					testJSONIsBot:     false,
 					testJSONFirstName: testFirstNameUser,
 				},
-				"status": "left",
+				"status": testMemberStatusLeft,
 			}
 		default:
 			t.Fatalf("unexpected bot method: %s", method)
@@ -661,7 +661,7 @@ func TestHandleMessageKnownNonMemberBypassesFirstMessageChecks(t *testing.T) {
 		lastResults: make(map[messageResultKey]*MessageProcessingResult),
 	}
 
-	chat := &api.Chat{ID: 100, Type: "supergroup"}
+	chat := &api.Chat{ID: 100, Type: testChatTypeSupergroup}
 	user := &api.User{ID: 200}
 	msg := &api.Message{
 		MessageID: 12,
@@ -720,7 +720,7 @@ func TestHandleMessageWithoutUserOrSenderChatSkipsSafely(t *testing.T) {
 	t.Parallel()
 
 	r := &Reactor{lastResults: make(map[messageResultKey]*MessageProcessingResult)}
-	chat := &api.Chat{ID: -1001, Type: "supergroup"}
+	chat := &api.Chat{ID: -1001, Type: testChatTypeSupergroup}
 	msg := &api.Message{MessageID: 7, Chat: *chat, Text: "anonymous"}
 
 	if err := r.handleMessage(context.Background(), msg, chat, nil, db.DefaultSettings(chat.ID)); err != nil {
@@ -754,7 +754,7 @@ func TestHandleMessageExternalQuoteHeuristicDoesNotTriggerForNonFirstMessage(t *
 		lastResults: make(map[messageResultKey]*MessageProcessingResult),
 	}
 
-	chat := &api.Chat{ID: 100, Type: "supergroup"}
+	chat := &api.Chat{ID: 100, Type: testChatTypeSupergroup}
 	user := &api.User{ID: 200}
 	msg := &api.Message{
 		MessageID: 2,
@@ -800,7 +800,7 @@ func TestHandleMessageCleanMemberInsertsMemberInsteadOfKnownNonMember(t *testing
 					testJSONIsBot:     false,
 					testJSONFirstName: testFirstNameUser,
 				},
-				"status": "member",
+				"status": telegramMemberStatus,
 			}
 		default:
 			t.Fatalf("unexpected bot method: %s", method)
@@ -828,7 +828,7 @@ func TestHandleMessageCleanMemberInsertsMemberInsteadOfKnownNonMember(t *testing
 		lastResults: make(map[messageResultKey]*MessageProcessingResult),
 	}
 
-	chat := &api.Chat{ID: 100, Type: "supergroup"}
+	chat := &api.Chat{ID: 100, Type: testChatTypeSupergroup}
 	user := &api.User{ID: 200}
 	msg := &api.Message{MessageID: 13, Chat: *chat, From: user, Text: testMessageText}
 	settings := &db.Settings{LLMFirstMessageEnabled: true, CommunityVotingEnabled: true}
@@ -909,7 +909,7 @@ func TestHandleMessageExternalQuoteHeuristicFallbacks(t *testing.T) {
 				lastResults: make(map[messageResultKey]*MessageProcessingResult),
 			}
 
-			chat := &api.Chat{ID: 100, Type: "supergroup"}
+			chat := &api.Chat{ID: 100, Type: testChatTypeSupergroup}
 			user := &api.User{ID: 200}
 			msg := tt.msg
 			msg.Chat = *chat
@@ -934,7 +934,7 @@ func TestDetectFirstMessageExternalQuoteHeuristic(t *testing.T) {
 	t.Parallel()
 
 	msg := &api.Message{
-		Chat: api.Chat{ID: 100, Type: "supergroup"},
+		Chat: api.Chat{ID: 100, Type: testChatTypeSupergroup},
 		ExternalReply: &api.ExternalReplyInfo{
 			Origin: api.MessageOrigin{Type: api.MessageOriginChannel},
 			Chat:   &api.Chat{ID: 999, Type: testChatTypeChannel},

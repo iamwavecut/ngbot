@@ -160,7 +160,7 @@ func TestTestJoinCaptchaCommandSendsWebAppButton(t *testing.T) {
 	}
 
 	user := &api.User{ID: 42, FirstName: testFirstNameNeo}
-	chat := &api.Chat{ID: user.ID, Type: "private"}
+	chat := &api.Chat{ID: user.ID, Type: telegramChatTypePrivate}
 	update := &api.Update{Message: commandMessage(chat, user, "/test_join_captcha")}
 
 	proceed, err := gatekeeper.Handle(t.Context(), update, chat, user)
@@ -898,9 +898,9 @@ func TestStartJoinRequestWebAppChallengeFallsBackDurablyOnSendFailure(t *testing
 			return nil
 		case testTelegramMethodGetChat:
 			if r.Form.Get("chat_id") == "9001" {
-				return map[string]any{"id": 9001, "type": "private", testJSONFirstName: testFirstNameNeo}
+				return map[string]any{"id": 9001, "type": telegramChatTypePrivate, testJSONFirstName: testFirstNameNeo}
 			}
-			return map[string]any{"id": -100123, "type": "supergroup", "title": testGroupTitle}
+			return map[string]any{"id": -100123, "type": testChatTypeSupergroup, testJSONTitle: testGroupTitle}
 		case testTelegramMethodSendMessage:
 			return recorder.nextSendMessageResult()
 		default:
@@ -924,10 +924,10 @@ func TestStartJoinRequestWebAppChallengeFallsBackDurablyOnSendFailure(t *testing
 	}
 
 	req := &api.ChatJoinRequest{
-		Chat:       api.Chat{ID: -100123, Type: "supergroup"},
+		Chat:       api.Chat{ID: -100123, Type: testChatTypeSupergroup},
 		From:       api.User{ID: 42, FirstName: testFirstNameNeo},
 		UserChatID: 9001,
-		QueryID:    "join-query",
+		QueryID:    testJoinQueryID,
 	}
 
 	sendErr := gatekeeper.startJoinRequestWebAppChallenge(context.Background(), req, webAppSettings())
@@ -958,7 +958,7 @@ func newWebAppChallenge(expiresAt time.Time) *db.Challenge {
 		Status:             db.ChallengeStatusPending,
 		SuccessUUID:        testCorrectChoice,
 		WebAppToken:        "join-token",
-		JoinRequestQueryID: "join-query",
+		JoinRequestQueryID: testJoinQueryID,
 		CaptchaPrompt:      "poodle",
 		CaptchaOptionsJSON: testCaptchaOptionsJSON,
 		CreatedAt:          time.Now(),

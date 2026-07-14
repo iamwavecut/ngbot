@@ -67,10 +67,10 @@ func TestStartJoinRequestWebAppChallengeStoresUserLanguage(t *testing.T) {
 	}
 
 	req := &api.ChatJoinRequest{
-		Chat:       api.Chat{ID: -100123, Type: "supergroup"},
+		Chat:       api.Chat{ID: -100123, Type: testChatTypeSupergroup},
 		From:       api.User{ID: 42, FirstName: testFirstNameNeo, LanguageCode: "ru"},
 		UserChatID: 9001,
-		QueryID:    "join-query",
+		QueryID:    testJoinQueryID,
 	}
 	if err := gatekeeper.startJoinRequestWebAppChallenge(context.Background(), req, webAppSettings()); err != nil {
 		t.Fatalf("startJoinRequestWebAppChallenge returned error: %v", err)
@@ -93,9 +93,9 @@ func TestUnopenedWebAppFallbackCarriesUserLanguage(t *testing.T) {
 		case testTelegramMethodGetChat:
 			switch r.Form.Get("chat_id") {
 			case "9001":
-				return map[string]any{"id": 9001, "type": "private", testJSONFirstName: testFirstNameNeo}
+				return map[string]any{"id": 9001, "type": telegramChatTypePrivate, testJSONFirstName: testFirstNameNeo}
 			case "-100123":
-				return map[string]any{"id": -100123, "type": "supergroup", "title": testGroupTitle}
+				return map[string]any{"id": -100123, "type": testChatTypeSupergroup, testJSONTitle: testGroupTitle}
 			default:
 				t.Fatalf("unexpected getChat chat_id: %q", r.Form.Get("chat_id"))
 				return nil
@@ -115,8 +115,8 @@ func TestUnopenedWebAppFallbackCarriesUserLanguage(t *testing.T) {
 		ChatID:             -100123,
 		Status:             db.ChallengeStatusPending,
 		SuccessUUID:        testCorrectChoice,
-		WebAppToken:        "tok",
-		JoinRequestQueryID: "join-query",
+		WebAppToken:        testToken,
+		JoinRequestQueryID: testJoinQueryID,
 		CaptchaPrompt:      "poodle",
 		CaptchaOptionsJSON: testCaptchaOptionsJSON,
 		UserLanguage:       "ru",

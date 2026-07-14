@@ -175,7 +175,7 @@ func TestProcessNewChatMembersNotSpammerOverrideBypassesBanCheck(t *testing.T) {
 					testJSONIsBot:     false,
 					testJSONFirstName: testFirstNameUser,
 				},
-				"status": "member",
+				"status": telegramMemberStatus,
 			}
 		default:
 			t.Fatalf("unexpected bot method: %s", method)

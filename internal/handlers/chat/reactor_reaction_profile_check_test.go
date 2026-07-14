@@ -14,7 +14,7 @@ import (
 func TestHandleMessageReactionModeratesUnknownUserProfileSpam(t *testing.T) {
 	t.Parallel()
 
-	chat := &api.Chat{ID: -100123, Type: "supergroup", Title: testGroupTitle}
+	chat := &api.Chat{ID: -100123, Type: testChatTypeSupergroup, Title: testGroupTitle}
 	settings := db.DefaultSettings(chat.ID)
 	user := &api.User{ID: 777, FirstName: testFirstNameBad, UserName: "badworker"}
 	detector := &testSpamDetector{result: boolPtr(true)}
@@ -28,22 +28,22 @@ func TestHandleMessageReactionModeratesUnknownUserProfileSpam(t *testing.T) {
 
 		switch method {
 		case testTelegramMethodGetChatMember:
-			return testChatMemberResponse("left", false, false, false)
+			return testChatMemberResponse(testMemberStatusLeft, false, false, false)
 		case testTelegramMethodGetChat:
 			if got := r.Form.Get("chat_id"); got != "777" {
 				t.Fatalf("expected user profile chat lookup, got chat_id %q", got)
 			}
 			return map[string]any{
 				"id":              777,
-				"type":            "private",
+				"type":            telegramChatTypePrivate,
 				testJSONFirstName: testFirstNameBad,
 				"username":        "badworker",
 				"bio":             "Удаленная работа от 500 долларов в день, подробности в личку",
 				"personal_chat": map[string]any{
-					"id":       -100999,
-					"type":     testChatTypeChannel,
-					"title":    "Fast income",
-					"username": "fast_income_bot",
+					"id":          -100999,
+					"type":        testChatTypeChannel,
+					testJSONTitle: "Fast income",
+					"username":    "fast_income_bot",
 				},
 			}
 		case "getUserPersonalChatMessages":
@@ -51,12 +51,12 @@ func TestHandleMessageReactionModeratesUnknownUserProfileSpam(t *testing.T) {
 				t.Fatalf("expected personal chat messages for user 777, got %q", got)
 			}
 			return []map[string]any{{
-				"message_id": 1,
-				testJSONDate: 1,
+				logFieldMessageID: 1,
+				testJSONDate:      1,
 				logFieldChat: map[string]any{
-					"id":    -100999,
-					"type":  testChatTypeChannel,
-					"title": "Fast income",
+					"id":          -100999,
+					"type":        testChatTypeChannel,
+					testJSONTitle: "Fast income",
 				},
 				"text": "Казино бот с бонусом, переходи по ссылке",
 			}}
@@ -118,7 +118,7 @@ func TestHandleMessageReactionModeratesUnknownUserProfileSpam(t *testing.T) {
 func TestHandleMessageReactionRemembersUnknownUserProfileNotSpam(t *testing.T) {
 	t.Parallel()
 
-	chat := &api.Chat{ID: -100123, Type: "supergroup", Title: testGroupTitle}
+	chat := &api.Chat{ID: -100123, Type: testChatTypeSupergroup, Title: testGroupTitle}
 	settings := db.DefaultSettings(chat.ID)
 	user := &api.User{ID: 777, FirstName: "Clean", UserName: "cleanworker"}
 	detector := &testSpamDetector{result: boolPtr(false)}
@@ -131,11 +131,11 @@ func TestHandleMessageReactionRemembersUnknownUserProfileNotSpam(t *testing.T) {
 
 		switch method {
 		case testTelegramMethodGetChatMember:
-			return testChatMemberResponse("left", false, false, false)
+			return testChatMemberResponse(testMemberStatusLeft, false, false, false)
 		case testTelegramMethodGetChat:
 			return map[string]any{
 				"id":              777,
-				"type":            "private",
+				"type":            telegramChatTypePrivate,
 				testJSONFirstName: "Clean",
 				"username":        "cleanworker",
 				"bio":             "Local neighbor and regular reader",
@@ -187,16 +187,16 @@ func TestHandleMessageReactionRemembersUnknownUserProfileNotSpam(t *testing.T) {
 func TestHandleMessageReactionSkipsKnownMemberAfterTelegramMembershipCheck(t *testing.T) {
 	t.Parallel()
 
-	chat := &api.Chat{ID: -100123, Type: "supergroup", Title: testGroupTitle}
+	chat := &api.Chat{ID: -100123, Type: testChatTypeSupergroup, Title: testGroupTitle}
 	settings := db.DefaultSettings(chat.ID)
-	user := &api.User{ID: 777, FirstName: "Member", UserName: "member"}
+	user := &api.User{ID: 777, FirstName: "Member", UserName: telegramMemberStatus}
 	detector := &testSpamDetector{result: boolPtr(true)}
 	service := &testBotService{settings: settings}
 
 	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
 		switch method {
 		case testTelegramMethodGetChatMember:
-			return testChatMemberResponse("member", false, false, false)
+			return testChatMemberResponse(telegramMemberStatus, false, false, false)
 		default:
 			t.Fatalf("unexpected bot method: %s", method)
 		}
@@ -240,7 +240,7 @@ func TestHandleMessageReactionSkipsKnownMemberAfterTelegramMembershipCheck(t *te
 func TestHandleMessageReactionSkipsRememberedNonMember(t *testing.T) {
 	t.Parallel()
 
-	chat := &api.Chat{ID: -100123, Type: "supergroup", Title: testGroupTitle}
+	chat := &api.Chat{ID: -100123, Type: testChatTypeSupergroup, Title: testGroupTitle}
 	settings := db.DefaultSettings(chat.ID)
 	user := &api.User{ID: 777, FirstName: "Known", UserName: "knownreader"}
 	detector := &testSpamDetector{result: boolPtr(true)}
@@ -277,7 +277,7 @@ func TestHandleMessageReactionSkipsRememberedNonMember(t *testing.T) {
 func TestHandleMessageReactionModeratesActorChatProfileSpam(t *testing.T) {
 	t.Parallel()
 
-	chat := &api.Chat{ID: -100123, Type: "supergroup", Title: testGroupTitle}
+	chat := &api.Chat{ID: -100123, Type: testChatTypeSupergroup, Title: testGroupTitle}
 	settings := db.DefaultSettings(chat.ID)
 	actorChat := &api.Chat{ID: -100777, Type: testChatTypeChannel, Title: testSpamChannelTitle, UserName: "spam_channel"}
 	detector := &testSpamDetector{result: boolPtr(true)}
@@ -294,9 +294,9 @@ func TestHandleMessageReactionModeratesActorChatProfileSpam(t *testing.T) {
 			switch got := r.Form.Get("chat_id"); got {
 			case "-100123":
 				return map[string]any{
-					"id":    -100123,
-					"type":  "supergroup",
-					"title": testGroupTitle,
+					"id":          -100123,
+					"type":        testChatTypeSupergroup,
+					testJSONTitle: testGroupTitle,
 				}
 			case "-100777":
 			default:
@@ -305,16 +305,16 @@ func TestHandleMessageReactionModeratesActorChatProfileSpam(t *testing.T) {
 			return map[string]any{
 				"id":                -100777,
 				"type":              testChatTypeChannel,
-				"title":             testSpamChannelTitle,
+				testJSONTitle:       testSpamChannelTitle,
 				"username":          "spam_channel",
 				testJSONDescription: "Крипто-казино, бонусы, быстрый заработок",
 				"pinned_message": map[string]any{
-					"message_id": 10,
-					testJSONDate: 1,
+					logFieldMessageID: 10,
+					testJSONDate:      1,
 					logFieldChat: map[string]any{
-						"id":    -100777,
-						"type":  testChatTypeChannel,
-						"title": testSpamChannelTitle,
+						"id":          -100777,
+						"type":        testChatTypeChannel,
+						testJSONTitle: testSpamChannelTitle,
 					},
 					"text": "Переходи в бота и забирай бонус",
 				},
@@ -373,7 +373,7 @@ func TestHandleMessageReactionModeratesActorChatProfileSpam(t *testing.T) {
 func TestHandleMessageReactionSkipsWhenReactionProfileCheckDisabled(t *testing.T) {
 	t.Parallel()
 
-	chat := &api.Chat{ID: -100123, Type: "supergroup", Title: testGroupTitle}
+	chat := &api.Chat{ID: -100123, Type: testChatTypeSupergroup, Title: testGroupTitle}
 	settings := db.DefaultSettings(chat.ID)
 	settings.ReactionProfileCheckEnabled = false
 	user := &api.User{ID: 777, FirstName: testFirstNameBad, UserName: "badworker"}
@@ -411,7 +411,7 @@ func TestHandleMessageReactionSkipsWhenReactionProfileCheckDisabled(t *testing.T
 func TestHandleMessageReactionSkipsReactionRemoval(t *testing.T) {
 	t.Parallel()
 
-	chat := &api.Chat{ID: -100123, Type: "supergroup", Title: testGroupTitle}
+	chat := &api.Chat{ID: -100123, Type: testChatTypeSupergroup, Title: testGroupTitle}
 	settings := db.DefaultSettings(chat.ID)
 	user := &api.User{ID: 777, FirstName: testFirstNameBad, UserName: "badworker"}
 	detector := &testSpamDetector{result: boolPtr(true)}

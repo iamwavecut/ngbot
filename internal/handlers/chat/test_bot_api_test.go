@@ -33,7 +33,14 @@ const (
 	testJSONFirstName      = "first_name"
 	testJSONDate           = "date"
 	testJSONDescription    = "description"
+	testJSONTitle          = "title"
 	testChatTypeChannel    = "channel"
+	testChatTypeSupergroup = "supergroup"
+	testMemberStatusLeft   = "left"
+	testGroupUsername      = "waveclub"
+	testJoinQueryID        = "join-query"
+	testExpiredChallengeID = "uuid-expired"
+	testToken              = "tok"
 	testMessageText        = "hello there"
 )
 
