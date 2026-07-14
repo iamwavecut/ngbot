@@ -9,6 +9,54 @@ import (
 	"github.com/iamwavecut/ngbot/internal/db"
 )
 
+func TestSetSpamCasePreVoteRestrictedOnlyUpdatesPendingCase(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	client, err := NewSQLiteClient(ctx, t.TempDir(), "test.db")
+	if err != nil {
+		t.Fatalf("new sqlite client: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+
+	now := time.Now().UTC().Truncate(time.Second)
+	resolveAt := now.Add(time.Minute)
+	spamCase, err := client.CreateSpamCase(ctx, &db.SpamCase{
+		ChatID:            -100,
+		UserID:            200,
+		MessageID:         40,
+		MessageText:       "candidate",
+		CreatedAt:         now,
+		ResolveAt:         &resolveAt,
+		Status:            db.SpamCaseStatusPending,
+		PreVoteRestricted: true,
+	})
+	if err != nil {
+		t.Fatalf("create spam case: %v", err)
+	}
+	if err := client.SetSpamCasePreVoteRestricted(ctx, spamCase.ID, false); err != nil {
+		t.Fatalf("clear pre-vote restriction: %v", err)
+	}
+	persisted, err := client.GetSpamCase(ctx, spamCase.ID)
+	if err != nil {
+		t.Fatalf("get spam case: %v", err)
+	}
+	if persisted.PreVoteRestricted {
+		t.Fatal("failed restriction remained marked as applied")
+	}
+
+	claimed, ok, err := client.ClaimSpamCaseResolution(ctx, spamCase.ID, 1, true, now)
+	if err != nil {
+		t.Fatalf("claim spam case: %v", err)
+	}
+	if !ok || claimed == nil {
+		t.Fatal("spam case was not claimed")
+	}
+	if err := client.SetSpamCasePreVoteRestricted(ctx, spamCase.ID, true); err == nil {
+		t.Fatal("expected terminal-owner claim to reject stale restriction update")
+	}
+}
+
 func TestSpamVoteAndTimeoutRaceHasOneResolutionAndOneStat(t *testing.T) {
 	t.Parallel()
 

@@ -33,6 +33,13 @@ func TestSQLiteEnforcesForeignKeysAndCascades(t *testing.T) {
 	if enabled != 1 {
 		t.Fatalf("foreign keys disabled: got %d", enabled)
 	}
+	var busyTimeout int
+	if err := client.db.GetContext(ctx, &busyTimeout, "PRAGMA busy_timeout"); err != nil {
+		t.Fatalf("read busy timeout: %v", err)
+	}
+	if busyTimeout != 5000 {
+		t.Fatalf("busy timeout = %d, want 5000", busyTimeout)
+	}
 
 	if _, err := client.db.ExecContext(ctx, `INSERT INTO chat_members (chat_id, user_id) VALUES (?, ?)`, 999, 1); err == nil {
 		t.Fatal("expected orphan chat member insert to fail")
@@ -651,6 +658,100 @@ func TestDurableStateMigrationsUpgradeExistingRowsAndPreserveLegacySpamQuery(t *
 	defer func() { _ = rows.Close() }()
 	if rows.Next() {
 		t.Fatal("expected foreign_key_check to be empty after upgrade")
+	}
+}
+
+func TestLegacySpamRecoveryMigrationIsScopedAndReversible(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "legacy-spam.db")
+	sqlDB, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
+
+	source := &migrate.EmbedFileSystemMigrationSource{
+		FileSystem: resources.FS,
+		Root:       migrationsRoot,
+	}
+	const migration = "20260714210000-finalize-legacy-spam-cases.sql"
+	if _, err := migrate.ExecMax(sqlDB, "sqlite3", source, migrate.Up, migrationsBefore(t, migration)); err != nil {
+		t.Fatalf("execute migrations before legacy recovery: %v", err)
+	}
+	if _, err := sqlDB.ExecContext(ctx, `INSERT INTO chats (id) VALUES (100)`); err != nil {
+		t.Fatalf("insert chat: %v", err)
+	}
+	if _, err := sqlDB.ExecContext(ctx, `
+		INSERT INTO spam_cases (
+			id, chat_id, user_id, message_id, message_text, created_at,
+			pre_vote_restricted, status, resolve_at, next_attempt_at, attempt_count, last_error
+		) VALUES
+			(1, 100, 1, 0, 'legacy resolving', CURRENT_TIMESTAMP, 1,
+				'resolving_false_positive', datetime('now', '-1 minute'), datetime('now', '+1 day'), 3, 'legacy error'),
+			(2, 100, 2, 0, 'legacy pending', CURRENT_TIMESTAMP, 1,
+				'pending', datetime('now', '+1 minute'), NULL, 0, ''),
+			(3, 100, 3, 55, 'modern resolving', CURRENT_TIMESTAMP, 1,
+				'resolving_false_positive', datetime('now', '-1 minute'), datetime('now', '+1 day'), 2, 'modern error')
+	`); err != nil {
+		t.Fatalf("insert spam cases: %v", err)
+	}
+
+	if _, err := migrate.ExecMax(sqlDB, "sqlite3", source, migrate.Up, 1); err != nil {
+		t.Fatalf("execute legacy recovery migration: %v", err)
+	}
+
+	for _, caseID := range []int64{1, 2} {
+		var (
+			status        string
+			resolvedAt    sql.NullTime
+			nextAttemptAt sql.NullTime
+		)
+		if err := sqlDB.QueryRowContext(ctx, `
+			SELECT status, resolved_at, next_attempt_at
+			FROM spam_cases
+			WHERE id = ?
+		`, caseID).Scan(&status, &resolvedAt, &nextAttemptAt); err != nil {
+			t.Fatalf("read finalized legacy case %d: %v", caseID, err)
+		}
+		if status != db.SpamCaseStatusFalsePositive || !resolvedAt.Valid || nextAttemptAt.Valid {
+			t.Fatalf("legacy case %d was not finalized: status=%q resolved=%v next=%v", caseID, status, resolvedAt.Valid, nextAttemptAt.Valid)
+		}
+	}
+	var modernStatus string
+	if err := sqlDB.QueryRowContext(ctx, `SELECT status FROM spam_cases WHERE id = 3`).Scan(&modernStatus); err != nil {
+		t.Fatalf("read modern case: %v", err)
+	}
+	if modernStatus != db.SpamCaseStatusResolvingFalsePositive {
+		t.Fatalf("modern case status = %q, want resolving_false_positive", modernStatus)
+	}
+	var backupRows int
+	if err := sqlDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM durable_spam_legacy_recovery_backup`).Scan(&backupRows); err != nil {
+		t.Fatalf("count backup rows: %v", err)
+	}
+	if backupRows != 2 {
+		t.Fatalf("backup rows = %d, want 2", backupRows)
+	}
+
+	if _, err := migrate.ExecMax(sqlDB, "sqlite3", source, migrate.Down, 1); err != nil {
+		t.Fatalf("roll back legacy recovery migration: %v", err)
+	}
+	var (
+		restoredStatus   string
+		restoredAttempts int
+		restoredError    string
+		restoredNext     sql.NullTime
+	)
+	if err := sqlDB.QueryRowContext(ctx, `
+		SELECT status, attempt_count, last_error, next_attempt_at
+		FROM spam_cases
+		WHERE id = 1
+	`).Scan(&restoredStatus, &restoredAttempts, &restoredError, &restoredNext); err != nil {
+		t.Fatalf("read restored legacy case: %v", err)
+	}
+	if restoredStatus != db.SpamCaseStatusResolvingFalsePositive || restoredAttempts != 3 || restoredError != "legacy error" || !restoredNext.Valid {
+		t.Fatalf("legacy case was not restored exactly: status=%q attempts=%d error=%q next=%v", restoredStatus, restoredAttempts, restoredError, restoredNext.Valid)
 	}
 }
 

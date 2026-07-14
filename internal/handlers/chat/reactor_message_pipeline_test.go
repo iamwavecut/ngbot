@@ -377,6 +377,39 @@ func TestHandleMessageCleanLeftUserRememberedAsKnownNonMember(t *testing.T) {
 	}
 }
 
+func TestHandleMessageAdminRequiredDuringAuthorLookupDoesNotFailUpdate(t *testing.T) {
+	t.Parallel()
+
+	botAPI := newTestBotAPI(t, func(method string, _ *http.Request) any {
+		if method == testTelegramMethodGetChatMember {
+			return &testBotAPIError{code: http.StatusBadRequest, description: "Bad Request: CHAT_ADMIN_REQUIRED"}
+		}
+		t.Fatalf("unexpected bot method: %s", method)
+		return nil
+	})
+	service := &testBotService{botAPI: botAPI}
+	store := &testReactorStore{}
+	r := &Reactor{
+		s:            service,
+		bot:          service.GetBot(),
+		store:        store,
+		spamDetector: &testSpamDetector{result: boolPtr(false)},
+		banService:   &testBanService{},
+		lastResults:  make(map[messageResultKey]*MessageProcessingResult),
+	}
+	chat := &api.Chat{ID: 100, Type: testChatTypeSupergroup}
+	user := &api.User{ID: 200}
+	msg := &api.Message{MessageID: 12, Chat: *chat, From: user, Text: testMessageText}
+	settings := &db.Settings{LLMFirstMessageEnabled: true, CommunityVotingEnabled: true}
+
+	if err := r.handleMessage(context.Background(), msg, chat, user, settings); err != nil {
+		t.Fatalf("handleMessage returned error: %v", err)
+	}
+	if service.insertedMember != 0 || len(store.upserted) != 0 {
+		t.Fatalf("author state changed without a membership lookup: inserted=%d upserted=%#v", service.insertedMember, store.upserted)
+	}
+}
+
 func TestHandleMessageNotSpammerOverrideBypassesBanAndLLM(t *testing.T) {
 	t.Parallel()
 

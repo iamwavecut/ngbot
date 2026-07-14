@@ -32,6 +32,11 @@ services:
       - dotpath:/data:delegated
     ports:
       - "127.0.0.1:${NG_GATEKEEPER_WEBAPP_HOST_PORT:-18080}:8080"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     restart: unless-stopped
 
 volumes:

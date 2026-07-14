@@ -420,8 +420,30 @@ func errorsIsCanceled(err error) bool {
 }
 
 func withPrivilegeError(err error, operation string) error {
-	if strings.Contains(err.Error(), MsgNoPrivileges) {
+	if isTelegramPrivilegeError(err) {
 		return ErrNoPrivileges
 	}
 	return fmt.Errorf("failed to %s user: %w", operation, err)
+}
+
+func isTelegramPrivilegeError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrNoPrivileges) {
+		return true
+	}
+	message := strings.ToUpper(err.Error())
+	for _, marker := range []string{
+		strings.ToUpper(MsgNoPrivileges),
+		"CHAT_ADMIN_REQUIRED",
+		"NOT ENOUGH RIGHTS",
+		"BOT IS NOT AN ADMINISTRATOR",
+		"NEED ADMINISTRATOR RIGHTS",
+	} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
 }

@@ -56,6 +56,7 @@ type testModerationStore struct {
 	members               []int64
 	membersErr            error
 	presentationErr       error
+	retryCalls            int
 }
 
 func (s *testModerationStore) CreateSpamCase(_ context.Context, sc *db.SpamCase) (*db.SpamCase, error) {
@@ -80,6 +81,14 @@ func (s *testModerationStore) UpdateSpamCasePresentation(_ context.Context, sc *
 	s.spamCase.ChannelUsername = sc.ChannelUsername
 	s.spamCase.ChannelPostID = sc.ChannelPostID
 	s.spamCase.NotificationMessageID = sc.NotificationMessageID
+	return nil
+}
+
+func (s *testModerationStore) SetSpamCasePreVoteRestricted(_ context.Context, caseID int64, restricted bool) error {
+	if s.spamCase == nil || s.spamCase.ID != caseID || s.spamCase.Status != db.SpamCaseStatusPending {
+		return errors.New("spam case is no longer pending")
+	}
+	s.spamCase.PreVoteRestricted = restricted
 	return nil
 }
 
@@ -174,6 +183,7 @@ func (s *testModerationStore) FinalizeSpamCaseResolution(_ context.Context, case
 }
 
 func (s *testModerationStore) ScheduleSpamCaseRetry(context.Context, int64, string, time.Time, string) (bool, error) {
+	s.retryCalls++
 	return true, nil
 }
 
@@ -237,6 +247,8 @@ func (s *testModerationStore) DeleteSpamCaseReportMessage(_ context.Context, cas
 type testModerationBanService struct {
 	muteCalls   int
 	unmuteCalls int
+	muteErr     error
+	unmuteErr   error
 }
 
 func (s *testModerationBanService) Start(context.Context) error { return nil }
@@ -247,12 +259,12 @@ func (s *testModerationBanService) CheckBan(context.Context, int64) (bool, error
 
 func (s *testModerationBanService) MuteUser(context.Context, int64, int64) error {
 	s.muteCalls++
-	return nil
+	return s.muteErr
 }
 
 func (s *testModerationBanService) UnmuteUser(context.Context, int64, int64) error {
 	s.unmuteCalls++
-	return nil
+	return s.unmuteErr
 }
 
 func (s *testModerationBanService) BanUserWithMessage(context.Context, int64, int64, int) error {
@@ -501,10 +513,10 @@ func TestProcessBannedBotMessageDeletesRecentJoinServiceMessage(t *testing.T) {
 		t.Fatalf("ProcessBannedMessage returned error: %v", err)
 	}
 
-	if len(deletedMessageIDs) != 2 {
-		t.Fatalf("expected spam message and join service message deletes, got %#v", deletedMessageIDs)
+	if len(deletedMessageIDs) != 1 {
+		t.Fatalf("expected only the join service message to need an explicit delete, got %#v", deletedMessageIDs)
 	}
-	if deletedMessageIDs[0] != "40" || deletedMessageIDs[1] != "77" {
+	if deletedMessageIDs[0] != "77" {
 		t.Fatalf("unexpected deleted messages: %#v", deletedMessageIDs)
 	}
 	if len(store.processedJoiners) != 1 || store.processedJoiners[0] != [3]int64{-100, 200, 1} {

@@ -93,7 +93,14 @@ func isSpamTelegramEffectAlreadyApplied(err error) bool {
 		return true
 	}
 	message := strings.ToUpper(err.Error())
-	for _, marker := range []string{"MESSAGE TO DELETE NOT FOUND", "MESSAGE_ID_INVALID", "USER_NOT_PARTICIPANT"} {
+	for _, marker := range []string{
+		"MESSAGE TO DELETE NOT FOUND",
+		"MESSAGE_ID_INVALID",
+		"USER_NOT_PARTICIPANT",
+		"PARTICIPANT_ID_INVALID",
+		"MEMBER NOT FOUND",
+		"USER IS DEACTIVATED",
+	} {
 		if strings.Contains(message, marker) {
 			return true
 		}

@@ -15,6 +15,7 @@ import (
 
 	api "github.com/OvyFlash/telegram-bot-api"
 	"github.com/iamwavecut/ngbot/internal/config"
+	"github.com/iamwavecut/ngbot/internal/db"
 )
 
 func TestCreateInChatNotificationRepliesToOriginalMessageWithCappedQuote(t *testing.T) {
@@ -232,6 +233,139 @@ func TestVotingSurfaceFallbackPrecedesDestructiveModeration(t *testing.T) {
 				t.Fatalf("expected in-chat fallback presentation, got %#v", store.spamCase)
 			}
 		})
+	}
+}
+
+func TestVotingPermissionFailurePreservesOriginalMessage(t *testing.T) {
+	t.Parallel()
+
+	deleteCalls := 0
+	nextMessageID := 700
+	botAPI := newModerationRetryTestBotAPI(t, func(method string, _ *http.Request) testAPIResponse {
+		switch method {
+		case testTelegramMethodSendMessage:
+			nextMessageID++
+			return testAPIResponse{OK: true, Result: map[string]any{
+				moderationTestJSONMessageID: nextMessageID,
+				moderationTestJSONDate:      0,
+				moderationTestJSONChat:      map[string]any{"id": -100, moderationTestJSONType: moderationTestSupergroup},
+			}}
+		case testTelegramMethodDeleteMessage:
+			deleteCalls++
+			return testAPIResponse{OK: true, Result: true}
+		default:
+			t.Fatalf("unexpected bot method: %s", method)
+			return testAPIResponse{OK: true}
+		}
+	})
+	store := &testModerationStore{}
+	banService := &testModerationBanService{muteErr: ErrNoPrivileges}
+	sc := &SpamControl{
+		s:          &testModerationService{botAPI: botAPI},
+		bot:        botAPI,
+		store:      store,
+		config:     config.SpamControl{SuspectNotificationTimeout: time.Hour, VotingTimeoutMinutes: time.Minute},
+		banService: banService,
+	}
+	msg := &api.Message{
+		MessageID: 40,
+		Chat:      api.Chat{ID: -100, Type: moderationTestSupergroup},
+		From:      &api.User{ID: 200, FirstName: moderationTestTargetName},
+		Text:      "candidate",
+	}
+
+	result, err := sc.ProcessSpamMessage(context.Background(), msg, &msg.Chat, "en")
+	if err != nil {
+		t.Fatalf("ProcessSpamMessage returned error: %v", err)
+	}
+	if result.Error != errChatAdminRequired || result.MessageDeleted || result.UserBanned {
+		t.Fatalf("unexpected processing result: %#v", result)
+	}
+	if deleteCalls != 0 {
+		t.Fatalf("original message was deleted after mute failure: %d delete calls", deleteCalls)
+	}
+	if store.spamCase == nil || store.spamCase.PreVoteRestricted {
+		t.Fatalf("failed mute was persisted as an applied restriction: %#v", store.spamCase)
+	}
+}
+
+func TestKnownBanPermissionFailurePreservesOriginalMessage(t *testing.T) {
+	t.Parallel()
+
+	deleteCalls := 0
+	nextMessageID := 700
+	botAPI := newModerationRetryTestBotAPI(t, func(method string, _ *http.Request) testAPIResponse {
+		switch method {
+		case testTelegramMethodSendMessage:
+			nextMessageID++
+			return testAPIResponse{OK: true, Result: map[string]any{
+				moderationTestJSONMessageID: nextMessageID,
+				moderationTestJSONDate:      0,
+				moderationTestJSONChat:      map[string]any{"id": -100, moderationTestJSONType: moderationTestSupergroup},
+			}}
+		case testTelegramMethodBanChatMember:
+			return testAPIResponse{OK: false, Description: "Bad Request: not enough rights to restrict/unrestrict chat member"}
+		case testTelegramMethodDeleteMessage:
+			deleteCalls++
+			return testAPIResponse{OK: true, Result: true}
+		default:
+			t.Fatalf("unexpected bot method: %s", method)
+			return testAPIResponse{OK: true}
+		}
+	})
+	store := &testModerationStore{}
+	sc := &SpamControl{
+		s:          &testModerationService{botAPI: botAPI},
+		bot:        botAPI,
+		store:      store,
+		config:     config.SpamControl{SuspectNotificationTimeout: time.Hour},
+		banService: &testModerationBanService{},
+	}
+	msg := &api.Message{
+		MessageID: 40,
+		Chat:      api.Chat{ID: -100, Type: moderationTestSupergroup},
+		From:      &api.User{ID: 200, FirstName: moderationTestTargetName},
+		Text:      "known spammer",
+	}
+
+	result, err := sc.ProcessBannedMessage(context.Background(), msg, &msg.Chat, "en")
+	if err != nil {
+		t.Fatalf("ProcessBannedMessage returned error: %v", err)
+	}
+	if result.Error != errChatAdminRequired || result.MessageDeleted || result.UserBanned {
+		t.Fatalf("unexpected processing result: %#v", result)
+	}
+	if deleteCalls != 0 {
+		t.Fatalf("original message was deleted after ban failure: %d delete calls", deleteCalls)
+	}
+	if len(store.deletedKnownNonMember) != 0 {
+		t.Fatalf("known non-member state was cleared after ban failure: %#v", store.deletedKnownNonMember)
+	}
+}
+
+func TestAbsentUserUnmuteIsTreatedAsAlreadyApplied(t *testing.T) {
+	t.Parallel()
+
+	spamCase := &db.SpamCase{
+		ID:                1,
+		ChatID:            -100,
+		UserID:            200,
+		MessageID:         40,
+		PreVoteRestricted: true,
+		Status:            db.SpamCaseStatusResolvingFalsePositive,
+	}
+	store := &testModerationStore{spamCase: spamCase}
+	banService := &testModerationBanService{unmuteErr: errors.New("Bad Request: PARTICIPANT_ID_INVALID")}
+	sc := &SpamControl{store: store, banService: banService}
+
+	if err := sc.resolveClaimedCase(context.Background(), spamCase); err != nil {
+		t.Fatalf("resolveClaimedCase returned error: %v", err)
+	}
+	if store.retryCalls != 0 {
+		t.Fatalf("retry scheduled for already-absent user: %d", store.retryCalls)
+	}
+	if store.spamCase.Status != db.SpamCaseStatusFalsePositive || store.spamCase.ResolvedAt == nil {
+		t.Fatalf("case was not finalized: %#v", store.spamCase)
 	}
 }
 

@@ -151,6 +151,28 @@ func (s *sqliteClient) UpdateSpamCasePresentation(ctx context.Context, sc *db.Sp
 	return nil
 }
 
+func (s *sqliteClient) SetSpamCasePreVoteRestricted(ctx context.Context, caseID int64, restricted bool) error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE spam_cases
+		SET pre_vote_restricted = ?
+		WHERE id = ? AND status = ?
+	`, restricted, caseID, db.SpamCaseStatusPending)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected != 1 {
+		return errors.New("spam case is no longer pending")
+	}
+	return nil
+}
+
 func (s *sqliteClient) SetSpamCaseResolveAt(ctx context.Context, caseID int64, resolveAt time.Time) (bool, error) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()

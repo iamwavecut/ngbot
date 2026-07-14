@@ -154,7 +154,7 @@ func (sc *SpamControl) resolveClaimedCase(ctx context.Context, spamCase *db.Spam
 		sc.clearKnownNonMember(ctx, spamCase.ChatID, spamCase.UserID)
 	case db.SpamCaseStatusResolvingFalsePositive:
 		if spamCase.PreVoteRestricted {
-			if err := sc.banService.UnmuteUser(ctx, spamCase.ChatID, spamCase.UserID); err != nil {
+			if err := sc.banService.UnmuteUser(ctx, spamCase.ChatID, spamCase.UserID); err != nil && !isSpamTelegramEffectAlreadyApplied(err) {
 				log.WithField("error", err.Error()).Error("failed to unmute user")
 				actionErr = err
 			}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"iter"
+	"strings"
 	"testing"
 	"time"
 
@@ -240,6 +241,7 @@ func TestChatCompletionFallsBackWhenCachedContentCannotBeUsed(t *testing.T) {
 		logger:     log.New().WithField("test", "gemini"),
 		listCaches: listedCaches(&genai.CachedContent{Name: testExistingCacheName, DisplayName: cacheDisplayPrefix + fingerprint, Model: DefaultModel, ExpireTime: time.Now().Add(time.Hour)}),
 		generateContent: func(_ context.Context, _ string, contents []*genai.Content, config *genai.GenerateContentConfig) (*genai.GenerateContentResponse, error) {
+			assertClassificationConfig(t, config)
 			callCount++
 			if config.CachedContent != "" {
 				if len(contents) != 1 || contentText(contents[0]) != testCandidate {
@@ -333,6 +335,71 @@ func TestChatCompletionFallsBackWhenCachedResponseIsEmpty(t *testing.T) {
 	}
 	if len(resp.Choices) != 1 || resp.Choices[0].Message.Content != "0" {
 		t.Fatalf("unexpected response: %#v", resp)
+	}
+}
+
+func TestChatCompletionRejectsRepeatedEmptyResponseWithSafeDiagnostics(t *testing.T) {
+	t.Parallel()
+	const classifiedPayload = "classified-payload-secret"
+
+	segments, err := splitPromptSegments([]llm.ChatCompletionMessage{
+		{Role: llm.RoleSystem, Content: testSystemPrompt, Cacheable: true},
+		{Role: llm.RoleUser, Content: testStaticUser, Cacheable: true},
+		{Role: llm.RoleAssistant, Content: testStaticAnswer, Cacheable: true},
+		{Role: llm.RoleUser, Content: classifiedPayload},
+	})
+	if err != nil {
+		t.Fatalf("splitPromptSegments returned error: %v", err)
+	}
+	fingerprint := cacheFingerprint(DefaultModel, segments.systemInstruction, segments.cacheablePrefix)
+
+	callCount := 0
+	api := &API{
+		model:      DefaultModel,
+		logger:     log.New().WithField("test", "gemini"),
+		listCaches: listedCaches(&genai.CachedContent{Name: testExistingCacheName, DisplayName: cacheDisplayPrefix + fingerprint, Model: DefaultModel, ExpireTime: time.Now().Add(time.Hour)}),
+		generateContent: func(_ context.Context, _ string, _ []*genai.Content, config *genai.GenerateContentConfig) (*genai.GenerateContentResponse, error) {
+			assertClassificationConfig(t, config)
+			callCount++
+			return &genai.GenerateContentResponse{
+				Candidates: []*genai.Candidate{{FinishReason: genai.FinishReasonMaxTokens}},
+				UsageMetadata: &genai.GenerateContentResponseUsageMetadata{
+					ThoughtsTokenCount: defaultMaxOutputTokens,
+				},
+			}, nil
+		},
+	}
+
+	_, err = api.ChatCompletion(context.Background(), []llm.ChatCompletionMessage{
+		{Role: llm.RoleSystem, Content: testSystemPrompt, Cacheable: true},
+		{Role: llm.RoleUser, Content: testStaticUser, Cacheable: true},
+		{Role: llm.RoleAssistant, Content: testStaticAnswer, Cacheable: true},
+		{Role: llm.RoleUser, Content: classifiedPayload},
+	})
+	if err == nil {
+		t.Fatal("expected repeated empty Gemini response to fail")
+	}
+	if callCount != 2 {
+		t.Fatalf("GenerateContent calls = %d, want 2", callCount)
+	}
+	if !strings.Contains(err.Error(), "returned no text") || !strings.Contains(err.Error(), string(genai.FinishReasonMaxTokens)) {
+		t.Fatalf("unexpected empty response error: %v", err)
+	}
+	if strings.Contains(err.Error(), classifiedPayload) {
+		t.Fatalf("diagnostic error leaked classified message: %v", err)
+	}
+}
+
+func assertClassificationConfig(t *testing.T, config *genai.GenerateContentConfig) {
+	t.Helper()
+	if config.MaxOutputTokens != defaultMaxOutputTokens {
+		t.Fatalf("max output tokens = %d, want %d", config.MaxOutputTokens, defaultMaxOutputTokens)
+	}
+	if config.ThinkingConfig == nil || config.ThinkingConfig.ThinkingBudget == nil {
+		t.Fatal("thinking budget is not configured")
+	}
+	if *config.ThinkingConfig.ThinkingBudget != defaultThinkingBudget {
+		t.Fatalf("thinking budget = %d, want %d", *config.ThinkingConfig.ThinkingBudget, defaultThinkingBudget)
 	}
 }
 

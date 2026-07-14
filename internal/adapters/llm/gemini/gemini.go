@@ -44,7 +44,8 @@ const (
 	defaultTemperature     = float32(0)
 	defaultTopK            = float32(1)
 	defaultTopP            = float32(1)
-	defaultMaxOutputTokens = int32(4)
+	defaultMaxOutputTokens = int32(16)
+	defaultThinkingBudget  = int32(0)
 	defaultCacheTTL        = 6 * time.Hour
 	cacheDisplayPrefix     = "ngbot-spam-"
 	cacheHashLength        = 12
@@ -101,24 +102,18 @@ func (g *API) ChatCompletion(ctx context.Context, messages []llm.ChatCompletionM
 			g.logger.WithField("error", cacheErr.Error()).Warn("failed to prepare Gemini explicit cache, falling back to uncached request")
 		}
 		if cache != nil {
-			resp, err = g.generateContent(ctx, g.model, segments.liveContents, &genai.GenerateContentConfig{
-				CachedContent:    cache.Name,
-				Temperature:      genai.Ptr(defaultTemperature),
-				TopK:             genai.Ptr(defaultTopK),
-				TopP:             genai.Ptr(defaultTopP),
-				MaxOutputTokens:  defaultMaxOutputTokens,
-				ResponseMIMEType: "text/plain",
-				SafetySettings:   defaultSafetySettings(),
-			})
+			config := classificationConfig()
+			config.CachedContent = cache.Name
+			resp, err = g.generateContent(ctx, g.model, segments.liveContents, config)
 			if err == nil {
 				g.logUsageMetadata(resp)
 				if hasTextResponse(resp) {
 					return toChatCompletionResponse(resp), nil
 				}
-				g.logger.WithFields(log.Fields{
-					logFieldCacheName:    cache.Name,
-					logFieldCacheDisplay: cache.DisplayName,
-				}).Warn("Gemini cached response was empty, retrying without cache")
+				fields := emptyResponseLogFields(resp)
+				fields[logFieldCacheName] = cache.Name
+				fields[logFieldCacheDisplay] = cache.DisplayName
+				g.logger.WithFields(fields).Warn("Gemini cached response was empty, retrying without cache")
 			}
 			if err != nil && !isCacheUseError(err) {
 				return llm.ChatCompletionResponse{}, fmt.Errorf("generate gemini content with cache: %w", err)
@@ -136,21 +131,39 @@ func (g *API) ChatCompletion(ctx context.Context, messages []llm.ChatCompletionM
 
 	contents := append([]*genai.Content{}, segments.cachedContents...)
 	contents = append(contents, segments.liveContents...)
-	resp, err = g.generateContent(ctx, g.model, contents, &genai.GenerateContentConfig{
-		SystemInstruction: segments.systemInstruction,
-		Temperature:       genai.Ptr(defaultTemperature),
-		TopK:              genai.Ptr(defaultTopK),
-		TopP:              genai.Ptr(defaultTopP),
-		MaxOutputTokens:   defaultMaxOutputTokens,
-		ResponseMIMEType:  "text/plain",
-		SafetySettings:    defaultSafetySettings(),
-	})
+	config := classificationConfig()
+	config.SystemInstruction = segments.systemInstruction
+	resp, err = g.generateContent(ctx, g.model, contents, config)
 	if err != nil {
 		return llm.ChatCompletionResponse{}, fmt.Errorf("generate gemini content: %w", err)
 	}
 
 	g.logUsageMetadata(resp)
+	if !hasTextResponse(resp) {
+		fields := emptyResponseLogFields(resp)
+		g.logger.WithFields(fields).Warn("Gemini uncached response was empty")
+		return llm.ChatCompletionResponse{}, fmt.Errorf(
+			"generate gemini content returned no text: candidates=%v finish_reasons=%v prompt_block_reason=%v",
+			fields["candidate_count"],
+			fields["finish_reasons"],
+			fields["prompt_block_reason"],
+		)
+	}
 	return toChatCompletionResponse(resp), nil
+}
+
+func classificationConfig() *genai.GenerateContentConfig {
+	return &genai.GenerateContentConfig{
+		Temperature:      genai.Ptr(defaultTemperature),
+		TopK:             genai.Ptr(defaultTopK),
+		TopP:             genai.Ptr(defaultTopP),
+		MaxOutputTokens:  defaultMaxOutputTokens,
+		ResponseMIMEType: "text/plain",
+		SafetySettings:   defaultSafetySettings(),
+		ThinkingConfig: &genai.ThinkingConfig{
+			ThinkingBudget: genai.Ptr(defaultThinkingBudget),
+		},
+	}
 }
 
 func splitPromptSegments(messages []llm.ChatCompletionMessage) (promptSegments, error) {
@@ -364,13 +377,43 @@ func hasTextResponse(resp *genai.GenerateContentResponse) bool {
 	return resp != nil && strings.TrimSpace(resp.Text()) != ""
 }
 
+func emptyResponseLogFields(resp *genai.GenerateContentResponse) log.Fields {
+	fields := log.Fields{
+		"candidate_count":     0,
+		"finish_reasons":      []string(nil),
+		"prompt_block_reason": "",
+	}
+	if resp == nil {
+		fields["response_nil"] = true
+		return fields
+	}
+	fields["candidate_count"] = len(resp.Candidates)
+	finishReasons := make([]string, 0, len(resp.Candidates))
+	for _, candidate := range resp.Candidates {
+		if candidate != nil {
+			finishReasons = append(finishReasons, string(candidate.FinishReason))
+		}
+	}
+	fields["finish_reasons"] = finishReasons
+	if resp.PromptFeedback != nil {
+		fields["prompt_block_reason"] = string(resp.PromptFeedback.BlockReason)
+	}
+	if resp.UsageMetadata != nil {
+		fields["candidate_tokens"] = resp.UsageMetadata.CandidatesTokenCount
+		fields["thoughts_tokens"] = resp.UsageMetadata.ThoughtsTokenCount
+	}
+	return fields
+}
+
 func (g *API) logUsageMetadata(resp *genai.GenerateContentResponse) {
 	if resp == nil || resp.UsageMetadata == nil {
 		return
 	}
 	g.logger.WithFields(log.Fields{
 		"cached_content_tokens": resp.UsageMetadata.CachedContentTokenCount,
+		"candidate_tokens":      resp.UsageMetadata.CandidatesTokenCount,
 		"prompt_tokens":         resp.UsageMetadata.PromptTokenCount,
+		"thoughts_tokens":       resp.UsageMetadata.ThoughtsTokenCount,
 		"total_tokens":          resp.UsageMetadata.TotalTokenCount,
 	}).Debug("Gemini usage metadata")
 }

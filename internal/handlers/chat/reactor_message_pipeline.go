@@ -460,6 +460,10 @@ func (r *Reactor) rememberAuthorIfPossible(ctx context.Context, chat *api.Chat, 
 		},
 	})
 	if err != nil {
+		if strings.Contains(strings.ToUpper(err.Error()), "CHAT_ADMIN_REQUIRED") {
+			entry.WithField(logFieldError, err.Error()).Warn("cannot inspect chat member without administrator rights")
+			return nil
+		}
 		entry.WithField(logFieldError, err.Error()).Error("failed to get chat member")
 		return err
 	}

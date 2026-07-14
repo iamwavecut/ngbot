@@ -31,10 +31,13 @@ func NewSQLiteClient(ctx context.Context, dataDir string, dbPath string) (*sqlit
 	}
 
 	dbFilePath := filepath.Join(workDir, dbPath)
+	query := make(url.Values)
+	query.Add("_pragma", "foreign_keys(1)")
+	query.Add("_pragma", "busy_timeout(5000)")
 	dsn := (&url.URL{
 		Scheme:   "file",
 		Path:     dbFilePath,
-		RawQuery: "_pragma=foreign_keys(1)",
+		RawQuery: query.Encode(),
 	}).String()
 	dbx, err := sqlx.Open("sqlite", dsn)
 	if err != nil {

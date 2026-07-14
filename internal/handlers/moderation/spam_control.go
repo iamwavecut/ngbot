@@ -61,6 +61,7 @@ type spamStore interface {
 	CreateSpamCase(ctx context.Context, sc *db.SpamCase) (*db.SpamCase, error)
 	UpdateSpamCase(ctx context.Context, sc *db.SpamCase) error
 	UpdateSpamCasePresentation(ctx context.Context, sc *db.SpamCase) error
+	SetSpamCasePreVoteRestricted(ctx context.Context, caseID int64, restricted bool) error
 	SetSpamCaseResolveAt(ctx context.Context, caseID int64, resolveAt time.Time) (bool, error)
 	GetSpamCase(ctx context.Context, id int64) (*db.SpamCase, error)
 	GetPendingSpamCases(ctx context.Context) ([]*db.SpamCase, error)
@@ -252,6 +253,7 @@ func (sc *SpamControl) ProcessReportedMessage(ctx context.Context, targetMsg *ap
 
 func (sc *SpamControl) preprocessMessage(ctx context.Context, msg *api.Message, chat *api.Chat, lang string, voting bool) (*ProcessingResult, error) {
 	result := &ProcessingResult{}
+	var persistenceErr error
 	if msg == nil || chat == nil || msg.From == nil {
 		return result, nil
 	}
@@ -318,32 +320,36 @@ func (sc *SpamControl) preprocessMessage(ctx context.Context, msg *api.Message, 
 		return result, errors.New("no voting surface is available")
 	}
 
-	if err := bot.DeleteChatMessage(ctx, sc.bot, chat.ID, msg.MessageID); err != nil {
-		log.WithField("error", err.Error()).WithField("chat_title", chat.Title).WithField("chat_username", chat.UserName).Error("failed to delete message")
-	} else {
-		result.MessageDeleted = true
-	}
-
 	if voting {
 		if err := sc.banService.MuteUser(ctx, chat.ID, msg.From.ID); err != nil {
-			if errors.Is(err, ErrNoPrivileges) {
+			spamCase.PreVoteRestricted = false
+			if updateErr := sc.store.SetSpamCasePreVoteRestricted(ctx, spamCase.ID, false); updateErr != nil {
+				persistenceErr = fmt.Errorf("record failed pre-vote restriction: %w", updateErr)
+			}
+			if isTelegramPrivilegeError(err) {
 				result.Error = errChatAdminRequired
 			} else {
 				result.Error = err.Error()
 			}
 		} else {
 			result.UserBanned = true
+			if err := bot.DeleteChatMessage(ctx, sc.bot, chat.ID, msg.MessageID); err != nil {
+				log.WithField("error", err.Error()).WithField("chat_title", chat.Title).WithField("chat_username", chat.UserName).Error("failed to delete message")
+			} else {
+				result.MessageDeleted = true
+			}
 		}
 	} else {
 		if err := bot.BanUserFromChat(ctx, sc.bot, msg.From.ID, chat.ID, 0); err != nil {
 			log.WithField("error", err.Error()).WithField("chat_title", chat.Title).WithField("chat_username", chat.UserName).Error("failed to ban user")
-			if strings.Contains(err.Error(), errChatAdminRequired) {
+			if isTelegramPrivilegeError(err) {
 				result.Error = errChatAdminRequired
 			} else {
 				result.Error = err.Error()
 			}
 		} else {
 			result.UserBanned = true
+			result.MessageDeleted = true
 		}
 		now := time.Now()
 		spamCase.Status = spamCaseStatusSpam
@@ -388,11 +394,11 @@ func (sc *SpamControl) preprocessMessage(ctx context.Context, msg *api.Message, 
 			log.WithField("error", err.Error()).Warn("failed to increment spam confirmed stat")
 		}
 	}
-	if !voting {
+	if !voting && result.UserBanned {
 		sc.clearKnownNonMember(ctx, chat.ID, msg.From.ID)
 	}
 
-	return result, nil
+	return result, persistenceErr
 }
 
 func (sc *SpamControl) ProcessBannedMessage(ctx context.Context, msg *api.Message, chat *api.Chat, lang string) (*ProcessingResult, error) {
