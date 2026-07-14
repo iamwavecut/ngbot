@@ -34,16 +34,28 @@ func (sc *SpamControl) recoverPendingSpamCaseDeadlines(ctx context.Context) erro
 	if err != nil {
 		return err
 	}
+	var result error
 	for _, spamCase := range cases {
 		if spamCase == nil || spamCase.ResolveAt != nil {
 			continue
 		}
+		if !spamCase.PreVoteRestricted && spamCase.MessageID != 0 {
+			claimedCase, claimed, claimErr := sc.store.ClaimKnownSpamCase(ctx, spamCase.ID, time.Now())
+			if claimErr != nil {
+				result = errors.Join(result, claimErr)
+				continue
+			}
+			if claimed {
+				result = errors.Join(result, sc.resolveClaimedCase(ctx, claimedCase))
+			}
+			continue
+		}
 		resolveAt := spamCase.CreatedAt.Add(sc.effectiveVotingPolicy(ctx, spamCase.ChatID).Timeout)
 		if _, err := sc.store.SetSpamCaseResolveAt(ctx, spamCase.ID, resolveAt); err != nil {
-			return err
+			result = errors.Join(result, err)
 		}
 	}
-	return nil
+	return result
 }
 
 func (sc *SpamControl) processDurableWork(ctx context.Context) {

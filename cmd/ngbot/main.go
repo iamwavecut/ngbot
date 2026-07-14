@@ -242,7 +242,7 @@ func buildRuntime(ctx context.Context, cfg *config.Config, errChan chan<- shutdo
 
 	service := bot.NewService(ctx, botAPI, dbClient, cfg.DefaultLanguage, log.WithField("context", "service"))
 	banService := moderationHandlers.NewBanService(botAPI, dbClient)
-	spamControl := moderationHandlers.NewSpamControl(service, botAPI, dbClient, dbClient, cfg.SpamControl, banService, cfg.SpamControl.Verbose)
+	spamControl := moderationHandlers.NewSpamControl(service, botAPI, dbClient, cfg.SpamControl, banService, cfg.SpamControl.Verbose)
 
 	gatekeeperHandler := chatHandlers.NewGatekeeper(service, botAPI, dbClient, dbClient, cfg, banService)
 	adminHandler := adminHandlers.NewAdmin(service, botAPI, dbClient, dbClient, banService)

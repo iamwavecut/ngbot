@@ -140,18 +140,13 @@ func (sc *SpamControl) resolveClaimedCase(ctx context.Context, spamCase *db.Spam
 	case db.SpamCaseStatusResolvingSpam:
 		terminalStatus = db.SpamCaseStatusSpam
 		statMetric = handlersbase.StatSpamConfirmed
-		if !spamCase.PreVoteRestricted && spamCase.MessageID != 0 {
-			if err := bot.DeleteChatMessage(ctx, sc.bot, spamCase.ChatID, spamCase.MessageID); err != nil {
-				log.WithField("error", err.Error()).WithField("chat_id", spamCase.ChatID).WithField("message_id", spamCase.MessageID).Error("failed to delete reported spam message")
-			}
-		}
-		if err := bot.BanUserFromChat(ctx, sc.bot, spamCase.UserID, spamCase.ChatID, 0); err != nil {
+		if err := bot.BanUserFromChat(ctx, sc.bot, spamCase.UserID, spamCase.ChatID, 0); err != nil && !isSpamTelegramEffectAlreadyApplied(err) {
 			log.WithField("error", err.Error()).Error("failed to ban user")
 			actionErr = err
 		} else {
 			sc.cleanupRecentJoinMessage(ctx, spamCase.ChatID, spamCase.UserID)
+			sc.clearKnownNonMember(ctx, spamCase.ChatID, spamCase.UserID)
 		}
-		sc.clearKnownNonMember(ctx, spamCase.ChatID, spamCase.UserID)
 	case db.SpamCaseStatusResolvingFalsePositive:
 		if spamCase.PreVoteRestricted {
 			if err := sc.banService.UnmuteUser(ctx, spamCase.ChatID, spamCase.UserID); err != nil && !isSpamTelegramEffectAlreadyApplied(err) {
@@ -182,7 +177,9 @@ func (sc *SpamControl) resolveClaimedCase(ctx context.Context, spamCase *db.Spam
 	if finalized {
 		spamCase.Status = terminalStatus
 		spamCase.ResolvedAt = &now
-		sc.closeVotingPrompt(ctx, spamCase)
+		if spamCase.ResolveAt != nil {
+			sc.closeVotingPrompt(ctx, spamCase)
+		}
 	}
 	return nil
 }

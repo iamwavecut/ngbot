@@ -57,6 +57,94 @@ func TestSetSpamCasePreVoteRestrictedOnlyUpdatesPendingCase(t *testing.T) {
 	}
 }
 
+func TestClaimKnownSpamCaseIsSingleOwnerAndSurvivesReopen(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	client, err := NewSQLiteClient(ctx, dataDir, "test.db")
+	if err != nil {
+		t.Fatalf("new sqlite client: %v", err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	spamCase, err := client.CreateSpamCase(ctx, &db.SpamCase{
+		ChatID:      -100,
+		UserID:      200,
+		MessageID:   40,
+		MessageText: "known spammer",
+		CreatedAt:   now,
+		Status:      db.SpamCaseStatusPending,
+	})
+	if err != nil {
+		t.Fatalf("create known spam case: %v", err)
+	}
+
+	claimed, changed, err := client.ClaimKnownSpamCase(ctx, spamCase.ID, now)
+	if err != nil || !changed {
+		t.Fatalf("claim known spam case: changed=%t case=%#v err=%v", changed, claimed, err)
+	}
+	if claimed.Status != db.SpamCaseStatusResolvingSpam || !claimed.NextAttemptAt.Valid {
+		t.Fatalf("unexpected claimed state: %#v", claimed)
+	}
+	if second, changed, err := client.ClaimKnownSpamCase(ctx, spamCase.ID, now.Add(time.Second)); err != nil || changed || second != nil {
+		t.Fatalf("second owner claimed known spam case: changed=%t case=%#v err=%v", changed, second, err)
+	}
+	if err := client.Close(); err != nil {
+		t.Fatalf("close database: %v", err)
+	}
+
+	reopened, err := NewSQLiteClient(ctx, dataDir, "test.db")
+	if err != nil {
+		t.Fatalf("reopen database: %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	due, err := reopened.GetDueSpamCases(ctx, now.Add(time.Second))
+	if err != nil {
+		t.Fatalf("get due known spam cases: %v", err)
+	}
+	if len(due) != 1 || due[0].ID != spamCase.ID || due[0].Status != db.SpamCaseStatusResolvingSpam {
+		t.Fatalf("claimed known spam case was not recoverable: %#v", due)
+	}
+}
+
+func TestRemoveExpiredRestrictionsPreservesActiveRows(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	client, err := NewSQLiteClient(ctx, t.TempDir(), "test.db")
+	if err != nil {
+		t.Fatalf("new sqlite client: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+
+	now := time.Now().UTC()
+	for _, restriction := range []*db.UserRestriction{
+		{ChatID: -100, UserID: 1, RestrictedAt: now.Add(-2 * time.Hour), ExpiresAt: now.Add(-time.Hour)},
+		{ChatID: -100, UserID: 2, RestrictedAt: now, ExpiresAt: now.Add(time.Hour)},
+	} {
+		if err := client.AddRestriction(ctx, restriction); err != nil {
+			t.Fatalf("add restriction for user %d: %v", restriction.UserID, err)
+		}
+	}
+	if err := client.RemoveExpiredRestrictions(ctx); err != nil {
+		t.Fatalf("remove expired restrictions: %v", err)
+	}
+	expired, err := client.GetActiveRestriction(ctx, -100, 1)
+	if err != nil {
+		t.Fatalf("get expired restriction: %v", err)
+	}
+	if expired != nil {
+		t.Fatalf("expired restriction was retained: %#v", expired)
+	}
+	active, err := client.GetActiveRestriction(ctx, -100, 2)
+	if err != nil {
+		t.Fatalf("get active restriction: %v", err)
+	}
+	if active == nil {
+		t.Fatal("active restriction was deleted")
+	}
+}
+
 func TestSpamVoteAndTimeoutRaceHasOneResolutionAndOneStat(t *testing.T) {
 	t.Parallel()
 

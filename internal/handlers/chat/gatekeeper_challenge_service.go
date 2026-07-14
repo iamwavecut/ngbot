@@ -290,6 +290,16 @@ func (g *Gatekeeper) processChallengeActionWithStats(ctx context.Context, challe
 			return nil
 		}
 	case db.ChallengeStatusRejectPending:
+		if challenge.CommChatID != challenge.ChatID {
+			currentMember, err := g.isCurrentJoinRequestMember(ctx, challenge)
+			if err != nil {
+				actionErr = err
+				break
+			}
+			if currentMember {
+				return g.cleanupChallengeWithoutPenalty(ctx, challenge)
+			}
+		}
 		settings, err := g.fetchAndValidateSettings(ctx, challenge.ChatID)
 		if err != nil {
 			actionErr = err
@@ -389,12 +399,31 @@ func isTelegramActionAlreadyApplied(err error) bool {
 		"MESSAGE TO DELETE NOT FOUND",
 		"MESSAGE_ID_INVALID",
 		"USER_NOT_PARTICIPANT",
+		"PARTICIPANT_ID_INVALID",
+		"MEMBER NOT FOUND",
+		"USER IS DEACTIVATED",
 	} {
 		if strings.Contains(message, marker) {
 			return true
 		}
 	}
 	return false
+}
+
+func (g *Gatekeeper) isCurrentJoinRequestMember(ctx context.Context, challenge *db.Challenge) (bool, error) {
+	member, err := bot.GetChatMember(ctx, g.bot, api.GetChatMemberConfig{
+		ChatConfigWithUser: api.ChatConfigWithUser{
+			ChatConfig: api.ChatConfig{ChatID: challenge.ChatID},
+			UserID:     challenge.UserID,
+		},
+	})
+	if err != nil {
+		if isTelegramActionAlreadyApplied(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("check join-request membership before rejection: %w", err)
+	}
+	return isCurrentChatMember(member), nil
 }
 
 func (g *Gatekeeper) rejectConfigFromSettings(settings *db.Settings, language string, title string) (time.Duration, string, error) {

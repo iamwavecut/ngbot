@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"path"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -261,10 +262,12 @@ func TestFetchKnownBannedDailyAppliesPartialProviderSuccess(t *testing.T) {
 }
 
 type recordingBanStore struct {
-	kv          map[string]string
-	banlist     map[int64]struct{}
-	sources     map[banlistSourceKey]map[int64]*time.Time
-	sourceCalls []banlistSourceCall
+	kv           map[string]string
+	banlist      map[int64]struct{}
+	sources      map[banlistSourceKey]map[int64]*time.Time
+	sourceCalls  []banlistSourceCall
+	cleanupCalls int
+	cleanupErr   error
 }
 
 type banlistSourceKey struct {
@@ -356,9 +359,48 @@ func (s *recordingBanStore) GetActiveRestriction(context.Context, int64, int64) 
 	return nil, nil
 }
 
+func (s *recordingBanStore) RemoveExpiredRestrictions(context.Context) error {
+	s.cleanupCalls++
+	return s.cleanupErr
+}
+
 func (s *recordingBanStore) hasSource(key banlistSourceKey, userID int64) bool {
 	_, ok := s.sources[key][userID]
 	return ok
+}
+
+func TestBanServiceStartCleansExpiredRestrictions(t *testing.T) {
+	t.Parallel()
+
+	store := newRecordingBanStore()
+	store.kv[kvKeyLastDailyFetch] = time.Now().Format(time.RFC3339)
+	store.kv[kvKeyLastHourlyFetch] = time.Now().Format(time.RFC3339)
+	service := &defaultBanService{
+		db:          store,
+		httpClient:  http.DefaultClient,
+		knownBanned: map[int64]struct{}{},
+	}
+	if err := service.Start(context.Background()); err != nil {
+		t.Fatalf("start ban service: %v", err)
+	}
+	t.Cleanup(func() { _ = service.Stop(context.Background()) })
+	if store.cleanupCalls != 1 {
+		t.Fatalf("startup cleanup calls = %d, want 1", store.cleanupCalls)
+	}
+}
+
+func TestBanServiceStartFailsWhenRestrictionCleanupFails(t *testing.T) {
+	t.Parallel()
+
+	store := newRecordingBanStore()
+	store.cleanupErr = errors.New("database unavailable")
+	service := &defaultBanService{db: store, knownBanned: map[int64]struct{}{}}
+	if err := service.Start(context.Background()); err == nil || !strings.Contains(err.Error(), "remove expired restrictions") {
+		t.Fatalf("start error = %v, want restriction cleanup failure", err)
+	}
+	if service.started {
+		t.Fatal("service started after required cleanup failed")
+	}
 }
 
 func TestCheckBanFailsOpenOnProviderErrors(t *testing.T) {

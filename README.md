@@ -136,6 +136,17 @@ The Mini App endpoint is intentionally hostile to indexing and embedding:
 11. Known crawler and LLM user agents are rejected before challenge lookup.
 12. MIME sniffing and legacy cross-domain policies are disabled.
 
+### Production SQLite maintenance
+
+Do not run `PRAGMA quick_check`, `integrity_check`, or other long scans against the live database file. Create a consistent online snapshot first, then run integrity and migration checks against the snapshot:
+
+```bash
+sqlite3 /home/username/.ngbot/bot.db ".backup '/home/username/.ngbot/bot-audit.db'"
+sqlite3 /home/username/.ngbot/bot-audit.db "PRAGMA quick_check; PRAGMA foreign_key_check;"
+```
+
+Delete the audit snapshot after verification. A direct long-running read can hold a SQLite shared lock long enough for application writes to reach the configured busy timeout.
+
 ## Troubleshooting
 Don't hesitate to contact me
 

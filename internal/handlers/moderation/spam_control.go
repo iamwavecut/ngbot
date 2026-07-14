@@ -13,7 +13,6 @@ import (
 	"github.com/iamwavecut/ngbot/internal/bot"
 	"github.com/iamwavecut/ngbot/internal/config"
 	"github.com/iamwavecut/ngbot/internal/db"
-	handlersbase "github.com/iamwavecut/ngbot/internal/handlers/base"
 	"github.com/iamwavecut/ngbot/internal/i18n"
 	log "github.com/sirupsen/logrus"
 )
@@ -22,7 +21,6 @@ type SpamControl struct {
 	s          bot.Service
 	bot        *api.BotAPI
 	store      spamStore
-	stats      handlersbase.StatsStore
 	config     config.SpamControl
 	banService BanService
 	verbose    bool
@@ -59,7 +57,6 @@ var (
 
 type spamStore interface {
 	CreateSpamCase(ctx context.Context, sc *db.SpamCase) (*db.SpamCase, error)
-	UpdateSpamCase(ctx context.Context, sc *db.SpamCase) error
 	UpdateSpamCasePresentation(ctx context.Context, sc *db.SpamCase) error
 	SetSpamCasePreVoteRestricted(ctx context.Context, caseID int64, restricted bool) error
 	SetSpamCaseResolveAt(ctx context.Context, caseID int64, resolveAt time.Time) (bool, error)
@@ -72,6 +69,7 @@ type spamStore interface {
 	GetDueSpamCaseReportMessages(ctx context.Context, before time.Time) ([]*db.SpamCaseReportMessage, error)
 	DeleteSpamCaseReportMessage(ctx context.Context, caseID, chatID int64, messageID int) error
 	AddVoteIfPending(ctx context.Context, vote *db.SpamVote) (notSpamVotes, spamVotes int, accepted bool, err error)
+	ClaimKnownSpamCase(ctx context.Context, caseID int64, now time.Time) (*db.SpamCase, bool, error)
 	ClaimSpamCaseResolution(ctx context.Context, caseID int64, requiredVoters int, timedOut bool, now time.Time) (*db.SpamCase, bool, error)
 	FinalizeSpamCaseResolution(ctx context.Context, caseID int64, expectedStatus, terminalStatus, statsKey string, resolvedAt time.Time) (bool, error)
 	ScheduleSpamCaseRetry(ctx context.Context, caseID int64, expectedStatus string, nextAttemptAt time.Time, lastError string) (bool, error)
@@ -81,12 +79,11 @@ type spamStore interface {
 	DeleteChatKnownNonMember(ctx context.Context, chatID int64, userID int64) error
 }
 
-func NewSpamControl(s bot.Service, botAPI *api.BotAPI, store spamStore, stats handlersbase.StatsStore, config config.SpamControl, banService BanService, verbose bool) *SpamControl {
+func NewSpamControl(s bot.Service, botAPI *api.BotAPI, store spamStore, config config.SpamControl, banService BanService, verbose bool) *SpamControl {
 	return &SpamControl{
 		s:          s,
 		bot:        botAPI,
 		store:      store,
-		stats:      stats,
 		config:     config,
 		banService: banService,
 		verbose:    verbose,
@@ -340,8 +337,16 @@ func (sc *SpamControl) preprocessMessage(ctx context.Context, msg *api.Message, 
 			}
 		}
 	} else {
-		if err := bot.BanUserFromChat(ctx, sc.bot, msg.From.ID, chat.ID, 0); err != nil {
-			log.WithField("error", err.Error()).WithField("chat_title", chat.Title).WithField("chat_username", chat.UserName).Error("failed to ban user")
+		claimedCase, claimed, err := sc.store.ClaimKnownSpamCase(ctx, spamCase.ID, time.Now())
+		if err != nil {
+			return result, fmt.Errorf("claim known spam case: %w", err)
+		}
+		if !claimed {
+			return result, nil
+		}
+		spamCase = claimedCase
+		if err := sc.resolveClaimedCase(ctx, spamCase); err != nil {
+			log.WithField("error", err.Error()).WithField("chat_title", chat.Title).WithField("chat_username", chat.UserName).Error("failed to resolve known spam case")
 			if isTelegramPrivilegeError(err) {
 				result.Error = errChatAdminRequired
 			} else {
@@ -350,12 +355,6 @@ func (sc *SpamControl) preprocessMessage(ctx context.Context, msg *api.Message, 
 		} else {
 			result.UserBanned = true
 			result.MessageDeleted = true
-		}
-		now := time.Now()
-		spamCase.Status = spamCaseStatusSpam
-		spamCase.ResolvedAt = &now
-		if result.UserBanned {
-			sc.cleanupRecentJoinMessage(ctx, chat.ID, msg.From.ID)
 		}
 	}
 
@@ -384,18 +383,6 @@ func (sc *SpamControl) preprocessMessage(ctx context.Context, msg *api.Message, 
 				}
 			})
 		}
-	}
-
-	if !voting && result.UserBanned {
-		if err := sc.store.UpdateSpamCase(ctx, spamCase); err != nil {
-			log.WithField("error", err.Error()).Error("failed to update spam case")
-		}
-		if err := handlersbase.IncrementDailyStat(ctx, sc.stats, chat.ID, handlersbase.StatSpamConfirmed); err != nil {
-			log.WithField("error", err.Error()).Warn("failed to increment spam confirmed stat")
-		}
-	}
-	if !voting && result.UserBanned {
-		sc.clearKnownNonMember(ctx, chat.ID, msg.From.ID)
 	}
 
 	return result, persistenceErr

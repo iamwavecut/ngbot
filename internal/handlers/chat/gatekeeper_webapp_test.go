@@ -773,6 +773,11 @@ func TestJoinCaptchaAnswerBlocksAfterTooManyWrongChoices(t *testing.T) {
 	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
 		recorder.record(t, method, r)
 		switch method {
+		case testTelegramMethodGetChatMember:
+			return map[string]any{
+				"status": testMemberStatusLeft,
+				"user":   map[string]any{"id": 42, testJSONIsBot: false, testJSONFirstName: testFirstNameNeo},
+			}
 		case testTelegramMethodJoinRequestQuery, testTelegramMethodBanChatMember:
 			return true
 		default:
@@ -834,6 +839,11 @@ func TestJoinCaptchaAnswerDeclinesExpiredChallenge(t *testing.T) {
 	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
 		recorder.record(t, method, r)
 		switch method {
+		case testTelegramMethodGetChatMember:
+			return map[string]any{
+				"status": testMemberStatusLeft,
+				"user":   map[string]any{"id": 42, testJSONIsBot: false, testJSONFirstName: testFirstNameNeo},
+			}
 		case testTelegramMethodJoinRequestQuery, testTelegramMethodBanChatMember:
 			return true
 		default:
@@ -1104,6 +1114,11 @@ func TestHandleJoinCaptchaAnswerDeclinesKnownBannedUser(t *testing.T) {
 	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
 		recorder.record(t, method, r)
 		switch method {
+		case testTelegramMethodGetChatMember:
+			return map[string]any{
+				"status": testMemberStatusLeft,
+				"user":   map[string]any{"id": 42, testJSONIsBot: false, testJSONFirstName: testFirstNameNeo},
+			}
 		case testTelegramMethodJoinRequestQuery, testTelegramMethodBanChatMember:
 			return true
 		default:

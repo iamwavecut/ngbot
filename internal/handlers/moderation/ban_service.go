@@ -63,6 +63,7 @@ type banStore interface {
 	AddRestriction(ctx context.Context, restriction *db.UserRestriction) error
 	RemoveRestriction(ctx context.Context, chatID int64, userID int64) error
 	GetActiveRestriction(ctx context.Context, chatID, userID int64) (*db.UserRestriction, error)
+	RemoveExpiredRestrictions(ctx context.Context) error
 }
 
 type banlistProvider struct {
@@ -128,6 +129,9 @@ func (s *defaultBanService) Start(ctx context.Context) error {
 	if err := s.loadKnownBannedFromDB(ctx); err != nil {
 		return fmt.Errorf("load known banned from db: %w", err)
 	}
+	if err := s.cleanupExpiredRestrictions(ctx); err != nil {
+		return err
+	}
 
 	runCtx, cancel := context.WithCancel(ctx)
 	s.runCancel = cancel
@@ -147,6 +151,9 @@ func (s *defaultBanService) Start(ctx context.Context) error {
 			case <-runCtx.Done():
 				return
 			case <-ticker.C:
+				if err := s.cleanupExpiredRestrictions(runCtx); err != nil && !errorsIsCanceled(err) {
+					log.WithError(err).Error("Failed to clean up expired restrictions")
+				}
 				if err := s.refreshKnownBanned(runCtx); err != nil && !errorsIsCanceled(err) {
 					log.WithError(err).Error("Failed to refresh known banned users")
 				}
@@ -155,6 +162,16 @@ func (s *defaultBanService) Start(ctx context.Context) error {
 	})
 
 	s.started = true
+	return nil
+}
+
+func (s *defaultBanService) cleanupExpiredRestrictions(ctx context.Context) error {
+	if s.db == nil {
+		return nil
+	}
+	if err := s.db.RemoveExpiredRestrictions(ctx); err != nil {
+		return fmt.Errorf("remove expired restrictions: %w", err)
+	}
 	return nil
 }
 

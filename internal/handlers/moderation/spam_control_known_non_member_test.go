@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -65,12 +66,6 @@ func (s *testModerationStore) CreateSpamCase(_ context.Context, sc *db.SpamCase)
 	return sc, nil
 }
 
-func (s *testModerationStore) UpdateSpamCase(_ context.Context, sc *db.SpamCase) error {
-	copyCase := *sc
-	s.spamCase = &copyCase
-	return nil
-}
-
 func (s *testModerationStore) UpdateSpamCasePresentation(_ context.Context, sc *db.SpamCase) error {
 	if s.presentationErr != nil {
 		return s.presentationErr
@@ -111,7 +106,12 @@ func (s *testModerationStore) GetPendingSpamCases(context.Context) ([]*db.SpamCa
 	return nil, nil
 }
 
-func (s *testModerationStore) GetDueSpamCases(context.Context, time.Time) ([]*db.SpamCase, error) {
+func (s *testModerationStore) GetDueSpamCases(_ context.Context, now time.Time) ([]*db.SpamCase, error) {
+	if s.spamCase != nil &&
+		(s.spamCase.Status == db.SpamCaseStatusResolvingSpam || s.spamCase.Status == db.SpamCaseStatusResolvingFalsePositive) &&
+		s.spamCase.NextAttemptAt.Valid && !s.spamCase.NextAttemptAt.Time.After(now) {
+		return []*db.SpamCase{s.spamCase}, nil
+	}
 	return nil, nil
 }
 
@@ -152,6 +152,24 @@ func (s *testModerationStore) AddVoteIfPending(_ context.Context, vote *db.SpamV
 	return notSpam, spam, true, nil
 }
 
+func (s *testModerationStore) ClaimKnownSpamCase(_ context.Context, caseID int64, now time.Time) (*db.SpamCase, bool, error) {
+	if s.spamCase == nil ||
+		s.spamCase.ID != caseID ||
+		s.spamCase.Status != db.SpamCaseStatusPending ||
+		s.spamCase.ResolvedAt != nil ||
+		s.spamCase.ResolveAt != nil ||
+		s.spamCase.PreVoteRestricted ||
+		s.spamCase.MessageID == 0 {
+		return nil, false, nil
+	}
+	s.spamCase.Status = db.SpamCaseStatusResolvingSpam
+	s.spamCase.NextAttemptAt = sql.NullTime{Time: now, Valid: true}
+	s.spamCase.AttemptCount = 0
+	s.spamCase.LastError = ""
+	copyCase := *s.spamCase
+	return &copyCase, true, nil
+}
+
 func (s *testModerationStore) GetSpamVotes(context.Context, int64) ([]*db.SpamVote, error) {
 	return s.votes, nil
 }
@@ -182,8 +200,14 @@ func (s *testModerationStore) FinalizeSpamCaseResolution(_ context.Context, case
 	return true, nil
 }
 
-func (s *testModerationStore) ScheduleSpamCaseRetry(context.Context, int64, string, time.Time, string) (bool, error) {
+func (s *testModerationStore) ScheduleSpamCaseRetry(_ context.Context, caseID int64, expectedStatus string, nextAttemptAt time.Time, lastError string) (bool, error) {
+	if s.spamCase == nil || s.spamCase.ID != caseID || s.spamCase.Status != expectedStatus {
+		return false, nil
+	}
 	s.retryCalls++
+	s.spamCase.NextAttemptAt = sql.NullTime{Time: nextAttemptAt, Valid: !nextAttemptAt.IsZero()}
+	s.spamCase.AttemptCount++
+	s.spamCase.LastError = lastError
 	return true, nil
 }
 
@@ -376,6 +400,37 @@ func TestProcessBannedMessageClearsKnownNonMember(t *testing.T) {
 	}
 	if store.spamCase == nil || store.spamCase.Status != spamCaseStatusSpam {
 		t.Fatalf("expected spam case to be marked as spam, got %#v", store.spamCase)
+	}
+}
+
+func TestRecoverPendingKnownSpamCaseClaimsBeforeBan(t *testing.T) {
+	t.Parallel()
+
+	botAPI := newModerationTestBotAPI(t, func(method string, _ *http.Request) any {
+		if method != testTelegramMethodBanChatMember {
+			t.Fatalf("unexpected bot method: %s", method)
+		}
+		return true
+	})
+	store := &testModerationStore{spamCase: &db.SpamCase{
+		ID:          1,
+		ChatID:      -100,
+		UserID:      200,
+		MessageID:   40,
+		MessageText: "known spammer",
+		CreatedAt:   time.Now(),
+		Status:      db.SpamCaseStatusPending,
+	}}
+	sc := &SpamControl{bot: botAPI, store: store, banService: &testModerationBanService{}}
+
+	if err := sc.recoverPendingSpamCaseDeadlines(context.Background()); err != nil {
+		t.Fatalf("recover pending known spam case: %v", err)
+	}
+	if store.spamCase.Status != db.SpamCaseStatusSpam || store.spamCase.ResolvedAt == nil {
+		t.Fatalf("pending known spam case was not durably resolved: %#v", store.spamCase)
+	}
+	if len(store.deletedKnownNonMember) != 1 {
+		t.Fatalf("known non-member state was not cleared after recovered ban: %#v", store.deletedKnownNonMember)
 	}
 }
 
@@ -605,6 +660,7 @@ func TestVoteBanReportMessageRetentionIsTenMinutes(t *testing.T) {
 func TestResolveReportedCaseSpamDeletesTargetAndKeepsReportMessage(t *testing.T) {
 	t.Parallel()
 
+	resolveAt := time.Now().Add(time.Minute)
 	var deletedMessageIDs []string
 	botAPI := newModerationTestBotAPI(t, func(method string, r *http.Request) any {
 		switch method {
@@ -634,6 +690,7 @@ func TestResolveReportedCaseSpamDeletesTargetAndKeepsReportMessage(t *testing.T)
 			Status:                spamCaseStatusPending,
 			CreatedAt:             time.Now(),
 			PreVoteRestricted:     false,
+			ResolveAt:             &resolveAt,
 		},
 		votes: []*db.SpamVote{
 			{Vote: false},
@@ -657,8 +714,8 @@ func TestResolveReportedCaseSpamDeletesTargetAndKeepsReportMessage(t *testing.T)
 		t.Fatalf("ResolveCase returned error: %v", err)
 	}
 
-	if len(deletedMessageIDs) != 2 || deletedMessageIDs[0] != "40" || deletedMessageIDs[1] != "70" {
-		t.Fatalf("expected target and completed voting prompt deletes, got %#v", deletedMessageIDs)
+	if len(deletedMessageIDs) != 1 || deletedMessageIDs[0] != "70" {
+		t.Fatalf("expected only explicit voting prompt delete after revoke-messages ban, got %#v", deletedMessageIDs)
 	}
 	if len(store.reportMessages) != 1 {
 		t.Fatalf("expected report artifact to remain queued for ten-minute retention, got %#v", store.reportMessages)
@@ -668,6 +725,7 @@ func TestResolveReportedCaseSpamDeletesTargetAndKeepsReportMessage(t *testing.T)
 func TestResolveReportedCaseFalsePositiveKeepsTargetAndReportMessage(t *testing.T) {
 	t.Parallel()
 
+	resolveAt := time.Now().Add(time.Minute)
 	var deletedMessageIDs []string
 	botAPI := newModerationTestBotAPI(t, func(method string, r *http.Request) any {
 		switch method {
@@ -694,6 +752,7 @@ func TestResolveReportedCaseFalsePositiveKeepsTargetAndReportMessage(t *testing.
 			Status:                spamCaseStatusPending,
 			CreatedAt:             time.Now(),
 			PreVoteRestricted:     false,
+			ResolveAt:             &resolveAt,
 		},
 		votes: []*db.SpamVote{
 			{Vote: true},

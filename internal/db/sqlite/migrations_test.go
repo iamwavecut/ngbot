@@ -755,6 +755,94 @@ func TestLegacySpamRecoveryMigrationIsScopedAndReversible(t *testing.T) {
 	}
 }
 
+func TestImmediateSpamRecoveryMigrationIsScopedAndReversible(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "immediate-spam.db")
+	sqlDB, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
+
+	source := &migrate.EmbedFileSystemMigrationSource{
+		FileSystem: resources.FS,
+		Root:       migrationsRoot,
+	}
+	const migration = "20260714220000-recover-immediate-spam-cases.sql"
+	if _, err := migrate.ExecMax(sqlDB, "sqlite3", source, migrate.Up, migrationsBefore(t, migration)); err != nil {
+		t.Fatalf("execute migrations before immediate recovery: %v", err)
+	}
+	if _, err := sqlDB.ExecContext(ctx, `INSERT INTO chats (id) VALUES (100)`); err != nil {
+		t.Fatalf("insert chat: %v", err)
+	}
+	if _, err := sqlDB.ExecContext(ctx, `
+		INSERT INTO spam_cases (
+			id, chat_id, user_id, message_id, message_text, created_at,
+			pre_vote_restricted, status, resolve_at, next_attempt_at, attempt_count, last_error
+		) VALUES
+			(1, 100, 1, 55, 'immediate pending', CURRENT_TIMESTAMP, 0,
+				'pending', NULL, datetime('now', '+1 day'), 3, 'previous error'),
+			(2, 100, 2, 56, 'voting pending', CURRENT_TIMESTAMP, 1,
+				'pending', NULL, NULL, 0, ''),
+			(3, 100, 3, 57, 'reported pending', CURRENT_TIMESTAMP, 0,
+				'pending', datetime('now', '+1 minute'), NULL, 0, ''),
+			(4, 100, 4, 0, 'legacy pending', CURRENT_TIMESTAMP, 0,
+				'pending', NULL, NULL, 0, '')
+	`); err != nil {
+		t.Fatalf("insert spam cases: %v", err)
+	}
+
+	if _, err := migrate.ExecMax(sqlDB, "sqlite3", source, migrate.Up, 1); err != nil {
+		t.Fatalf("execute immediate recovery migration: %v", err)
+	}
+
+	var (
+		status        string
+		nextAttemptAt sql.NullTime
+		attempts      int
+		lastError     string
+	)
+	if err := sqlDB.QueryRowContext(ctx, `
+		SELECT status, next_attempt_at, attempt_count, last_error
+		FROM spam_cases WHERE id = 1
+	`).Scan(&status, &nextAttemptAt, &attempts, &lastError); err != nil {
+		t.Fatalf("read recovered immediate case: %v", err)
+	}
+	if status != db.SpamCaseStatusResolvingSpam || !nextAttemptAt.Valid || attempts != 0 || lastError != "" {
+		t.Fatalf("immediate case was not made durable: status=%q next=%v attempts=%d error=%q", status, nextAttemptAt.Valid, attempts, lastError)
+	}
+	for _, caseID := range []int64{2, 3, 4} {
+		if err := sqlDB.QueryRowContext(ctx, `SELECT status FROM spam_cases WHERE id = ?`, caseID).Scan(&status); err != nil {
+			t.Fatalf("read unaffected case %d: %v", caseID, err)
+		}
+		if status != db.SpamCaseStatusPending {
+			t.Fatalf("unrelated case %d changed to %q", caseID, status)
+		}
+	}
+	var backupRows int
+	if err := sqlDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM durable_spam_immediate_recovery_backup`).Scan(&backupRows); err != nil {
+		t.Fatalf("count immediate recovery backups: %v", err)
+	}
+	if backupRows != 1 {
+		t.Fatalf("backup rows = %d, want 1", backupRows)
+	}
+
+	if _, err := migrate.ExecMax(sqlDB, "sqlite3", source, migrate.Down, 1); err != nil {
+		t.Fatalf("roll back immediate recovery migration: %v", err)
+	}
+	if err := sqlDB.QueryRowContext(ctx, `
+		SELECT status, next_attempt_at, attempt_count, last_error
+		FROM spam_cases WHERE id = 1
+	`).Scan(&status, &nextAttemptAt, &attempts, &lastError); err != nil {
+		t.Fatalf("read restored immediate case: %v", err)
+	}
+	if status != db.SpamCaseStatusPending || !nextAttemptAt.Valid || attempts != 3 || lastError != "previous error" {
+		t.Fatalf("immediate case was not restored exactly: status=%q next=%v attempts=%d error=%q", status, nextAttemptAt.Valid, attempts, lastError)
+	}
+}
+
 func migrationsBefore(t *testing.T, target string) int {
 	t.Helper()
 

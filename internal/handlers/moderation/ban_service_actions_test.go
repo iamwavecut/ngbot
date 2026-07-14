@@ -45,6 +45,10 @@ func (s *testBanStore) GetActiveRestriction(context.Context, int64, int64) (*db.
 	return &db.UserRestriction{ExpiresAt: time.Now().Add(time.Minute)}, nil
 }
 
+func (s *testBanStore) RemoveExpiredRestrictions(context.Context) error {
+	return nil
+}
+
 func TestUnmuteUserSendsExplicitAllowPermissions(t *testing.T) {
 	t.Parallel()
 

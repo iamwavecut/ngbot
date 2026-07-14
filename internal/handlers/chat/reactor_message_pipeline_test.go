@@ -206,7 +206,7 @@ func TestSpamVoteCallbackUsesSpamCaseChatSettings(t *testing.T) {
 	}
 
 	service := botservice.NewService(ctx, botAPI, dbClient, "en", log.NewEntry(log.New()))
-	spamControl := moderation.NewSpamControl(service, botAPI, dbClient, dbClient, config.SpamControl{
+	spamControl := moderation.NewSpamControl(service, botAPI, dbClient, config.SpamControl{
 		MinVoters:            2,
 		MaxVoters:            10,
 		MinVotersPercentage:  0,

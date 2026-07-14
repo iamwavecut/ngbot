@@ -341,6 +341,12 @@ func TestKnownBanPermissionFailurePreservesOriginalMessage(t *testing.T) {
 	if len(store.deletedKnownNonMember) != 0 {
 		t.Fatalf("known non-member state was cleared after ban failure: %#v", store.deletedKnownNonMember)
 	}
+	if store.spamCase == nil || store.spamCase.Status != db.SpamCaseStatusResolvingSpam {
+		t.Fatalf("failed known ban was not retained as durable resolving work: %#v", store.spamCase)
+	}
+	if store.retryCalls != 1 || !store.spamCase.NextAttemptAt.Valid || store.spamCase.AttemptCount != 1 {
+		t.Fatalf("failed known ban did not schedule a retry: case=%#v retry_calls=%d", store.spamCase, store.retryCalls)
+	}
 }
 
 func TestAbsentUserUnmuteIsTreatedAsAlreadyApplied(t *testing.T) {

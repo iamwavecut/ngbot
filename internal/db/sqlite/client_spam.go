@@ -414,6 +414,62 @@ func (s *sqliteClient) AddVoteIfPending(ctx context.Context, vote *db.SpamVote) 
 	return counts.NotSpam, counts.Spam, true, nil
 }
 
+func (s *sqliteClient) ClaimKnownSpamCase(ctx context.Context, caseID int64, now time.Time) (*db.SpamCase, bool, error) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	tx, err := s.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return nil, false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var spamCase db.SpamCase
+	if err := tx.GetContext(ctx, &spamCase, `
+		SELECT `+spamCaseColumns+` FROM spam_cases
+		WHERE id = ?
+			AND status = ?
+			AND resolved_at IS NULL
+			AND resolve_at IS NULL
+			AND pre_vote_restricted = FALSE
+			AND message_id != 0
+	`, caseID, db.SpamCaseStatusPending); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+
+	result, err := tx.ExecContext(ctx, `
+		UPDATE spam_cases
+		SET status = ?, next_attempt_at = ?, attempt_count = 0, last_error = ''
+		WHERE id = ?
+			AND status = ?
+			AND resolved_at IS NULL
+			AND resolve_at IS NULL
+			AND pre_vote_restricted = FALSE
+			AND message_id != 0
+	`, db.SpamCaseStatusResolvingSpam, now, caseID, db.SpamCaseStatusPending)
+	if err != nil {
+		return nil, false, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return nil, false, err
+	}
+	if affected != 1 {
+		return nil, false, nil
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, false, err
+	}
+	spamCase.Status = db.SpamCaseStatusResolvingSpam
+	spamCase.NextAttemptAt = sql.NullTime{Time: now, Valid: true}
+	spamCase.AttemptCount = 0
+	spamCase.LastError = ""
+	return &spamCase, true, nil
+}
+
 func (s *sqliteClient) ClaimSpamCaseResolution(
 	ctx context.Context,
 	caseID int64,

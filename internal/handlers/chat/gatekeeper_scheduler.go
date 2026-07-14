@@ -163,7 +163,7 @@ func (g *Gatekeeper) processExpiredChallenges(ctx context.Context) error {
 			}
 			continue
 		}
-		if challenge.WebAppToken != "" && challenge.JoinRequestQueryID != "" {
+		if challenge.WebAppToken != "" && challenge.JoinRequestQueryID != "" && !challenge.WebAppOpenedAt.Valid {
 			if err := g.attemptWebAppFallback(ctx, challenge, settings); err != nil {
 				entry.WithField(logFieldError, err.Error()).Error("failed to fallback expired web app challenge")
 			}
