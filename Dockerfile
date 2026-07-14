@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-FROM golang:alpine AS build
+FROM golang:1.25.12-alpine AS build
 HEALTHCHECK NONE
 
 WORKDIR /build
