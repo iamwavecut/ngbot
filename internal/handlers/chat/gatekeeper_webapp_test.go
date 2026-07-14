@@ -51,7 +51,7 @@ func TestJoinCaptchaAnswerApprovesMatchingTokenUserAndChoice(t *testing.T) {
 	}
 
 	form := url.Values{
-		"token":                {challenge.WebAppToken},
+		testWebAppFormToken:    {challenge.WebAppToken},
 		testWebAppFormChoice:   {challenge.SuccessUUID},
 		testWebAppFormInitData: {signedWebAppInitData(t, botAPI.Token, challenge.JoinRequestQueryID, challenge.UserID)},
 	}
@@ -150,7 +150,7 @@ func TestTestJoinCaptchaCommandSendsWebAppButton(t *testing.T) {
 			return nil
 		}
 	})
-	botAPI.Self.UserName = "testbot"
+	botAPI.Self.UserName = testBotUsername
 	store := newGatekeeperFlowStore()
 	gatekeeper := &Gatekeeper{
 		bot:    botAPI,
@@ -214,7 +214,7 @@ func TestJoinCaptchaAnswerCompletesTestChallengeWithoutJoinQueryAnswer(t *testin
 	}
 
 	form := url.Values{
-		"token":                {challenge.WebAppToken},
+		testWebAppFormToken:    {challenge.WebAppToken},
 		testWebAppFormChoice:   {challenge.SuccessUUID},
 		testWebAppFormInitData: {signedWebAppInitData(t, botAPI.Token, "runtime-webapp-query", challenge.UserID)},
 	}
@@ -315,13 +315,13 @@ func TestJoinCaptchaWebAppLocalizesAndObfuscatesChallengeText(t *testing.T) {
 	store := newGatekeeperFlowStore()
 	optionsJSON, err := encodeWebAppCaptchaOptions("ru", []webAppCaptchaOption{
 		{ID: testCorrectChoice, Symbol: "🐩"},
-		{ID: "wrong-choice", Symbol: "🍎"},
+		{ID: testWrongChoice, Symbol: "🍎"},
 	})
 	if err != nil {
 		t.Fatalf("encode options: %v", err)
 	}
 	challenge := newWebAppChallenge(time.Now().Add(3 * time.Minute))
-	challenge.CaptchaPrompt = "пуделя"
+	challenge.CaptchaPrompt = testChallengePromptRU
 	challenge.CaptchaOptionsJSON = optionsJSON
 	if _, err := store.CreateChallenge(t.Context(), challenge); err != nil {
 		t.Fatalf("create challenge: %v", err)
@@ -345,7 +345,7 @@ func TestJoinCaptchaWebAppLocalizesAndObfuscatesChallengeText(t *testing.T) {
 			t.Fatalf("expected localized page to contain %q, got %q", want, body)
 		}
 	}
-	for _, leaked := range []string{"пуделя", "🐩", "🍎"} {
+	for _, leaked := range []string{testChallengePromptRU, "🐩", "🍎"} {
 		if strings.Contains(body, leaked) {
 			t.Fatalf("expected captcha text %q to be obfuscated, got %q", leaked, body)
 		}
@@ -508,7 +508,7 @@ func TestJoinCaptchaAnswerRejectsCrossSitePostBeforeValidation(t *testing.T) {
 	}
 
 	form := url.Values{
-		"token":              {challenge.WebAppToken},
+		testWebAppFormToken:  {challenge.WebAppToken},
 		testWebAppFormChoice: {challenge.SuccessUUID},
 	}
 	req := httptest.NewRequest(http.MethodPost, joinCaptchaAnswerPath, strings.NewReader(form.Encode()))
@@ -540,7 +540,7 @@ func TestJoinCaptchaAnswerRejectsCrossOriginPostWithoutFetchMetadata(t *testing.
 	}
 
 	form := url.Values{
-		"token":              {challenge.WebAppToken},
+		testWebAppFormToken:  {challenge.WebAppToken},
 		testWebAppFormChoice: {challenge.SuccessUUID},
 	}
 	req := httptest.NewRequest(http.MethodPost, joinCaptchaAnswerPath, strings.NewReader(form.Encode()))
@@ -601,7 +601,7 @@ func TestJoinCaptchaAnswerRejectsInvalidInitData(t *testing.T) {
 	}
 
 	form := url.Values{
-		"token":                {challenge.WebAppToken},
+		testWebAppFormToken:    {challenge.WebAppToken},
 		testWebAppFormChoice:   {challenge.SuccessUUID},
 		testWebAppFormInitData: {"bad=init"},
 	}
@@ -642,7 +642,7 @@ func TestJoinCaptchaAnswerRejectsWrongUser(t *testing.T) {
 	}
 
 	form := url.Values{
-		"token":                {challenge.WebAppToken},
+		testWebAppFormToken:    {challenge.WebAppToken},
 		testWebAppFormChoice:   {challenge.SuccessUUID},
 		testWebAppFormInitData: {signedWebAppInitData(t, botAPI.Token, challenge.JoinRequestQueryID, 99)},
 	}
@@ -683,8 +683,8 @@ func TestJoinCaptchaAnswerIncrementsWrongChoiceWithoutAnsweringQuery(t *testing.
 	}
 
 	form := url.Values{
-		"token":                {challenge.WebAppToken},
-		testWebAppFormChoice:   {"wrong-choice"},
+		testWebAppFormToken:    {challenge.WebAppToken},
+		testWebAppFormChoice:   {testWrongChoice},
 		testWebAppFormInitData: {signedWebAppInitData(t, botAPI.Token, challenge.JoinRequestQueryID, challenge.UserID)},
 	}
 	req := httptest.NewRequest(http.MethodPost, "/gatekeeper/join-captcha/answer", strings.NewReader(form.Encode()))
@@ -724,13 +724,13 @@ func TestJoinCaptchaAnswerUsesChallengeLocaleForVisibleErrors(t *testing.T) {
 	store := newGatekeeperFlowStore()
 	optionsJSON, err := encodeWebAppCaptchaOptions("ru", []webAppCaptchaOption{
 		{ID: testCorrectChoice, Symbol: "🐩"},
-		{ID: "wrong-choice", Symbol: "🍎"},
+		{ID: testWrongChoice, Symbol: "🍎"},
 	})
 	if err != nil {
 		t.Fatalf("encode options: %v", err)
 	}
 	challenge := newWebAppChallenge(time.Now().Add(3 * time.Minute))
-	challenge.CaptchaPrompt = "пуделя"
+	challenge.CaptchaPrompt = testChallengePromptRU
 	challenge.CaptchaOptionsJSON = optionsJSON
 	if _, err := store.CreateChallenge(t.Context(), challenge); err != nil {
 		t.Fatalf("create challenge: %v", err)
@@ -744,8 +744,8 @@ func TestJoinCaptchaAnswerUsesChallengeLocaleForVisibleErrors(t *testing.T) {
 	}
 
 	form := url.Values{
-		"token":                {challenge.WebAppToken},
-		testWebAppFormChoice:   {"wrong-choice"},
+		testWebAppFormToken:    {challenge.WebAppToken},
+		testWebAppFormChoice:   {testWrongChoice},
 		testWebAppFormInitData: {signedWebAppInitData(t, botAPI.Token, challenge.JoinRequestQueryID, challenge.UserID)},
 	}
 	req := httptest.NewRequest(http.MethodPost, "/gatekeeper/join-captcha/answer", strings.NewReader(form.Encode()))
@@ -795,8 +795,8 @@ func TestJoinCaptchaAnswerBlocksAfterTooManyWrongChoices(t *testing.T) {
 	}
 
 	form := url.Values{
-		"token":                {challenge.WebAppToken},
-		testWebAppFormChoice:   {"wrong-choice"},
+		testWebAppFormToken:    {challenge.WebAppToken},
+		testWebAppFormChoice:   {testWrongChoice},
 		testWebAppFormInitData: {signedWebAppInitData(t, botAPI.Token, challenge.JoinRequestQueryID, challenge.UserID)},
 	}
 	req := httptest.NewRequest(http.MethodPost, "/gatekeeper/join-captcha/answer", strings.NewReader(form.Encode()))
@@ -855,7 +855,7 @@ func TestJoinCaptchaAnswerDeclinesExpiredChallenge(t *testing.T) {
 	}
 
 	form := url.Values{
-		"token":                {challenge.WebAppToken},
+		testWebAppFormToken:    {challenge.WebAppToken},
 		testWebAppFormChoice:   {challenge.SuccessUUID},
 		testWebAppFormInitData: {signedWebAppInitData(t, botAPI.Token, challenge.JoinRequestQueryID, challenge.UserID)},
 	}
@@ -898,9 +898,9 @@ func TestStartJoinRequestWebAppChallengeFallsBackDurablyOnSendFailure(t *testing
 			return nil
 		case testTelegramMethodGetChat:
 			if r.Form.Get("chat_id") == "9001" {
-				return map[string]any{"id": 9001, "type": telegramChatTypePrivate, testJSONFirstName: testFirstNameNeo}
+				return map[string]any{"id": 9001, testJSONType: telegramChatTypePrivate, testJSONFirstName: testFirstNameNeo}
 			}
-			return map[string]any{"id": -100123, "type": testChatTypeSupergroup, testJSONTitle: testGroupTitle}
+			return map[string]any{"id": -100123, testJSONType: testChatTypeSupergroup, testJSONTitle: testGroupTitle}
 		case testTelegramMethodSendMessage:
 			return recorder.nextSendMessageResult()
 		default:
@@ -959,7 +959,7 @@ func newWebAppChallenge(expiresAt time.Time) *db.Challenge {
 		SuccessUUID:        testCorrectChoice,
 		WebAppToken:        "join-token",
 		JoinRequestQueryID: testJoinQueryID,
-		CaptchaPrompt:      "poodle",
+		CaptchaPrompt:      testChallengePrompt,
 		CaptchaOptionsJSON: testCaptchaOptionsJSON,
 		CreatedAt:          time.Now(),
 		ExpiresAt:          expiresAt,
@@ -979,9 +979,9 @@ func staleSignedWebAppInitData(t *testing.T, token string, queryID string, userI
 
 	userJSON := fmt.Sprintf(`{"id":%d,%q:%q}`, userID, testJSONFirstName, testFirstNameNeo)
 	values := url.Values{
-		"auth_date": {strconv.FormatInt(authDate.Unix(), 10)},
-		"query_id":  {queryID},
-		"user":      {userJSON},
+		"auth_date":  {strconv.FormatInt(authDate.Unix(), 10)},
+		"query_id":   {queryID},
+		logFieldUser: {userJSON},
 	}
 
 	dataCheck := make([]string, 0, len(values))
@@ -1029,7 +1029,7 @@ func TestHandleJoinCaptchaAnswerRejectsStaleInitData(t *testing.T) {
 	}
 
 	form := url.Values{
-		"token":                {challenge.WebAppToken},
+		testWebAppFormToken:    {challenge.WebAppToken},
 		testWebAppFormChoice:   {challenge.SuccessUUID},
 		testWebAppFormInitData: {staleSignedWebAppInitData(t, botAPI.Token, challenge.JoinRequestQueryID, challenge.UserID, time.Now().Add(-2*time.Hour))},
 	}
@@ -1075,7 +1075,7 @@ func TestHandleJoinCaptchaAnswerPersistsApprovalRetryWhenApproveFails(t *testing
 	}
 
 	form := url.Values{
-		"token":                {challenge.WebAppToken},
+		testWebAppFormToken:    {challenge.WebAppToken},
 		testWebAppFormChoice:   {challenge.SuccessUUID},
 		testWebAppFormInitData: {signedWebAppInitData(t, botAPI.Token, challenge.JoinRequestQueryID, challenge.UserID)},
 	}
@@ -1131,7 +1131,7 @@ func TestHandleJoinCaptchaAnswerDeclinesKnownBannedUser(t *testing.T) {
 	}
 
 	form := url.Values{
-		"token":                {challenge.WebAppToken},
+		testWebAppFormToken:    {challenge.WebAppToken},
 		testWebAppFormChoice:   {challenge.SuccessUUID},
 		testWebAppFormInitData: {signedWebAppInitData(t, botAPI.Token, challenge.JoinRequestQueryID, challenge.UserID)},
 	}

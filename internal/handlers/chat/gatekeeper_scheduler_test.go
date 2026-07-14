@@ -170,12 +170,12 @@ func TestProcessNewChatMembersNotSpammerOverrideBypassesBanCheck(t *testing.T) {
 		switch method {
 		case testTelegramMethodGetChatMember:
 			return map[string]any{
-				"user": map[string]any{
+				logFieldUser: map[string]any{
 					"id":              200,
 					testJSONIsBot:     false,
 					testJSONFirstName: testFirstNameUser,
 				},
-				"status": telegramMemberStatus,
+				logFieldStatus: telegramMemberStatus,
 			}
 		default:
 			t.Fatalf("unexpected bot method: %s", method)

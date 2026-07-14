@@ -931,7 +931,7 @@ func TestJoinRequestCaptchaSuccessHandoffSkipsSecondCaptchaAndSendsGreetingOnce(
 		case testTelegramMethodGetChat:
 			return map[string]any{
 				"id":              9001,
-				"type":            telegramChatTypePrivate,
+				testJSONType:      telegramChatTypePrivate,
 				testJSONFirstName: testFirstNameNeo,
 			}
 		case "approveChatJoinRequest":
@@ -1080,7 +1080,7 @@ func TestJoinRequestCaptchaSuccessHandoffSkipsPublicCaptchaWithoutViaJoinRequest
 		case testTelegramMethodGetChat:
 			return map[string]any{
 				"id":              9001,
-				"type":            telegramChatTypePrivate,
+				testJSONType:      telegramChatTypePrivate,
 				testJSONFirstName: testFirstNameNeo,
 			}
 		case "approveChatJoinRequest":
@@ -1650,13 +1650,13 @@ func TestProcessExpiredJoinRequestWebAppChallengeFallsBackToDM(t *testing.T) {
 			case "9001":
 				return map[string]any{
 					"id":              9001,
-					"type":            telegramChatTypePrivate,
+					testJSONType:      telegramChatTypePrivate,
 					testJSONFirstName: testFirstNameNeo,
 				}
 			case "-100123":
 				return map[string]any{
 					"id":          -100123,
-					"type":        testChatTypeSupergroup,
+					testJSONType:  testChatTypeSupergroup,
 					testJSONTitle: testGroupTitle,
 				}
 			default:
@@ -1741,7 +1741,7 @@ func TestProcessExpiredJoinRequestDMFallbackChallengeRejects(t *testing.T) {
 		case testTelegramMethodGetChat:
 			return map[string]any{
 				"id":          -100123,
-				"type":        testChatTypeSupergroup,
+				testJSONType:  testChatTypeSupergroup,
 				testJSONTitle: testGroupTitle,
 			}
 		case testTelegramMethodDeleteMessage, testTelegramMethodBanChatMember, testTelegramMethodJoinRequestQuery:
@@ -1819,13 +1819,13 @@ func TestProcessUnopenedWebAppChallengeFallsBackEarly(t *testing.T) {
 			case "9001":
 				return map[string]any{
 					"id":              9001,
-					"type":            telegramChatTypePrivate,
+					testJSONType:      telegramChatTypePrivate,
 					testJSONFirstName: testFirstNameNeo,
 				}
 			case "-100123":
 				return map[string]any{
 					"id":          -100123,
-					"type":        testChatTypeSupergroup,
+					testJSONType:  testChatTypeSupergroup,
 					testJSONTitle: testGroupTitle,
 				}
 			default:
@@ -1849,7 +1849,7 @@ func TestProcessUnopenedWebAppChallengeFallsBackEarly(t *testing.T) {
 		SuccessUUID:        testCorrectChoice,
 		WebAppToken:        testToken,
 		JoinRequestQueryID: testJoinQueryID,
-		CaptchaPrompt:      "poodle",
+		CaptchaPrompt:      testChallengePrompt,
 		CaptchaOptionsJSON: testCaptchaOptionsJSON,
 		CreatedAt:          time.Now().Add(-30 * time.Second),
 		ExpiresAt:          time.Now().Add(2 * time.Minute),
@@ -1906,7 +1906,7 @@ func TestProcessUnopenedWebAppChallengeSkipsOpened(t *testing.T) {
 		SuccessUUID:        testCorrectChoice,
 		WebAppToken:        testToken,
 		JoinRequestQueryID: testJoinQueryID,
-		CaptchaPrompt:      "poodle",
+		CaptchaPrompt:      testChallengePrompt,
 		CaptchaOptionsJSON: testCaptchaOptionsJSON,
 		CreatedAt:          time.Now().Add(-30 * time.Second),
 		ExpiresAt:          time.Now().Add(2 * time.Minute),
@@ -1957,7 +1957,7 @@ func TestProcessUnopenedWebAppChallengeSkipsAlreadyPassed(t *testing.T) {
 		SuccessUUID:        testCorrectChoice,
 		WebAppToken:        testToken,
 		JoinRequestQueryID: testJoinQueryID,
-		CaptchaPrompt:      "poodle",
+		CaptchaPrompt:      testChallengePrompt,
 		CaptchaOptionsJSON: testCaptchaOptionsJSON,
 		CreatedAt:          time.Now().Add(-30 * time.Second),
 		ExpiresAt:          time.Now().Add(2 * time.Minute),
@@ -2006,13 +2006,13 @@ func TestProcessExpiredRecoversFallbackPendingChallenge(t *testing.T) {
 			case "9001":
 				return map[string]any{
 					"id":              9001,
-					"type":            telegramChatTypePrivate,
+					testJSONType:      telegramChatTypePrivate,
 					testJSONFirstName: testFirstNameNeo,
 				}
 			case "-100123":
 				return map[string]any{
 					"id":          -100123,
-					"type":        testChatTypeSupergroup,
+					testJSONType:  testChatTypeSupergroup,
 					testJSONTitle: testGroupTitle,
 				}
 			default:
@@ -2036,7 +2036,7 @@ func TestProcessExpiredRecoversFallbackPendingChallenge(t *testing.T) {
 		SuccessUUID:        testCorrectChoice,
 		WebAppToken:        testToken,
 		JoinRequestQueryID: testJoinQueryID,
-		CaptchaPrompt:      "poodle",
+		CaptchaPrompt:      testChallengePrompt,
 		CaptchaOptionsJSON: testCaptchaOptionsJSON,
 		CreatedAt:          time.Now().Add(-10 * time.Minute),
 		ExpiresAt:          time.Now().Add(-time.Minute),
@@ -2140,7 +2140,7 @@ func TestFallbackClaimedWebAppChallengeDeclinesWhenTargetChatUnavailable(t *test
 			case "9001":
 				return map[string]any{
 					"id":              9001,
-					"type":            telegramChatTypePrivate,
+					testJSONType:      telegramChatTypePrivate,
 					testJSONFirstName: testFirstNameNeo,
 				}
 			case "-100123":
@@ -2166,7 +2166,7 @@ func TestFallbackClaimedWebAppChallengeDeclinesWhenTargetChatUnavailable(t *test
 		SuccessUUID:        testCorrectChoice,
 		WebAppToken:        testToken,
 		JoinRequestQueryID: testJoinQueryID,
-		CaptchaPrompt:      "poodle",
+		CaptchaPrompt:      testChallengePrompt,
 		CaptchaOptionsJSON: testCaptchaOptionsJSON,
 		CreatedAt:          time.Now().Add(-10 * time.Minute),
 		ExpiresAt:          time.Now().Add(-time.Minute),

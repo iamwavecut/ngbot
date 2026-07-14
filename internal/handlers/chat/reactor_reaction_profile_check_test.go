@@ -35,13 +35,13 @@ func TestHandleMessageReactionModeratesUnknownUserProfileSpam(t *testing.T) {
 			}
 			return map[string]any{
 				"id":              777,
-				"type":            telegramChatTypePrivate,
+				testJSONType:      telegramChatTypePrivate,
 				testJSONFirstName: testFirstNameBad,
 				"username":        "badworker",
 				"bio":             "Удаленная работа от 500 долларов в день, подробности в личку",
 				"personal_chat": map[string]any{
 					"id":          -100999,
-					"type":        testChatTypeChannel,
+					testJSONType:  testChatTypeChannel,
 					testJSONTitle: "Fast income",
 					"username":    "fast_income_bot",
 				},
@@ -55,7 +55,7 @@ func TestHandleMessageReactionModeratesUnknownUserProfileSpam(t *testing.T) {
 				testJSONDate:      1,
 				logFieldChat: map[string]any{
 					"id":          -100999,
-					"type":        testChatTypeChannel,
+					testJSONType:  testChatTypeChannel,
 					testJSONTitle: "Fast income",
 				},
 				"text": "Казино бот с бонусом, переходи по ссылке",
@@ -135,7 +135,7 @@ func TestHandleMessageReactionRemembersUnknownUserProfileNotSpam(t *testing.T) {
 		case testTelegramMethodGetChat:
 			return map[string]any{
 				"id":              777,
-				"type":            telegramChatTypePrivate,
+				testJSONType:      telegramChatTypePrivate,
 				testJSONFirstName: "Clean",
 				"username":        "cleanworker",
 				"bio":             "Local neighbor and regular reader",
@@ -295,7 +295,7 @@ func TestHandleMessageReactionModeratesActorChatProfileSpam(t *testing.T) {
 			case "-100123":
 				return map[string]any{
 					"id":          -100123,
-					"type":        testChatTypeSupergroup,
+					testJSONType:  testChatTypeSupergroup,
 					testJSONTitle: testGroupTitle,
 				}
 			case "-100777":
@@ -304,7 +304,7 @@ func TestHandleMessageReactionModeratesActorChatProfileSpam(t *testing.T) {
 			}
 			return map[string]any{
 				"id":                -100777,
-				"type":              testChatTypeChannel,
+				testJSONType:        testChatTypeChannel,
 				testJSONTitle:       testSpamChannelTitle,
 				"username":          "spam_channel",
 				testJSONDescription: "Крипто-казино, бонусы, быстрый заработок",
@@ -313,7 +313,7 @@ func TestHandleMessageReactionModeratesActorChatProfileSpam(t *testing.T) {
 					testJSONDate:      1,
 					logFieldChat: map[string]any{
 						"id":          -100777,
-						"type":        testChatTypeChannel,
+						testJSONType:  testChatTypeChannel,
 						testJSONTitle: testSpamChannelTitle,
 					},
 					"text": "Переходи в бота и забирай бонус",

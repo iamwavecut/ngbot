@@ -156,8 +156,8 @@ func TestSpamVoteCallbackUsesSpamCaseChatSettings(t *testing.T) {
 		switch method {
 		case "getChatMember":
 			return map[string]any{
-				"status": telegramMemberStatus,
-				"user":   map[string]any{"id": 300, testJSONIsBot: false, testJSONFirstName: "Voter"},
+				logFieldStatus: telegramMemberStatus,
+				logFieldUser:   map[string]any{"id": 300, testJSONIsBot: false, testJSONFirstName: "Voter"},
 			}
 		case "answerCallbackQuery":
 			callbackAnswered = true
@@ -168,8 +168,8 @@ func TestSpamVoteCallbackUsesSpamCaseChatSettings(t *testing.T) {
 				logFieldMessageID: 400,
 				testJSONDate:      0,
 				logFieldChat: map[string]any{
-					"id":   900,
-					"type": testChatTypeChannel,
+					"id":         900,
+					testJSONType: testChatTypeChannel,
 				},
 			}
 		default:
@@ -321,12 +321,12 @@ func TestHandleMessageCleanLeftUserRememberedAsKnownNonMember(t *testing.T) {
 		switch method {
 		case testTelegramMethodGetChatMember:
 			return map[string]any{
-				"user": map[string]any{
+				logFieldUser: map[string]any{
 					"id":              200,
 					testJSONIsBot:     false,
 					testJSONFirstName: testFirstNameUser,
 				},
-				"status": testMemberStatusLeft,
+				logFieldStatus: testMemberStatusLeft,
 			}
 		default:
 			t.Fatalf("unexpected bot method: %s", method)
@@ -384,12 +384,12 @@ func TestHandleMessageNotSpammerOverrideBypassesBanAndLLM(t *testing.T) {
 		switch method {
 		case testTelegramMethodGetChatMember:
 			return map[string]any{
-				"user": map[string]any{
+				logFieldUser: map[string]any{
 					"id":              200,
 					testJSONIsBot:     false,
 					testJSONFirstName: testFirstNameUser,
 				},
-				"status": telegramMemberStatus,
+				logFieldStatus: telegramMemberStatus,
 			}
 		default:
 			t.Fatalf("unexpected bot method: %s", method)
@@ -546,7 +546,7 @@ func TestHandleMessageLinkedChannelSenderBypassesSpamPipeline(t *testing.T) {
 			}
 			return map[string]any{
 				"id":             -100,
-				"type":           testChatTypeSupergroup,
+				testJSONType:     testChatTypeSupergroup,
 				testJSONTitle:    "Discussion",
 				"linked_chat_id": -200,
 			}
@@ -626,12 +626,12 @@ func TestHandleMessageKnownNonMemberBypassesFirstMessageChecks(t *testing.T) {
 		switch method {
 		case testTelegramMethodGetChatMember:
 			return map[string]any{
-				"user": map[string]any{
+				logFieldUser: map[string]any{
 					"id":              200,
 					testJSONIsBot:     false,
 					testJSONFirstName: testFirstNameUser,
 				},
-				"status": testMemberStatusLeft,
+				logFieldStatus: testMemberStatusLeft,
 			}
 		default:
 			t.Fatalf("unexpected bot method: %s", method)
@@ -795,12 +795,12 @@ func TestHandleMessageCleanMemberInsertsMemberInsteadOfKnownNonMember(t *testing
 		switch method {
 		case testTelegramMethodGetChatMember:
 			return map[string]any{
-				"user": map[string]any{
+				logFieldUser: map[string]any{
 					"id":              200,
 					testJSONIsBot:     false,
 					testJSONFirstName: testFirstNameUser,
 				},
-				"status": telegramMemberStatus,
+				logFieldStatus: telegramMemberStatus,
 			}
 		default:
 			t.Fatalf("unexpected bot method: %s", method)

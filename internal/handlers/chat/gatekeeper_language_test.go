@@ -93,9 +93,9 @@ func TestUnopenedWebAppFallbackCarriesUserLanguage(t *testing.T) {
 		case testTelegramMethodGetChat:
 			switch r.Form.Get("chat_id") {
 			case "9001":
-				return map[string]any{"id": 9001, "type": telegramChatTypePrivate, testJSONFirstName: testFirstNameNeo}
+				return map[string]any{"id": 9001, testJSONType: telegramChatTypePrivate, testJSONFirstName: testFirstNameNeo}
 			case "-100123":
-				return map[string]any{"id": -100123, "type": testChatTypeSupergroup, testJSONTitle: testGroupTitle}
+				return map[string]any{"id": -100123, testJSONType: testChatTypeSupergroup, testJSONTitle: testGroupTitle}
 			default:
 				t.Fatalf("unexpected getChat chat_id: %q", r.Form.Get("chat_id"))
 				return nil
@@ -117,7 +117,7 @@ func TestUnopenedWebAppFallbackCarriesUserLanguage(t *testing.T) {
 		SuccessUUID:        testCorrectChoice,
 		WebAppToken:        testToken,
 		JoinRequestQueryID: testJoinQueryID,
-		CaptchaPrompt:      "poodle",
+		CaptchaPrompt:      testChallengePrompt,
 		CaptchaOptionsJSON: testCaptchaOptionsJSON,
 		UserLanguage:       "ru",
 		CreatedAt:          time.Now().Add(-30 * time.Second),

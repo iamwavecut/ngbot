@@ -34,6 +34,7 @@ const (
 	testJSONDate           = "date"
 	testJSONDescription    = "description"
 	testJSONTitle          = "title"
+	testJSONType           = "type"
 	testChatTypeChannel    = "channel"
 	testChatTypeSupergroup = "supergroup"
 	testMemberStatusLeft   = "left"
@@ -41,6 +42,11 @@ const (
 	testJoinQueryID        = "join-query"
 	testExpiredChallengeID = "uuid-expired"
 	testToken              = "tok"
+	testBotUsername        = "testbot"
+	testChallengePrompt    = "poodle"
+	testChallengePromptRU  = "пуделя"
+	testWrongChoice        = "wrong-choice"
+	testWebAppFormToken    = "token"
 	testMessageText        = "hello there"
 )
 
@@ -70,7 +76,7 @@ func newTestBotAPIWithErrors(t *testing.T, handler func(method string, r *http.R
 					"id":              1,
 					testJSONIsBot:     true,
 					testJSONFirstName: "Test",
-					"username":        "testbot",
+					"username":        testBotUsername,
 				},
 			}); err != nil {
 				t.Fatalf("encode getMe response: %v", err)

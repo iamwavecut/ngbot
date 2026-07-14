@@ -261,8 +261,8 @@ func TestVoteBanCommandCommunityVotingDisabledSkipsProcessing(t *testing.T) {
 				logFieldMessageID: 70,
 				testJSONDate:      0,
 				logFieldChat: map[string]any{
-					"id":   -100,
-					"type": testChatTypeSupergroup,
+					"id":         -100,
+					testJSONType: testChatTypeSupergroup,
 				},
 			}
 		default:
@@ -369,8 +369,8 @@ func TestVoteBanCommandWithoutReplySendsUsageHelp(t *testing.T) {
 				logFieldMessageID: 70,
 				testJSONDate:      0,
 				logFieldChat: map[string]any{
-					"id":   -100,
-					"type": testChatTypeSupergroup,
+					"id":         -100,
+					testJSONType: testChatTypeSupergroup,
 				},
 			}
 		default:
@@ -410,8 +410,8 @@ func TestVoteBanCommandLLMSpamBansImmediatelyAndDeletesReportMessage(t *testing.
 				logFieldMessageID: 70,
 				testJSONDate:      0,
 				logFieldChat: map[string]any{
-					"id":   -100,
-					"type": testChatTypeSupergroup,
+					"id":         -100,
+					testJSONType: testChatTypeSupergroup,
 				},
 			}
 		case testTelegramMethodDeleteMessage:
@@ -535,7 +535,7 @@ func TestMessageMentionsCurrentBot(t *testing.T) {
 			Length: len("@testbot"),
 		}},
 	}
-	if !messageMentionsCurrentBot(msg, api.User{ID: 1, UserName: "testbot"}) {
+	if !messageMentionsCurrentBot(msg, api.User{ID: 1, UserName: testBotUsername}) {
 		t.Fatal("expected current bot mention to match")
 	}
 	if messageMentionsCurrentBot(msg, api.User{ID: 2, UserName: "otherbot"}) {
@@ -547,22 +547,22 @@ func TestMessageMentionsCurrentBot(t *testing.T) {
 			Type:   "text_mention",
 			Offset: 0,
 			Length: len("bot"),
-			User:   &api.User{ID: 1, UserName: "testbot", IsBot: true},
+			User:   &api.User{ID: 1, UserName: testBotUsername, IsBot: true},
 		}},
 	}
-	if !messageMentionsCurrentBot(textMention, api.User{ID: 1, UserName: "testbot"}) {
+	if !messageMentionsCurrentBot(textMention, api.User{ID: 1, UserName: testBotUsername}) {
 		t.Fatal("expected current bot text mention to match")
 	}
 }
 
 func testChatMemberResponse(status string, canManage bool, canPromote bool, canRestrict bool) map[string]any {
 	return map[string]any{
-		"user": map[string]any{
+		logFieldUser: map[string]any{
 			"id":              100,
 			testJSONIsBot:     false,
 			testJSONFirstName: testFirstNameActor,
 		},
-		"status":               status,
+		logFieldStatus:         status,
 		"can_manage_chat":      canManage,
 		"can_promote_members":  canPromote,
 		"can_restrict_members": canRestrict,
