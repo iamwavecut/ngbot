@@ -2383,6 +2383,80 @@ func TestFallbackClaimedWebAppChallengeDeclinesWhenTargetChatUnavailable(t *test
 	}
 }
 
+func TestDMFallbackForbiddenDeclinesWithoutDurableRetry(t *testing.T) {
+	t.Parallel()
+
+	recorder := &botRequestRecorder{}
+	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
+		recorder.record(t, method, r)
+		switch method {
+		case testTelegramMethodGetChat:
+			chatID := r.Form.Get("chat_id")
+			if chatID == "9001" {
+				return map[string]any{
+					"id":              9001,
+					testJSONType:      telegramChatTypePrivate,
+					testJSONFirstName: testFirstNameNeo,
+				}
+			}
+			return map[string]any{
+				"id":         -100123,
+				testJSONType: "supergroup",
+				"title":      "Test group",
+			}
+		case testTelegramMethodSendMessage:
+			return &testBotAPIError{code: http.StatusForbidden, description: "Forbidden: bot can't initiate conversation with a user"}
+		case testTelegramMethodGetChatMember:
+			return map[string]any{
+				"status": testMemberStatusLeft,
+				"user":   map[string]any{"id": 42, testJSONIsBot: false, testJSONFirstName: testFirstNameNeo},
+			}
+		case testTelegramMethodJoinRequestQuery, testTelegramMethodBanChatMember:
+			return true
+		default:
+			t.Fatalf("unexpected bot method: %s", method)
+			return nil
+		}
+	})
+
+	store := newGatekeeperFlowStore()
+	challenge := &db.Challenge{
+		CommChatID:         9001,
+		UserID:             42,
+		ChatID:             -100123,
+		Status:             db.ChallengeStatusWebAppFallbackPending,
+		SuccessUUID:        testCorrectChoice,
+		WebAppToken:        testToken,
+		JoinRequestQueryID: testJoinQueryID,
+		CaptchaPrompt:      testChallengePrompt,
+		CaptchaOptionsJSON: testCaptchaOptionsJSON,
+		CreatedAt:          time.Now().Add(-10 * time.Minute),
+		ExpiresAt:          time.Now().Add(-time.Minute),
+	}
+	if _, err := store.CreateChallenge(context.Background(), challenge); err != nil {
+		t.Fatalf("create fallback challenge: %v", err)
+	}
+
+	gatekeeper := &Gatekeeper{
+		bot:        botAPI,
+		s:          &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI, language: "en"}, settings: webAppSettings()},
+		store:      store,
+		config:     &config.Config{},
+		banChecker: &testGatekeeperBanChecker{},
+	}
+
+	if err := gatekeeper.processChallengeAction(context.Background(), store.onlyChallenge(t)); err != nil {
+		t.Fatalf("process forbidden fallback: %v", err)
+	}
+	if len(store.challenges) != 0 {
+		t.Fatalf("permanently unavailable DM fallback remained durable: %#v", store.challenges)
+	}
+	declines := recorder.byMethod(testTelegramMethodJoinRequestQuery)
+	if len(declines) != 1 || declines[0].form.Get("result") != testJoinRequestDecline {
+		t.Fatalf("expected one terminal join-request decline, got %#v", declines)
+	}
+}
+
 func TestNoRightsPublicCaptchaPassDeletesCaptchaWithoutModeration(t *testing.T) {
 	t.Parallel()
 

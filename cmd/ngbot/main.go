@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"slices"
 	"syscall"
 	"time"
 
@@ -41,6 +42,7 @@ const (
 	privateHelpCommandDescription   = "Show bot help"
 	adminSettingsCommand            = "settings"
 	adminSettingsCommandDescription = "Bot settings"
+	databaseMaintenanceArgument     = "--database-maintenance"
 )
 
 type updateLoopComponent struct {
@@ -163,6 +165,16 @@ func main() {
 	log.SetOutput(os.Stdout)
 	log.SetLevel(log.Level(cfg.LogLevel))
 	tool.SetLogger(log.StandardLogger())
+	if slices.Contains(os.Args[1:], databaseMaintenanceArgument) {
+		maintenanceCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+		defer stop()
+		if err := runDatabaseMaintenance(maintenanceCtx, &cfg); err != nil {
+			log.WithError(err).Error("Database maintenance failed")
+			os.Exit(1)
+		}
+		log.Info("Database maintenance completed")
+		return
+	}
 
 	maskedConfig := maskConfiguration(&cfg)
 	if configJSON, err := json.MarshalIndent(maskedConfig, "", "  "); err != nil {
@@ -219,6 +231,20 @@ func main() {
 	if shutdown.exitCode != 0 {
 		os.Exit(shutdown.exitCode)
 	}
+}
+
+func runDatabaseMaintenance(ctx context.Context, cfg *config.Config) error {
+	dbClient, err := sqlite.NewSQLiteClient(ctx, cfg.DotPath, "bot.db")
+	if err != nil {
+		return fmt.Errorf("apply database migrations: %w", err)
+	}
+	if err := dbClient.Close(); err != nil {
+		return fmt.Errorf("close migrated database: %w", err)
+	}
+	if err := sqlite.MaintainDatabase(ctx, cfg.DotPath, "bot.db"); err != nil {
+		return fmt.Errorf("maintain database: %w", err)
+	}
+	return nil
 }
 
 func buildRuntime(ctx context.Context, cfg *config.Config, errChan chan<- shutdownSignal) (*lifecycle.Runtime, error) {

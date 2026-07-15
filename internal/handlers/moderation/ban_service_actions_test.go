@@ -29,6 +29,10 @@ func (s *testBanStore) ApplyBanlistSource(context.Context, string, string, strin
 	return nil, nil, nil
 }
 
+func (s *testBanStore) CleanupBanlistSources(context.Context) error {
+	return nil
+}
+
 func (s *testBanStore) GetBanlist(context.Context) (map[int64]struct{}, error) {
 	return nil, nil
 }

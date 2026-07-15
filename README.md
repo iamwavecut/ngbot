@@ -147,6 +147,16 @@ sqlite3 /home/username/.ngbot/bot-audit.db "PRAGMA quick_check; PRAGMA foreign_k
 
 Delete the audit snapshot after verification. A direct long-running read can hold a SQLite shared lock long enough for application writes to reach the configured busy timeout.
 
+The application has an offline maintenance mode that applies pending migrations, performs a full `VACUUM`, enables incremental auto-vacuum, runs `PRAGMA optimize`, validates the database, restores WAL mode, and exits without starting Telegram polling:
+
+```bash
+docker compose stop ngbot
+docker compose run --rm --no-deps ngbot --database-maintenance
+docker compose up -d ngbot
+```
+
+Create and verify a database backup before running this command. The service must remain stopped for the complete maintenance run. Normal banlist refreshes use inactive generations, short batched writes, atomic activation, bounded garbage collection, passive WAL checkpoints, and incremental vacuum, so full maintenance is not required after each refresh.
+
 ## Troubleshooting
 Don't hesitate to contact me
 

@@ -177,7 +177,7 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 	if content == "" {
 		result.Skipped = true
 		result.SkipReason = "Empty message content"
-		entry.WithField("message_id", msg.MessageID).Warn("empty message content")
+		entry.WithField("message_id", msg.MessageID).Debug("empty message content")
 		return nil
 	}
 

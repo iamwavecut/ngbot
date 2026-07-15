@@ -377,6 +377,10 @@ func (g *Gatekeeper) processChallengeActionWithStats(ctx context.Context, challe
 	if actionErr == nil {
 		return nil
 	}
+	if challenge.Status == db.ChallengeStatusWebAppFallbackPending && isTelegramConversationUnavailable(actionErr) {
+		entry.WithField(logFieldError, actionErr.Error()).Info("DM fallback is permanently unavailable; declining join request")
+		return g.declineWebAppChallenge(ctx, challenge)
+	}
 	if moderation.IsTelegramPrivilegeError(actionErr) {
 		g.banChecker.MarkModerationUnavailable(challenge.ChatID)
 		passed := challenge.Status == db.ChallengeStatusApproveQueryPending ||
@@ -530,6 +534,25 @@ func isTelegramActionAlreadyApplied(err error) bool {
 		"PARTICIPANT_ID_INVALID",
 		"MEMBER NOT FOUND",
 		"USER IS DEACTIVATED",
+	} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func isTelegramConversationUnavailable(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToUpper(err.Error())
+	for _, marker := range []string{
+		"BOT CAN'T INITIATE CONVERSATION",
+		"BOT_CANT_INITIATE_CONVERSATION",
+		"BOT WAS BLOCKED BY THE USER",
+		"USER IS DEACTIVATED",
+		"CHAT NOT FOUND",
 	} {
 		if strings.Contains(message, marker) {
 			return true

@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"testing"
 	"time"
@@ -128,7 +129,7 @@ func TestIncrementalBanlistUpdateDoesNotRewriteEffectiveProjection(t *testing.T)
 	}
 }
 
-func TestBanlistImportCanCommitWhileReadGuardIsHeld(t *testing.T) {
+func TestBanlistImportYieldsToQueuedOrdinaryWriter(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -138,25 +139,145 @@ func TestBanlistImportCanCommitWhileReadGuardIsHeld(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = client.Close() })
 
-	client.mutex.RLock()
-	done := make(chan error, 1)
+	userIDs := make([]int64, 100_000)
+	for i := range userIDs {
+		userIDs[i] = int64(i + 1)
+	}
+
+	client.mutex.Lock()
+	importDone := make(chan error, 1)
 	go func() {
-		_, _, err := client.ApplyBanlistSource(ctx, "lols", "hourly", "hourly-1", []int64{1}, time.Now(), nil, false)
-		done <- err
+		_, _, err := client.ApplyBanlistSource(ctx, "lols", "daily", "daily-1", userIDs, time.Now(), nil, true)
+		importDone <- err
 	}()
+	time.Sleep(20 * time.Millisecond)
+	writeDone := make(chan error, 1)
+	go func() {
+		writeDone <- client.SetKV(ctx, "interleaved-write", "completed")
+	}()
+	time.Sleep(20 * time.Millisecond)
+	client.mutex.Unlock()
 
 	select {
-	case err := <-done:
-		client.mutex.RUnlock()
+	case err := <-writeDone:
 		if err != nil {
-			t.Fatalf("apply banlist source while read guard is held: %v", err)
+			t.Fatalf("ordinary write during banlist import: %v", err)
 		}
+	case err := <-importDone:
+		if err != nil {
+			t.Fatalf("banlist import failed before ordinary writer ran: %v", err)
+		}
+		t.Fatal("banlist import retained the write lock until the full snapshot completed")
 	case <-time.After(2 * time.Second):
-		client.mutex.RUnlock()
-		if err := <-done; err != nil {
-			t.Fatalf("apply banlist source after releasing read guard: %v", err)
+		t.Fatal("ordinary write did not run between banlist batches")
+	}
+	if err := <-importDone; err != nil {
+		t.Fatalf("complete banlist import: %v", err)
+	}
+}
+
+func TestIncompleteBanlistGenerationIsInvisibleAndCleanedInBatches(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	client, err := NewSQLiteClient(ctx, t.TempDir(), "test.db")
+	if err != nil {
+		t.Fatalf("new sqlite client: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+
+	now := time.Now().UTC()
+	if _, _, err := client.ApplyBanlistSource(ctx, "lols", "daily", "active", []int64{1}, now, nil, true); err != nil {
+		t.Fatalf("seed active generation: %v", err)
+	}
+	result, err := client.db.ExecContext(ctx, `
+		INSERT INTO banlist_generations (
+			provider, feed_type, generation, last_seen_at, active
+		) VALUES ('lols', 'daily', 'interrupted', ?, 0)
+	`, now.Add(time.Hour))
+	if err != nil {
+		t.Fatalf("create interrupted generation: %v", err)
+	}
+	generationID, err := result.LastInsertId()
+	if err != nil {
+		t.Fatalf("read interrupted generation id: %v", err)
+	}
+	if _, err := client.db.ExecContext(ctx, `INSERT INTO banlist_entries (generation_id, user_id) VALUES (?, 2)`, generationID); err != nil {
+		t.Fatalf("stage interrupted generation entry: %v", err)
+	}
+
+	banlist, err := client.GetBanlist(ctx)
+	if err != nil {
+		t.Fatalf("get effective banlist: %v", err)
+	}
+	if _, ok := banlist[1]; !ok {
+		t.Fatalf("active generation disappeared: %#v", banlist)
+	}
+	if _, ok := banlist[2]; ok {
+		t.Fatalf("inactive generation leaked into projection: %#v", banlist)
+	}
+	if err := client.CleanupBanlistSources(ctx); err != nil {
+		t.Fatalf("cleanup incomplete generation: %v", err)
+	}
+	var incompleteRows int
+	if err := client.db.GetContext(ctx, &incompleteRows, `SELECT COUNT(*) FROM banlist_generations WHERE active = 0`); err != nil {
+		t.Fatalf("count incomplete generations: %v", err)
+	}
+	if incompleteRows != 0 {
+		t.Fatalf("incomplete generations remain after cleanup: %d", incompleteRows)
+	}
+}
+
+func TestBanlistCleanupYieldsToQueuedOrdinaryWriter(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	client, err := NewSQLiteClient(ctx, t.TempDir(), "test.db")
+	if err != nil {
+		t.Fatalf("new sqlite client: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+
+	userIDs := make([]int64, banlistCleanupBatchSize*2)
+	for i := range userIDs {
+		userIDs[i] = int64(i + 1)
+	}
+	now := time.Now().UTC()
+	if _, _, err := client.ApplyBanlistSource(ctx, "lols", "daily", "daily-1", userIDs, now, nil, true); err != nil {
+		t.Fatalf("seed active generation: %v", err)
+	}
+	if _, _, err := client.ApplyBanlistSource(ctx, "lols", "daily", "daily-2", []int64{1}, now.Add(time.Hour), nil, true); err != nil {
+		t.Fatalf("retire large generation: %v", err)
+	}
+
+	client.mutex.Lock()
+	cleanupDone := make(chan error, 1)
+	go func() {
+		cleanupDone <- client.CleanupBanlistSources(ctx)
+	}()
+	time.Sleep(20 * time.Millisecond)
+	writeDone := make(chan error, 1)
+	go func() {
+		writeDone <- client.SetKV(ctx, "cleanup-interleaved-write", "completed")
+	}()
+	time.Sleep(20 * time.Millisecond)
+	client.mutex.Unlock()
+
+	select {
+	case err := <-writeDone:
+		if err != nil {
+			t.Fatalf("ordinary write during banlist cleanup: %v", err)
 		}
-		t.Fatal("banlist import waited for an unrelated database reader")
+	case err := <-cleanupDone:
+		if err != nil {
+			t.Fatalf("banlist cleanup failed before ordinary writer ran: %v", err)
+		}
+		t.Fatal("banlist cleanup retained the write lock across all retired entries")
+	case <-time.After(2 * time.Second):
+		t.Fatal("ordinary write did not run between banlist cleanup batches")
+	}
+	if err := <-cleanupDone; err != nil {
+		t.Fatalf("complete banlist cleanup: %v", err)
 	}
 }
 
@@ -190,7 +311,7 @@ func BenchmarkConcurrentBanlistReadsDuringSnapshot(b *testing.B) {
 		generation := 0
 		for ctx.Err() == nil {
 			generation++
-			_, _, err := client.ApplyBanlistSource(ctx, "benchmark", "daily", "refresh", userIDs, time.Now(), nil, true)
+			_, _, err := client.ApplyBanlistSource(ctx, "benchmark", "daily", fmt.Sprintf("refresh-%d", generation), userIDs, time.Now(), nil, true)
 			if err != nil {
 				if ctx.Err() != nil {
 					writerDone <- nil

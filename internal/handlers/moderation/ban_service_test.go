@@ -184,6 +184,61 @@ func TestCheckBanRacesProvidersAndPersistsOnlinePositive(t *testing.T) {
 	}
 }
 
+func TestCheckBanPublishesOnlinePositiveBeforeBlockedPersistence(t *testing.T) {
+	t.Parallel()
+
+	store := newBlockingOnlineBanStore()
+	store.kv[kvKeyLastDailyFetch] = time.Now().Format(time.RFC3339)
+	store.kv[kvKeyLastHourlyFetch] = time.Now().Format(time.RFC3339)
+	svc := &defaultBanService{
+		db:          store,
+		httpClient:  http.DefaultClient,
+		knownBanned: map[int64]struct{}{},
+		providers: []banlistProvider{
+			{
+				name: "positive",
+				check: func(context.Context, *http.Client, int64) (bool, error) {
+					return true, nil
+				},
+			},
+		},
+	}
+	if err := svc.Start(context.Background()); err != nil {
+		t.Fatalf("start ban service: %v", err)
+	}
+	t.Cleanup(func() {
+		store.releasePersistence()
+		stopCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = svc.Stop(stopCtx)
+	})
+
+	banned, err := svc.CheckBan(context.Background(), 789)
+	if err != nil {
+		t.Fatalf("check ban: %v", err)
+	}
+	if !banned || !svc.IsKnownBanned(789) {
+		t.Fatal("online positive was not published before persistence")
+	}
+	select {
+	case <-store.started:
+	case <-time.After(time.Second):
+		t.Fatal("online persistence worker did not receive observation")
+	}
+	if store.hasSource(banlistSourceKey{provider: "positive", feedType: banlistFeedOnline}, 789) {
+		t.Fatal("blocked persistence unexpectedly completed")
+	}
+	store.releasePersistence()
+	select {
+	case <-store.persisted:
+	case <-time.After(time.Second):
+		t.Fatal("online persistence did not complete after writer was released")
+	}
+	if !store.hasSource(banlistSourceKey{provider: "positive", feedType: banlistFeedOnline}, 789) {
+		t.Fatal("online positive was not persisted by lifecycle worker")
+	}
+}
+
 func TestBootstrapLoadsStoredBanlistBeforeSkippingFetch(t *testing.T) {
 	t.Parallel()
 
@@ -346,13 +401,64 @@ func TestBanlistProjectionDeltasArePublishedInCommitOrder(t *testing.T) {
 }
 
 type recordingBanStore struct {
-	kv              map[string]string
-	banlist         map[int64]struct{}
-	sources         map[banlistSourceKey]map[int64]*time.Time
-	sourceCalls     []banlistSourceCall
-	getBanlistCalls int
-	cleanupCalls    int
-	cleanupErr      error
+	kv                  map[string]string
+	banlist             map[int64]struct{}
+	sources             map[banlistSourceKey]map[int64]*time.Time
+	sourceCalls         []banlistSourceCall
+	getBanlistCalls     int
+	cleanupCalls        int
+	cleanupErr          error
+	banlistCleanupCalls int
+	banlistCleanupErr   error
+}
+
+type blockingOnlineBanStore struct {
+	*recordingBanStore
+	started     chan struct{}
+	release     chan struct{}
+	persisted   chan struct{}
+	releaseOnce sync.Once
+}
+
+func (s *blockingOnlineBanStore) releasePersistence() {
+	s.releaseOnce.Do(func() { close(s.release) })
+}
+
+func newBlockingOnlineBanStore() *blockingOnlineBanStore {
+	return &blockingOnlineBanStore{
+		recordingBanStore: newRecordingBanStore(),
+		started:           make(chan struct{}),
+		release:           make(chan struct{}),
+		persisted:         make(chan struct{}),
+	}
+}
+
+func (s *blockingOnlineBanStore) ApplyBanlistSource(
+	ctx context.Context,
+	provider, feedType, generation string,
+	userIDs []int64,
+	seenAt time.Time,
+	expiresAt *time.Time,
+	replace bool,
+) ([]int64, []int64, error) {
+	close(s.started)
+	select {
+	case <-ctx.Done():
+		return nil, nil, ctx.Err()
+	case <-s.release:
+	}
+	added, removed, err := s.recordingBanStore.ApplyBanlistSource(
+		ctx,
+		provider,
+		feedType,
+		generation,
+		userIDs,
+		seenAt,
+		expiresAt,
+		replace,
+	)
+	close(s.persisted)
+	return added, removed, err
 }
 
 type orderedDeltaBanStore struct {
@@ -474,6 +580,11 @@ func (s *recordingBanStore) GetBanlist(context.Context) (map[int64]struct{}, err
 		result[userID] = struct{}{}
 	}
 	return result, nil
+}
+
+func (s *recordingBanStore) CleanupBanlistSources(context.Context) error {
+	s.banlistCleanupCalls++
+	return s.banlistCleanupErr
 }
 
 func (s *recordingBanStore) AddRestriction(context.Context, *db.UserRestriction) error {

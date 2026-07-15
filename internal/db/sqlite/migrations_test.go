@@ -12,6 +12,7 @@ import (
 
 	"github.com/iamwavecut/ngbot/internal/db"
 	"github.com/iamwavecut/ngbot/resources"
+	"github.com/jmoiron/sqlx"
 	migrate "github.com/rubenv/sql-migrate"
 )
 
@@ -46,6 +47,27 @@ func TestSQLiteEnforcesForeignKeysAndCascades(t *testing.T) {
 	}
 	if journalMode != "wal" {
 		t.Fatalf("journal mode = %q, want wal", journalMode)
+	}
+	var journalSizeLimit int64
+	if err := client.db.GetContext(ctx, &journalSizeLimit, "PRAGMA journal_size_limit"); err != nil {
+		t.Fatalf("read journal size limit: %v", err)
+	}
+	if journalSizeLimit != journalSizeLimitBytes {
+		t.Fatalf("journal size limit = %d, want %d", journalSizeLimit, journalSizeLimitBytes)
+	}
+	var walAutoCheckpoint int
+	if err := client.db.GetContext(ctx, &walAutoCheckpoint, "PRAGMA wal_autocheckpoint"); err != nil {
+		t.Fatalf("read WAL auto-checkpoint: %v", err)
+	}
+	if walAutoCheckpoint != walAutoCheckpointPages {
+		t.Fatalf("WAL auto-checkpoint = %d, want %d", walAutoCheckpoint, walAutoCheckpointPages)
+	}
+	var autoVacuum int
+	if err := client.db.GetContext(ctx, &autoVacuum, "PRAGMA auto_vacuum"); err != nil {
+		t.Fatalf("read auto-vacuum mode: %v", err)
+	}
+	if autoVacuum != incrementalAutoVacuum {
+		t.Fatalf("auto-vacuum mode = %d, want incremental", autoVacuum)
 	}
 
 	if _, err := client.db.ExecContext(ctx, `INSERT INTO chat_members (chat_id, user_id) VALUES (?, ?)`, 999, 1); err == nil {
@@ -648,16 +670,22 @@ func TestDurableStateMigrationsUpgradeExistingRowsAndPreserveLegacySpamQuery(t *
 		t.Fatalf("legacy spam case values changed after upgrade")
 	}
 
-	var sourceRows int
+	var generationRows int
 	if err := sqlDB.QueryRowContext(ctx, `
 		SELECT COUNT(*)
-		FROM banlist_sources
-		WHERE user_id = 1 AND provider = 'legacy' AND feed_type = 'legacy'
-	`).Scan(&sourceRows); err != nil {
-		t.Fatalf("count migrated banlist source: %v", err)
+		FROM banlist_generations
+	`).Scan(&generationRows); err != nil {
+		t.Fatalf("count migrated banlist generations: %v", err)
 	}
-	if sourceRows != 1 {
-		t.Fatalf("migrated banlist sources = %d, want 1", sourceRows)
+	if generationRows != 0 {
+		t.Fatalf("legacy-only banlist generations survived cutover: %d", generationRows)
+	}
+	var effectiveRows int
+	if err := sqlDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM banlist`).Scan(&effectiveRows); err != nil {
+		t.Fatalf("count effective banlist after cutover: %v", err)
+	}
+	if effectiveRows != 0 {
+		t.Fatalf("legacy-only effective banlist rows survived cutover: %d", effectiveRows)
 	}
 
 	rows, err := sqlDB.QueryContext(ctx, `PRAGMA foreign_key_check`)
@@ -667,6 +695,87 @@ func TestDurableStateMigrationsUpgradeExistingRowsAndPreserveLegacySpamQuery(t *
 	defer func() { _ = rows.Close() }()
 	if rows.Next() {
 		t.Fatal("expected foreign_key_check to be empty after upgrade")
+	}
+}
+
+func TestBanlistGenerationMigrationRetiresLegacyAndPreservesActiveProviders(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "banlist-cutover.db")
+	sqlDB, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
+
+	source := &migrate.EmbedFileSystemMigrationSource{
+		FileSystem: resources.FS,
+		Root:       migrationsRoot,
+	}
+	const migration = "20260715190000-cutover-banlist-generations.sql"
+	if _, err := migrate.ExecMax(sqlDB, "sqlite3", source, migrate.Up, migrationsBefore(t, migration)); err != nil {
+		t.Fatalf("execute migrations before banlist cutover: %v", err)
+	}
+	if _, err := sqlDB.ExecContext(ctx, `
+		DELETE FROM banlist_sources;
+		DELETE FROM banlist;
+		INSERT INTO banlist (user_id) VALUES (1), (2), (3), (4);
+		INSERT INTO banlist_sources (
+			user_id, provider, feed_type, generation, last_seen_at, expires_at
+		) VALUES
+			(1, 'legacy', 'legacy', 'migration', CURRENT_TIMESTAMP, datetime('now', '+1 day')),
+			(2, 'lols', 'daily', 'lols-current', CURRENT_TIMESTAMP, NULL),
+			(3, 'cas', 'daily', 'cas-current', CURRENT_TIMESTAMP, NULL),
+			(4, 'lols', 'hourly', 'lols-expired', datetime('now', '-2 days'), datetime('now', '-1 hour'))
+	`); err != nil {
+		t.Fatalf("seed pre-cutover banlist: %v", err)
+	}
+
+	if _, err := migrate.ExecMax(sqlDB, "sqlite3", source, migrate.Up, 1); err != nil {
+		t.Fatalf("execute banlist cutover migration: %v", err)
+	}
+
+	var oldTableRows int
+	if err := sqlDB.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'banlist_sources'
+	`).Scan(&oldTableRows); err != nil {
+		t.Fatalf("check retired source table: %v", err)
+	}
+	if oldTableRows != 0 {
+		t.Fatal("legacy banlist_sources table survived cutover")
+	}
+	var effective []int64
+	if err := sqlx.NewDb(sqlDB, "sqlite").SelectContext(ctx, &effective, `SELECT user_id FROM banlist ORDER BY user_id`); err != nil {
+		t.Fatalf("read cutover projection: %v", err)
+	}
+	if !slices.Equal(effective, []int64{2, 3}) {
+		t.Fatalf("cutover projection = %v, want [2 3]", effective)
+	}
+	var generationRows int
+	if err := sqlDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM banlist_generations WHERE active = 1`).Scan(&generationRows); err != nil {
+		t.Fatalf("count active generations: %v", err)
+	}
+	if generationRows != 2 {
+		t.Fatalf("active generations = %d, want 2", generationRows)
+	}
+	var entryRows int
+	if err := sqlDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM banlist_entries`).Scan(&entryRows); err != nil {
+		t.Fatalf("count generation entries: %v", err)
+	}
+	if entryRows != 2 {
+		t.Fatalf("generation entries = %d, want 2", entryRows)
+	}
+
+	if _, err := migrate.ExecMax(sqlDB, "sqlite3", source, migrate.Down, 1); err != nil {
+		t.Fatalf("roll back banlist cutover migration: %v", err)
+	}
+	var restoredSources int
+	if err := sqlDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM banlist_sources`).Scan(&restoredSources); err != nil {
+		t.Fatalf("count restored banlist sources: %v", err)
+	}
+	if restoredSources != 2 {
+		t.Fatalf("restored banlist sources = %d, want 2", restoredSources)
 	}
 }
 

@@ -28,12 +28,13 @@ const (
 
 	accoutsAPIURLTemplate = "https://api.lols.bot/account?id=%v"
 
-	banServiceHTTPTimeout = 10 * time.Second
-	banServiceMaxRetries  = 3
-	banServiceRetryStep   = 300 * time.Millisecond
-	banlistHourlyTTL      = 26 * time.Hour
-	banlistOnlineTTL      = 24 * time.Hour
-	moderationStatusTTL   = 5 * time.Minute
+	banServiceHTTPTimeout  = 10 * time.Second
+	banServiceMaxRetries   = 3
+	banServiceRetryStep    = 300 * time.Millisecond
+	banlistHourlyTTL       = 26 * time.Hour
+	banlistOnlineTTL       = 24 * time.Hour
+	onlineBanQueueCapacity = 1_024
+	moderationStatusTTL    = 5 * time.Minute
 
 	banlistFeedDaily  = "daily"
 	banlistFeedHourly = "hourly"
@@ -65,6 +66,7 @@ type banStore interface {
 	GetKV(ctx context.Context, key string) (string, error)
 	SetKV(ctx context.Context, key string, value string) error
 	ApplyBanlistSource(ctx context.Context, provider, feedType, generation string, userIDs []int64, seenAt time.Time, expiresAt *time.Time, replace bool) (added, removed []int64, err error)
+	CleanupBanlistSources(ctx context.Context) error
 	GetBanlist(ctx context.Context) (map[int64]struct{}, error)
 	AddRestriction(ctx context.Context, restriction *db.UserRestriction) error
 	RemoveRestriction(ctx context.Context, chatID int64, userID int64) error
@@ -85,16 +87,22 @@ type defaultBanService struct {
 	httpClient *http.Client
 	providers  []banlistProvider
 
-	knownBanned  map[int64]struct{}
-	mapMutex     sync.RWMutex
-	banlistMutex sync.Mutex
-	moderation   map[int64]moderationStatus
-	moderationM  sync.RWMutex
+	knownBanned    map[int64]struct{}
+	mapMutex       sync.RWMutex
+	banlistMutex   sync.Mutex
+	moderation     map[int64]moderationStatus
+	moderationM    sync.RWMutex
+	onlineBanQueue chan onlineBanObservation
 
 	runMutex  sync.Mutex
 	started   bool
 	runCancel context.CancelFunc
 	workersWg sync.WaitGroup
+}
+
+type onlineBanObservation struct {
+	userID   int64
+	provider string
 }
 
 type moderationStatus struct {
@@ -195,6 +203,10 @@ func (s *defaultBanService) Start(ctx context.Context) error {
 
 	runCtx, cancel := context.WithCancel(ctx)
 	s.runCancel = cancel
+	s.onlineBanQueue = make(chan onlineBanObservation, onlineBanQueueCapacity)
+	s.workersWg.Go(func() {
+		s.persistOnlineBanObservations(runCtx)
+	})
 
 	s.workersWg.Go(func() {
 		if err := s.refreshKnownBanned(runCtx); err != nil && !errorsIsCanceled(err) {
@@ -446,9 +458,33 @@ func (s *defaultBanService) loadKnownBannedFromDB(ctx context.Context) error {
 }
 
 func (s *defaultBanService) rememberKnownBanned(ctx context.Context, userID int64, provider string) {
+	s.markKnownBanned(userID)
+	observation := onlineBanObservation{userID: userID, provider: provider}
+	if s.onlineBanQueue != nil {
+		select {
+		case s.onlineBanQueue <- observation:
+			return
+		default:
+			log.WithField(logFieldUserID, userID).Warn("online ban persistence queue is full; persisting synchronously")
+		}
+	}
+	s.persistKnownBanned(ctx, observation)
+}
+
+func (s *defaultBanService) persistOnlineBanObservations(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case observation := <-s.onlineBanQueue:
+			s.persistKnownBanned(ctx, observation)
+		}
+	}
+}
+
+func (s *defaultBanService) persistKnownBanned(ctx context.Context, observation onlineBanObservation) {
 	s.banlistMutex.Lock()
 	defer s.banlistMutex.Unlock()
-	s.markKnownBanned(userID)
 	if s.db == nil {
 		return
 	}
@@ -456,23 +492,24 @@ func (s *defaultBanService) rememberKnownBanned(ctx context.Context, userID int6
 	expiresAt := seenAt.Add(banlistOnlineTTL)
 	added, removed, err := s.db.ApplyBanlistSource(
 		ctx,
-		provider,
+		observation.provider,
 		banlistFeedOnline,
 		newBanlistGeneration(),
-		[]int64{userID},
+		[]int64{observation.userID},
 		seenAt,
 		&expiresAt,
 		false,
 	)
 	if err != nil {
 		log.WithFields(log.Fields{
-			logFieldUserID:   userID,
-			logFieldProvider: provider,
+			logFieldUserID:   observation.userID,
+			logFieldProvider: observation.provider,
 			logFieldError:    err.Error(),
 		}).Error("failed to persist online banned user")
 		return
 	}
 	s.applyKnownBannedDelta(added, removed)
+	s.cleanupBanlistSources(ctx)
 }
 
 func (s *defaultBanService) applyBanlistSource(
@@ -499,7 +536,14 @@ func (s *defaultBanService) applyBanlistSource(
 		return nil, nil, err
 	}
 	s.applyKnownBannedDelta(added, removed)
+	s.cleanupBanlistSources(ctx)
 	return added, removed, nil
+}
+
+func (s *defaultBanService) cleanupBanlistSources(ctx context.Context) {
+	if err := s.db.CleanupBanlistSources(ctx); err != nil && !errorsIsCanceled(err) {
+		log.WithField(logFieldError, err.Error()).Warn("failed to clean inactive banlist generations")
+	}
 }
 
 func (s *defaultBanService) setKnownBanned(banned map[int64]struct{}) {
