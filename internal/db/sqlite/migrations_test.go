@@ -40,6 +40,13 @@ func TestSQLiteEnforcesForeignKeysAndCascades(t *testing.T) {
 	if busyTimeout != 5000 {
 		t.Fatalf("busy timeout = %d, want 5000", busyTimeout)
 	}
+	var journalMode string
+	if err := client.db.GetContext(ctx, &journalMode, "PRAGMA journal_mode"); err != nil {
+		t.Fatalf("read journal mode: %v", err)
+	}
+	if journalMode != "wal" {
+		t.Fatalf("journal mode = %q, want wal", journalMode)
+	}
 
 	if _, err := client.db.ExecContext(ctx, `INSERT INTO chat_members (chat_id, user_id) VALUES (?, ?)`, 999, 1); err == nil {
 		t.Fatal("expected orphan chat member insert to fail")

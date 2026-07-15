@@ -173,6 +173,7 @@ func (s *defaultBanService) fetchKnownBannedFeed(
 	replace bool,
 	updateLastFetch func(context.Context) error,
 ) error {
+	refreshStartedAt := time.Now()
 	seenAt := time.Now().UTC()
 	configured := 0
 	succeeded := 0
@@ -183,6 +184,7 @@ func (s *defaultBanService) fetchKnownBannedFeed(
 			continue
 		}
 		configured++
+		fetchStartedAt := time.Now()
 		results, err := fetchProviderSnapshot(ctx, s.httpClient, provider, urls)
 		if err != nil {
 			failures = append(failures, err)
@@ -197,7 +199,8 @@ func (s *defaultBanService) fetchKnownBannedFeed(
 			expiry := seenAt.Add(ttl)
 			expiresAt = &expiry
 		}
-		if err := s.db.ApplyBanlistSource(
+		applyStartedAt := time.Now()
+		added, removed, err := s.applyBanlistSource(
 			ctx,
 			provider.name,
 			feedType,
@@ -206,10 +209,19 @@ func (s *defaultBanService) fetchKnownBannedFeed(
 			seenAt,
 			expiresAt,
 			replace,
-		); err != nil {
+		)
+		if err != nil {
 			failures = append(failures, fmt.Errorf("apply %s %s snapshot: %w", provider.name, feedType, err))
 			continue
 		}
+		log.WithFields(log.Fields{
+			"added":          len(added),
+			"apply_duration": time.Since(applyStartedAt),
+			"fetch_duration": applyStartedAt.Sub(fetchStartedAt),
+			"feed_type":      feedType,
+			logFieldProvider: provider.name,
+			"removed":        len(removed),
+		}).Debug("applied external banlist provider")
 		succeeded++
 	}
 	if configured == 0 {
@@ -218,13 +230,9 @@ func (s *defaultBanService) fetchKnownBannedFeed(
 	if succeeded == 0 {
 		return fmt.Errorf("fetch known banned %s: %w", feedType, errors.Join(failures...))
 	}
-	fullBanlist, err := s.db.GetBanlist(ctx)
-	if err != nil {
-		return fmt.Errorf("get effective %s banlist: %w", feedType, err)
-	}
-	s.setKnownBanned(fullBanlist)
 	log.WithFields(log.Fields{
-		"count":      len(fullBanlist),
+		"count":      s.knownBannedCount(),
+		"duration":   time.Since(refreshStartedAt),
 		"feed_type":  feedType,
 		"providers":  configured,
 		"successful": succeeded,

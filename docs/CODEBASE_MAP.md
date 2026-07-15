@@ -21,11 +21,11 @@ total_tokens: ~90000
 | Gatekeeper | Every challenge generation has a unique `challenge_id`. State transitions use expected-state CAS; transient Telegram effects are retried by a lifecycle worker, and durable rows are deleted only after the external action succeeds or is already applied. A confirmed privilege failure is terminal instead: the chat enters cached no-rights mode and no retry is scheduled. Public CAPTCHA remains available without restriction; success deletes it, while failure stores a notice for 30 minutes. Activation failures compensate before returning. |
 | Moderation | Spam cases persist `resolve_at` and resolving states. Vote and timeout race through one transactional claim; immediate known-spammer bans also claim `resolving_spam` before Telegram I/O. Chats without restrict-member rights skip banlist, LLM, reaction and voting moderation. A privilege failure discovered during an action finalizes the case as `not_enforced`, closes its prompt and never retries; other Telegram failures retain bounded durable retry. |
 | Voting eligibility | A voter must be a member or administrator of the source chat. Log-channel subscription alone grants no moderation authority. If the log post fails, an in-chat surface must exist and its binding must be persisted before destructive moderation starts. |
-| Banlist | `banlist_sources` stores provider/feed provenance and expiry. A successful provider snapshot replaces only that provider; a failed provider retains its prior snapshot. `banlist` remains the compatibility projection of all unexpired sources. |
-| SQLite | Every connection enables foreign keys; startup verifies the pragma, performs a ping, and closes the handle on error. Confirmed legacy orphans are removed before enforcement. |
+| Banlist | `banlist_sources` stores provider/feed provenance and expiry. A successful provider snapshot replaces only that provider; a failed provider retains its prior snapshot. `banlist` remains the compatibility projection of all unexpired sources and is updated by exact added/removed deltas instead of full rebuilds. |
+| SQLite | Every connection enables foreign keys and a busy timeout; startup enables and verifies WAL mode, performs a ping, and closes the handle on error. Confirmed legacy orphans are removed before enforcement. |
 | Security | Secrets are fully redacted, classification logs contain IDs/length/digest rather than message text, diagnostic commands are authorized, and public WebApp URLs require HTTPS except loopback development. |
 
-**Known limitations**: SQLite still has one process-wide `RWMutex`; it should be narrowed only after the concurrent-read/ban-import benchmark demonstrates material contention. Telegram idempotency is inferred from known already-applied responses; an exhausted retry remains durable and is logged for operator intervention. The WebApp listener remains plain HTTP inside the container and therefore requires a TLS-terminating reverse proxy.
+**Known limitations**: SQLite remains a single-writer database, so unrelated writes still wait for an active banlist source/projection transaction; WAL and the dedicated import guard keep reads available during that work. Telegram idempotency is inferred from known already-applied responses; an exhausted retry remains durable and is logged for operator intervention. The WebApp listener remains plain HTTP inside the container and therefore requires a TLS-terminating reverse proxy.
 
 ```mermaid
 graph TB
@@ -148,13 +148,13 @@ ngbot/
 │   │   ├── gatekeeper_greeting.go # MarkdownV2 prefix tagging (mdv2:) for greeting templates
 │   │   ├── not_spammer_overrides.go  # Not-spammer override validation/normalization
 │   │   ├── settings_test.go       # Defaults/timeout normalization tests
-│   │   └── sqlite/                # SQLite implementation (flat sqliteClient + shared RWMutex)
-│   │       ├── client.go          # FK-enforced SQLite bootstrap, permissions, migrations
+│   │   └── sqlite/                # SQLite implementation (flat sqliteClient + WAL-aware locking)
+│   │       ├── client.go          # FK/WAL-enforced SQLite bootstrap, permissions, migrations
 │   │       ├── client_settings_members.go  # Settings snapshots, excluded.* UPSERT, members
 │   │       ├── client_challenges.go        # Generation-bound challenge CAS transitions/retries
 │   │       ├── client_challenges_test.go   # Parallel join + WebApp race regression tests
-│   │       ├── client_spam.go              # Durable moderation + provenance-aware banlist
-│   │       ├── client_banlist_test.go      # Snapshot/retry/expiry projection tests
+│   │       ├── client_spam.go              # Durable moderation + delta-based provenance banlist
+│   │       ├── client_banlist_test.go      # Snapshot/retry/expiry/concurrency projection tests
 │   │       ├── client_spam_report_test.go  # Report message tests
 │   │       ├── client_kv.go                # KV store operations (stats + sessions + flags)
 │   │       ├── client_not_spammer_overrides.go  # Override CRUD + scoped/global lookup
@@ -574,10 +574,10 @@ Only members/administrators of the **source chat** can vote. A per-chat five-min
 | `settings.go` | `DefaultSettings()`, `ErrNotFound`, `SettingsOverrideInherit` |
 | `spam_tracking.go` | `SpamReport`, `UserRestriction` |
 | `gatekeeper_greeting.go` | `mdv2:` prefix helpers |
-| `sqlite/client.go` | `_pragma=foreign_keys(1)`, ping/pragma verification, 0700/0600 permissions, migrations |
+| `sqlite/client.go` | FK/busy pragmas, WAL verification, ping, 0700/0600 permissions, migrations |
 | `sqlite/client_settings_members.go` | Settings/member CRUD; local normalization and `excluded.*` snapshot UPSERT |
 | `sqlite/client_challenges.go` | Generation-bound CAS transitions, message binding, due/retry queries |
-| `sqlite/client_spam.go` | Transactional voting/finalization, durable reports, restriction UPSERT, banlist sources/projection |
+| `sqlite/client_spam.go` | Transactional voting/finalization, durable reports, restriction UPSERT, staged banlist source/projection deltas |
 | `sqlite/client_kv.go` | KV store operations |
 | `sqlite/client_not_spammer_overrides.go` | Override CRUD + scoped/global lookup (dynamic OR clause) |
 | `sqlite/client_known_non_members.go` | Known-non-member CRUD + lookup |
@@ -672,9 +672,9 @@ Only members/administrators of the **source chat** can vote. A per-chat five-min
 **Gotchas**:
 - `db.ErrNotFound` used for missing settings, but `(nil, nil)` for challenges/admin panel, `("", nil)` for KV — inconsistent not-found signaling
 - `SpamVote.Vote` is inverted: `true` = NOT spam, `false` = IS spam
-- Connection pool: 42 max open connections; one app-level `sync.RWMutex` serializes all writes across the whole client
+- Connection pool: 42 max open connections in WAL mode; ordinary writes are serialized by the app-level `sync.RWMutex`, while a dedicated banlist import guard permits concurrent reads
 - Pure-Go SQLite driver (`modernc.org/sqlite`); migration dialect `"sqlite3"` ≠ sqlx driver name `"sqlite"`
-- Vote claiming/finalization and banlist snapshot/projection rebuilds use explicit transactions; CAS statements remain single-statement atomic operations
+- Vote claiming/finalization and banlist source/projection deltas use explicit transactions; CAS statements remain single-statement atomic operations
 - `GetActiveRestriction` does NOT special-case `sql.ErrNoRows` (returns it as error); uses SQLite `datetime('now')`
 
 ---
@@ -1148,7 +1148,7 @@ Loading is **env-only** via `sethvargo/go-envconfig` (no flags, no config file).
 
 ### Database
 - SQLite (pure-Go `modernc.org/sqlite`) with embedded migrations (`rubenv/sql-migrate`)
-- `db:` struct tags for `sqlx`; one app-level `sync.RWMutex` serializes writes
+- `db:` struct tags for `sqlx`; WAL plus app-level write serialization, with a read-compatible dedicated banlist importer
 - Composite primary keys for parallel operations; upsert pattern (`ON CONFLICT … DO UPDATE`)
 - Concurrency control via atomic compare-and-set (`UPDATE … WHERE status=…` + `RowsAffected()==1`)
 

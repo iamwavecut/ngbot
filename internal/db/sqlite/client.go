@@ -20,8 +20,9 @@ import (
 const migrationsRoot = "migrations"
 
 type sqliteClient struct {
-	db    *sqlx.DB
-	mutex sync.RWMutex
+	db                 *sqlx.DB
+	mutex              sync.RWMutex
+	banlistImportMutex sync.Mutex
 }
 
 func NewSQLiteClient(ctx context.Context, dataDir string, dbPath string) (*sqliteClient, error) {
@@ -62,6 +63,13 @@ func NewSQLiteClient(ctx context.Context, dataDir string, dbPath string) (*sqlit
 	}
 	if foreignKeysEnabled != 1 {
 		return nil, fmt.Errorf("foreign key enforcement is disabled")
+	}
+	var journalMode string
+	if err := dbx.GetContext(ctx, &journalMode, "PRAGMA journal_mode = WAL"); err != nil {
+		return nil, fmt.Errorf("enable WAL journal mode: %w", err)
+	}
+	if journalMode != "wal" {
+		return nil, fmt.Errorf("WAL journal mode is disabled: %s", journalMode)
 	}
 
 	migrationsSource := &migrate.EmbedFileSystemMigrationSource{

@@ -25,8 +25,8 @@ func (s *testBanStore) SetKV(context.Context, string, string) error {
 	return nil
 }
 
-func (s *testBanStore) ApplyBanlistSource(context.Context, string, string, string, []int64, time.Time, *time.Time, bool) error {
-	return nil
+func (s *testBanStore) ApplyBanlistSource(context.Context, string, string, string, []int64, time.Time, *time.Time, bool) ([]int64, []int64, error) {
+	return nil, nil, nil
 }
 
 func (s *testBanStore) GetBanlist(context.Context) (map[int64]struct{}, error) {

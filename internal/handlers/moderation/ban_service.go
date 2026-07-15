@@ -64,7 +64,7 @@ type BanService interface {
 type banStore interface {
 	GetKV(ctx context.Context, key string) (string, error)
 	SetKV(ctx context.Context, key string, value string) error
-	ApplyBanlistSource(ctx context.Context, provider, feedType, generation string, userIDs []int64, seenAt time.Time, expiresAt *time.Time, replace bool) error
+	ApplyBanlistSource(ctx context.Context, provider, feedType, generation string, userIDs []int64, seenAt time.Time, expiresAt *time.Time, replace bool) (added, removed []int64, err error)
 	GetBanlist(ctx context.Context) (map[int64]struct{}, error)
 	AddRestriction(ctx context.Context, restriction *db.UserRestriction) error
 	RemoveRestriction(ctx context.Context, chatID int64, userID int64) error
@@ -85,10 +85,11 @@ type defaultBanService struct {
 	httpClient *http.Client
 	providers  []banlistProvider
 
-	knownBanned map[int64]struct{}
-	mapMutex    sync.RWMutex
-	moderation  map[int64]moderationStatus
-	moderationM sync.RWMutex
+	knownBanned  map[int64]struct{}
+	mapMutex     sync.RWMutex
+	banlistMutex sync.Mutex
+	moderation   map[int64]moderationStatus
+	moderationM  sync.RWMutex
 
 	runMutex  sync.Mutex
 	started   bool
@@ -434,6 +435,8 @@ func (s *defaultBanService) loadKnownBannedFromDB(ctx context.Context) error {
 	if s.db == nil {
 		return nil
 	}
+	s.banlistMutex.Lock()
+	defer s.banlistMutex.Unlock()
 	fullBanlist, err := s.db.GetBanlist(ctx)
 	if err != nil {
 		return err
@@ -443,13 +446,15 @@ func (s *defaultBanService) loadKnownBannedFromDB(ctx context.Context) error {
 }
 
 func (s *defaultBanService) rememberKnownBanned(ctx context.Context, userID int64, provider string) {
+	s.banlistMutex.Lock()
+	defer s.banlistMutex.Unlock()
 	s.markKnownBanned(userID)
 	if s.db == nil {
 		return
 	}
 	seenAt := time.Now().UTC()
 	expiresAt := seenAt.Add(banlistOnlineTTL)
-	if err := s.db.ApplyBanlistSource(
+	added, removed, err := s.db.ApplyBanlistSource(
 		ctx,
 		provider,
 		banlistFeedOnline,
@@ -458,7 +463,8 @@ func (s *defaultBanService) rememberKnownBanned(ctx context.Context, userID int6
 		seenAt,
 		&expiresAt,
 		false,
-	); err != nil {
+	)
+	if err != nil {
 		log.WithFields(log.Fields{
 			logFieldUserID:   userID,
 			logFieldProvider: provider,
@@ -466,13 +472,34 @@ func (s *defaultBanService) rememberKnownBanned(ctx context.Context, userID int6
 		}).Error("failed to persist online banned user")
 		return
 	}
-	if err := s.loadKnownBannedFromDB(ctx); err != nil {
-		log.WithFields(log.Fields{
-			logFieldUserID:   userID,
-			logFieldProvider: provider,
-			logFieldError:    err.Error(),
-		}).Error("failed to reload online banned user")
+	s.applyKnownBannedDelta(added, removed)
+}
+
+func (s *defaultBanService) applyBanlistSource(
+	ctx context.Context,
+	provider, feedType, generation string,
+	userIDs []int64,
+	seenAt time.Time,
+	expiresAt *time.Time,
+	replace bool,
+) (added, removed []int64, err error) {
+	s.banlistMutex.Lock()
+	defer s.banlistMutex.Unlock()
+	added, removed, err = s.db.ApplyBanlistSource(
+		ctx,
+		provider,
+		feedType,
+		generation,
+		userIDs,
+		seenAt,
+		expiresAt,
+		replace,
+	)
+	if err != nil {
+		return nil, nil, err
 	}
+	s.applyKnownBannedDelta(added, removed)
+	return added, removed, nil
 }
 
 func (s *defaultBanService) setKnownBanned(banned map[int64]struct{}) {
@@ -489,6 +516,23 @@ func (s *defaultBanService) markKnownBanned(userID int64) {
 	s.mapMutex.Lock()
 	s.knownBanned[userID] = struct{}{}
 	s.mapMutex.Unlock()
+}
+
+func (s *defaultBanService) applyKnownBannedDelta(added, removed []int64) {
+	s.mapMutex.Lock()
+	defer s.mapMutex.Unlock()
+	for _, userID := range removed {
+		delete(s.knownBanned, userID)
+	}
+	for _, userID := range added {
+		s.knownBanned[userID] = struct{}{}
+	}
+}
+
+func (s *defaultBanService) knownBannedCount() int {
+	s.mapMutex.RLock()
+	defer s.mapMutex.RUnlock()
+	return len(s.knownBanned)
 }
 
 func errorsIsCanceled(err error) bool {

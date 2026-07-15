@@ -170,7 +170,7 @@ For detailed architecture, see [docs/CODEBASE_MAP.md](docs/CODEBASE_MAP.md).
 - **Driver** 🔌: `modernc.org/sqlite` (pure-Go, CGO-free — enables the distroless static build).
 - **Access** 🧩: Hand-written SQL through `jmoiron/sqlx` (`db:` struct tags, `StructScan`). **No code generation.**
 - **Ports** 🔌: Consumer-owned interfaces live beside `bot.service` and each handler. The concrete SQLite adapter satisfies them structurally; there is no repository-wide database interface.
-- **Concurrency** 🔒: One app-level `sync.RWMutex` on `sqliteClient` (RLock reads, Lock writes) + `SetMaxOpenConns(42)`. Race-sensitive state changes use transactions or atomic compare-and-set (`UPDATE … WHERE status=…` + `RowsAffected()==1`).
+- **Concurrency** 🔒: SQLite runs in WAL mode with `SetMaxOpenConns(42)`. One app-level `sync.RWMutex` serializes ordinary writes; banlist imports have their own mutex and use a shared guard so reads continue while the atomic source/projection transaction runs. Race-sensitive state changes use transactions or atomic compare-and-set (`UPDATE … WHERE status=…` + `RowsAffected()==1`).
 
 ### Storage Layer
 - **Architecture** 🏗️: Flat — one concrete `sqliteClient` adapter implements consumer-owned ports directly. **No** interface → Postgres → buffered/cached → factory chain.

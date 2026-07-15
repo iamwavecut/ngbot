@@ -5,9 +5,12 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/iamwavecut/ngbot/internal/db"
+	"github.com/jmoiron/sqlx"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -792,6 +795,8 @@ func (s *sqliteClient) UpsertBanlist(ctx context.Context, userIDs []int64) error
 	return nil
 }
 
+const banlistStageBatchSize = 1_000
+
 func (s *sqliteClient) ApplyBanlistSource(
 	ctx context.Context,
 	provider, feedType, generation string,
@@ -799,59 +804,165 @@ func (s *sqliteClient) ApplyBanlistSource(
 	seenAt time.Time,
 	expiresAt *time.Time,
 	replace bool,
-) error {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
+) (added, removed []int64, err error) {
+	s.banlistImportMutex.Lock()
+	defer s.banlistImportMutex.Unlock()
 
-	tx, err := s.db.BeginTx(ctx, nil)
+	conn, err := s.db.Connx(ctx)
 	if err != nil {
-		return fmt.Errorf("begin banlist source transaction: %w", err)
+		return nil, nil, fmt.Errorf("acquire banlist import connection: %w", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	if err := stageBanlistSource(ctx, conn, userIDs); err != nil {
+		return nil, nil, err
+	}
+	defer dropBanlistStageTables(ctx, conn)
+
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+
+	tx, err := conn.BeginTxx(ctx, nil)
+	if err != nil {
+		return nil, nil, fmt.Errorf("begin banlist source transaction: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	if replace {
-		if _, err := tx.ExecContext(ctx, `
-			DELETE FROM banlist_sources WHERE provider = ? AND feed_type = ?
-		`, provider, feedType); err != nil {
-			return fmt.Errorf("replace banlist source %s/%s: %w", provider, feedType, err)
-		}
-	}
-	stmt, err := tx.PrepareContext(ctx, `
+	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO banlist_sources (user_id, provider, feed_type, generation, last_seen_at, expires_at)
-		VALUES (?, ?, ?, ?, ?, ?)
+		SELECT user_id, ?, ?, ?, ?, ?
+		FROM temp_banlist_import
+		WHERE TRUE
 		ON CONFLICT(user_id, provider, feed_type) DO UPDATE SET
 			generation = excluded.generation,
 			last_seen_at = excluded.last_seen_at,
 			expires_at = excluded.expires_at
-	`)
-	if err != nil {
-		return fmt.Errorf("prepare banlist source insert: %w", err)
+	`, provider, feedType, generation, seenAt, expiresAt); err != nil {
+		return nil, nil, fmt.Errorf("upsert banlist source %s/%s: %w", provider, feedType, err)
 	}
-	defer func() { _ = stmt.Close() }()
-	for _, userID := range userIDs {
-		if _, err := stmt.ExecContext(ctx, userID, provider, feedType, generation, seenAt, expiresAt); err != nil {
-			return fmt.Errorf("insert banlist source user %d: %w", userID, err)
+	if replace {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT OR IGNORE INTO temp_banlist_removed (user_id)
+			SELECT user_id FROM banlist_sources
+			WHERE provider = ? AND feed_type = ? AND generation != ?
+		`, provider, feedType, generation); err != nil {
+			return nil, nil, fmt.Errorf("stage replaced banlist source %s/%s: %w", provider, feedType, err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT OR IGNORE INTO temp_banlist_removed (user_id)
+		SELECT user_id FROM banlist_sources
+		WHERE expires_at IS NOT NULL AND expires_at <= ?
+	`, seenAt); err != nil {
+		return nil, nil, fmt.Errorf("stage expired banlist sources: %w", err)
+	}
+	if replace {
+		if _, err := tx.ExecContext(ctx, `
+			DELETE FROM banlist_sources
+			WHERE provider = ? AND feed_type = ? AND generation != ?
+		`, provider, feedType, generation); err != nil {
+			return nil, nil, fmt.Errorf("replace banlist source %s/%s: %w", provider, feedType, err)
 		}
 	}
 	if _, err := tx.ExecContext(ctx, `
 		DELETE FROM banlist_sources WHERE expires_at IS NOT NULL AND expires_at <= ?
 	`, seenAt); err != nil {
-		return fmt.Errorf("expire banlist sources: %w", err)
+		return nil, nil, fmt.Errorf("expire banlist sources: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM banlist`); err != nil {
-		return fmt.Errorf("clear effective banlist: %w", err)
+	removedRows, err := tx.QueryContext(ctx, `
+		DELETE FROM banlist
+		WHERE user_id IN (SELECT user_id FROM temp_banlist_removed)
+			AND NOT EXISTS (
+				SELECT 1 FROM banlist_sources
+				WHERE banlist_sources.user_id = banlist.user_id
+					AND (expires_at IS NULL OR expires_at > ?)
+			)
+		RETURNING user_id
+	`, seenAt)
+	if err != nil {
+		return nil, nil, fmt.Errorf("remove ineffective banlist ids: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO banlist (user_id)
-		SELECT DISTINCT user_id
-		FROM banlist_sources
-		WHERE expires_at IS NULL OR expires_at > ?
-	`, seenAt); err != nil {
-		return fmt.Errorf("rebuild effective banlist: %w", err)
+	removed, err = scanBanlistIDs(removedRows)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read removed banlist ids: %w", err)
+	}
+	addedRows, err := tx.QueryContext(ctx, `
+		INSERT OR IGNORE INTO banlist (user_id)
+		SELECT user_id FROM banlist_sources
+		WHERE provider = ? AND feed_type = ? AND generation = ?
+			AND (expires_at IS NULL OR expires_at > ?)
+		RETURNING user_id
+	`, provider, feedType, generation, seenAt)
+	if err != nil {
+		return nil, nil, fmt.Errorf("add effective banlist ids: %w", err)
+	}
+	added, err = scanBanlistIDs(addedRows)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read added banlist ids: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit banlist source transaction: %w", err)
+		return nil, nil, fmt.Errorf("commit banlist source transaction: %w", err)
+	}
+	return added, removed, nil
+}
+
+func stageBanlistSource(ctx context.Context, conn *sqlx.Conn, userIDs []int64) error {
+	for _, query := range []string{
+		`CREATE TEMP TABLE IF NOT EXISTS temp_banlist_import (user_id INTEGER PRIMARY KEY) WITHOUT ROWID`,
+		`CREATE TEMP TABLE IF NOT EXISTS temp_banlist_removed (user_id INTEGER PRIMARY KEY) WITHOUT ROWID`,
+	} {
+		if _, err := conn.ExecContext(ctx, query); err != nil {
+			return fmt.Errorf("create banlist staging table: %w", err)
+		}
+	}
+
+	tx, err := conn.BeginTxx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin banlist staging transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, table := range []string{"temp_banlist_import", "temp_banlist_removed"} {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM `+table); err != nil {
+			return fmt.Errorf("clear %s: %w", table, err)
+		}
+	}
+	for batch := range slices.Chunk(userIDs, banlistStageBatchSize) {
+		query := `INSERT OR IGNORE INTO temp_banlist_import (user_id) VALUES ` + strings.TrimSuffix(strings.Repeat("(?),", len(batch)), ",")
+		args := make([]any, len(batch))
+		for i, userID := range batch {
+			args[i] = userID
+		}
+		if _, err := tx.ExecContext(ctx, query, args...); err != nil {
+			return fmt.Errorf("stage banlist ids: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit banlist staging transaction: %w", err)
 	}
 	return nil
+}
+
+func dropBanlistStageTables(ctx context.Context, conn *sqlx.Conn) {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	for _, table := range []string{"temp_banlist_import", "temp_banlist_removed"} {
+		_, _ = conn.ExecContext(cleanupCtx, `DROP TABLE IF EXISTS `+table)
+	}
+}
+
+func scanBanlistIDs(rows *sql.Rows) ([]int64, error) {
+	defer func() { _ = rows.Close() }()
+	userIDs := make([]int64, 0)
+	for rows.Next() {
+		var userID int64
+		if err := rows.Scan(&userID); err != nil {
+			return nil, err
+		}
+		userIDs = append(userIDs, userID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return userIDs, nil
 }
 
 func (s *sqliteClient) GetBanlist(ctx context.Context) (map[int64]struct{}, error) {

@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"errors"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"path"
@@ -228,7 +229,7 @@ func TestFetchKnownBannedDailyAppliesPartialProviderSuccess(t *testing.T) {
 	svc := &defaultBanService{
 		db:          store,
 		httpClient:  server.Client(),
-		knownBanned: map[int64]struct{}{},
+		knownBanned: map[int64]struct{}{400: {}},
 		providers: []banlistProvider{
 			{
 				name:      "ok",
@@ -259,15 +260,129 @@ func TestFetchKnownBannedDailyAppliesPartialProviderSuccess(t *testing.T) {
 	if got := store.kv[kvKeyLastDailyFetch]; got != "" {
 		t.Fatalf("partial refresh moved retry timestamp: %q", got)
 	}
+	if store.getBanlistCalls != 0 {
+		t.Fatalf("refresh reloaded the full banlist %d times", store.getBanlistCalls)
+	}
+}
+
+func TestFetchKnownBannedDailyAppliesProjectionDeltaInMemory(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("200\n"))
+	}))
+	t.Cleanup(server.Close)
+
+	store := newRecordingBanStore()
+	key := banlistSourceKey{provider: "provider", feedType: banlistFeedDaily}
+	store.sources[key] = map[int64]*time.Time{100: nil}
+	store.banlist[100] = struct{}{}
+	svc := &defaultBanService{
+		db:          store,
+		httpClient:  server.Client(),
+		knownBanned: map[int64]struct{}{100: {}},
+		providers: []banlistProvider{{
+			name:      "provider",
+			dailyURLs: []string{server.URL},
+		}},
+	}
+
+	if err := svc.FetchKnownBannedDaily(context.Background()); err != nil {
+		t.Fatalf("fetch known banned daily: %v", err)
+	}
+	if svc.IsKnownBanned(100) {
+		t.Fatal("dropped provider ID remained in memory")
+	}
+	if !svc.IsKnownBanned(200) {
+		t.Fatal("new provider ID was not added to memory")
+	}
+	if store.getBanlistCalls != 0 {
+		t.Fatalf("refresh reloaded the full banlist %d times", store.getBanlistCalls)
+	}
+}
+
+func TestBanlistProjectionDeltasArePublishedInCommitOrder(t *testing.T) {
+	t.Parallel()
+
+	store := &orderedDeltaBanStore{
+		recordingBanStore: newRecordingBanStore(),
+		firstStarted:      make(chan struct{}),
+		secondEntered:     make(chan struct{}),
+		releaseFirst:      make(chan struct{}),
+	}
+	svc := &defaultBanService{
+		db:          store,
+		knownBanned: map[int64]struct{}{},
+	}
+	errCh := make(chan error, 2)
+	go func() {
+		_, _, err := svc.applyBanlistSource(context.Background(), "first", banlistFeedDaily, "first", nil, time.Now(), nil, true)
+		errCh <- err
+	}()
+	<-store.firstStarted
+	go func() {
+		_, _, err := svc.applyBanlistSource(context.Background(), "second", banlistFeedDaily, "second", nil, time.Now(), nil, true)
+		errCh <- err
+	}()
+
+	overlapped := false
+	select {
+	case <-store.secondEntered:
+		overlapped = true
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(store.releaseFirst)
+	for range 2 {
+		if err := <-errCh; err != nil {
+			t.Fatalf("apply ordered banlist delta: %v", err)
+		}
+	}
+	if overlapped {
+		t.Fatal("second banlist update reached the store before the first delta was published")
+	}
+	if svc.IsKnownBanned(42) {
+		t.Fatal("out-of-order deltas resurrected an ID removed by the later commit")
+	}
 }
 
 type recordingBanStore struct {
-	kv           map[string]string
-	banlist      map[int64]struct{}
-	sources      map[banlistSourceKey]map[int64]*time.Time
-	sourceCalls  []banlistSourceCall
-	cleanupCalls int
-	cleanupErr   error
+	kv              map[string]string
+	banlist         map[int64]struct{}
+	sources         map[banlistSourceKey]map[int64]*time.Time
+	sourceCalls     []banlistSourceCall
+	getBanlistCalls int
+	cleanupCalls    int
+	cleanupErr      error
+}
+
+type orderedDeltaBanStore struct {
+	*recordingBanStore
+	mutex         sync.Mutex
+	calls         int
+	firstStarted  chan struct{}
+	secondEntered chan struct{}
+	releaseFirst  chan struct{}
+}
+
+func (s *orderedDeltaBanStore) ApplyBanlistSource(
+	context.Context,
+	string, string, string,
+	[]int64,
+	time.Time,
+	*time.Time,
+	bool,
+) ([]int64, []int64, error) {
+	s.mutex.Lock()
+	s.calls++
+	call := s.calls
+	s.mutex.Unlock()
+	if call == 1 {
+		close(s.firstStarted)
+		<-s.releaseFirst
+		return []int64{42}, nil, nil
+	}
+	close(s.secondEntered)
+	return nil, []int64{42}, nil
 }
 
 type banlistSourceKey struct {
@@ -307,7 +422,8 @@ func (s *recordingBanStore) ApplyBanlistSource(
 	seenAt time.Time,
 	expiresAt *time.Time,
 	replace bool,
-) error {
+) ([]int64, []int64, error) {
+	before := maps.Clone(s.banlist)
 	key := banlistSourceKey{provider: provider, feedType: feedType}
 	call := banlistSourceCall{
 		key:       key,
@@ -336,10 +452,23 @@ func (s *recordingBanStore) ApplyBanlistSource(
 			delete(s.sources, sourceKey)
 		}
 	}
-	return nil
+	added := make([]int64, 0)
+	for userID := range s.banlist {
+		if _, ok := before[userID]; !ok {
+			added = append(added, userID)
+		}
+	}
+	removed := make([]int64, 0)
+	for userID := range before {
+		if _, ok := s.banlist[userID]; !ok {
+			removed = append(removed, userID)
+		}
+	}
+	return added, removed, nil
 }
 
 func (s *recordingBanStore) GetBanlist(context.Context) (map[int64]struct{}, error) {
+	s.getBanlistCalls++
 	result := make(map[int64]struct{}, len(s.banlist))
 	for userID := range s.banlist {
 		result[userID] = struct{}{}
