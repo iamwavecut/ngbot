@@ -63,6 +63,7 @@ type spamStore interface {
 	GetSpamCase(ctx context.Context, id int64) (*db.SpamCase, error)
 	GetPendingSpamCases(ctx context.Context) ([]*db.SpamCase, error)
 	GetDueSpamCases(ctx context.Context, now time.Time) ([]*db.SpamCase, error)
+	GetPrivilegeBlockedSpamCases(ctx context.Context) ([]*db.SpamCase, error)
 	GetActiveSpamCase(ctx context.Context, chatID int64, userID int64) (*db.SpamCase, error)
 	GetActiveSpamCaseByMessage(ctx context.Context, chatID int64, userID int64, messageID int) (*db.SpamCase, error)
 	AddSpamCaseReportMessage(ctx context.Context, message *db.SpamCaseReportMessage) error
@@ -215,6 +216,13 @@ func (sc *SpamControl) ProcessReportedMessage(ctx context.Context, targetMsg *ap
 	if targetMsg == nil || reportMsg == nil || chat == nil || targetMsg.From == nil {
 		return result, nil
 	}
+	available, err := sc.banService.ModerationAvailable(ctx, chat.ID)
+	if err != nil || !available {
+		if err != nil {
+			log.WithError(err).WithField(logFieldChatID, chat.ID).Warn("failed to inspect moderation rights; skipping report")
+		}
+		return result, nil
+	}
 
 	spamCase, err := sc.getReportedSpamCase(ctx, targetMsg)
 	if err != nil {
@@ -252,6 +260,13 @@ func (sc *SpamControl) preprocessMessage(ctx context.Context, msg *api.Message, 
 	result := &ProcessingResult{}
 	var persistenceErr error
 	if msg == nil || chat == nil || msg.From == nil {
+		return result, nil
+	}
+	available, err := sc.banService.ModerationAvailable(ctx, chat.ID)
+	if err != nil || !available {
+		if err != nil {
+			log.WithError(err).WithField(logFieldChatID, chat.ID).Warn("failed to inspect moderation rights; skipping moderation")
+		}
 		return result, nil
 	}
 
@@ -324,7 +339,11 @@ func (sc *SpamControl) preprocessMessage(ctx context.Context, msg *api.Message, 
 				persistenceErr = fmt.Errorf("record failed pre-vote restriction: %w", updateErr)
 			}
 			if isTelegramPrivilegeError(err) {
+				sc.banService.MarkModerationUnavailable(chat.ID)
 				result.Error = errChatAdminRequired
+				if finalizeErr := sc.finalizeWithoutModeration(ctx, spamCase); finalizeErr != nil {
+					persistenceErr = errors.Join(persistenceErr, finalizeErr)
+				}
 			} else {
 				result.Error = err.Error()
 			}

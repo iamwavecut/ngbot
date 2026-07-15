@@ -14,7 +14,7 @@ import (
 const challengeColumns = `
 	challenge_id, comm_chat_id, user_id, chat_id, status, success_uuid, web_app_token, join_request_query_id,
 	captcha_prompt, captcha_options_json, join_message_id, challenge_message_id, attempts, created_at, expires_at,
-	web_app_opened_at, user_language, next_attempt_at, attempt_count, last_error
+	web_app_opened_at, user_language, next_attempt_at, attempt_count, last_error, notice_message_id, user_restricted
 `
 
 func (c *sqliteClient) CreateChallenge(ctx context.Context, challenge *db.Challenge) (*db.Challenge, error) {
@@ -32,8 +32,8 @@ func (c *sqliteClient) CreateChallenge(ctx context.Context, challenge *db.Challe
 		INSERT INTO gatekeeper_challenges (
 			challenge_id, comm_chat_id, user_id, chat_id, status, success_uuid, web_app_token, join_request_query_id, captcha_prompt,
 			captcha_options_json, join_message_id, challenge_message_id, attempts, created_at, expires_at, web_app_opened_at,
-			user_language, next_attempt_at, attempt_count, last_error
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			user_language, next_attempt_at, attempt_count, last_error, notice_message_id, user_restricted
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(comm_chat_id, user_id, chat_id) DO UPDATE SET
 			challenge_id = excluded.challenge_id,
 			status = excluded.status,
@@ -51,7 +51,9 @@ func (c *sqliteClient) CreateChallenge(ctx context.Context, challenge *db.Challe
 			user_language = excluded.user_language,
 			next_attempt_at = excluded.next_attempt_at,
 			attempt_count = excluded.attempt_count,
-			last_error = excluded.last_error
+			last_error = excluded.last_error,
+			notice_message_id = excluded.notice_message_id,
+			user_restricted = excluded.user_restricted
 	`
 	_, err := c.db.ExecContext(
 		ctx, query,
@@ -75,6 +77,8 @@ func (c *sqliteClient) CreateChallenge(ctx context.Context, challenge *db.Challe
 		challenge.NextAttemptAt,
 		challenge.AttemptCount,
 		challenge.LastError,
+		challenge.NoticeMessageID,
+		challenge.UserRestricted,
 	)
 	if err != nil {
 		return nil, err
@@ -314,6 +318,33 @@ func (c *sqliteClient) ScheduleChallengeRetry(
 	return affected == 1, err
 }
 
+func (c *sqliteClient) CompleteChallengeWithoutPrivileges(
+	ctx context.Context,
+	challengeID, expectedStatus string,
+	noticeMessageID int,
+	expiresAt time.Time,
+	lastError string,
+) (bool, error) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	result, err := c.db.ExecContext(ctx, `
+		UPDATE gatekeeper_challenges
+		SET status = ?,
+			notice_message_id = ?,
+			expires_at = ?,
+			next_attempt_at = NULL,
+			attempt_count = 0,
+			last_error = ?
+		WHERE challenge_id = ? AND status = ?
+	`, db.ChallengeStatusNoPrivilegesNotice, noticeMessageID, expiresAt, lastError, challengeID, expectedStatus)
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	return affected == 1, err
+}
+
 func (c *sqliteClient) DeleteChallengeInstance(ctx context.Context, challengeID, expectedStatus string) (bool, error) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
@@ -393,11 +424,20 @@ func (c *sqliteClient) GetExpiredChallenges(ctx context.Context, now time.Time) 
 	defer c.mutex.RUnlock()
 
 	var challenges []*db.Challenge
-	err := c.db.SelectContext(ctx, &challenges, `
+	err := c.db.SelectContext(
+		ctx, &challenges, `
 		SELECT `+challengeColumns+`
 		FROM gatekeeper_challenges
 		WHERE expires_at <= ?
-	`, now)
+			AND status NOT IN (?, ?, ?, ?, ?)
+	`,
+		now,
+		db.ChallengeStatusWebAppFallbackPending,
+		db.ChallengeStatusApproveQueryPending,
+		db.ChallengeStatusApproveMemberPending,
+		db.ChallengeStatusUnrestrictPending,
+		db.ChallengeStatusRejectPending,
+	)
 	return challenges, err
 }
 

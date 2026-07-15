@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"testing"
@@ -123,5 +124,67 @@ func TestBanUserWithMessageRevokesMessages(t *testing.T) {
 	service := &defaultBanService{bot: botAPI, db: &testBanStore{}}
 	if err := service.BanUserWithMessage(context.Background(), -100, 200, 50); err != nil {
 		t.Fatalf("ban user: %v", err)
+	}
+}
+
+func TestModerationAvailabilityCachesRightsAndExplicitFailureWins(t *testing.T) {
+	t.Parallel()
+
+	getChatMemberCalls := 0
+	botAPI := newModerationTestBotAPI(t, func(method string, _ *http.Request) any {
+		if method != "getChatMember" {
+			t.Fatalf("unexpected bot method: %s", method)
+		}
+		getChatMemberCalls++
+		return map[string]any{
+			"user": map[string]any{
+				"id":         1,
+				"is_bot":     true,
+				"first_name": "Test",
+			},
+			"status":               "administrator",
+			"can_restrict_members": true,
+		}
+	})
+
+	service := NewBanService(botAPI, &testBanStore{})
+	for range 2 {
+		available, err := service.ModerationAvailable(context.Background(), -100)
+		if err != nil || !available {
+			t.Fatalf("expected cached moderation rights: available=%t err=%v", available, err)
+		}
+	}
+	if getChatMemberCalls != 1 {
+		t.Fatalf("expected one Telegram capability lookup, got %d", getChatMemberCalls)
+	}
+
+	service.MarkModerationUnavailable(-100)
+	available, err := service.ModerationAvailable(context.Background(), -100)
+	if err != nil || available {
+		t.Fatalf("explicit privilege failure did not override cached rights: available=%t err=%v", available, err)
+	}
+	if getChatMemberCalls != 1 {
+		t.Fatalf("explicit failure unexpectedly repeated Telegram lookup: %d", getChatMemberCalls)
+	}
+}
+
+func TestMutePrivilegeFailureImmediatelyDisablesModeration(t *testing.T) {
+	t.Parallel()
+
+	botAPI := newModerationRetryTestBotAPI(t, func(method string, _ *http.Request) testAPIResponse {
+		if method != "restrictChatMember" {
+			t.Fatalf("unexpected bot method: %s", method)
+		}
+		return testAPIResponse{OK: false, Description: "Bad Request: CHAT_ADMIN_REQUIRED"}
+	})
+	service := NewBanService(botAPI, &testBanStore{})
+
+	err := service.MuteUser(context.Background(), -100, 200)
+	if !errors.Is(err, ErrNoPrivileges) {
+		t.Fatalf("MuteUser error = %v, want ErrNoPrivileges", err)
+	}
+	available, err := service.ModerationAvailable(context.Background(), -100)
+	if err != nil || available {
+		t.Fatalf("privilege failure did not disable moderation: available=%t err=%v", available, err)
 	}
 }

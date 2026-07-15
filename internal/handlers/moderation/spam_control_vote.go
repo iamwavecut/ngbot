@@ -20,8 +20,21 @@ func (sc *SpamControl) RecordVote(ctx context.Context, caseID int64, voterID int
 	if err != nil {
 		return 0, 0, err
 	}
+	if spamCase == nil || spamCase.Status != db.SpamCaseStatusPending {
+		return 0, 0, ErrSpamCaseClosed
+	}
 	if spamCase.UserID == voterID {
 		return 0, 0, ErrSuspectCannotVote
+	}
+	available, err := sc.banService.ModerationAvailable(ctx, spamCase.ChatID)
+	if err != nil || !available {
+		if err != nil {
+			log.WithError(err).WithField(logFieldChatID, spamCase.ChatID).Warn("failed to inspect moderation rights before vote")
+		}
+		if finalizeErr := sc.finalizeWithoutModeration(ctx, spamCase); finalizeErr != nil {
+			return 0, 0, finalizeErr
+		}
+		return 0, 0, ErrSpamCaseClosed
 	}
 	settings, err := sc.s.GetSettings(ctx, spamCase.ChatID)
 	if err != nil {
@@ -133,6 +146,12 @@ func (sc *SpamControl) resolveClaimedCase(ctx context.Context, spamCase *db.Spam
 	if spamCase == nil {
 		return nil
 	}
+	available, err := sc.banService.ModerationAvailable(ctx, spamCase.ChatID)
+	if err != nil {
+		log.WithError(err).WithField(logFieldChatID, spamCase.ChatID).Warn("failed to refresh moderation rights before resolution")
+	} else if !available {
+		return errors.Join(ErrNoPrivileges, sc.finalizeWithoutModeration(ctx, spamCase))
+	}
 	var actionErr error
 	terminalStatus := db.SpamCaseStatusFalsePositive
 	statMetric := handlersbase.StatFalsePositive
@@ -158,6 +177,10 @@ func (sc *SpamControl) resolveClaimedCase(ctx context.Context, spamCase *db.Spam
 		return nil
 	}
 	if actionErr != nil {
+		if isTelegramPrivilegeError(actionErr) {
+			sc.banService.MarkModerationUnavailable(spamCase.ChatID)
+			return errors.Join(actionErr, sc.finalizeWithoutModeration(ctx, spamCase))
+		}
 		nextAttemptAt := time.Time{}
 		if spamCase.AttemptCount+1 < maxSpamResolutionAttempts {
 			nextAttemptAt = time.Now().Add(spamCaseRetryDelay(spamCase.AttemptCount))
@@ -184,6 +207,30 @@ func (sc *SpamControl) resolveClaimedCase(ctx context.Context, spamCase *db.Spam
 	return nil
 }
 
+func (sc *SpamControl) finalizeWithoutModeration(ctx context.Context, spamCase *db.SpamCase) error {
+	if spamCase == nil {
+		return nil
+	}
+	now := time.Now()
+	finalized, err := sc.store.FinalizeSpamCaseResolution(
+		ctx,
+		spamCase.ID,
+		spamCase.Status,
+		db.SpamCaseStatusNotEnforced,
+		"",
+		now,
+	)
+	if err != nil {
+		return fmt.Errorf("finalize case without moderation: %w", err)
+	}
+	if finalized {
+		spamCase.Status = db.SpamCaseStatusNotEnforced
+		spamCase.ResolvedAt = &now
+		sc.closeVotingPrompt(ctx, spamCase)
+	}
+	return nil
+}
+
 func (sc *SpamControl) closeVotingPrompt(ctx context.Context, spamCase *db.SpamCase) {
 	if spamCase == nil {
 		return
@@ -194,7 +241,7 @@ func (sc *SpamControl) closeVotingPrompt(ctx context.Context, spamCase *db.SpamC
 		}
 	}
 	if spamCase.ChannelPostID != 0 && spamCase.ChannelUsername != "" {
-		emptyMarkup := api.NewInlineKeyboardMarkup()
+		emptyMarkup := api.InlineKeyboardMarkup{InlineKeyboard: [][]api.InlineKeyboardButton{}}
 		edit := api.EditMessageReplyMarkupConfig{BaseEdit: api.BaseEdit{
 			BaseChatMessage: api.BaseChatMessage{
 				ChatConfig: api.ChatConfig{ChannelUsername: "@" + strings.TrimPrefix(spamCase.ChannelUsername, "@")},

@@ -11,7 +11,9 @@ import (
 	"time"
 
 	api "github.com/OvyFlash/telegram-bot-api"
+	"github.com/iamwavecut/ngbot/internal/bot"
 	"github.com/iamwavecut/ngbot/internal/db"
+	"github.com/iamwavecut/ngbot/internal/policy/permissions"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -31,6 +33,7 @@ const (
 	banServiceRetryStep   = 300 * time.Millisecond
 	banlistHourlyTTL      = 26 * time.Hour
 	banlistOnlineTTL      = 24 * time.Hour
+	moderationStatusTTL   = 5 * time.Minute
 
 	banlistFeedDaily  = "daily"
 	banlistFeedHourly = "hourly"
@@ -39,6 +42,7 @@ const (
 	kvKeyLastDailyFetch  = "last_daily_fetch"
 	kvKeyLastHourlyFetch = "last_hourly_fetch"
 	logFieldProvider     = "provider"
+	logFieldChatID       = "chat_id"
 	logFieldUserID       = "user_id"
 	logFieldError        = "error"
 )
@@ -53,6 +57,8 @@ type BanService interface {
 	UnbanUser(ctx context.Context, chatID, userID int64) error
 	IsRestricted(ctx context.Context, chatID, userID int64) (bool, error)
 	IsKnownBanned(userID int64) bool
+	ModerationAvailable(ctx context.Context, chatID int64) (bool, error)
+	MarkModerationUnavailable(chatID int64)
 }
 
 type banStore interface {
@@ -81,11 +87,18 @@ type defaultBanService struct {
 
 	knownBanned map[int64]struct{}
 	mapMutex    sync.RWMutex
+	moderation  map[int64]moderationStatus
+	moderationM sync.RWMutex
 
 	runMutex  sync.Mutex
 	started   bool
 	runCancel context.CancelFunc
 	workersWg sync.WaitGroup
+}
+
+type moderationStatus struct {
+	available bool
+	expiresAt time.Time
 }
 
 var ErrNoPrivileges = fmt.Errorf("no privileges")
@@ -97,7 +110,53 @@ func NewBanService(bot *api.BotAPI, db banStore) BanService {
 		httpClient:  &http.Client{Timeout: banServiceHTTPTimeout},
 		providers:   defaultBanlistProviders(),
 		knownBanned: map[int64]struct{}{},
+		moderation:  map[int64]moderationStatus{},
 	}
+}
+
+func (s *defaultBanService) ModerationAvailable(ctx context.Context, chatID int64) (bool, error) {
+	now := time.Now()
+	s.moderationM.RLock()
+	status, ok := s.moderation[chatID]
+	s.moderationM.RUnlock()
+	if ok && now.Before(status.expiresAt) {
+		return status.available, nil
+	}
+	if s.bot == nil || s.bot.Self.ID == 0 {
+		return false, errors.New("bot identity is unavailable")
+	}
+
+	member, err := bot.GetChatMember(ctx, s.bot, api.GetChatMemberConfig{
+		ChatConfigWithUser: api.ChatConfigWithUser{
+			ChatConfig: api.ChatConfig{ChatID: chatID},
+			UserID:     s.bot.Self.ID,
+		},
+	})
+	if err != nil {
+		if isTelegramPrivilegeError(err) {
+			s.MarkModerationUnavailable(chatID)
+			return false, nil
+		}
+		return false, fmt.Errorf("check bot moderation rights: %w", err)
+	}
+
+	available := permissions.CanRestrictMembers(&member)
+	s.moderationM.Lock()
+	if s.moderation == nil {
+		s.moderation = map[int64]moderationStatus{}
+	}
+	s.moderation[chatID] = moderationStatus{available: available, expiresAt: now.Add(moderationStatusTTL)}
+	s.moderationM.Unlock()
+	return available, nil
+}
+
+func (s *defaultBanService) MarkModerationUnavailable(chatID int64) {
+	s.moderationM.Lock()
+	if s.moderation == nil {
+		s.moderation = map[int64]moderationStatus{}
+	}
+	s.moderation[chatID] = moderationStatus{available: false, expiresAt: time.Now().Add(moderationStatusTTL)}
+	s.moderationM.Unlock()
 }
 
 func defaultBanlistProviders() []banlistProvider {
@@ -444,6 +503,10 @@ func withPrivilegeError(err error, operation string) error {
 }
 
 func isTelegramPrivilegeError(err error) bool {
+	return IsTelegramPrivilegeError(err)
+}
+
+func IsTelegramPrivilegeError(err error) bool {
 	if err == nil {
 		return false
 	}

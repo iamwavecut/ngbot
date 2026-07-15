@@ -282,6 +282,26 @@ func (s *sqliteClient) GetDueSpamCases(ctx context.Context, now time.Time) ([]*d
 	return cases, err
 }
 
+func (s *sqliteClient) GetPrivilegeBlockedSpamCases(ctx context.Context) ([]*db.SpamCase, error) {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+
+	var cases []*db.SpamCase
+	err := s.db.SelectContext(ctx, &cases, `
+		SELECT `+spamCaseColumns+` FROM spam_cases
+		WHERE status IN (?, ?)
+			AND (
+				upper(last_error) LIKE '%CHAT_ADMIN_REQUIRED%'
+				OR upper(last_error) LIKE '%NOT ENOUGH RIGHTS%'
+				OR upper(last_error) LIKE '%NO PRIVILEGES%'
+				OR upper(last_error) LIKE '%BOT IS NOT AN ADMINISTRATOR%'
+				OR upper(last_error) LIKE '%NEED ADMINISTRATOR RIGHTS%'
+			)
+		ORDER BY id
+	`, db.SpamCaseStatusResolvingSpam, db.SpamCaseStatusResolvingFalsePositive)
+	return cases, err
+}
+
 func (s *sqliteClient) AddSpamCaseReportMessage(ctx context.Context, message *db.SpamCaseReportMessage) error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()

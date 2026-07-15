@@ -363,6 +363,46 @@ func TestSpamResolutionRetryExhaustionRetainsCaseAndStopsPolling(t *testing.T) {
 	}
 }
 
+func TestPrivilegeBlockedSpamCaseIsRecoverableWithoutRetry(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	client, err := NewSQLiteClient(ctx, t.TempDir(), "test.db")
+	if err != nil {
+		t.Fatalf("new sqlite client: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+
+	now := time.Now().UTC().Truncate(time.Second)
+	spamCase, err := client.CreateSpamCase(ctx, &db.SpamCase{
+		ChatID:      -100,
+		UserID:      200,
+		MessageID:   40,
+		MessageText: "known spammer",
+		CreatedAt:   now,
+		Status:      db.SpamCaseStatusPending,
+	})
+	if err != nil {
+		t.Fatalf("create spam case: %v", err)
+	}
+	claimed, changed, err := client.ClaimKnownSpamCase(ctx, spamCase.ID, now)
+	if err != nil || !changed {
+		t.Fatalf("claim spam case: changed=%t case=%#v err=%v", changed, claimed, err)
+	}
+	if scheduled, err := client.ScheduleSpamCaseRetry(ctx, spamCase.ID, claimed.Status, now.Add(24*time.Hour), "no privileges"); err != nil || !scheduled {
+		t.Fatalf("persist privilege failure: scheduled=%t err=%v", scheduled, err)
+	}
+
+	due, err := client.GetDueSpamCases(ctx, now.Add(time.Hour))
+	if err != nil || len(due) != 0 {
+		t.Fatalf("privilege-blocked case remained in retry queue: due=%#v err=%v", due, err)
+	}
+	blocked, err := client.GetPrivilegeBlockedSpamCases(ctx)
+	if err != nil || len(blocked) != 1 || blocked[0].ID != spamCase.ID {
+		t.Fatalf("privilege-blocked case was not recoverable: blocked=%#v err=%v", blocked, err)
+	}
+}
+
 func TestSpamCaseMessageBoundLookupAndReportMessages(t *testing.T) {
 	t.Parallel()
 

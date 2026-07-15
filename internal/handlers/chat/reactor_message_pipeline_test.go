@@ -116,8 +116,10 @@ func (d *testSpamDetector) IsReportedSpam(_ context.Context, message string, _ [
 }
 
 type testBanService struct {
-	checkBanCalls int
-	checkBan      bool
+	checkBanCalls         int
+	checkBan              bool
+	moderationUnavailable bool
+	markedUnavailable     bool
 }
 
 func (s *testBanService) Start(context.Context) error { return nil }
@@ -125,6 +127,15 @@ func (s *testBanService) Stop(context.Context) error  { return nil }
 func (s *testBanService) CheckBan(context.Context, int64) (bool, error) {
 	s.checkBanCalls++
 	return s.checkBan, nil
+}
+
+func (s *testBanService) ModerationAvailable(context.Context, int64) (bool, error) {
+	return !s.moderationUnavailable, nil
+}
+
+func (s *testBanService) MarkModerationUnavailable(int64) {
+	s.moderationUnavailable = true
+	s.markedUnavailable = true
 }
 func (s *testBanService) MuteUser(context.Context, int64, int64) error                { return nil }
 func (s *testBanService) UnmuteUser(context.Context, int64, int64) error              { return nil }
@@ -504,6 +515,46 @@ func TestHandleMessageNotSpammerOverrideBypassesBanAndLLM(t *testing.T) {
 	}
 	if result.SkipReason != "User is manually marked as not spammer" {
 		t.Fatalf("unexpected skip reason: %q", result.SkipReason)
+	}
+}
+
+func TestHandleMessageWithoutModerationRightsSkipsAllSpamChecks(t *testing.T) {
+	t.Parallel()
+
+	service := &testBotService{}
+	detector := &testSpamDetector{}
+	banService := &testBanService{moderationUnavailable: true}
+	processSpamCalls := 0
+	reactor := &Reactor{
+		s:            service,
+		bot:          service.GetBot(),
+		store:        &testReactorStore{},
+		spamDetector: detector,
+		banService:   banService,
+		processSpam: func(context.Context, *api.Message, *api.Chat, string) (*moderation.ProcessingResult, error) {
+			processSpamCalls++
+			return nil, nil
+		},
+		processBanned: func(context.Context, *api.Message, *api.Chat, string) (*moderation.ProcessingResult, error) {
+			t.Fatal("processBanned should not be called")
+			return nil, nil
+		},
+		lastResults: make(map[messageResultKey]*MessageProcessingResult),
+	}
+
+	chat := &api.Chat{ID: 100, Type: testChatTypeSupergroup}
+	user := &api.User{ID: 200, UserName: "new_user"}
+	msg := &api.Message{MessageID: 10, Chat: *chat, From: user, Text: testMessageText}
+
+	if err := reactor.handleMessage(context.Background(), msg, chat, user, &db.Settings{LLMFirstMessageEnabled: true}); err != nil {
+		t.Fatalf("handleMessage returned error: %v", err)
+	}
+	if detector.calls != 0 || banService.checkBanCalls != 0 || processSpamCalls != 0 {
+		t.Fatalf("no-rights chat reached spam checks: llm=%d ban=%d moderation=%d", detector.calls, banService.checkBanCalls, processSpamCalls)
+	}
+	result := reactor.GetLastProcessingResult(chat.ID, msg.MessageID)
+	if result == nil || !result.Skipped || result.SkipReason != messageSkipReasonNoModerationRights {
+		t.Fatalf("unexpected no-rights processing result: %#v", result)
 	}
 }
 

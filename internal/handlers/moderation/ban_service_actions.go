@@ -23,6 +23,9 @@ func (s *defaultBanService) MuteUser(ctx context.Context, chatID, userID int64) 
 	}
 
 	if _, err := s.bot.RequestWithContext(ctx, config); err != nil {
+		if isTelegramPrivilegeError(err) {
+			s.MarkModerationUnavailable(chatID)
+		}
 		return withPrivilegeError(err, "restrict")
 	}
 
@@ -52,6 +55,9 @@ func (s *defaultBanService) UnmuteUser(ctx context.Context, chatID, userID int64
 	}
 
 	if _, err := s.bot.RequestWithContext(ctx, config); err != nil {
+		if isTelegramPrivilegeError(err) {
+			s.MarkModerationUnavailable(chatID)
+		}
 		return withPrivilegeError(err, "unrestrict")
 	}
 
@@ -76,6 +82,9 @@ func (s *defaultBanService) BanUserWithMessage(ctx context.Context, chatID, user
 		RevokeMessages: true,
 	}
 	if _, err := s.bot.RequestWithContext(ctx, config); err != nil {
+		if isTelegramPrivilegeError(err) {
+			s.MarkModerationUnavailable(chatID)
+		}
 		return withPrivilegeError(err, "ban")
 	}
 

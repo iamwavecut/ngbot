@@ -236,12 +236,12 @@ func TestVotingSurfaceFallbackPrecedesDestructiveModeration(t *testing.T) {
 	}
 }
 
-func TestVotingPermissionFailurePreservesOriginalMessage(t *testing.T) {
+func TestVotingPermissionFailureClosesCaseWithoutDeletingOriginalMessage(t *testing.T) {
 	t.Parallel()
 
-	deleteCalls := 0
+	deletedMessageIDs := make([]string, 0)
 	nextMessageID := 700
-	botAPI := newModerationRetryTestBotAPI(t, func(method string, _ *http.Request) testAPIResponse {
+	botAPI := newModerationRetryTestBotAPI(t, func(method string, r *http.Request) testAPIResponse {
 		switch method {
 		case testTelegramMethodSendMessage:
 			nextMessageID++
@@ -251,7 +251,10 @@ func TestVotingPermissionFailurePreservesOriginalMessage(t *testing.T) {
 				moderationTestJSONChat:      map[string]any{"id": -100, moderationTestJSONType: moderationTestSupergroup},
 			}}
 		case testTelegramMethodDeleteMessage:
-			deleteCalls++
+			if err := r.ParseForm(); err != nil {
+				t.Fatalf("parse delete form: %v", err)
+			}
+			deletedMessageIDs = append(deletedMessageIDs, r.Form.Get("message_id"))
 			return testAPIResponse{OK: true, Result: true}
 		default:
 			t.Fatalf("unexpected bot method: %s", method)
@@ -281,20 +284,23 @@ func TestVotingPermissionFailurePreservesOriginalMessage(t *testing.T) {
 	if result.Error != errChatAdminRequired || result.MessageDeleted || result.UserBanned {
 		t.Fatalf("unexpected processing result: %#v", result)
 	}
-	if deleteCalls != 0 {
-		t.Fatalf("original message was deleted after mute failure: %d delete calls", deleteCalls)
+	if len(deletedMessageIDs) != 1 || deletedMessageIDs[0] != "701" {
+		t.Fatalf("expected only the voting prompt to be deleted, got %v; case=%#v", deletedMessageIDs, store.spamCase)
 	}
-	if store.spamCase == nil || store.spamCase.PreVoteRestricted {
-		t.Fatalf("failed mute was persisted as an applied restriction: %#v", store.spamCase)
+	if store.spamCase == nil || store.spamCase.PreVoteRestricted || store.spamCase.Status != db.SpamCaseStatusNotEnforced {
+		t.Fatalf("failed mute was not finalized without enforcement: %#v", store.spamCase)
+	}
+	if store.retryCalls != 0 || !banService.markedUnavailable {
+		t.Fatalf("privilege failure scheduled retry or did not disable moderation: retries=%d marked=%v", store.retryCalls, banService.markedUnavailable)
 	}
 }
 
-func TestKnownBanPermissionFailurePreservesOriginalMessage(t *testing.T) {
+func TestKnownBanPermissionFailureFinalizesWithoutRetry(t *testing.T) {
 	t.Parallel()
 
-	deleteCalls := 0
+	deletedMessageIDs := make([]string, 0)
 	nextMessageID := 700
-	botAPI := newModerationRetryTestBotAPI(t, func(method string, _ *http.Request) testAPIResponse {
+	botAPI := newModerationRetryTestBotAPI(t, func(method string, r *http.Request) testAPIResponse {
 		switch method {
 		case testTelegramMethodSendMessage:
 			nextMessageID++
@@ -306,7 +312,10 @@ func TestKnownBanPermissionFailurePreservesOriginalMessage(t *testing.T) {
 		case testTelegramMethodBanChatMember:
 			return testAPIResponse{OK: false, Description: "Bad Request: not enough rights to restrict/unrestrict chat member"}
 		case testTelegramMethodDeleteMessage:
-			deleteCalls++
+			if err := r.ParseForm(); err != nil {
+				t.Fatalf("parse delete form: %v", err)
+			}
+			deletedMessageIDs = append(deletedMessageIDs, r.Form.Get("message_id"))
 			return testAPIResponse{OK: true, Result: true}
 		default:
 			t.Fatalf("unexpected bot method: %s", method)
@@ -314,12 +323,13 @@ func TestKnownBanPermissionFailurePreservesOriginalMessage(t *testing.T) {
 		}
 	})
 	store := &testModerationStore{}
+	banService := &testModerationBanService{}
 	sc := &SpamControl{
 		s:          &testModerationService{botAPI: botAPI},
 		bot:        botAPI,
 		store:      store,
 		config:     config.SpamControl{SuspectNotificationTimeout: time.Hour},
-		banService: &testModerationBanService{},
+		banService: banService,
 	}
 	msg := &api.Message{
 		MessageID: 40,
@@ -335,17 +345,17 @@ func TestKnownBanPermissionFailurePreservesOriginalMessage(t *testing.T) {
 	if result.Error != errChatAdminRequired || result.MessageDeleted || result.UserBanned {
 		t.Fatalf("unexpected processing result: %#v", result)
 	}
-	if deleteCalls != 0 {
-		t.Fatalf("original message was deleted after ban failure: %d delete calls", deleteCalls)
+	if len(deletedMessageIDs) != 1 || deletedMessageIDs[0] != "701" {
+		t.Fatalf("expected only the informational prompt to be deleted, got %v; case=%#v", deletedMessageIDs, store.spamCase)
 	}
 	if len(store.deletedKnownNonMember) != 0 {
 		t.Fatalf("known non-member state was cleared after ban failure: %#v", store.deletedKnownNonMember)
 	}
-	if store.spamCase == nil || store.spamCase.Status != db.SpamCaseStatusResolvingSpam {
-		t.Fatalf("failed known ban was not retained as durable resolving work: %#v", store.spamCase)
+	if store.spamCase == nil || store.spamCase.Status != db.SpamCaseStatusNotEnforced {
+		t.Fatalf("failed known ban was not finalized without enforcement: %#v", store.spamCase)
 	}
-	if store.retryCalls != 1 || !store.spamCase.NextAttemptAt.Valid || store.spamCase.AttemptCount != 1 {
-		t.Fatalf("failed known ban did not schedule a retry: case=%#v retry_calls=%d", store.spamCase, store.retryCalls)
+	if store.retryCalls != 0 || !banService.markedUnavailable {
+		t.Fatalf("privilege failure scheduled retry or did not disable moderation: retries=%d marked=%v", store.retryCalls, banService.markedUnavailable)
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	api "github.com/OvyFlash/telegram-bot-api"
 	"github.com/iamwavecut/ngbot/internal/bot"
 	"github.com/iamwavecut/ngbot/internal/db"
+	moderation "github.com/iamwavecut/ngbot/internal/handlers/moderation"
 	"github.com/iamwavecut/tool"
 	"github.com/pborman/uuid"
 	log "github.com/sirupsen/logrus"
@@ -32,6 +33,12 @@ func (g *Gatekeeper) processNewChatMembers(ctx context.Context) error {
 		entry.WithField("count", len(recentJoiners)).Debug("processing new chat members")
 	}
 	for _, joiner := range recentJoiners {
+		if !g.moderationAvailable(ctx, joiner.ChatID) {
+			if err := g.store.ProcessRecentJoiner(ctx, joiner.ChatID, joiner.UserID, false); err != nil {
+				entry.WithField(logFieldError, err.Error()).Error("failed to close no-rights recent joiner")
+			}
+			continue
+		}
 		chatMember, err := bot.GetChatMember(ctx, g.bot, api.GetChatMemberConfig{
 			ChatConfigWithUser: api.ChatConfigWithUser{
 				ChatConfig: api.ChatConfig{
@@ -89,6 +96,12 @@ func (g *Gatekeeper) processNewChatMembers(ctx context.Context) error {
 			banErr := bot.BanUserFromChat(ctx, g.bot, joiner.UserID, joiner.ChatID, 0)
 			if banErr != nil {
 				entry.WithField(logFieldError, banErr.Error()).Error("failed to ban user")
+				if moderation.IsTelegramPrivilegeError(banErr) {
+					g.banChecker.MarkModerationUnavailable(joiner.ChatID)
+					if err := g.store.ProcessRecentJoiner(ctx, joiner.ChatID, joiner.UserID, false); err != nil {
+						entry.WithField(logFieldError, err.Error()).Error("failed to close privilege-blocked recent joiner")
+					}
+				}
 			}
 			if g.config.SpamControl.DebugUserID != 0 {
 				errMsg := ""
@@ -134,9 +147,9 @@ func (g *Gatekeeper) processExpiredChallenges(ctx context.Context) error {
 		return err
 	}
 	for _, challenge := range expired {
-		if isPendingChallengeAction(challenge.Status) {
-			if err := g.processChallengeAction(ctx, challenge); err != nil {
-				entry.WithField(logFieldError, err.Error()).Error("failed to recover expired durable challenge action")
+		if challenge.Status == db.ChallengeStatusNoPrivilegesNotice {
+			if err := g.cleanupNoPrivilegesNotice(ctx, challenge); err != nil {
+				entry.WithField(logFieldError, err.Error()).Error("failed to clean up no-rights challenge notice")
 			}
 			continue
 		}

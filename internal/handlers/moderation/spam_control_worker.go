@@ -13,6 +13,9 @@ import (
 const maxSpamResolutionAttempts = 8
 
 func (sc *SpamControl) runDurableWorker(ctx context.Context) {
+	if err := sc.recoverPrivilegeBlockedSpamCases(ctx); err != nil && !errors.Is(err, context.Canceled) {
+		sc.getLogEntry().WithField("error", err.Error()).Error("failed to recover privilege-blocked spam cases")
+	}
 	if err := sc.recoverPendingSpamCaseDeadlines(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		sc.getLogEntry().WithField("error", err.Error()).Error("failed to recover spam case deadlines")
 	}
@@ -27,6 +30,22 @@ func (sc *SpamControl) runDurableWorker(ctx context.Context) {
 			sc.processDurableWork(ctx)
 		}
 	}
+}
+
+func (sc *SpamControl) recoverPrivilegeBlockedSpamCases(ctx context.Context) error {
+	cases, err := sc.store.GetPrivilegeBlockedSpamCases(ctx)
+	if err != nil {
+		return err
+	}
+	var result error
+	for _, spamCase := range cases {
+		if spamCase == nil {
+			continue
+		}
+		sc.banService.MarkModerationUnavailable(spamCase.ChatID)
+		result = errors.Join(result, sc.finalizeWithoutModeration(ctx, spamCase))
+	}
+	return result
 }
 
 func (sc *SpamControl) recoverPendingSpamCaseDeadlines(ctx context.Context) error {

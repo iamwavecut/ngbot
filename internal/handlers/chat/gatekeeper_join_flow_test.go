@@ -155,6 +155,22 @@ func (s *gatekeeperFlowStore) CompleteExternalAction(_ context.Context, challeng
 	return s.transition(challengeID, expectedStatus, nextStatus, expiresAt), nil
 }
 
+func (s *gatekeeperFlowStore) CompleteChallengeWithoutPrivileges(_ context.Context, challengeID, expectedStatus string, noticeMessageID int, expiresAt time.Time, lastError string) (bool, error) {
+	key, challenge := s.challengeByID(challengeID)
+	if challenge == nil || challenge.Status != expectedStatus {
+		return false, nil
+	}
+	clone := *challenge
+	clone.Status = db.ChallengeStatusNoPrivilegesNotice
+	clone.NoticeMessageID = noticeMessageID
+	clone.ExpiresAt = expiresAt
+	clone.NextAttemptAt = sql.NullTime{}
+	clone.AttemptCount = 0
+	clone.LastError = lastError
+	s.challenges[key] = &clone
+	return true, nil
+}
+
 func (s *gatekeeperFlowStore) ScheduleChallengeRetry(_ context.Context, challengeID, expectedStatus string, nextAttemptAt time.Time, lastError string) (bool, error) {
 	key, challenge := s.challengeByID(challengeID)
 	if challenge == nil || challenge.Status != expectedStatus {
@@ -269,7 +285,7 @@ func (s *gatekeeperFlowStore) GetPassedJoinRequestChallengeByChatUser(_ context.
 func (s *gatekeeperFlowStore) GetExpiredChallenges(_ context.Context, now time.Time) ([]*db.Challenge, error) {
 	expired := make([]*db.Challenge, 0)
 	for _, challenge := range s.challenges {
-		if !challenge.ExpiresAt.After(now) {
+		if !isPendingChallengeAction(challenge.Status) && !challenge.ExpiresAt.After(now) {
 			expired = append(expired, cloneChallenge(challenge))
 		}
 	}
@@ -2155,7 +2171,7 @@ func TestProcessUnopenedWebAppChallengeSkipsAlreadyPassed(t *testing.T) {
 	}
 }
 
-func TestProcessExpiredRecoversFallbackPendingChallenge(t *testing.T) {
+func TestProcessDueRecoversFallbackPendingChallenge(t *testing.T) {
 	t.Parallel()
 
 	recorder := &botRequestRecorder{}
@@ -2202,6 +2218,7 @@ func TestProcessExpiredRecoversFallbackPendingChallenge(t *testing.T) {
 		CaptchaOptionsJSON: testCaptchaOptionsJSON,
 		CreatedAt:          time.Now().Add(-10 * time.Minute),
 		ExpiresAt:          time.Now().Add(-time.Minute),
+		NextAttemptAt:      sql.NullTime{Time: time.Now().Add(-time.Minute), Valid: true},
 	}
 	if _, err := store.CreateChallenge(context.Background(), stuck); err != nil {
 		t.Fatalf("create stuck challenge: %v", err)
@@ -2221,8 +2238,8 @@ func TestProcessExpiredRecoversFallbackPendingChallenge(t *testing.T) {
 		banChecker: &testGatekeeperBanChecker{},
 	}
 
-	if err := gatekeeper.processExpiredChallenges(context.Background()); err != nil {
-		t.Fatalf("processExpiredChallenges returned error: %v", err)
+	if err := gatekeeper.processDueChallengeActions(context.Background()); err != nil {
+		t.Fatalf("processDueChallengeActions returned error: %v", err)
 	}
 
 	sends := recorder.byMethod(testTelegramMethodSendMessage)
@@ -2363,5 +2380,170 @@ func TestFallbackClaimedWebAppChallengeDeclinesWhenTargetChatUnavailable(t *test
 	}
 	if declines[0].form.Get("result") != testJoinRequestDecline {
 		t.Fatalf("expected decline result, got %q", declines[0].form.Get("result"))
+	}
+}
+
+func TestNoRightsPublicCaptchaPassDeletesCaptchaWithoutModeration(t *testing.T) {
+	t.Parallel()
+
+	recorder := &botRequestRecorder{}
+	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
+		recorder.record(t, method, r)
+		switch method {
+		case testTelegramMethodSendMessage:
+			return recorder.nextSendMessageResult()
+		case testTelegramMethodDeleteMessage:
+			return true
+		default:
+			t.Fatalf("unexpected moderation method in no-rights flow: %s", method)
+			return nil
+		}
+	})
+	settings := &db.Settings{
+		GatekeeperEnabled:             true,
+		GatekeeperCaptchaEnabled:      true,
+		GatekeeperCaptchaOptionsCount: 3,
+		ChallengeTimeout:              (3 * time.Minute).Nanoseconds(),
+	}
+	store := newGatekeeperFlowStore()
+	banChecker := &testGatekeeperBanChecker{moderationUnavailable: true}
+	gatekeeper := &Gatekeeper{
+		bot:        botAPI,
+		s:          &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI, language: "en"}, settings: settings},
+		store:      store,
+		config:     &config.Config{},
+		banChecker: banChecker,
+	}
+	chat := api.Chat{ID: -100123, Type: testChatTypeSupergroup, Title: testGroupTitle}
+	user := api.User{ID: 42, FirstName: testFirstNameNeo}
+
+	gatekeeper.handleChatMember(context.Background(), newChatMemberJoinUpdate(chat, user, user), settings)
+	challenge := store.onlyChallenge(t)
+	if challenge.UserRestricted {
+		t.Fatal("no-rights public challenge was persisted as restricted")
+	}
+	if err := gatekeeper.completeChallenge(context.Background(), challenge, nil, "en"); err != nil {
+		t.Fatalf("complete no-rights challenge: %v", err)
+	}
+	if len(store.challenges) != 0 {
+		t.Fatalf("passed no-rights challenge was retained: %d rows", len(store.challenges))
+	}
+	if len(recorder.byMethod(testTelegramMethodSendMessage)) != 1 || len(recorder.byMethod(testTelegramMethodDeleteMessage)) != 1 {
+		t.Fatalf("passed no-rights flow did not only send and delete the captcha: %#v", recorder.requests)
+	}
+	if banChecker.checkBanCalls != 0 || len(banChecker.bans) != 0 {
+		t.Fatalf("passed no-rights flow reached ban checks: checks=%d bans=%d", banChecker.checkBanCalls, len(banChecker.bans))
+	}
+}
+
+func TestNoRightsPublicCaptchaFailureKeepsNoticeForThirtyMinutes(t *testing.T) {
+	t.Parallel()
+
+	recorder := &botRequestRecorder{}
+	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
+		recorder.record(t, method, r)
+		switch method {
+		case testTelegramMethodSendMessage:
+			return recorder.nextSendMessageResult()
+		case testTelegramMethodDeleteMessage:
+			return true
+		default:
+			t.Fatalf("unexpected moderation method in no-rights flow: %s", method)
+			return nil
+		}
+	})
+	settings := &db.Settings{
+		GatekeeperEnabled:             true,
+		GatekeeperCaptchaEnabled:      true,
+		GatekeeperCaptchaOptionsCount: 3,
+		ChallengeTimeout:              (3 * time.Minute).Nanoseconds(),
+	}
+	store := newGatekeeperFlowStore()
+	banChecker := &testGatekeeperBanChecker{moderationUnavailable: true}
+	gatekeeper := &Gatekeeper{
+		bot:        botAPI,
+		s:          &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI, language: "en"}, settings: settings},
+		store:      store,
+		config:     &config.Config{},
+		banChecker: banChecker,
+	}
+	chat := api.Chat{ID: -100123, Type: testChatTypeSupergroup, Title: testGroupTitle}
+	user := api.User{ID: 42, FirstName: testFirstNameNeo}
+
+	gatekeeper.handleChatMember(context.Background(), newChatMemberJoinUpdate(chat, user, user), settings)
+	challenge := store.onlyChallenge(t)
+	startedAt := time.Now()
+	if err := gatekeeper.failChallenge(context.Background(), challenge, "failed", time.Minute); err != nil {
+		t.Fatalf("fail no-rights challenge: %v", err)
+	}
+	noticeChallenge := store.onlyChallenge(t)
+	if noticeChallenge.Status != db.ChallengeStatusNoPrivilegesNotice || noticeChallenge.NoticeMessageID == 0 {
+		t.Fatalf("no-rights failure did not persist notice lifecycle: %#v", noticeChallenge)
+	}
+	if noticeChallenge.ExpiresAt.Before(startedAt.Add(29*time.Minute)) || noticeChallenge.ExpiresAt.After(startedAt.Add(31*time.Minute)) {
+		t.Fatalf("unexpected no-rights notice retention: %v", noticeChallenge.ExpiresAt.Sub(startedAt))
+	}
+	sends := recorder.byMethod(testTelegramMethodSendMessage)
+	if len(sends) != 2 || !strings.Contains(sends[1].form.Get("text"), "did not pass the CAPTCHA") {
+		t.Fatalf("missing no-rights failure notice: %#v", sends)
+	}
+	if banChecker.checkBanCalls != 0 || len(banChecker.bans) != 0 {
+		t.Fatalf("failed no-rights flow reached ban checks: checks=%d bans=%d", banChecker.checkBanCalls, len(banChecker.bans))
+	}
+
+	_, stored := store.challengeByID(noticeChallenge.ChallengeID)
+	stored.ExpiresAt = time.Now().Add(-time.Second)
+	if err := gatekeeper.processExpiredChallenges(context.Background()); err != nil {
+		t.Fatalf("expire no-rights notice: %v", err)
+	}
+	if len(store.challenges) != 0 {
+		t.Fatalf("expired no-rights notice was retained: %d rows", len(store.challenges))
+	}
+	deletedNotice := false
+	for _, request := range recorder.byMethod(testTelegramMethodDeleteMessage) {
+		if request.form.Get("message_id") == fmt.Sprint(noticeChallenge.NoticeMessageID) {
+			deletedNotice = true
+		}
+	}
+	if !deletedNotice {
+		t.Fatalf("expired no-rights notice message %d was not deleted: %#v", noticeChallenge.NoticeMessageID, recorder.requests)
+	}
+}
+
+func TestNoRightsGreetingStillRunsWhenCaptchaIsDisabled(t *testing.T) {
+	t.Parallel()
+
+	recorder := &botRequestRecorder{}
+	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
+		recorder.record(t, method, r)
+		if method != testTelegramMethodSendMessage {
+			t.Fatalf("unexpected moderation method in no-rights greeting flow: %s", method)
+		}
+		return recorder.nextSendMessageResult()
+	})
+	settings := &db.Settings{
+		GatekeeperEnabled:         true,
+		GatekeeperCaptchaEnabled:  false,
+		GatekeeperGreetingEnabled: true,
+		GatekeeperGreetingText:    "Welcome, {user}",
+	}
+	store := newGatekeeperFlowStore()
+	gatekeeper := &Gatekeeper{
+		bot:        botAPI,
+		s:          &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI, language: "en"}, settings: settings},
+		store:      store,
+		config:     &config.Config{},
+		banChecker: &testGatekeeperBanChecker{moderationUnavailable: true},
+	}
+	chat := api.Chat{ID: -100123, Type: testChatTypeSupergroup, Title: testGroupTitle}
+	user := api.User{ID: 42, FirstName: testFirstNameNeo}
+
+	gatekeeper.handleChatMember(context.Background(), newChatMemberJoinUpdate(chat, user, user), settings)
+	sends := recorder.byMethod(testTelegramMethodSendMessage)
+	if len(sends) != 1 || !strings.Contains(sends[0].form.Get("text"), "Welcome") {
+		t.Fatalf("no-rights greeting was not sent: %#v", sends)
+	}
+	if len(store.challenges) != 0 {
+		t.Fatalf("captcha-disabled no-rights flow created challenges: %d", len(store.challenges))
 	}
 }

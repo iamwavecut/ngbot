@@ -202,6 +202,14 @@ func (r *Reactor) voteBanCommand(ctx context.Context, msg *api.Message, chat *ap
 		_ = r.sendTemporaryReply(ctx, msg, i18n.Get("This command can only be used in groups", r.s.GetLanguage(ctx, chat.ID, user)))
 		return nil
 	}
+	moderationAvailable, err := r.moderationAvailable(ctx, chat.ID)
+	if err != nil {
+		entry.WithError(err).Warn("failed to inspect moderation rights; skipping report")
+	}
+	if err != nil || !moderationAvailable {
+		_ = r.sendTemporaryReply(ctx, msg, i18n.Get("Moderation is unavailable because I do not have permission to restrict members.", r.s.GetLanguage(ctx, chat.ID, user)))
+		return nil
+	}
 
 	if msg.ReplyToMessage == nil || msg.ReplyToMessage.From == nil {
 		_ = r.sendTemporaryReply(ctx, msg, i18n.Get("Use /voteban or mention me in reply to a spam message to start a vote.", r.s.GetLanguage(ctx, chat.ID, user)))

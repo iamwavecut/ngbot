@@ -83,6 +83,8 @@ type (
 		CaptchaOptionsJSON string       `db:"captcha_options_json"`
 		JoinMessageID      int          `db:"join_message_id"`
 		ChallengeMessageID int          `db:"challenge_message_id"`
+		NoticeMessageID    int          `db:"notice_message_id"`
+		UserRestricted     bool         `db:"user_restricted"`
 		Attempts           int          `db:"attempts"`
 		CreatedAt          time.Time    `db:"created_at"`
 		ExpiresAt          time.Time    `db:"expires_at"`
@@ -164,11 +166,13 @@ const (
 	ChallengeStatusApproveMemberPending    = "approve_member_pending"
 	ChallengeStatusUnrestrictPending       = "unrestrict_pending"
 	ChallengeStatusRejectPending           = "reject_pending"
+	ChallengeStatusNoPrivilegesNotice      = "no_privileges_notice"
 	SpamCaseStatusPending                  = "pending"
 	SpamCaseStatusResolvingSpam            = "resolving_spam"
 	SpamCaseStatusResolvingFalsePositive   = "resolving_false_positive"
 	SpamCaseStatusSpam                     = "spam"
 	SpamCaseStatusFalsePositive            = "false_positive"
+	SpamCaseStatusNotEnforced              = "not_enforced"
 )
 
 // GetLanguage Returns chat's set language

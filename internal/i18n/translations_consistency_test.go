@@ -41,6 +41,44 @@ func TestTranslationsKeysAreUsedAndComplete(t *testing.T) {
 	}
 }
 
+func TestTranslationsAreCompleteForSupportedLocales(t *testing.T) {
+	t.Parallel()
+
+	dict, err := loadTranslationsDict()
+	if err != nil {
+		t.Fatalf("load translations dict: %v", err)
+	}
+
+	allowedSourceText := map[string]map[string]bool{
+		"Help":       {"NL": true},
+		"Indulgence": {"FR": true},
+	}
+
+	keys := make([]string, 0, len(dict))
+	for key := range dict {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	for _, key := range keys {
+		translations := dict[key]
+		for _, locale := range supportedTranslationLocales() {
+			value, ok := translations[locale]
+			if !ok {
+				t.Errorf("missing locale %s for key %s", locale, key)
+				continue
+			}
+			if strings.TrimSpace(value) == "" {
+				t.Errorf("empty translation for key %s locale %s", key, locale)
+				continue
+			}
+			if value == key && !allowedSourceText[key][locale] {
+				t.Errorf("locale %s for key %s is still the English source text", locale, key)
+			}
+		}
+	}
+}
+
 func TestAdminPanelTranslationsAreCompleteForSupportedLocales(t *testing.T) {
 	t.Parallel()
 

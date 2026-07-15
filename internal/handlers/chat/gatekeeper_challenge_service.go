@@ -12,6 +12,7 @@ import (
 	"github.com/iamwavecut/ngbot/internal/bot"
 	"github.com/iamwavecut/ngbot/internal/db"
 	handlersbase "github.com/iamwavecut/ngbot/internal/handlers/base"
+	moderation "github.com/iamwavecut/ngbot/internal/handlers/moderation"
 	"github.com/iamwavecut/ngbot/internal/i18n"
 	"github.com/iamwavecut/tool"
 	"github.com/pkg/errors"
@@ -23,6 +24,7 @@ const maxChallengeActionAttempts = 8
 const (
 	approvedJoinRequestChallengeTTL = 5 * time.Minute
 	webAppOpenDeadline              = 11 * time.Second
+	noPrivilegesNoticeRetention     = 30 * time.Minute
 )
 
 func (g *Gatekeeper) handleChallenge(ctx context.Context, u *api.Update, chat *api.Chat, user *api.User) (err error) {
@@ -159,6 +161,14 @@ func (g *Gatekeeper) handleChallenge(ctx context.Context, u *api.Update, chat *a
 func (g *Gatekeeper) completeChallenge(ctx context.Context, challenge *db.Challenge, target *api.ChatFullInfo, language string) error {
 	_ = target
 	_ = language
+	if challenge.CommChatID == challenge.ChatID && !challenge.UserRestricted {
+		g.deleteChallengePrompt(ctx, challenge)
+		deleted, err := g.store.DeleteChallengeInstance(ctx, challenge.ChallengeID, db.ChallengeStatusPending)
+		if deleted {
+			g.incrementChallengeStat(ctx, challenge.ChatID, handlersbase.StatChallengePassed)
+		}
+		return err
+	}
 	nextStatus := db.ChallengeStatusUnrestrictPending
 	if challenge.CommChatID != challenge.ChatID {
 		nextStatus = db.ChallengeStatusApproveMemberPending
@@ -208,7 +218,7 @@ func (g *Gatekeeper) cleanupChallengeWithoutPenalty(ctx context.Context, challen
 		}
 	}
 
-	if challenge.CommChatID == challenge.ChatID {
+	if challenge.CommChatID == challenge.ChatID && challenge.UserRestricted {
 		claimed, err := g.store.CompleteExternalAction(ctx, challenge.ChallengeID, challenge.Status, db.ChallengeStatusUnrestrictPending, time.Time{})
 		if err != nil || !claimed {
 			return err
@@ -237,6 +247,27 @@ func (g *Gatekeeper) processChallengeActionWithStats(ctx context.Context, challe
 		"challenge_id": challenge.ChallengeID,
 		logFieldStatus: challenge.Status,
 	})
+	moderationAvailable := true
+	switch challenge.Status {
+	case db.ChallengeStatusApproveQueryPending,
+		db.ChallengeStatusApproveMemberPending,
+		db.ChallengeStatusUnrestrictPending,
+		db.ChallengeStatusRejectPending:
+		if g.banChecker == nil {
+			moderationAvailable = false
+		} else {
+			available, err := g.banChecker.ModerationAvailable(ctx, challenge.ChatID)
+			if err != nil {
+				entry.WithError(err).Warn("failed to refresh moderation rights before challenge action")
+			} else {
+				moderationAvailable = available
+			}
+		}
+		if !moderationAvailable {
+			passed := challenge.Status != db.ChallengeStatusRejectPending
+			return g.finishChallengeWithoutPrivileges(ctx, challenge, passed, "moderation unavailable", recordStats)
+		}
+	}
 
 	var actionErr error
 	switch challenge.Status {
@@ -277,6 +308,9 @@ func (g *Gatekeeper) processChallengeActionWithStats(ctx context.Context, challe
 			return nil
 		}
 	case db.ChallengeStatusUnrestrictPending:
+		if !challenge.UserRestricted {
+			return g.finishPassedChallengeWithoutEnforcement(ctx, challenge, recordStats)
+		}
 		actionErr = bot.UnrestrictChatting(ctx, g.bot, challenge.UserID, challenge.ChatID)
 		if actionErr == nil || isTelegramActionAlreadyApplied(actionErr) {
 			g.deleteChallengePrompt(ctx, challenge)
@@ -290,7 +324,10 @@ func (g *Gatekeeper) processChallengeActionWithStats(ctx context.Context, challe
 			return nil
 		}
 	case db.ChallengeStatusRejectPending:
-		if challenge.CommChatID != challenge.ChatID {
+		if challenge.CommChatID == challenge.ChatID && (!challenge.UserRestricted || !moderationAvailable) {
+			return g.finishChallengeWithoutPrivileges(ctx, challenge, false, "moderation unavailable", recordStats)
+		}
+		if challenge.CommChatID != challenge.ChatID && moderationAvailable {
 			currentMember, err := g.isCurrentJoinRequestMember(ctx, challenge)
 			if err != nil {
 				actionErr = err
@@ -300,14 +337,17 @@ func (g *Gatekeeper) processChallengeActionWithStats(ctx context.Context, challe
 				return g.cleanupChallengeWithoutPenalty(ctx, challenge)
 			}
 		}
-		settings, err := g.fetchAndValidateSettings(ctx, challenge.ChatID)
-		if err != nil {
-			actionErr = err
-			break
-		}
-		banErr := bot.BanUserFromChat(ctx, g.bot, challenge.UserID, challenge.ChatID, time.Now().Add(settings.GetRejectTimeout()).Unix())
-		if isTelegramActionAlreadyApplied(banErr) {
-			banErr = nil
+		var banErr error
+		if moderationAvailable {
+			settings, err := g.fetchAndValidateSettings(ctx, challenge.ChatID)
+			if err != nil {
+				actionErr = err
+				break
+			}
+			banErr = bot.BanUserFromChat(ctx, g.bot, challenge.UserID, challenge.ChatID, time.Now().Add(settings.GetRejectTimeout()).Unix())
+			if isTelegramActionAlreadyApplied(banErr) {
+				banErr = nil
+			}
 		}
 		var declineErr error
 		if challenge.JoinRequestQueryID != "" {
@@ -337,6 +377,13 @@ func (g *Gatekeeper) processChallengeActionWithStats(ctx context.Context, challe
 	if actionErr == nil {
 		return nil
 	}
+	if moderation.IsTelegramPrivilegeError(actionErr) {
+		g.banChecker.MarkModerationUnavailable(challenge.ChatID)
+		passed := challenge.Status == db.ChallengeStatusApproveQueryPending ||
+			challenge.Status == db.ChallengeStatusApproveMemberPending ||
+			challenge.Status == db.ChallengeStatusUnrestrictPending
+		return g.finishChallengeWithoutPrivileges(ctx, challenge, passed, actionErr.Error(), recordStats)
+	}
 	nextAttemptAt := time.Time{}
 	if challenge.AttemptCount+1 < maxChallengeActionAttempts {
 		nextAttemptAt = time.Now().Add(challengeRetryDelay(challenge.AttemptCount))
@@ -354,6 +401,87 @@ func (g *Gatekeeper) processChallengeActionWithStats(ctx context.Context, challe
 		entry.WithFields(fields).WithField("retry_in", time.Until(nextAttemptAt)).Warn("gatekeeper action failed; retry scheduled")
 	}
 	return actionErr
+}
+
+func (g *Gatekeeper) finishPassedChallengeWithoutEnforcement(ctx context.Context, challenge *db.Challenge, recordStats bool) error {
+	g.deleteChallengePrompt(ctx, challenge)
+	deleted, err := g.store.DeleteChallengeInstance(ctx, challenge.ChallengeID, challenge.Status)
+	if err != nil {
+		return err
+	}
+	if deleted && recordStats {
+		g.incrementChallengeStat(ctx, challenge.ChatID, handlersbase.StatChallengePassed)
+	}
+	return nil
+}
+
+func (g *Gatekeeper) finishChallengeWithoutPrivileges(ctx context.Context, challenge *db.Challenge, passed bool, lastError string, recordStats bool) error {
+	if challenge == nil {
+		return nil
+	}
+	if passed && challenge.CommChatID == challenge.ChatID {
+		return g.finishPassedChallengeWithoutEnforcement(ctx, challenge, recordStats)
+	}
+
+	language := g.s.GetLanguage(ctx, challenge.ChatID, nil)
+	mention := fmt.Sprintf("[%s](tg://user?id=%d)", api.EscapeText(api.ModeMarkdown, i18n.Get("This user", language)), challenge.UserID)
+	messageTemplate := i18n.Get("⚠️ %s did not pass the CAPTCHA. I cannot remove this user because I do not have permission to restrict members.", language)
+	if passed {
+		messageTemplate = i18n.Get("⚠️ %s passed the CAPTCHA, but I cannot approve the join request because I do not have the required administrator rights.", language)
+	}
+	notice := api.NewMessage(challenge.ChatID, fmt.Sprintf(messageTemplate, mention))
+	notice.ParseMode = api.ModeMarkdown
+	notice.DisableNotification = false
+	sent, err := bot.Send(ctx, g.bot, notice)
+	if err != nil {
+		g.getLogEntry().WithFields(log.Fields{
+			"challenge_id": challenge.ChallengeID,
+			logFieldError:  err.Error(),
+		}).Error("failed to send no-rights challenge notice")
+		g.deleteChallengePrompt(ctx, challenge)
+		_, deleteErr := g.store.DeleteChallengeInstance(ctx, challenge.ChallengeID, challenge.Status)
+		return deleteErr
+	}
+
+	expiresAt := time.Now().Add(noPrivilegesNoticeRetention)
+	completed, err := g.store.CompleteChallengeWithoutPrivileges(
+		ctx,
+		challenge.ChallengeID,
+		challenge.Status,
+		sent.MessageID,
+		expiresAt,
+		lastError,
+	)
+	if err != nil || !completed {
+		_ = bot.DeleteChatMessage(ctx, g.bot, challenge.ChatID, sent.MessageID)
+		return err
+	}
+	challenge.NoticeMessageID = sent.MessageID
+	challenge.ExpiresAt = expiresAt
+	challenge.Status = db.ChallengeStatusNoPrivilegesNotice
+	g.deleteChallengePrompt(ctx, challenge)
+	if recordStats {
+		stat := handlersbase.StatChallengeFailed
+		if passed {
+			stat = handlersbase.StatChallengePassed
+		}
+		g.incrementChallengeStat(ctx, challenge.ChatID, stat)
+	}
+	return nil
+}
+
+func (g *Gatekeeper) cleanupNoPrivilegesNotice(ctx context.Context, challenge *db.Challenge) error {
+	if challenge == nil {
+		return nil
+	}
+	g.deleteChallengePrompt(ctx, challenge)
+	if challenge.NoticeMessageID != 0 {
+		if err := bot.DeleteChatMessage(ctx, g.bot, challenge.ChatID, challenge.NoticeMessageID); err != nil && !isTelegramActionAlreadyApplied(err) {
+			return err
+		}
+	}
+	_, err := g.store.DeleteChallengeInstance(ctx, challenge.ChallengeID, db.ChallengeStatusNoPrivilegesNotice)
+	return err
 }
 
 func (g *Gatekeeper) deleteChallengeMessages(ctx context.Context, challenge *db.Challenge) {

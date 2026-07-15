@@ -88,6 +88,8 @@ type GatekeeperBanChecker interface {
 	CheckBan(ctx context.Context, userID int64) (bool, error)
 	IsKnownBanned(userID int64) bool
 	BanUserWithMessage(ctx context.Context, chatID, userID int64, messageID int) error
+	ModerationAvailable(ctx context.Context, chatID int64) (bool, error)
+	MarkModerationUnavailable(chatID int64)
 }
 
 type gatekeeperStore interface {
@@ -104,6 +106,7 @@ type gatekeeperStore interface {
 	PrepareDMFallback(ctx context.Context, challengeID, successUUID, userLanguage string, expiresAt time.Time) (bool, error)
 	CompleteExternalAction(ctx context.Context, challengeID, expectedStatus, nextStatus string, expiresAt time.Time) (bool, error)
 	ScheduleChallengeRetry(ctx context.Context, challengeID, expectedStatus string, nextAttemptAt time.Time, lastError string) (bool, error)
+	CompleteChallengeWithoutPrivileges(ctx context.Context, challengeID, expectedStatus string, noticeMessageID int, expiresAt time.Time, lastError string) (bool, error)
 	DeleteChallengeInstance(ctx context.Context, challengeID, expectedStatus string) (bool, error)
 	GetDueChallenges(ctx context.Context, now time.Time) ([]*db.Challenge, error)
 	GetExpiredChallenges(ctx context.Context, now time.Time) ([]*db.Challenge, error)
@@ -114,6 +117,21 @@ type gatekeeperStore interface {
 	GetUnprocessedRecentJoiners(ctx context.Context) ([]*db.RecentJoiner, error)
 	ProcessRecentJoiner(ctx context.Context, chatID int64, userID int64, isSpammer bool) error
 	IsChatNotSpammer(ctx context.Context, chatID int64, userID int64, username string) (bool, error)
+}
+
+func (g *Gatekeeper) moderationAvailable(ctx context.Context, chatID int64) bool {
+	if g.banChecker == nil {
+		return false
+	}
+	available, err := g.banChecker.ModerationAvailable(ctx, chatID)
+	if err != nil {
+		g.getLogEntry().WithFields(log.Fields{
+			logFieldChatID: chatID,
+			logFieldError:  err.Error(),
+		}).Warn("failed to inspect bot moderation rights; using no-rights mode")
+		return false
+	}
+	return available
 }
 
 var challengeKeys = []string{

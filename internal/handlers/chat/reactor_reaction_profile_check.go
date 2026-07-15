@@ -28,6 +28,13 @@ func (r *Reactor) handleMessageReaction(ctx context.Context, reaction *api.Messa
 	if len(reaction.NewReaction) == 0 {
 		return true, nil
 	}
+	moderationAvailable, err := r.moderationAvailable(ctx, chat.ID)
+	if err != nil {
+		entry.WithError(err).Warn("failed to inspect moderation rights; skipping reaction moderation")
+	}
+	if err != nil || !moderationAvailable {
+		return true, nil
+	}
 
 	switch {
 	case reaction.User != nil:
@@ -152,12 +159,14 @@ func (r *Reactor) moderateReactionActorChat(ctx context.Context, chat *api.Chat,
 		ChatConfig:  api.ChatConfig{ChatID: chat.ID},
 		ActorChatID: actorChat.ID,
 	}); err != nil {
+		r.markModerationUnavailableOnPrivilege(chat.ID, err)
 		return fmt.Errorf("delete all actor chat reactions: %w", err)
 	}
 	if _, err := r.bot.RequestWithContext(ctx, api.BanChatSenderChatConfig{
 		ChatConfig:   api.ChatConfig{ChatID: chat.ID},
 		SenderChatID: actorChat.ID,
 	}); err != nil {
+		r.markModerationUnavailableOnPrivilege(chat.ID, err)
 		return fmt.Errorf("ban reaction sender chat: %w", err)
 	}
 	entry.Info("Successfully banned reaction sender chat")
@@ -169,9 +178,11 @@ func (r *Reactor) punishReactionUser(ctx context.Context, chatID int64, messageI
 		ChatConfig: api.ChatConfig{ChatID: chatID},
 		UserID:     userID,
 	}); err != nil {
+		r.markModerationUnavailableOnPrivilege(chatID, err)
 		return fmt.Errorf("delete all user reactions: %w", err)
 	}
 	if err := bot.BanUserFromChat(ctx, r.bot, userID, chatID, 0); err != nil {
+		r.markModerationUnavailableOnPrivilege(chatID, err)
 		return fmt.Errorf("ban reaction user: %w", err)
 	}
 	entry.WithField("messageID", messageID).Info("Successfully banned reaction user")

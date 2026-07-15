@@ -94,6 +94,7 @@ For detailed architecture, see [docs/CODEBASE_MAP.md](docs/CODEBASE_MAP.md).
 - LLM APIs (OpenAI-compatible and Gemini).
 - Banlist API (lols.bot).
 - **Join-Captcha WebApp** 🔒: The gatekeeper join-captcha WebApp server speaks plain HTTP and **MUST** run behind a TLS-terminating reverse proxy. Its listen address is configured via `GatekeeperWebApp.ListenAddr`. In the Docker deployment it binds `0.0.0.0:8080` inside the container (mapped to `127.0.0.1:18080` on the host); the default **must NOT** be changed to loopback or the container port mapping breaks.
+- **No-Rights Mode** 🛡️: Before banlist, LLM, reaction, or voting moderation, check the bot's restrict-member capability. A confirmed Telegram privilege error is terminal and must not be retried. Public CAPTCHA may still run without restricting the user: success deletes the CAPTCHA; failure leaves a durable 30-minute notice.
 
 ### Admin Panel UX Rules
 - **Cascading Menus** 🧭: Admin settings must be structured as cascading category menus. Do not place many unrelated controls on a single page.

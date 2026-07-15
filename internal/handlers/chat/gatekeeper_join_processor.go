@@ -11,6 +11,7 @@ import (
 	"github.com/iamwavecut/ngbot/internal/bot"
 	"github.com/iamwavecut/ngbot/internal/db"
 	handlersbase "github.com/iamwavecut/ngbot/internal/handlers/base"
+	moderation "github.com/iamwavecut/ngbot/internal/handlers/moderation"
 	"github.com/iamwavecut/ngbot/internal/i18n"
 	"github.com/iamwavecut/tool"
 	"github.com/pborman/uuid"
@@ -41,6 +42,7 @@ func (g *Gatekeeper) handleNewChatMembersV2(ctx context.Context, u *api.Update, 
 		return nil
 	}
 	subfeaturesEnabled := settings.GatekeeperCaptchaEnabled || settings.GatekeeperGreetingEnabled
+	moderationAvailable := g.moderationAvailable(ctx, chat.ID)
 
 	select {
 	case <-ctx.Done():
@@ -52,6 +54,27 @@ func (g *Gatekeeper) handleNewChatMembersV2(ctx context.Context, u *api.Update, 
 		joiner, err := g.recordRecentJoiner(ctx, chat.ID, &member, u.Message.MessageID)
 		if err != nil {
 			entry.WithField(logFieldError, err.Error()).Error("failed to save recent joiner")
+		}
+		if !moderationAvailable {
+			if member.IsBot {
+				continue
+			}
+			if settings.GatekeeperCaptchaEnabled {
+				if err := g.ensurePublicChallenge(ctx, u, &member, chat, settings); err != nil {
+					entry.WithFields(log.Fields{
+						logFieldUserID: member.ID,
+						logFieldError:  err.Error(),
+					}).Error("failed to ensure no-rights public challenge")
+				}
+			} else if settings.GatekeeperGreetingEnabled {
+				if err := g.sendGreeting(ctx, chat.ID, chat, &member, settings); err != nil {
+					entry.WithFields(log.Fields{
+						logFieldUserID: member.ID,
+						logFieldError:  err.Error(),
+					}).Error("failed to send no-rights greeting")
+				}
+			}
+			continue
 		}
 		isNotSpammer, err := g.store.IsChatNotSpammer(ctx, chat.ID, member.ID, member.UserName)
 		if err != nil {
@@ -124,6 +147,27 @@ func (g *Gatekeeper) handleChatMember(ctx context.Context, u *api.Update, settin
 			logFieldError:  err.Error(),
 		}).Error("failed to save recent joiner")
 	}
+	if !g.moderationAvailable(ctx, chat.ID) {
+		if member.IsBot {
+			return
+		}
+		if settings.GatekeeperCaptchaEnabled {
+			if err := g.ensurePublicChallenge(ctx, u, member, chat, settings); err != nil {
+				entry.WithFields(log.Fields{
+					logFieldUserID: member.ID,
+					logFieldError:  err.Error(),
+				}).Error("failed to start no-rights gatekeeper captcha")
+			}
+		} else if settings.GatekeeperGreetingEnabled {
+			if err := g.sendGreeting(ctx, chat.ID, chat, member, settings); err != nil {
+				entry.WithFields(log.Fields{
+					logFieldUserID: member.ID,
+					logFieldError:  err.Error(),
+				}).Error("failed to send no-rights greeting")
+			}
+		}
+		return
+	}
 
 	isNotSpammer, err := g.store.IsChatNotSpammer(ctx, chat.ID, member.ID, member.UserName)
 	if err != nil {
@@ -173,7 +217,7 @@ func (g *Gatekeeper) handleChatMember(ctx context.Context, u *api.Update, settin
 		}).Error("failed to load approved join request handoff challenge")
 	}
 	if handoffChallenge != nil {
-		if err := g.sendGreeting(ctx, chat.ID, chat, member, settings, true); err != nil {
+		if err := g.sendGreeting(ctx, chat.ID, chat, member, settings); err != nil {
 			entry.WithFields(log.Fields{
 				logFieldUserID: member.ID,
 				logFieldError:  err.Error(),
@@ -189,7 +233,7 @@ func (g *Gatekeeper) handleChatMember(ctx context.Context, u *api.Update, settin
 	}
 
 	if u.ChatMember.ViaJoinRequest {
-		if err := g.sendGreeting(ctx, chat.ID, chat, member, settings, true); err != nil {
+		if err := g.sendGreeting(ctx, chat.ID, chat, member, settings); err != nil {
 			entry.WithFields(log.Fields{
 				logFieldUserID: member.ID,
 				logFieldError:  err.Error(),
@@ -207,13 +251,30 @@ func (g *Gatekeeper) handleChatMember(ctx context.Context, u *api.Update, settin
 			}).Error("failed to handle gatekeeper captcha for new member")
 		}
 	case settings.GatekeeperGreetingEnabled:
-		if err := g.sendGreeting(ctx, chat.ID, chat, member, settings, true); err != nil {
+		if err := g.sendGreeting(ctx, chat.ID, chat, member, settings); err != nil {
 			entry.WithFields(log.Fields{
 				logFieldUserID: member.ID,
 				logFieldError:  err.Error(),
 			}).Error("failed to send gatekeeper greeting for new member")
 		}
 	}
+}
+
+func (g *Gatekeeper) ensurePublicChallenge(ctx context.Context, u *api.Update, user *api.User, chat *api.Chat, settings *db.Settings) error {
+	if user == nil || chat == nil {
+		return nil
+	}
+	existing, err := g.store.GetChallengeByChatUser(ctx, chat.ID, user.ID)
+	if err != nil {
+		return err
+	}
+	if existing != nil {
+		if u != nil && u.Message != nil {
+			return g.backfillPublicChallengeJoinMessageID(ctx, chat.ID, user.ID, u.Message.MessageID)
+		}
+		return nil
+	}
+	return g.startChallenge(ctx, u, user, chat, chat.ID, chat.ID, settings)
 }
 
 func (g *Gatekeeper) handleChatJoinRequest(ctx context.Context, u *api.Update, settings *db.Settings) error {
@@ -227,29 +288,34 @@ func (g *Gatekeeper) handleChatJoinRequest(ctx context.Context, u *api.Update, s
 		entry.Debug("settings are nil")
 		return nil
 	}
-	isNotSpammer, err := g.store.IsChatNotSpammer(ctx, u.ChatJoinRequest.Chat.ID, u.ChatJoinRequest.From.ID, u.ChatJoinRequest.From.UserName)
-	if err != nil {
-		entry.WithField(logFieldError, err.Error()).Error("failed to check manual not-spammer override")
-		return nil
-	}
-	if !isNotSpammer {
-		banned, err := g.banChecker.CheckBan(ctx, u.ChatJoinRequest.From.ID)
+	if g.moderationAvailable(ctx, u.ChatJoinRequest.Chat.ID) {
+		isNotSpammer, err := g.store.IsChatNotSpammer(ctx, u.ChatJoinRequest.Chat.ID, u.ChatJoinRequest.From.ID, u.ChatJoinRequest.From.UserName)
 		if err != nil {
-			entry.WithFields(log.Fields{
-				logFieldUserID: u.ChatJoinRequest.From.ID,
-				logFieldError:  err.Error(),
-			}).Error("failed to check ban for chat join request")
-			return err
-		}
-		if banned {
-			g.processKnownBannedJoinRequest(ctx, u.ChatJoinRequest)
+			entry.WithField(logFieldError, err.Error()).Error("failed to check manual not-spammer override")
 			return nil
+		}
+		if !isNotSpammer {
+			banned, err := g.banChecker.CheckBan(ctx, u.ChatJoinRequest.From.ID)
+			if err != nil {
+				entry.WithFields(log.Fields{
+					logFieldUserID: u.ChatJoinRequest.From.ID,
+					logFieldError:  err.Error(),
+				}).Error("failed to check ban for chat join request")
+				return err
+			}
+			if banned {
+				g.processKnownBannedJoinRequest(ctx, u.ChatJoinRequest)
+				return nil
+			}
 		}
 	}
 	if !settings.GatekeeperCaptchaEnabled && !settings.GatekeeperGreetingEnabled {
 		if u.ChatJoinRequest.QueryID != "" {
 			if err := bot.AnswerJoinRequestQuery(ctx, g.bot, u.ChatJoinRequest.QueryID, bot.JoinRequestQueryResultQueue); err != nil {
 				entry.WithField(logFieldError, err.Error()).Error("failed to queue join request query with disabled gatekeeper subfeatures")
+				if moderation.IsTelegramPrivilegeError(err) {
+					g.banChecker.MarkModerationUnavailable(u.ChatJoinRequest.Chat.ID)
+				}
 			}
 		}
 		entry.Debug("both gatekeeper subfeatures are disabled")
@@ -259,6 +325,9 @@ func (g *Gatekeeper) handleChatJoinRequest(ctx context.Context, u *api.Update, s
 		if u.ChatJoinRequest.QueryID != "" {
 			if err := bot.AnswerJoinRequestQuery(ctx, g.bot, u.ChatJoinRequest.QueryID, bot.JoinRequestQueryResultQueue); err != nil {
 				entry.WithField(logFieldError, err.Error()).Error("failed to queue join request query with disabled captcha")
+				if moderation.IsTelegramPrivilegeError(err) {
+					g.banChecker.MarkModerationUnavailable(u.ChatJoinRequest.Chat.ID)
+				}
 			}
 		}
 		entry.Debug("captcha is disabled for join requests, leaving request for manual review")
@@ -277,6 +346,9 @@ func (g *Gatekeeper) handleChatJoinRequest(ctx context.Context, u *api.Update, s
 	if u.ChatJoinRequest.QueryID != "" {
 		if err := bot.AnswerJoinRequestQuery(ctx, g.bot, u.ChatJoinRequest.QueryID, bot.JoinRequestQueryResultQueue); err != nil {
 			entry.WithField(logFieldError, err.Error()).Error("failed to queue join request query before DM fallback")
+			if moderation.IsTelegramPrivilegeError(err) {
+				g.banChecker.MarkModerationUnavailable(u.ChatJoinRequest.Chat.ID)
+			}
 		}
 	}
 
@@ -318,7 +390,7 @@ func (g *Gatekeeper) startChallenge(ctx context.Context, u *api.Update, user *ap
 	isPublic := recipientChatID == target.ID
 	restricted := false
 
-	if isPublic {
+	if isPublic && g.moderationAvailable(ctx, target.ID) {
 		if _, err := b.RequestWithContext(ctx, api.RestrictChatMemberConfig{
 			ChatMemberConfig: api.ChatMemberConfig{
 				ChatConfig: api.ChatConfig{
@@ -344,22 +416,29 @@ func (g *Gatekeeper) startChallenge(ctx context.Context, u *api.Update, user *ap
 				CanManageTopics:       false,
 			},
 		}); err != nil {
-			entry.WithField(logFieldError, err.Error()).Error("failed to restrict user")
-			return errors.WithMessage(err, "restrict user before challenge")
+			if moderation.IsTelegramPrivilegeError(err) {
+				g.banChecker.MarkModerationUnavailable(target.ID)
+				entry.WithField(logFieldError, err.Error()).Warn("restriction unavailable; starting informational captcha")
+			} else {
+				entry.WithField(logFieldError, err.Error()).Error("failed to restrict user")
+				return errors.WithMessage(err, "restrict user before challenge")
+			}
+		} else {
+			restricted = true
 		}
-		restricted = true
 	}
 
 	now := time.Now()
 	challenge := &db.Challenge{
-		CommChatID:   recipientChatID,
-		UserID:       user.ID,
-		ChatID:       target.ID,
-		Status:       db.ChallengeStatusPending,
-		SuccessUUID:  uuid.New(),
-		UserLanguage: strings.TrimSpace(user.LanguageCode),
-		CreatedAt:    now,
-		ExpiresAt:    now.Add(challengeTimeout),
+		CommChatID:     recipientChatID,
+		UserID:         user.ID,
+		ChatID:         target.ID,
+		Status:         db.ChallengeStatusPending,
+		SuccessUUID:    uuid.New(),
+		UserLanguage:   strings.TrimSpace(user.LanguageCode),
+		UserRestricted: restricted,
+		CreatedAt:      now,
+		ExpiresAt:      now.Add(challengeTimeout),
 	}
 	if u != nil && u.Message != nil {
 		challenge.JoinMessageID = u.Message.MessageID
@@ -521,6 +600,10 @@ func (g *Gatekeeper) processKnownBannedJoinRequest(ctx context.Context, request 
 			logFieldUserID: userID,
 			logFieldError:  err.Error(),
 		}).Error("failed to decline banned join request")
+		if moderation.IsTelegramPrivilegeError(err) {
+			g.banChecker.MarkModerationUnavailable(chatID)
+			return
+		}
 	}
 	if g.banChecker != nil {
 		if err := g.banChecker.BanUserWithMessage(ctx, chatID, userID, 0); err != nil {
@@ -528,6 +611,10 @@ func (g *Gatekeeper) processKnownBannedJoinRequest(ctx context.Context, request 
 				logFieldUserID: userID,
 				logFieldError:  err.Error(),
 			}).Error("failed to ban known banned join requester")
+			if moderation.IsTelegramPrivilegeError(err) {
+				g.banChecker.MarkModerationUnavailable(chatID)
+				return
+			}
 		}
 	}
 
@@ -543,6 +630,10 @@ func (g *Gatekeeper) processKnownBannedJoinedUser(ctx context.Context, chatID, u
 				logFieldUserID: userID,
 				logFieldError:  err.Error(),
 			}).Error("failed to ban known banned joined user")
+			if moderation.IsTelegramPrivilegeError(err) {
+				g.banChecker.MarkModerationUnavailable(chatID)
+				return
+			}
 		}
 	}
 
@@ -681,7 +772,7 @@ func composeGatekeeperMessage(greetingText, challengeText string) string {
 	}
 }
 
-func (g *Gatekeeper) sendGreeting(ctx context.Context, recipientChatID int64, target *api.Chat, user *api.User, settings *db.Settings, disableNotification bool) error {
+func (g *Gatekeeper) sendGreeting(ctx context.Context, recipientChatID int64, target *api.Chat, user *api.User, settings *db.Settings) error {
 	if target == nil || user == nil || settings == nil || !settings.GatekeeperGreetingEnabled {
 		return nil
 	}
@@ -693,7 +784,7 @@ func (g *Gatekeeper) sendGreeting(ctx context.Context, recipientChatID int64, ta
 
 	msg := api.NewMessage(recipientChatID, msgText)
 	msg.ParseMode = g.greetingParseMode(settings)
-	msg.DisableNotification = disableNotification
+	msg.DisableNotification = true
 	_, err := bot.Send(ctx, g.bot, msg)
 	if err != nil {
 		return errors.WithMessage(err, "cant send greeting")

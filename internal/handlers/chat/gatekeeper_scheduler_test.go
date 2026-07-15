@@ -87,6 +87,10 @@ func (s *testGatekeeperStore) CompleteExternalAction(context.Context, string, st
 	return false, nil
 }
 
+func (s *testGatekeeperStore) CompleteChallengeWithoutPrivileges(context.Context, string, string, int, time.Time, string) (bool, error) {
+	return false, nil
+}
+
 func (s *testGatekeeperStore) ScheduleChallengeRetry(context.Context, string, string, time.Time, string) (bool, error) {
 	return false, nil
 }
@@ -133,10 +137,12 @@ func (s *testGatekeeperStore) IsChatNotSpammer(context.Context, int64, int64, st
 }
 
 type testGatekeeperBanChecker struct {
-	checkBanCalls int
-	banned        bool
-	bans          []testGatekeeperBan
-	knownBanned   map[int64]bool
+	checkBanCalls         int
+	banned                bool
+	bans                  []testGatekeeperBan
+	knownBanned           map[int64]bool
+	moderationUnavailable bool
+	markedUnavailable     bool
 }
 
 type testGatekeeperBan struct {
@@ -148,6 +154,15 @@ type testGatekeeperBan struct {
 func (c *testGatekeeperBanChecker) CheckBan(context.Context, int64) (bool, error) {
 	c.checkBanCalls++
 	return c.banned, nil
+}
+
+func (c *testGatekeeperBanChecker) ModerationAvailable(context.Context, int64) (bool, error) {
+	return !c.moderationUnavailable, nil
+}
+
+func (c *testGatekeeperBanChecker) MarkModerationUnavailable(int64) {
+	c.moderationUnavailable = true
+	c.markedUnavailable = true
 }
 
 func (c *testGatekeeperBanChecker) IsKnownBanned(userID int64) bool {
@@ -214,5 +229,47 @@ func TestProcessNewChatMembersNotSpammerOverrideBypassesBanCheck(t *testing.T) {
 	}
 	if store.processed[0].isSpammer {
 		t.Fatal("expected overridden joiner to be processed as not spammer")
+	}
+}
+
+func TestProcessNewChatMembersPrivilegeFailureClosesJoinerWithoutRetry(t *testing.T) {
+	t.Parallel()
+
+	botAPI := newTestBotAPI(t, func(method string, _ *http.Request) any {
+		switch method {
+		case testTelegramMethodGetChatMember:
+			return map[string]any{
+				logFieldUser: map[string]any{
+					"id":              200,
+					testJSONIsBot:     false,
+					testJSONFirstName: testFirstNameUser,
+				},
+				logFieldStatus: telegramMemberStatus,
+			}
+		case testTelegramMethodBanChatMember:
+			return &testBotAPIError{code: http.StatusBadRequest, description: "Bad Request: CHAT_ADMIN_REQUIRED"}
+		default:
+			t.Fatalf("unexpected bot method: %s", method)
+			return nil
+		}
+	})
+	store := &testGatekeeperStore{joiners: []*db.RecentJoiner{{ChatID: 100, UserID: 200}}}
+	banChecker := &testGatekeeperBanChecker{banned: true}
+	gatekeeper := &Gatekeeper{
+		bot:        botAPI,
+		s:          &testBotService{botAPI: botAPI},
+		store:      store,
+		config:     &config.Config{},
+		banChecker: banChecker,
+	}
+
+	if err := gatekeeper.processNewChatMembers(context.Background()); err != nil {
+		t.Fatalf("processNewChatMembers returned error: %v", err)
+	}
+	if !banChecker.markedUnavailable {
+		t.Fatal("privilege failure did not switch the chat to no-rights mode")
+	}
+	if len(store.processed) != 1 || store.processed[0].isSpammer {
+		t.Fatalf("privilege-blocked joiner was left for retry: %#v", store.processed)
 	}
 }

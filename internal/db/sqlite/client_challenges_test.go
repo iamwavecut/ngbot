@@ -366,6 +366,101 @@ func TestChallengeStatusLookupAndExpiryLifecycle(t *testing.T) {
 	}
 }
 
+func TestChallengeNoPrivilegesNoticeLifecycle(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	client, err := NewSQLiteClient(ctx, t.TempDir(), "test.db")
+	if err != nil {
+		t.Fatalf("new sqlite client: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+
+	now := time.Now().UTC().Truncate(time.Second)
+	challenge := &db.Challenge{
+		CommChatID:         -100,
+		UserID:             200,
+		ChatID:             -100,
+		Status:             db.ChallengeStatusRejectPending,
+		SuccessUUID:        "no-rights",
+		ChallengeMessageID: 40,
+		UserRestricted:     false,
+		CreatedAt:          now,
+		ExpiresAt:          now.Add(time.Minute),
+		NextAttemptAt:      sql.NullTime{Time: now, Valid: true},
+	}
+	if _, err := client.CreateChallenge(ctx, challenge); err != nil {
+		t.Fatalf("create challenge: %v", err)
+	}
+
+	expiresAt := now.Add(30 * time.Minute)
+	changed, err := client.CompleteChallengeWithoutPrivileges(
+		ctx,
+		challenge.ChallengeID,
+		db.ChallengeStatusRejectPending,
+		77,
+		expiresAt,
+		"CHAT_ADMIN_REQUIRED",
+	)
+	if err != nil || !changed {
+		t.Fatalf("complete no-rights challenge: changed=%t err=%v", changed, err)
+	}
+	loaded, err := client.GetChallengeByChatUser(ctx, challenge.ChatID, challenge.UserID)
+	if err != nil {
+		t.Fatalf("load no-rights challenge: %v", err)
+	}
+	if loaded == nil || loaded.Status != db.ChallengeStatusNoPrivilegesNotice || loaded.NoticeMessageID != 77 || loaded.UserRestricted || loaded.NextAttemptAt.Valid {
+		t.Fatalf("unexpected no-rights challenge state: %#v", loaded)
+	}
+	if !loaded.ExpiresAt.Equal(expiresAt) || loaded.LastError != "CHAT_ADMIN_REQUIRED" {
+		t.Fatalf("unexpected no-rights challenge metadata: %#v", loaded)
+	}
+
+	expired, err := client.GetExpiredChallenges(ctx, expiresAt.Add(-time.Second))
+	if err != nil || len(expired) != 0 {
+		t.Fatalf("notice expired too early: expired=%#v err=%v", expired, err)
+	}
+	expired, err = client.GetExpiredChallenges(ctx, expiresAt.Add(time.Second))
+	if err != nil || len(expired) != 1 || expired[0].ChallengeID != challenge.ChallengeID {
+		t.Fatalf("notice was not exposed after retention: expired=%#v err=%v", expired, err)
+	}
+}
+
+func TestExpiredChallengeActionRemainsInRetryQueueOnly(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	client, err := NewSQLiteClient(ctx, t.TempDir(), "test.db")
+	if err != nil {
+		t.Fatalf("new sqlite client: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+
+	now := time.Now().UTC().Truncate(time.Second)
+	challenge := &db.Challenge{
+		CommChatID:    -100,
+		UserID:        200,
+		ChatID:        -100,
+		Status:        db.ChallengeStatusRejectPending,
+		SuccessUUID:   "due-only",
+		CreatedAt:     now.Add(-time.Hour),
+		ExpiresAt:     now.Add(-time.Minute),
+		NextAttemptAt: sql.NullTime{Time: now.Add(time.Minute), Valid: true},
+	}
+	if _, err := client.CreateChallenge(ctx, challenge); err != nil {
+		t.Fatalf("create challenge: %v", err)
+	}
+
+	expired, err := client.GetExpiredChallenges(ctx, now)
+	if err != nil || len(expired) != 0 {
+		t.Fatalf("durable action leaked into expiry worker: expired=%#v err=%v", expired, err)
+	}
+	due, err := client.GetDueChallenges(ctx, now.Add(2*time.Minute))
+	if err != nil || len(due) != 1 || due[0].ChallengeID != challenge.ChallengeID {
+		t.Fatalf("durable action was not retained in retry queue: due=%#v err=%v", due, err)
+	}
+}
+
 func TestChallengeWebAppTokenLookup(t *testing.T) {
 	t.Parallel()
 

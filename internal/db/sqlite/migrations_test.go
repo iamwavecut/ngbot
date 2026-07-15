@@ -264,6 +264,8 @@ func TestGatekeeperWebAppChallengeColumnsExistAfterMigrations(t *testing.T) {
 		"next_attempt_at",
 		"attempt_count",
 		"last_error",
+		"notice_message_id",
+		"user_restricted",
 	} {
 		if _, ok := columns[name]; !ok {
 			t.Fatalf("expected gatekeeper_challenges.%s to exist", name)

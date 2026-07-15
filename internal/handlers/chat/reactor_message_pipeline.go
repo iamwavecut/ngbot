@@ -33,6 +33,7 @@ const (
 	messageSkipReasonLinkedChannelSender = "Linked channel sender"
 	messageSkipReasonChatSender          = "Chat sender"
 	messageSkipReasonAnonymousSender     = "Unsupported anonymous sender"
+	messageSkipReasonNoModerationRights  = "Bot has no moderation rights"
 )
 
 func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api.Chat, user *api.User, settings *db.Settings) error {
@@ -68,6 +69,16 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 			entry = entry.WithField("sender_chat_id", msg.SenderChat.ID)
 		}
 		entry.Warn("ignoring unsupported anonymous sender")
+		return nil
+	}
+	moderationAvailable, err := r.moderationAvailable(ctx, chat.ID)
+	if err != nil {
+		entry.WithField(logFieldError, err.Error()).Warn("failed to inspect moderation rights; skipping spam pipeline")
+	}
+	if err != nil || !moderationAvailable {
+		result.Stage = StageSpamCheck
+		result.Skipped = true
+		result.SkipReason = messageSkipReasonNoModerationRights
 		return nil
 	}
 
@@ -252,6 +263,20 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 	}
 
 	return nil
+}
+
+func (r *Reactor) moderationAvailable(ctx context.Context, chatID int64) (bool, error) {
+	if r.banService == nil {
+		return true, nil
+	}
+	return r.banService.ModerationAvailable(ctx, chatID)
+}
+
+func (r *Reactor) markModerationUnavailableOnPrivilege(chatID int64, err error) {
+	if r.banService == nil || !moderation.IsTelegramPrivilegeError(err) {
+		return
+	}
+	r.banService.MarkModerationUnavailable(chatID)
 }
 
 func detectFirstMessageExternalQuoteHeuristic(msg *api.Message) firstMessageExternalQuoteHeuristic {

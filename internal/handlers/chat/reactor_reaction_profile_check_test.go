@@ -446,4 +446,30 @@ func TestHandleMessageReactionSkipsReactionRemoval(t *testing.T) {
 	}
 }
 
+func TestReactionPrivilegeFailureDisablesModeration(t *testing.T) {
+	t.Parallel()
+
+	botAPI := newTestBotAPI(t, func(method string, _ *http.Request) any {
+		switch method {
+		case testTelegramMethodDeleteAllReactions:
+			return true
+		case testTelegramMethodBanChatMember:
+			return &testBotAPIError{code: http.StatusBadRequest, description: "Bad Request: CHAT_ADMIN_REQUIRED"}
+		default:
+			t.Fatalf("unexpected bot method: %s", method)
+			return nil
+		}
+	})
+	banService := &testBanService{}
+	reactor := &Reactor{bot: botAPI, banService: banService}
+
+	err := reactor.punishReactionUser(context.Background(), -100, 40, 200, reactor.getLogEntry())
+	if err == nil {
+		t.Fatal("expected privilege failure")
+	}
+	if !banService.moderationUnavailable || !banService.markedUnavailable {
+		t.Fatalf("reaction privilege failure did not disable moderation: %#v", banService)
+	}
+}
+
 var _ moderation.BanService = (*testBanService)(nil)

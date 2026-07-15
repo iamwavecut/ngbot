@@ -115,6 +115,10 @@ func (s *testModerationStore) GetDueSpamCases(_ context.Context, now time.Time) 
 	return nil, nil
 }
 
+func (s *testModerationStore) GetPrivilegeBlockedSpamCases(context.Context) ([]*db.SpamCase, error) {
+	return nil, nil
+}
+
 func (s *testModerationStore) GetActiveSpamCase(context.Context, int64, int64) (*db.SpamCase, error) {
 	if s.spamCase == nil || s.spamCase.Status != spamCaseStatusPending {
 		return nil, nil
@@ -269,16 +273,27 @@ func (s *testModerationStore) DeleteSpamCaseReportMessage(_ context.Context, cas
 }
 
 type testModerationBanService struct {
-	muteCalls   int
-	unmuteCalls int
-	muteErr     error
-	unmuteErr   error
+	muteCalls             int
+	unmuteCalls           int
+	muteErr               error
+	unmuteErr             error
+	moderationUnavailable bool
+	markedUnavailable     bool
 }
 
 func (s *testModerationBanService) Start(context.Context) error { return nil }
 func (s *testModerationBanService) Stop(context.Context) error  { return nil }
 func (s *testModerationBanService) CheckBan(context.Context, int64) (bool, error) {
 	return false, nil
+}
+
+func (s *testModerationBanService) ModerationAvailable(context.Context, int64) (bool, error) {
+	return !s.moderationUnavailable, nil
+}
+
+func (s *testModerationBanService) MarkModerationUnavailable(int64) {
+	s.moderationUnavailable = true
+	s.markedUnavailable = true
 }
 
 func (s *testModerationBanService) MuteUser(context.Context, int64, int64) error {
@@ -305,6 +320,56 @@ func (s *testModerationBanService) IsRestricted(context.Context, int64, int64) (
 
 func (s *testModerationBanService) IsKnownBanned(int64) bool {
 	return false
+}
+
+func TestRecordVoteDoesNotRewriteTerminalCaseInNoRightsMode(t *testing.T) {
+	t.Parallel()
+
+	resolvedAt := time.Now().Add(-time.Minute)
+	spamCase := &db.SpamCase{
+		ID:         1,
+		ChatID:     -100,
+		UserID:     200,
+		Status:     db.SpamCaseStatusNotEnforced,
+		ResolvedAt: &resolvedAt,
+	}
+	control := &SpamControl{
+		store:      &testModerationStore{spamCase: spamCase},
+		banService: &testModerationBanService{moderationUnavailable: true},
+	}
+
+	_, _, err := control.RecordVote(context.Background(), spamCase.ID, 300, false)
+	if !errors.Is(err, ErrSpamCaseClosed) {
+		t.Fatalf("RecordVote error = %v, want ErrSpamCaseClosed", err)
+	}
+	if spamCase.Status != db.SpamCaseStatusNotEnforced || spamCase.ResolvedAt != &resolvedAt {
+		t.Fatalf("terminal case was rewritten: %#v", spamCase)
+	}
+}
+
+func TestClaimedCaseStopsBeforeTelegramWhenChatIsAlreadyNoRights(t *testing.T) {
+	t.Parallel()
+
+	spamCase := &db.SpamCase{
+		ID:        1,
+		ChatID:    -100,
+		UserID:    200,
+		MessageID: 40,
+		Status:    db.SpamCaseStatusResolvingSpam,
+	}
+	store := &testModerationStore{spamCase: spamCase}
+	control := &SpamControl{
+		store:      store,
+		banService: &testModerationBanService{moderationUnavailable: true},
+	}
+
+	err := control.resolveClaimedCase(context.Background(), spamCase)
+	if !errors.Is(err, ErrNoPrivileges) {
+		t.Fatalf("resolveClaimedCase error = %v, want ErrNoPrivileges", err)
+	}
+	if spamCase.Status != db.SpamCaseStatusNotEnforced || store.retryCalls != 0 {
+		t.Fatalf("no-rights case was not terminalized without retry: case=%#v retries=%d", spamCase, store.retryCalls)
+	}
 }
 
 func newModerationTestBotAPI(t *testing.T, handler func(method string, r *http.Request) any) *api.BotAPI {
