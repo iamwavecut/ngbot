@@ -648,7 +648,7 @@ Only members/administrators of the **source chat** can vote. A per-chat five-min
 
 > Value `-1` (`SettingsOverrideInherit`) means "use global config". `Settings.Enabled` is normalized to `GatekeeperEnabled` on a local persistence copy. Legacy timeout values in `(0, 1s)` are interpreted as seconds by pure accessors; reads never mutate the `Settings` receiver.
 
-**Database Schema** (37 migrations):
+**Database Schema** (38 migrations):
 
 | Table | PK | Notes |
 |-------|-----|-------|
@@ -670,7 +670,7 @@ Only members/administrators of the **source chat** can vote. A per-chat five-min
 | `chat_not_spammer_overrides` | auto `id` | Unique: `(match_type, match_value, normalized_scope)` |
 | `chat_known_non_members` | `(chat_id, user_id)` | — |
 
-**Recent migrations of note**: `2026071400` removes confirmed FK orphans before enforcement; `2026071401` adds challenge generation/retry state; `2026071402` adds durable moderation scheduling; `2026071403` adds initial banlist provenance; `2026071500` records whether restriction happened and binds the 30-minute no-rights notice; `2026071519` retires legacy provenance and normalizes banlist source generations. Every migration has Up/Down sections; applied files are never rewritten.
+**Recent migrations of note**: `2026071400` removes confirmed FK orphans before enforcement; `2026071401` adds challenge generation/retry state; `2026071402` adds durable moderation scheduling; `2026071403` adds initial banlist provenance; `2026071500` records whether restriction happened and binds the 30-minute no-rights notice; `202607151900` retires legacy provenance and normalizes banlist source generations; `202607151910` requeues exhausted permanent DM-fallback failures for one terminal pass through the corrected handler. Every migration has Up/Down sections; applied files are never rewritten.
 
 **Gotchas**:
 - `db.ErrNotFound` used for missing settings, but `(nil, nil)` for challenges/admin panel, `("", nil)` for KV — inconsistent not-found signaling

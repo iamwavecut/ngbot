@@ -961,6 +961,83 @@ func TestImmediateSpamRecoveryMigrationIsScopedAndReversible(t *testing.T) {
 	}
 }
 
+func TestPermanentDMFallbackRecoveryMigrationIsScopedAndReversible(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "dm-fallback-recovery.db")
+	sqlDB, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
+
+	source := &migrate.EmbedFileSystemMigrationSource{
+		FileSystem: resources.FS,
+		Root:       migrationsRoot,
+	}
+	const migration = "20260715191000-requeue-permanent-dm-fallback.sql"
+	if _, err := migrate.ExecMax(sqlDB, "sqlite3", source, migrate.Up, migrationsBefore(t, migration)); err != nil {
+		t.Fatalf("execute migrations before DM fallback recovery: %v", err)
+	}
+	if _, err := sqlDB.ExecContext(ctx, `
+		INSERT INTO gatekeeper_challenges (
+			comm_chat_id, user_id, chat_id, success_uuid,
+			created_at, expires_at, challenge_id, status,
+			next_attempt_at, attempt_count, last_error
+		) VALUES
+			(9001, 42, -100, 'success', CURRENT_TIMESTAMP, datetime('now', '+10 minutes'),
+				'permanent-dm', 'web_app_fallback_pending', NULL, 25,
+				'Forbidden: bot can''t initiate conversation with a user'),
+			(9002, 43, -100, 'success', CURRENT_TIMESTAMP, datetime('now', '+10 minutes'),
+				'temporary-dm', 'web_app_fallback_pending', NULL, 8, 'temporary Telegram failure')
+	`); err != nil {
+		t.Fatalf("insert exhausted DM fallbacks: %v", err)
+	}
+
+	if _, err := migrate.ExecMax(sqlDB, "sqlite3", source, migrate.Up, 1); err != nil {
+		t.Fatalf("execute DM fallback recovery migration: %v", err)
+	}
+	var (
+		nextAttemptAt sql.NullTime
+		attemptCount  int
+	)
+	if err := sqlDB.QueryRowContext(ctx, `
+		SELECT next_attempt_at, attempt_count
+		FROM gatekeeper_challenges
+		WHERE challenge_id = 'permanent-dm'
+	`).Scan(&nextAttemptAt, &attemptCount); err != nil {
+		t.Fatalf("read recovered permanent fallback: %v", err)
+	}
+	if !nextAttemptAt.Valid || attemptCount != 0 {
+		t.Fatalf("permanent fallback was not requeued: next=%v attempts=%d", nextAttemptAt.Valid, attemptCount)
+	}
+	if err := sqlDB.QueryRowContext(ctx, `
+		SELECT next_attempt_at, attempt_count
+		FROM gatekeeper_challenges
+		WHERE challenge_id = 'temporary-dm'
+	`).Scan(&nextAttemptAt, &attemptCount); err != nil {
+		t.Fatalf("read unrelated fallback: %v", err)
+	}
+	if nextAttemptAt.Valid || attemptCount != 8 {
+		t.Fatalf("unrelated fallback changed: next=%v attempts=%d", nextAttemptAt.Valid, attemptCount)
+	}
+
+	if _, err := migrate.ExecMax(sqlDB, "sqlite3", source, migrate.Down, 1); err != nil {
+		t.Fatalf("roll back DM fallback recovery migration: %v", err)
+	}
+	if err := sqlDB.QueryRowContext(ctx, `
+		SELECT next_attempt_at, attempt_count
+		FROM gatekeeper_challenges
+		WHERE challenge_id = 'permanent-dm'
+	`).Scan(&nextAttemptAt, &attemptCount); err != nil {
+		t.Fatalf("read restored permanent fallback: %v", err)
+	}
+	if nextAttemptAt.Valid || attemptCount != 25 {
+		t.Fatalf("permanent fallback was not restored: next=%v attempts=%d", nextAttemptAt.Valid, attemptCount)
+	}
+}
+
 func migrationsBefore(t *testing.T, target string) int {
 	t.Helper()
 
