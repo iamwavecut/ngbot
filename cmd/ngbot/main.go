@@ -272,6 +272,7 @@ func buildRuntime(ctx context.Context, cfg *config.Config, errChan chan<- shutdo
 
 	gatekeeperHandler := chatHandlers.NewGatekeeper(service, botAPI, dbClient, dbClient, cfg, banService)
 	adminHandler := adminHandlers.NewAdmin(service, botAPI, dbClient, dbClient, banService)
+	banlistGuard := chatHandlers.NewBanlistGuard(botAPI, banService)
 
 	llmAPI, err := configureLLM(cfg, log.WithField("context", "handlers"))
 	if err != nil {
@@ -284,11 +285,12 @@ func buildRuntime(ctx context.Context, cfg *config.Config, errChan chan<- shutdo
 		SpamControl: cfg.SpamControl,
 	})
 
-	updateHandlers := selectUpdateHandlers(cfg.EnabledHandlers, map[string]bot.Handler{
+	configuredHandlers := selectUpdateHandlers(cfg.EnabledHandlers, map[string]bot.Handler{
 		handlerAdmin:      adminHandler,
 		handlerGatekeeper: gatekeeperHandler,
 		handlerReactor:    reactorHandler,
 	})
+	updateHandlers := append([]bot.Handler{banlistGuard}, configuredHandlers...)
 
 	updateLoop := newUpdateLoopComponent(
 		botAPI,

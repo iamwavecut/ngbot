@@ -420,16 +420,17 @@ func newChatMemberJoinUpdate(chat api.Chat, joinedUser api.User, actor api.User)
 	}
 }
 
-func TestDisabledGatekeeperChatMemberUpdateDoesNotTouchJoinRequest(t *testing.T) {
+func TestDisabledGatekeeperCleanChatMemberOnlyChecksBanlist(t *testing.T) {
 	t.Parallel()
 
 	user := api.User{ID: 200, FirstName: testFirstNameUser}
 	chat := api.Chat{ID: -100, Type: testChatTypeSupergroup, Title: "Group"}
+	banChecker := &testGatekeeperBanChecker{}
 	gatekeeper := &Gatekeeper{
 		s:          &gatekeeperTestService{testBotService: testBotService{language: "en"}, settings: &db.Settings{GatekeeperEnabled: false}},
 		store:      newGatekeeperFlowStore(),
 		config:     &config.Config{},
-		banChecker: &testGatekeeperBanChecker{},
+		banChecker: banChecker,
 	}
 
 	proceed, err := gatekeeper.Handle(t.Context(), newChatMemberJoinUpdate(chat, user, user), &chat, &user)
@@ -438,6 +439,34 @@ func TestDisabledGatekeeperChatMemberUpdateDoesNotTouchJoinRequest(t *testing.T)
 	}
 	if !proceed {
 		t.Fatalf("expected disabled gatekeeper to keep propagation")
+	}
+	if banChecker.checkBanCalls != 1 || len(banChecker.bans) != 0 {
+		t.Fatalf("expected only the terminal banlist check, calls=%d bans=%#v", banChecker.checkBanCalls, banChecker.bans)
+	}
+}
+
+func TestDisabledGatekeeperBannedChatMemberStillBans(t *testing.T) {
+	t.Parallel()
+
+	user := api.User{ID: 200, FirstName: testFirstNameUser}
+	chat := api.Chat{ID: -100, Type: testChatTypeSupergroup, Title: "Group"}
+	banChecker := &testGatekeeperBanChecker{banned: true}
+	gatekeeper := &Gatekeeper{
+		s:          &gatekeeperTestService{testBotService: testBotService{language: "en"}, settings: &db.Settings{GatekeeperEnabled: false}},
+		store:      newGatekeeperFlowStore(),
+		config:     &config.Config{},
+		banChecker: banChecker,
+	}
+
+	proceed, err := gatekeeper.Handle(t.Context(), newChatMemberJoinUpdate(chat, user, user), &chat, &user)
+	if err != nil {
+		t.Fatalf("handle disabled gatekeeper banned member: %v", err)
+	}
+	if !proceed {
+		t.Fatal("expected gatekeeper join update to keep propagation")
+	}
+	if banChecker.checkBanCalls != 1 || len(banChecker.bans) != 1 {
+		t.Fatalf("expected terminal ban despite disabled captcha, checks=%d bans=%#v", banChecker.checkBanCalls, banChecker.bans)
 	}
 }
 
@@ -448,6 +477,7 @@ func TestBannedChatJoinRequestDeclinesAndBansBeforeCaptcha(t *testing.T) {
 	groupChat := api.Chat{ID: -100123, Type: testChatTypeSupergroup, Title: testGroupTitle, UserName: testGroupUsername}
 	user := api.User{ID: 42, FirstName: testFirstNameNeo}
 	store := newGatekeeperFlowStore()
+	store.isNotSpammer = true
 
 	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
 		recorder.record(t, method, r)

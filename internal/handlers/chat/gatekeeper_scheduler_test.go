@@ -141,6 +141,7 @@ type testGatekeeperBanChecker struct {
 	banned                bool
 	bans                  []testGatekeeperBan
 	knownBanned           map[int64]bool
+	banErr                error
 	moderationUnavailable bool
 	markedUnavailable     bool
 }
@@ -175,10 +176,10 @@ func (c *testGatekeeperBanChecker) BanUserWithMessage(_ context.Context, chatID 
 		userID:    userID,
 		messageID: messageID,
 	})
-	return nil
+	return c.banErr
 }
 
-func TestProcessNewChatMembersNotSpammerOverrideBypassesBanCheck(t *testing.T) {
+func TestProcessNewChatMembersNotSpammerOverrideAppliesAfterBanCheck(t *testing.T) {
 	t.Parallel()
 
 	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
@@ -221,8 +222,8 @@ func TestProcessNewChatMembersNotSpammerOverrideBypassesBanCheck(t *testing.T) {
 		t.Fatalf("processNewChatMembers returned error: %v", err)
 	}
 
-	if banChecker.checkBanCalls != 0 {
-		t.Fatalf("expected ban checker not to be called, got %d calls", banChecker.checkBanCalls)
+	if banChecker.checkBanCalls != 1 {
+		t.Fatalf("expected ban checker before manual override, got %d calls", banChecker.checkBanCalls)
 	}
 	if len(store.processed) != 1 {
 		t.Fatalf("expected one processed joiner, got %d", len(store.processed))
@@ -236,25 +237,14 @@ func TestProcessNewChatMembersPrivilegeFailureClosesJoinerWithoutRetry(t *testin
 	t.Parallel()
 
 	botAPI := newTestBotAPI(t, func(method string, _ *http.Request) any {
-		switch method {
-		case testTelegramMethodGetChatMember:
-			return map[string]any{
-				logFieldUser: map[string]any{
-					"id":              200,
-					testJSONIsBot:     false,
-					testJSONFirstName: testFirstNameUser,
-				},
-				logFieldStatus: telegramMemberStatus,
-			}
-		case testTelegramMethodBanChatMember:
-			return &testBotAPIError{code: http.StatusBadRequest, description: "Bad Request: CHAT_ADMIN_REQUIRED"}
-		default:
-			t.Fatalf("unexpected bot method: %s", method)
-			return nil
-		}
+		t.Fatalf("unexpected bot method: %s", method)
+		return nil
 	})
 	store := &testGatekeeperStore{joiners: []*db.RecentJoiner{{ChatID: 100, UserID: 200}}}
-	banChecker := &testGatekeeperBanChecker{banned: true}
+	banChecker := &testGatekeeperBanChecker{
+		banned: true,
+		banErr: errors.New("Bad Request: CHAT_ADMIN_REQUIRED"),
+	}
 	gatekeeper := &Gatekeeper{
 		bot:        botAPI,
 		s:          &testBotService{botAPI: botAPI},

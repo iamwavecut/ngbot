@@ -274,6 +274,48 @@ func TestHandleMessageReactionSkipsRememberedNonMember(t *testing.T) {
 	}
 }
 
+func TestHandleMessageReactionBanlistedMemberBypassesProfileModeration(t *testing.T) {
+	t.Parallel()
+
+	deleteReactionCalls := 0
+	banCalls := 0
+	botAPI := newTestBotAPI(t, func(method string, _ *http.Request) any {
+		switch method {
+		case testTelegramMethodDeleteAllReactions:
+			deleteReactionCalls++
+			return true
+		case testTelegramMethodBanChatMember:
+			banCalls++
+			return true
+		default:
+			t.Fatalf("unexpected bot method: %s", method)
+			return nil
+		}
+	})
+	detector := &testSpamDetector{result: boolPtr(false)}
+	banService := &testBanService{checkBan: true}
+	reactor := &Reactor{
+		s:            &testBotService{botAPI: botAPI, isMember: true},
+		bot:          botAPI,
+		store:        &testReactorStore{knownNonMember: true},
+		spamDetector: detector,
+		banService:   banService,
+	}
+	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
+	user := &api.User{ID: 200, UserName: "known_spammer"}
+	reaction := &api.MessageReactionUpdated{Chat: *chat, MessageID: 42, User: user}
+
+	if err := reactor.moderateReactionUser(context.Background(), reaction, chat, user, reactor.getLogEntry()); err != nil {
+		t.Fatalf("moderate banlisted reactor: %v", err)
+	}
+	if detector.calls != 0 {
+		t.Fatalf("expected no profile LLM call, got %d", detector.calls)
+	}
+	if deleteReactionCalls != 1 || banCalls != 1 {
+		t.Fatalf("expected direct reaction cleanup and ban, deletes=%d bans=%d", deleteReactionCalls, banCalls)
+	}
+}
+
 func TestHandleMessageReactionModeratesActorChatProfileSpam(t *testing.T) {
 	t.Parallel()
 

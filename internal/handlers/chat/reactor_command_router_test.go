@@ -464,6 +464,64 @@ func TestVoteBanCommandLLMSpamBansImmediatelyAndDeletesReportMessage(t *testing.
 	}
 }
 
+func TestVoteBanCommandBanlistedTargetBypassesLLMAndModerationCase(t *testing.T) {
+	t.Parallel()
+
+	deletedMessages := make(map[string]int)
+	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
+		switch method {
+		case testTelegramMethodDeleteMessage:
+			if err := r.ParseForm(); err != nil {
+				t.Fatalf("parse form: %v", err)
+			}
+			deletedMessages[r.Form.Get(logFieldMessageID)]++
+			return true
+		case testTelegramMethodSendMessage:
+			return map[string]any{
+				logFieldMessageID: 70,
+				testJSONDate:      0,
+				logFieldChat: map[string]any{
+					"id":         -100,
+					testJSONType: testChatTypeSupergroup,
+				},
+			}
+		default:
+			t.Fatalf("unexpected bot method: %s", method)
+			return nil
+		}
+	})
+	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
+	actor := &api.User{ID: 100, FirstName: testFirstNameActor}
+	target := &api.User{ID: 200, FirstName: testFirstNameTarget}
+	reply := &api.Message{MessageID: 40, Chat: *chat, From: target, Text: "known banned text"}
+	command := &api.Message{MessageID: 50, Chat: *chat, From: actor, Text: testVoteBanCommand, ReplyToMessage: reply}
+	detector := &testSpamDetector{reportedResult: boolPtr(true)}
+	banService := &testBanService{knownBanned: true}
+	reactor := &Reactor{
+		s:            &testBotService{botAPI: botAPI, language: "en"},
+		bot:          botAPI,
+		spamDetector: detector,
+		banService:   banService,
+		processBanned: func(context.Context, *api.Message, *api.Chat, string) (*moderation.ProcessingResult, error) {
+			t.Fatal("banlisted report target must not create a moderation case")
+			return nil, nil
+		},
+	}
+
+	if err := reactor.voteBanCommand(context.Background(), command, chat, actor, &db.Settings{CommunityVotingEnabled: true}); err != nil {
+		t.Fatalf("voteBanCommand returned error: %v", err)
+	}
+	if detector.reportedCalls != 0 {
+		t.Fatalf("expected no reported-message LLM call, got %d", detector.reportedCalls)
+	}
+	if len(banService.bans) != 1 || banService.bans[0].messageID != reply.MessageID {
+		t.Fatalf("unexpected direct ban: %#v", banService.bans)
+	}
+	if deletedMessages["40"] != 1 || deletedMessages["50"] != 1 {
+		t.Fatalf("expected target and report cleanup, got %#v", deletedMessages)
+	}
+}
+
 func TestMessageMentionCurrentBotTriggersReportFlow(t *testing.T) {
 	t.Parallel()
 

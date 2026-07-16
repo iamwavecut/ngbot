@@ -351,10 +351,6 @@ func (g *Gatekeeper) Handle(ctx context.Context, u *api.Update, chat *api.Chat, 
 		if err != nil {
 			return true, err
 		}
-		if !settings.GatekeeperEnabled {
-			entry.Debug("gatekeeper is disabled for this chat")
-			return true, nil
-		}
 		g.handleChatMember(ctx, u, settings)
 		return true, nil
 	case updateTypeChatJoinRequest:
@@ -363,19 +359,11 @@ func (g *Gatekeeper) Handle(ctx context.Context, u *api.Update, chat *api.Chat, 
 		if err != nil {
 			return true, err
 		}
-		if !settings.GatekeeperEnabled {
-			entry.Debug("gatekeeper is disabled for this chat")
-			return true, nil
-		}
 		return true, g.handleChatJoinRequest(ctx, u, settings)
 	case updateTypeNewChatMembers:
 		settings, err := g.fetchAndValidateSettings(ctx, chat.ID)
 		if err != nil {
 			return true, err
-		}
-		if !settings.GatekeeperEnabled {
-			entry.Debug("gatekeeper is disabled for this chat")
-			return true, nil
 		}
 		return true, g.handleNewChatMembersV2(ctx, u, chat, settings)
 	default:

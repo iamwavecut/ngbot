@@ -218,6 +218,29 @@ func (r *Reactor) voteBanCommand(ctx context.Context, msg *api.Message, chat *ap
 
 	language := r.s.GetLanguage(ctx, chat.ID, user)
 	target := msg.ReplyToMessage
+	if r.banService != nil {
+		isBanlisted := r.banService.IsKnownBanned(target.From.ID)
+		if !isBanlisted {
+			isBanlisted, err = r.banService.CheckBan(ctx, target.From.ID)
+			if err != nil {
+				return errors.Wrap(err, "failed to check reported user banlist")
+			}
+		}
+		if isBanlisted {
+			outcome := enforceBanlistedMessage(ctx, r.bot, r.banService, target, chat, target.From)
+			if outcome.err != nil {
+				entry.WithError(outcome.err).Error("failed to enforce terminal banlist action for reported user")
+			}
+			if outcome.userBanned {
+				if err := r.s.DeleteMember(ctx, chat.ID, target.From.ID); err != nil {
+					entry.WithError(err).Error("failed to forget directly banned member")
+				}
+				_ = r.sendTemporaryReply(ctx, msg, i18n.Get("Reported message was confirmed as spam. The user was banned.", language))
+			}
+			r.deleteReportMessage(ctx, msg)
+			return nil
+		}
+	}
 	isReportedSpam, err := r.checkReportedMessageForSpam(ctx, chat.ID, bot.ExtractContentFromMessage(target))
 	if err != nil {
 		entry.WithError(err).Warn("reported spam LLM check failed; falling back to report flow")

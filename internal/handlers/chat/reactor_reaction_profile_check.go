@@ -59,6 +59,14 @@ func (r *Reactor) moderateReactionUser(ctx context.Context, reaction *api.Messag
 		logFieldUsername: user.UserName,
 	})
 
+	isBanned, err := r.banService.CheckBan(ctx, user.ID)
+	if err != nil {
+		return fmt.Errorf("check reaction user banlist: %w", err)
+	}
+	if isBanned {
+		return r.punishReactionUser(ctx, chat.ID, reaction.MessageID, user.ID, entry)
+	}
+
 	isMember, err := r.s.IsMember(ctx, chat.ID, user.ID)
 	if err != nil {
 		return fmt.Errorf("check reaction user membership: %w", err)
@@ -92,14 +100,6 @@ func (r *Reactor) moderateReactionUser(ctx context.Context, reaction *api.Messag
 	}
 	if err != nil {
 		entry.WithError(err).Debug("failed to check reaction user chat membership, continuing as external reactor")
-	}
-
-	isBanned, err := r.banService.CheckBan(ctx, user.ID)
-	if err != nil {
-		return fmt.Errorf("check reaction user banlist: %w", err)
-	}
-	if isBanned {
-		return r.punishReactionUser(ctx, chat.ID, reaction.MessageID, user.ID, entry)
 	}
 
 	profileText := r.buildReactionUserProfileText(ctx, user, entry)

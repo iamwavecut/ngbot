@@ -10,8 +10,6 @@ import (
 	api "github.com/OvyFlash/telegram-bot-api"
 	"github.com/iamwavecut/ngbot/internal/bot"
 	"github.com/iamwavecut/ngbot/internal/db"
-	moderation "github.com/iamwavecut/ngbot/internal/handlers/moderation"
-	"github.com/iamwavecut/tool"
 	"github.com/pborman/uuid"
 	log "github.com/sirupsen/logrus"
 )
@@ -37,6 +35,17 @@ func (g *Gatekeeper) processNewChatMembers(ctx context.Context) error {
 			if err := g.store.ProcessRecentJoiner(ctx, joiner.ChatID, joiner.UserID, false); err != nil {
 				entry.WithField(logFieldError, err.Error()).Error("failed to close no-rights recent joiner")
 			}
+			continue
+		}
+		banned, err := g.banChecker.CheckBan(ctx, joiner.UserID)
+		if err != nil {
+			entry.WithField(logFieldError, err.Error()).Error("failed to check ban")
+			continue
+		}
+		if banned {
+			entry.WithField(logFieldUserID, joiner.UserID).Info("recent joiner is banned")
+			banErr := g.processKnownBannedJoinedUser(ctx, joiner.ChatID, joiner.UserID, joiner.JoinMessageID)
+			g.completeKnownBannedRecentJoiner(ctx, joiner.ChatID, joiner.UserID, banErr)
 			continue
 		}
 		chatMember, err := bot.GetChatMember(ctx, g.bot, api.GetChatMemberConfig{
@@ -85,46 +94,7 @@ func (g *Gatekeeper) processNewChatMembers(ctx context.Context) error {
 			}
 			continue
 		}
-
-		banned, err := g.banChecker.CheckBan(ctx, joiner.UserID)
-		if err != nil {
-			entry.WithField(logFieldError, err.Error()).Error("failed to check ban")
-			continue
-		}
-		if banned {
-			entry.WithField("userID", joiner.UserID).Info("recent joiner is banned")
-			banErr := bot.BanUserFromChat(ctx, g.bot, joiner.UserID, joiner.ChatID, 0)
-			if banErr != nil {
-				entry.WithField(logFieldError, banErr.Error()).Error("failed to ban user")
-				if moderation.IsTelegramPrivilegeError(banErr) {
-					g.banChecker.MarkModerationUnavailable(joiner.ChatID)
-					if err := g.store.ProcessRecentJoiner(ctx, joiner.ChatID, joiner.UserID, false); err != nil {
-						entry.WithField(logFieldError, err.Error()).Error("failed to close privilege-blocked recent joiner")
-					}
-				}
-			}
-			if g.config.SpamControl.DebugUserID != 0 {
-				errMsg := ""
-				if banErr != nil {
-					errMsg = banErr.Error()
-				}
-				debugMsg := tool.ExecTemplate(`Banned joiner: {{ .user_name }} ({{ .user_id }}){{ if .error }} {{ .error }}{{end}}`, map[string]any{
-					"user_name":    joiner.Username,
-					logFieldUserID: joiner.UserID,
-					logFieldError:  errMsg,
-				})
-				_, _ = bot.Send(ctx, g.bot, api.NewMessage(g.config.SpamControl.DebugUserID, debugMsg))
-			}
-			if banErr != nil {
-				continue
-			}
-			if joiner.JoinMessageID != 0 {
-				if err := bot.DeleteChatMessage(ctx, g.bot, joiner.ChatID, joiner.JoinMessageID); err != nil {
-					entry.WithField(logFieldError, err.Error()).Error("failed to delete join message")
-				}
-			}
-		}
-		if err := g.store.ProcessRecentJoiner(ctx, joiner.ChatID, joiner.UserID, banned); err != nil {
+		if err := g.store.ProcessRecentJoiner(ctx, joiner.ChatID, joiner.UserID, false); err != nil {
 			entry.WithField(logFieldError, err.Error()).Error("failed to process recent joiner")
 		}
 	}

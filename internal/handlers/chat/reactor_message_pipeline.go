@@ -81,6 +81,9 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 		result.SkipReason = messageSkipReasonNoModerationRights
 		return nil
 	}
+	if r.banService.IsKnownBanned(user.ID) {
+		return r.enforceBanlistedMessage(ctx, msg, chat, user, result, entry)
+	}
 
 	isMember, err := r.s.IsMember(ctx, chat.ID, user.ID)
 	if err != nil {
@@ -89,11 +92,19 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 	}
 
 	result.Stage = StageMembershipCheck
-	knownBannedMember := isMember && r.banService.IsKnownBanned(user.ID)
-	if isMember && !knownBannedMember {
+	if isMember {
 		result.Skipped = true
 		result.SkipReason = messageSkipReasonAlreadyMember
 		return nil
+	}
+
+	result.Stage = StageBanCheck
+	isBanned, err := r.banService.CheckBan(ctx, user.ID)
+	if err != nil {
+		return errors.Wrap(err, "failed to check ban")
+	}
+	if isBanned {
+		return r.enforceBanlistedMessage(ctx, msg, chat, user, result, entry)
 	}
 
 	if r.isChatAdministrator(ctx, chat.ID, user.ID, entry) {
@@ -114,45 +125,6 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 		result.Skipped = true
 		result.SkipReason = "User is manually marked as not spammer"
 		return r.rememberAuthorIfPossible(ctx, chat, user, entry)
-	}
-
-	result.Stage = StageBanCheck
-
-	isBanned := knownBannedMember
-	if !isBanned {
-		isBanned, err = r.banService.CheckBan(ctx, user.ID)
-		if err != nil {
-			return errors.Wrap(err, "failed to check ban")
-		}
-	}
-	if isBanned {
-		result.Skipped = true
-		result.SkipReason = "User is banned"
-		if r.config.SpamControl.DebugUserID != 0 {
-			debugMsg := tool.ExecTemplate(`Banned user: {{ .user_name }} ({{ .user_id }})`, map[string]any{
-				"user_name":    bot.GetUN(user),
-				logFieldUserID: user.ID,
-			})
-			_, _ = bot.Send(ctx, r.bot, api.NewMessage(r.config.SpamControl.DebugUserID, debugMsg))
-		}
-		processingResult, err := r.processBanned(ctx, msg, chat, language)
-		if err != nil {
-			entry.WithField(logFieldError, err.Error()).Error("failed to process banned message")
-			result.Actions.Error = err.Error()
-		} else if processingResult != nil {
-			result.Actions.MessageDeleted = processingResult.MessageDeleted
-			result.Actions.UserBanned = processingResult.UserBanned
-			result.Actions.Error = processingResult.Error
-			if !processingResult.MessageDeleted || !processingResult.UserBanned {
-				result.SkipReason += fmt.Sprintf(" (Actions: message_deleted=%v, user_banned=%v",
-					processingResult.MessageDeleted, processingResult.UserBanned)
-				if processingResult.Error != "" {
-					result.SkipReason += fmt.Sprintf(", error=%s", processingResult.Error)
-				}
-				result.SkipReason += ")"
-			}
-		}
-		return nil
 	}
 
 	isKnownNonMember, err := r.store.IsChatKnownNonMember(ctx, chat.ID, user.ID)
@@ -266,6 +238,31 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 		}
 	}
 
+	return nil
+}
+
+func (r *Reactor) enforceBanlistedMessage(
+	ctx context.Context,
+	msg *api.Message,
+	chat *api.Chat,
+	user *api.User,
+	result *MessageProcessingResult,
+	entry *log.Entry,
+) error {
+	result.Stage = StageBanCheck
+	result.Skipped = true
+	result.SkipReason = "User is banned"
+
+	outcome := enforceBanlistedMessage(ctx, r.bot, r.banService, msg, chat, user)
+	result.Actions.MessageDeleted = outcome.messageDeleted
+	result.Actions.UserBanned = outcome.userBanned
+	if !outcome.moderationAvailable {
+		result.SkipReason = messageSkipReasonNoModerationRights
+	}
+	if outcome.err != nil {
+		result.Actions.Error = outcome.err.Error()
+		entry.WithField(logFieldError, outcome.err.Error()).Error("failed to enforce terminal banlist action")
+	}
 	return nil
 }
 
