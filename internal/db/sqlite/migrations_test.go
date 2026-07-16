@@ -45,7 +45,7 @@ func TestSQLiteEnforcesForeignKeysAndCascades(t *testing.T) {
 	if err := client.db.GetContext(ctx, &journalMode, "PRAGMA journal_mode"); err != nil {
 		t.Fatalf("read journal mode: %v", err)
 	}
-	if journalMode != "wal" {
+	if journalMode != walJournalMode {
 		t.Fatalf("journal mode = %q, want wal", journalMode)
 	}
 	var journalSizeLimit int64

@@ -19,6 +19,7 @@ import (
 
 const (
 	migrationsRoot         = "migrations"
+	walJournalMode         = "wal"
 	journalSizeLimitBytes  = 64 << 20
 	walAutoCheckpointPages = 1_000
 	incrementalAutoVacuum  = 2
@@ -76,7 +77,7 @@ func NewSQLiteClient(ctx context.Context, dataDir string, dbPath string) (*sqlit
 	if err := dbx.GetContext(ctx, &journalMode, "PRAGMA journal_mode = WAL"); err != nil {
 		return nil, fmt.Errorf("enable WAL journal mode: %w", err)
 	}
-	if journalMode != "wal" {
+	if journalMode != walJournalMode {
 		return nil, fmt.Errorf("WAL journal mode is disabled: %s", journalMode)
 	}
 	var journalSizeLimit int64
@@ -183,7 +184,7 @@ func MaintainDatabase(ctx context.Context, dataDir string, dbPath string) error 
 	if err := dbx.GetContext(ctx, &journalMode, `PRAGMA journal_mode = WAL`); err != nil {
 		return fmt.Errorf("restore WAL journal mode: %w", err)
 	}
-	if journalMode != "wal" {
+	if journalMode != walJournalMode {
 		return fmt.Errorf("WAL journal mode is unavailable after maintenance: %s", journalMode)
 	}
 	var journalSizeLimit int64

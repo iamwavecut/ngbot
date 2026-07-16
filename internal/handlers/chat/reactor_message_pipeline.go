@@ -89,7 +89,8 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 	}
 
 	result.Stage = StageMembershipCheck
-	if isMember {
+	knownBannedMember := isMember && r.banService.IsKnownBanned(user.ID)
+	if isMember && !knownBannedMember {
 		result.Skipped = true
 		result.SkipReason = messageSkipReasonAlreadyMember
 		return nil
@@ -117,9 +118,12 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 
 	result.Stage = StageBanCheck
 
-	isBanned, err := r.banService.CheckBan(ctx, user.ID)
-	if err != nil {
-		return errors.Wrap(err, "failed to check ban")
+	isBanned := knownBannedMember
+	if !isBanned {
+		isBanned, err = r.banService.CheckBan(ctx, user.ID)
+		if err != nil {
+			return errors.Wrap(err, "failed to check ban")
+		}
 	}
 	if isBanned {
 		result.Skipped = true
@@ -131,7 +135,7 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 			})
 			_, _ = bot.Send(ctx, r.bot, api.NewMessage(r.config.SpamControl.DebugUserID, debugMsg))
 		}
-		processingResult, err := r.spamControl.ProcessBannedMessage(ctx, msg, chat, language)
+		processingResult, err := r.processBanned(ctx, msg, chat, language)
 		if err != nil {
 			entry.WithField(logFieldError, err.Error()).Error("failed to process banned message")
 			result.Actions.Error = err.Error()

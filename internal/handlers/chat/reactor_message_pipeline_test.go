@@ -118,6 +118,7 @@ func (d *testSpamDetector) IsReportedSpam(_ context.Context, message string, _ [
 type testBanService struct {
 	checkBanCalls         int
 	checkBan              bool
+	knownBanned           bool
 	moderationUnavailable bool
 	markedUnavailable     bool
 }
@@ -143,7 +144,7 @@ func (s *testBanService) BanUserWithMessage(context.Context, int64, int64, int) 
 func (s *testBanService) UnbanUser(context.Context, int64, int64) error               { return nil }
 func (s *testBanService) IsRestricted(context.Context, int64, int64) (bool, error)    { return false, nil }
 
-func (s *testBanService) IsKnownBanned(int64) bool { return false }
+func (s *testBanService) IsKnownBanned(int64) bool { return s.knownBanned }
 
 type testNotSpammerStore struct {
 	testReactorStore
@@ -457,10 +458,11 @@ func TestHandleMessageNotSpammerOverrideBypassesBanAndLLM(t *testing.T) {
 
 	service := &testBotService{
 		botAPI:   botAPI,
+		isMember: true,
 		language: "ru",
 	}
 	detector := &testSpamDetector{}
-	banService := &testBanService{}
+	banService := &testBanService{knownBanned: true}
 	processSpamCalls := 0
 	r := &Reactor{
 		s:            service,
@@ -578,9 +580,9 @@ func TestHandleMessageChatAdministratorBypassesBanAndLLM(t *testing.T) {
 		}
 	})
 
-	service := &testBotService{botAPI: botAPI}
+	service := &testBotService{botAPI: botAPI, isMember: true}
 	detector := &testSpamDetector{result: boolPtr(true)}
-	banService := &testBanService{}
+	banService := &testBanService{knownBanned: true}
 	processSpamCalls := 0
 	r := &Reactor{
 		s:            service,
@@ -883,6 +885,59 @@ func TestHandleMessageExternalQuoteHeuristicDoesNotTriggerForNonFirstMessage(t *
 	}
 	if result.SkipReason != "User is already a member" {
 		t.Fatalf("unexpected skip reason: %q", result.SkipReason)
+	}
+}
+
+func TestHandleMessageKnownBannedMemberIsModerated(t *testing.T) {
+	t.Parallel()
+
+	botAPI := newTestBotAPI(t, func(method string, _ *http.Request) any {
+		if method == testTelegramMethodGetChatMember {
+			return testChatMemberResponse(telegramMemberStatus, false, false, false)
+		}
+		t.Fatalf("unexpected bot method: %s", method)
+		return nil
+	})
+	service := &testBotService{botAPI: botAPI, isMember: true}
+	detector := &testSpamDetector{}
+	banService := &testBanService{knownBanned: true}
+	processBannedCalls := 0
+	reactor := &Reactor{
+		s:            service,
+		bot:          service.GetBot(),
+		store:        &testReactorStore{},
+		spamDetector: detector,
+		banService:   banService,
+		processBanned: func(context.Context, *api.Message, *api.Chat, string) (*moderation.ProcessingResult, error) {
+			processBannedCalls++
+			return &moderation.ProcessingResult{MessageDeleted: true, UserBanned: true}, nil
+		},
+		lastResults: make(map[messageResultKey]*MessageProcessingResult),
+	}
+
+	chat := &api.Chat{ID: 100, Type: testChatTypeSupergroup}
+	user := &api.User{ID: 200}
+	msg := &api.Message{MessageID: 15, Chat: *chat, From: user, Text: "known banned member message"}
+
+	if err := reactor.handleMessage(context.Background(), msg, chat, user, &db.Settings{LLMFirstMessageEnabled: true}); err != nil {
+		t.Fatalf("handleMessage returned error: %v", err)
+	}
+	if processBannedCalls != 1 {
+		t.Fatalf("expected known banned member moderation, got %d calls", processBannedCalls)
+	}
+	if banService.checkBanCalls != 0 {
+		t.Fatalf("expected in-memory banlist lookup without online checks, got %d calls", banService.checkBanCalls)
+	}
+	if detector.calls != 0 {
+		t.Fatalf("expected LLM detector not to be called, got %d calls", detector.calls)
+	}
+
+	result := reactor.GetLastProcessingResult(chat.ID, msg.MessageID)
+	if result == nil || !result.Skipped || result.SkipReason != "User is banned" {
+		t.Fatalf("unexpected processing result: %#v", result)
+	}
+	if !result.Actions.MessageDeleted || !result.Actions.UserBanned {
+		t.Fatalf("expected destructive moderation actions, got %#v", result.Actions)
 	}
 }
 

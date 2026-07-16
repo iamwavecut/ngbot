@@ -66,7 +66,7 @@ func TestMaintainDatabaseCompactsAndRestoresRuntimePragmas(t *testing.T) {
 	if err := reopened.db.GetContext(ctx, &journalMode, `PRAGMA journal_mode`); err != nil {
 		t.Fatalf("read maintained journal mode: %v", err)
 	}
-	if journalMode != "wal" {
+	if journalMode != walJournalMode {
 		t.Fatalf("maintained journal mode = %q, want wal", journalMode)
 	}
 }
