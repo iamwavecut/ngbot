@@ -40,6 +40,38 @@ func TestBanlistGuardStopsCommandBeforeDownstreamHandlers(t *testing.T) {
 	}
 }
 
+func TestBanlistGuardStopsEditedMessageBeforeDownstreamHandlers(t *testing.T) {
+	t.Parallel()
+
+	deleteCalls := 0
+	botAPI := newTestBotAPI(t, func(method string, _ *http.Request) any {
+		if method != testTelegramMethodDeleteMessage {
+			t.Fatalf("unexpected bot method: %s", method)
+		}
+		deleteCalls++
+		return true
+	})
+	banService := &testBanService{knownBanned: true}
+	guard := NewBanlistGuard(botAPI, banService)
+	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
+	user := &api.User{ID: 200}
+	message := &api.Message{MessageID: 43, Chat: *chat, From: user, Text: "edited spam"}
+
+	proceed, err := guard.Handle(context.Background(), &api.Update{EditedMessage: message}, chat, user)
+	if err != nil {
+		t.Fatalf("handle edited banlisted message: %v", err)
+	}
+	if proceed {
+		t.Fatal("expected terminal banlist guard to stop edited message")
+	}
+	if len(banService.bans) != 1 || banService.bans[0].messageID != message.MessageID {
+		t.Fatalf("unexpected direct bans: %#v", banService.bans)
+	}
+	if deleteCalls != 1 {
+		t.Fatalf("expected edited message deletion, got %d calls", deleteCalls)
+	}
+}
+
 func TestBanlistGuardNoRightsStopsWithoutTelegramRetry(t *testing.T) {
 	t.Parallel()
 

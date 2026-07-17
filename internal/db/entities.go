@@ -143,6 +143,14 @@ type (
 		UpdatedAt time.Time `db:"updated_at"`
 	}
 
+	MessageProbation struct {
+		ChatID      int64        `db:"chat_id"`
+		UserID      int64        `db:"user_id"`
+		StartedAt   time.Time    `db:"started_at"`
+		EligibleAt  time.Time    `db:"eligible_at"`
+		GraduatedAt sql.NullTime `db:"graduated_at"`
+	}
+
 	ChatNotSpammerOverride struct {
 		ID              int64     `db:"id"`
 		ChatID          int64     `db:"chat_id"`

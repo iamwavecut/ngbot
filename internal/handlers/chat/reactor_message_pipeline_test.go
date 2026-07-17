@@ -2,8 +2,11 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strconv"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,11 +20,12 @@ import (
 )
 
 type testBotService struct {
-	botAPI         *api.BotAPI
-	isMember       bool
-	language       string
-	settings       *db.Settings
-	insertedMember int
+	botAPI          *api.BotAPI
+	isMember        bool
+	language        string
+	settings        *db.Settings
+	insertedMember  int
+	insertMemberErr error
 }
 
 func (s *testBotService) GetBot() *api.BotAPI {
@@ -36,6 +40,9 @@ func (s *testBotService) IsMember(context.Context, int64, int64) (bool, error) {
 }
 
 func (s *testBotService) InsertMember(context.Context, int64, int64) error {
+	if s.insertMemberErr != nil {
+		return s.insertMemberErr
+	}
 	s.insertedMember++
 	return nil
 }
@@ -60,9 +67,21 @@ func (s *testBotService) GetLanguage(context.Context, int64, *api.User) string {
 }
 
 type testReactorStore struct {
+	mutex          sync.Mutex
 	knownNonMember bool
 	upserted       []db.ChatKnownNonMember
 	deleted        [][2]int64
+	challenged     map[messageResultKey]int64
+	recordError    error
+	probations     map[messageProbationKey]db.MessageProbation
+	probationError error
+	graduateError  error
+	upsertError    error
+}
+
+type messageProbationKey struct {
+	chatID int64
+	userID int64
 }
 
 func (s *testReactorStore) ListChatSpamExamples(context.Context, int64, int, int) ([]*db.ChatSpamExample, error) {
@@ -73,11 +92,118 @@ func (s *testReactorStore) IsChatNotSpammer(context.Context, int64, int64, strin
 	return false, nil
 }
 
+func (s *testReactorStore) RecordChallengedMessage(_ context.Context, chatID int64, userID int64, messageID int) (bool, error) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	if s.recordError != nil {
+		return false, s.recordError
+	}
+	if s.challenged == nil {
+		s.challenged = make(map[messageResultKey]int64)
+	}
+	key := messageResultKey{ChatID: chatID, MessageID: messageID}
+	if _, exists := s.challenged[key]; exists {
+		return false, nil
+	}
+	s.challenged[key] = userID
+	return true, nil
+}
+
+func TestChallengeMarkerFailureDoesNotRememberAuthor(t *testing.T) {
+	t.Parallel()
+
+	botAPI := newTestBotAPI(t, func(method string, _ *http.Request) any {
+		if method != testTelegramMethodGetChatMember {
+			t.Fatalf("unexpected bot method: %s", method)
+		}
+		return testChatMemberResponse(telegramMemberStatus, false, false, false)
+	})
+	service := &testBotService{botAPI: botAPI}
+	store := &testReactorStore{recordError: errors.New("marker write failed")}
+	reactor := &Reactor{
+		s:            service,
+		bot:          botAPI,
+		store:        store,
+		spamDetector: &testSpamDetector{result: boolPtr(false)},
+		banService:   &testBanService{},
+		lastResults:  make(map[messageResultKey]*MessageProcessingResult),
+	}
+	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
+	user := &api.User{ID: 200, FirstName: testFirstNameUser}
+	message := &api.Message{MessageID: 301, Chat: *chat, From: user, Text: "safe first message"}
+
+	err := reactor.handleMessage(t.Context(), message, chat, user, &db.Settings{LLMFirstMessageEnabled: true})
+	if err == nil || !strings.Contains(err.Error(), "record challenged message") {
+		t.Fatalf("handle message error = %v, want marker failure", err)
+	}
+	if service.insertedMember != 0 {
+		t.Fatalf("author remembered without durable marker: %d", service.insertedMember)
+	}
+}
+
+func (s *testReactorStore) IsChallengedMessage(_ context.Context, chatID int64, userID int64, messageID int) (bool, error) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	storedUserID, ok := s.challenged[messageResultKey{ChatID: chatID, MessageID: messageID}]
+	return ok && storedUserID == userID, nil
+}
+
+func (s *testReactorStore) MessageProbation(_ context.Context, chatID int64, userID int64) (*db.MessageProbation, error) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	if s.probationError != nil {
+		return nil, s.probationError
+	}
+	probation, ok := s.probations[messageProbationKey{chatID: chatID, userID: userID}]
+	if !ok {
+		return nil, nil
+	}
+	return &probation, nil
+}
+
+func (s *testReactorStore) GetOrCreateMessageProbation(_ context.Context, chatID int64, userID int64, startedAt time.Time, eligibleAt time.Time) (*db.MessageProbation, bool, error) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	if s.probationError != nil {
+		return nil, false, s.probationError
+	}
+	if s.probations == nil {
+		s.probations = make(map[messageProbationKey]db.MessageProbation)
+	}
+	key := messageProbationKey{chatID: chatID, userID: userID}
+	probation, ok := s.probations[key]
+	if !ok {
+		probation = db.MessageProbation{ChatID: chatID, UserID: userID, StartedAt: startedAt, EligibleAt: eligibleAt}
+		s.probations[key] = probation
+	}
+	return &probation, !ok, nil
+}
+
+func (s *testReactorStore) MarkMessageProbationGraduated(_ context.Context, chatID int64, userID int64, graduatedAt time.Time) error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	if s.graduateError != nil {
+		return s.graduateError
+	}
+	key := messageProbationKey{chatID: chatID, userID: userID}
+	probation, ok := s.probations[key]
+	if !ok {
+		return errors.New("probation not found")
+	}
+	probation.GraduatedAt.Time = graduatedAt
+	probation.GraduatedAt.Valid = true
+	s.probations[key] = probation
+	return nil
+}
+
 func (s *testReactorStore) IsChatKnownNonMember(context.Context, int64, int64) (bool, error) {
 	return s.knownNonMember, nil
 }
 
 func (s *testReactorStore) UpsertChatKnownNonMember(_ context.Context, record *db.ChatKnownNonMember) error {
+	if s.upsertError != nil {
+		return s.upsertError
+	}
 	if record != nil {
 		s.upserted = append(s.upserted, *record)
 		s.knownNonMember = true
@@ -98,12 +224,13 @@ type testSpamDetector struct {
 	reportedMessages []string
 	result           *bool
 	reportedResult   *bool
+	err              error
 }
 
 func (d *testSpamDetector) IsSpam(_ context.Context, message string, _ []string) (*bool, error) {
 	d.calls++
 	d.messages = append(d.messages, message)
-	return d.result, nil
+	return d.result, d.err
 }
 
 func (d *testSpamDetector) IsReportedSpam(_ context.Context, message string, _ []string) (*bool, error) {
@@ -161,6 +288,182 @@ func (s *testNotSpammerStore) IsChatNotSpammer(context.Context, int64, int64, st
 
 func boolPtr(value bool) *bool {
 	return &value
+}
+
+func TestFirstMessageDeletionEvasionKeepsSecondMessageUnderChallenge(t *testing.T) {
+	t.Parallel()
+
+	botAPI := newTestBotAPI(t, func(method string, _ *http.Request) any {
+		if method != testTelegramMethodGetChatMember {
+			t.Fatalf("unexpected bot method: %s", method)
+		}
+		return testChatMemberResponse(telegramMemberStatus, false, false, false)
+	})
+	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
+	user := &api.User{ID: 200, FirstName: testFirstNameUser}
+	settings := db.DefaultSettings(chat.ID)
+	settings.LLMFirstMessageEnabled = true
+	service := &testBotService{botAPI: botAPI, settings: settings}
+	store := &testReactorStore{}
+	detector := &testSpamDetector{result: boolPtr(false)}
+	processedSpam := 0
+	reactor := &Reactor{
+		s:            service,
+		bot:          botAPI,
+		store:        store,
+		spamDetector: detector,
+		banService:   &testBanService{},
+		processSpam: func(context.Context, *api.Message, *api.Chat, string) (*moderation.ProcessingResult, error) {
+			processedSpam++
+			return &moderation.ProcessingResult{MessageDeleted: true, UserBanned: true}, nil
+		},
+		lastResults: make(map[messageResultKey]*MessageProcessingResult),
+	}
+
+	first := &api.Message{MessageID: 300, Chat: *chat, From: user, Text: "safe first message"}
+	if err := reactor.handleMessage(t.Context(), first, chat, user, settings); err != nil {
+		t.Fatalf("handle safe first message: %v", err)
+	}
+	if detector.calls != 1 || service.insertedMember != 0 {
+		t.Fatalf("first challenge calls=%d inserted=%d, want calls=1 inserted=0", detector.calls, service.insertedMember)
+	}
+
+	detector.result = boolPtr(true)
+	second := &api.Message{MessageID: 301, Chat: *chat, From: user, Text: "spam after deleting first message"}
+	if err := reactor.handleMessage(t.Context(), second, chat, user, settings); err != nil {
+		t.Fatalf("handle spam second message: %v", err)
+	}
+	if detector.calls != 2 {
+		t.Fatalf("second message bypassed challenge: calls=%d, want 2", detector.calls)
+	}
+	if processedSpam != 1 {
+		t.Fatalf("spam processing calls=%d, want 1", processedSpam)
+	}
+	if service.insertedMember != 0 {
+		t.Fatalf("spam author was trusted: inserted=%d", service.insertedMember)
+	}
+}
+
+func TestEditedChallengedMessageIsRechecked(t *testing.T) {
+	t.Parallel()
+
+	botAPI := newTestBotAPI(t, func(method string, _ *http.Request) any {
+		if method != testTelegramMethodGetChatMember {
+			t.Fatalf("unexpected bot method: %s", method)
+		}
+		return testChatMemberResponse(telegramMemberStatus, false, false, false)
+	})
+	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
+	user := &api.User{ID: 200, FirstName: testFirstNameUser}
+	settings := db.DefaultSettings(chat.ID)
+	settings.LLMFirstMessageEnabled = true
+	service := &testBotService{botAPI: botAPI, settings: settings}
+	store := &testReactorStore{}
+	detector := &testSpamDetector{result: boolPtr(false)}
+	processedSpam := 0
+	now := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
+	reactor := &Reactor{
+		s:            service,
+		bot:          botAPI,
+		store:        store,
+		spamDetector: detector,
+		banService:   &testBanService{},
+		processSpam: func(context.Context, *api.Message, *api.Chat, string) (*moderation.ProcessingResult, error) {
+			processedSpam++
+			return &moderation.ProcessingResult{MessageDeleted: true, UserBanned: true}, nil
+		},
+		lastResults: make(map[messageResultKey]*MessageProcessingResult),
+		now:         func() time.Time { return now },
+	}
+	message := &api.Message{
+		MessageID: 300,
+		Chat:      *chat,
+		From:      user,
+		Date:      now.Unix(),
+		Text:      "safe first message",
+	}
+
+	proceed, err := reactor.Handle(t.Context(), &api.Update{Message: message}, chat, user)
+	if err != nil || !proceed {
+		t.Fatalf("handle first message: proceed=%t err=%v", proceed, err)
+	}
+	if detector.calls != 1 || service.insertedMember != 0 {
+		t.Fatalf("first challenge calls=%d inserted=%d, want calls=1 inserted=0", detector.calls, service.insertedMember)
+	}
+	challenged, err := store.IsChallengedMessage(t.Context(), chat.ID, user.ID, message.MessageID)
+	if err != nil || !challenged {
+		t.Fatalf("challenged marker: challenged=%t err=%v", challenged, err)
+	}
+
+	detector.result = boolPtr(true)
+	activeUnmarkedEdit := *message
+	activeUnmarkedEdit.MessageID += 100
+	activeUnmarkedEdit.EditDate = now.Add(time.Minute).Unix()
+	activeUnmarkedEdit.Text = "spam added to rich message caption"
+	proceed, err = reactor.Handle(t.Context(), &api.Update{EditedMessage: &activeUnmarkedEdit}, chat, user)
+	if err != nil || !proceed {
+		t.Fatalf("handle active unmarked edit: proceed=%t err=%v", proceed, err)
+	}
+	if detector.calls != 2 || processedSpam != 1 {
+		t.Fatalf("active edit calls=%d processed=%d, want calls=2 processed=1", detector.calls, processedSpam)
+	}
+
+	detector.result = boolPtr(false)
+	second := *message
+	second.MessageID++
+	second.Text = "safe second message"
+	proceed, err = reactor.Handle(t.Context(), &api.Update{Message: &second}, chat, user)
+	if err != nil || !proceed {
+		t.Fatalf("handle second safe message: proceed=%t err=%v", proceed, err)
+	}
+	if detector.calls != 3 || service.insertedMember != 0 {
+		t.Fatalf("second challenge calls=%d inserted=%d, want calls=3 inserted=0", detector.calls, service.insertedMember)
+	}
+	now = now.Add(3 * time.Hour)
+	third := second
+	third.MessageID++
+	third.Text = "safe release message"
+	proceed, err = reactor.Handle(t.Context(), &api.Update{Message: &third}, chat, user)
+	if err != nil || !proceed {
+		t.Fatalf("handle safe release message: proceed=%t err=%v", proceed, err)
+	}
+	if detector.calls != 4 || service.insertedMember != 1 {
+		t.Fatalf("release calls=%d inserted=%d, want calls=4 inserted=1", detector.calls, service.insertedMember)
+	}
+
+	service.isMember = true
+	detector.result = boolPtr(true)
+	edited := *message
+	edited.Date = now.Add(-time.Hour).Unix()
+	edited.EditDate = now.Unix()
+	edited.Text = "edited spam message"
+	proceed, err = reactor.Handle(t.Context(), &api.Update{EditedMessage: &edited}, chat, user)
+	if err != nil || !proceed {
+		t.Fatalf("handle challenged edit: proceed=%t err=%v", proceed, err)
+	}
+	if detector.calls != 5 {
+		t.Fatalf("LLM calls after challenged edit = %d, want 5", detector.calls)
+	}
+	if detector.messages[4] != edited.Text {
+		t.Fatalf("edited content = %q, want %q", detector.messages[4], edited.Text)
+	}
+	if processedSpam != 2 {
+		t.Fatalf("edited spam processing calls = %d, want 2", processedSpam)
+	}
+	if service.insertedMember != 1 {
+		t.Fatalf("edited message repeated member insertion: %d", service.insertedMember)
+	}
+
+	unmarked := edited
+	unmarked.MessageID += 20
+	unmarked.Text = "unmarked edit"
+	proceed, err = reactor.Handle(t.Context(), &api.Update{EditedMessage: &unmarked}, chat, user)
+	if err != nil || !proceed {
+		t.Fatalf("handle unmarked edit: proceed=%t err=%v", proceed, err)
+	}
+	if detector.calls != 5 {
+		t.Fatalf("unmarked edit reached LLM: %d calls", detector.calls)
+	}
 }
 
 func TestSpamVoteCallbackUsesSpamCaseChatSettings(t *testing.T) {
@@ -339,13 +642,14 @@ func TestHandleMessageExternalQuoteHeuristic(t *testing.T) {
 	if result.IsSpam == nil || !*result.IsSpam {
 		t.Fatalf("expected spam result, got %#v", result.IsSpam)
 	}
-	if result.SkipReason != "First-message external quote heuristic" {
+	if result.SkipReason != messageSkipReasonExternalQuote {
 		t.Fatalf("unexpected skip reason: %q", result.SkipReason)
 	}
 }
 
 func TestHandleMessageCleanLeftUserRememberedAsKnownNonMember(t *testing.T) {
 	t.Parallel()
+	now := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
 
 	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
 		switch method {
@@ -382,6 +686,7 @@ func TestHandleMessageCleanLeftUserRememberedAsKnownNonMember(t *testing.T) {
 			return nil, nil
 		},
 		lastResults: make(map[messageResultKey]*MessageProcessingResult),
+		now:         func() time.Time { return now },
 	}
 
 	chat := &api.Chat{ID: 100, Type: testChatTypeSupergroup}
@@ -392,9 +697,18 @@ func TestHandleMessageCleanLeftUserRememberedAsKnownNonMember(t *testing.T) {
 	if err := r.handleMessage(context.Background(), msg, chat, user, settings); err != nil {
 		t.Fatalf("handleMessage returned error: %v", err)
 	}
+	if len(store.upserted) != 0 {
+		t.Fatalf("first safe message ended probation: upserted=%d", len(store.upserted))
+	}
+	second := *msg
+	second.MessageID++
+	now = now.Add(3 * time.Hour)
+	if err := r.handleMessage(context.Background(), &second, chat, user, settings); err != nil {
+		t.Fatalf("handle second message: %v", err)
+	}
 
-	if detector.calls != 1 {
-		t.Fatalf("expected LLM detector to be called once, got %d", detector.calls)
+	if detector.calls != 2 {
+		t.Fatalf("expected LLM detector to be called twice, got %d", detector.calls)
 	}
 	if service.insertedMember != 0 {
 		t.Fatalf("expected member insertion to be skipped, got %d", service.insertedMember)
@@ -434,6 +748,11 @@ func TestHandleMessageAdminRequiredDuringAuthorLookupDoesNotFailUpdate(t *testin
 
 	if err := r.handleMessage(context.Background(), msg, chat, user, settings); err != nil {
 		t.Fatalf("handleMessage returned error: %v", err)
+	}
+	second := *msg
+	second.MessageID++
+	if err := r.handleMessage(context.Background(), &second, chat, user, settings); err != nil {
+		t.Fatalf("handle second message: %v", err)
 	}
 	if service.insertedMember != 0 || len(store.upserted) != 0 {
 		t.Fatalf("author state changed without a membership lookup: inserted=%d upserted=%#v", service.insertedMember, store.upserted)
@@ -553,6 +872,10 @@ func TestHandleMessageWithoutModerationRightsSkipsAllSpamChecks(t *testing.T) {
 	}
 	if detector.calls != 0 || banService.checkBanCalls != 0 || processSpamCalls != 0 {
 		t.Fatalf("no-rights chat reached spam checks: llm=%d ban=%d moderation=%d", detector.calls, banService.checkBanCalls, processSpamCalls)
+	}
+	probation, err := reactor.store.MessageProbation(t.Context(), chat.ID, user.ID)
+	if err != nil || probation != nil {
+		t.Fatalf("no-rights message created probation: probation=%#v err=%v", probation, err)
 	}
 	result := reactor.GetLastProcessingResult(chat.ID, msg.MessageID)
 	if result == nil || !result.Skipped || result.SkipReason != messageSkipReasonNoModerationRights {
@@ -719,7 +1042,7 @@ func TestHandleMessageLinkedChannelSenderBypassesSpamPipeline(t *testing.T) {
 	}
 }
 
-func TestHandleMessageKnownNonMemberBypassesFirstMessageChecks(t *testing.T) {
+func TestHandleMessageKnownNonMemberDoesNotBypassMessageProbation(t *testing.T) {
 	t.Parallel()
 
 	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
@@ -782,8 +1105,8 @@ func TestHandleMessageKnownNonMemberBypassesFirstMessageChecks(t *testing.T) {
 	if detector.calls != 0 {
 		t.Fatalf("expected LLM detector not to be called, got %d calls", detector.calls)
 	}
-	if processSpamCalls != 0 {
-		t.Fatalf("expected processSpam not to be called, got %d", processSpamCalls)
+	if processSpamCalls != 1 {
+		t.Fatalf("known non-member bypassed spam processing: got %d calls", processSpamCalls)
 	}
 	if banService.checkBanCalls != 1 {
 		t.Fatalf("expected ban check to run before bypass, got %d calls", banService.checkBanCalls)
@@ -793,8 +1116,12 @@ func TestHandleMessageKnownNonMemberBypassesFirstMessageChecks(t *testing.T) {
 	if result == nil {
 		t.Fatal("expected processing result")
 	}
-	if result.SkipReason != "User is a remembered non-member" {
+	if result.SkipReason != messageSkipReasonExternalQuote {
 		t.Fatalf("unexpected skip reason: %q", result.SkipReason)
+	}
+	probation, err := store.MessageProbation(t.Context(), chat.ID, user.ID)
+	if err != nil || probation == nil {
+		t.Fatalf("known non-member probation: probation=%#v err=%v", probation, err)
 	}
 }
 
@@ -945,6 +1272,7 @@ func TestHandleMessageKnownBannedMemberIsDirectlyBanned(t *testing.T) {
 
 func TestHandleMessageCleanMemberInsertsMemberInsteadOfKnownNonMember(t *testing.T) {
 	t.Parallel()
+	now := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
 
 	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
 		switch method {
@@ -981,6 +1309,7 @@ func TestHandleMessageCleanMemberInsertsMemberInsteadOfKnownNonMember(t *testing
 			return nil, nil
 		},
 		lastResults: make(map[messageResultKey]*MessageProcessingResult),
+		now:         func() time.Time { return now },
 	}
 
 	chat := &api.Chat{ID: 100, Type: testChatTypeSupergroup}
@@ -990,6 +1319,15 @@ func TestHandleMessageCleanMemberInsertsMemberInsteadOfKnownNonMember(t *testing
 
 	if err := r.handleMessage(context.Background(), msg, chat, user, settings); err != nil {
 		t.Fatalf("handleMessage returned error: %v", err)
+	}
+	if service.insertedMember != 0 {
+		t.Fatalf("first safe message ended probation: inserted=%d", service.insertedMember)
+	}
+	second := *msg
+	second.MessageID++
+	now = now.Add(3 * time.Hour)
+	if err := r.handleMessage(context.Background(), &second, chat, user, settings); err != nil {
+		t.Fatalf("handle second message: %v", err)
 	}
 
 	if service.insertedMember != 1 {

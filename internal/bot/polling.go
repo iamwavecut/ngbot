@@ -107,7 +107,7 @@ func getUpdatesChansWithFetcher(ctx context.Context, buffer int, config api.Upda
 				}
 				if isStructurallyEmptyUpdate(&update) {
 					droppedUpdates++
-					log.WithField("update_id", update.UpdateID).Warn("Dropping empty update")
+					log.WithField(logFieldUpdateID, update.UpdateID).Warn("Dropping empty update")
 					continue
 				}
 				healthyResponse = true

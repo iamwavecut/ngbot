@@ -46,12 +46,13 @@ type (
 	}
 
 	SpamControl struct {
-		LogChannelUsername  string  `env:"SPAM_LOG_CHANNEL_USERNAME"`
-		DebugUserID         int64   `env:"SPAM_DEBUG_USER_ID"`
-		MinVoters           int     `env:"SPAM_MIN_VOTERS,default=2"`
-		MaxVoters           int     `env:"SPAM_MAX_VOTERS,default=10"`
-		MinVotersPercentage float64 `env:"SPAM_MIN_VOTERS_PERCENTAGE,default=5"`
-		Verbose             bool    `env:"SPAM_VERBOSE,default=false"`
+		LogChannelUsername       string        `env:"SPAM_LOG_CHANNEL_USERNAME"`
+		DebugUserID              int64         `env:"SPAM_DEBUG_USER_ID"`
+		MinVoters                int           `env:"SPAM_MIN_VOTERS,default=2"`
+		MaxVoters                int           `env:"SPAM_MAX_VOTERS,default=10"`
+		MinVotersPercentage      float64       `env:"SPAM_MIN_VOTERS_PERCENTAGE,default=5"`
+		Verbose                  bool          `env:"SPAM_VERBOSE,default=false"`
+		MessageProbationDuration time.Duration `env:"SPAM_MESSAGE_PROBATION_DURATION,default=3h"`
 
 		VotingTimeoutMinutes       time.Duration `env:"SPAM_VOTING_TIMEOUT,default=5m"`
 		SuspectNotificationTimeout time.Duration `env:"SPAM_SUSPECT_NOTIFICATION_TIMEOUT,default=2m"`
@@ -91,6 +92,9 @@ func validateConfig(cfg *Config) error {
 	}
 	if cfg.LLM.RequestTimeout <= 0 {
 		return fmt.Errorf("llm request timeout must be positive")
+	}
+	if cfg.SpamControl.MessageProbationDuration <= 0 {
+		return fmt.Errorf("spam message probation duration must be positive")
 	}
 	if cfg.GatekeeperWebApp.PublicURL != "" {
 		parsed, err := url.Parse(cfg.GatekeeperWebApp.PublicURL)

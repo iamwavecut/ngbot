@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	api "github.com/OvyFlash/telegram-bot-api"
 	"github.com/iamwavecut/ngbot/internal/bot"
@@ -28,15 +29,21 @@ type firstMessageExternalQuoteHeuristic struct {
 
 const (
 	messageSkipReasonAlreadyMember       = "User is already a member"
-	messageSkipReasonRememberedNonMember = "User is a remembered non-member"
+	messageSkipReasonGraduatedProbation  = "User completed message probation"
 	messageSkipReasonChatAdministrator   = "User is chat administrator"
 	messageSkipReasonLinkedChannelSender = "Linked channel sender"
 	messageSkipReasonChatSender          = "Chat sender"
 	messageSkipReasonAnonymousSender     = "Unsupported anonymous sender"
 	messageSkipReasonNoModerationRights  = "Bot has no moderation rights"
+	messageSkipReasonExternalQuote       = "First-message external quote heuristic"
+	logFieldProbationPhase               = "probation_phase"
 )
 
 func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api.Chat, user *api.User, settings *db.Settings) error {
+	return r.handleMessageChallenge(ctx, msg, chat, user, settings, false)
+}
+
+func (r *Reactor) handleMessageChallenge(ctx context.Context, msg *api.Message, chat *api.Chat, user *api.User, settings *db.Settings, recheck bool) error {
 	var userID int64
 	if user != nil {
 		userID = user.ID
@@ -85,17 +92,23 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 		return r.enforceBanlistedMessage(ctx, msg, chat, user, result, entry)
 	}
 
-	isMember, err := r.s.IsMember(ctx, chat.ID, user.ID)
+	observedAt := r.currentTime()
+	probation, err := r.store.MessageProbation(ctx, chat.ID, user.ID)
 	if err != nil {
-		entry.WithField(logFieldError, err.Error()).Error("Failed to check membership")
-		return fmt.Errorf("failed to check membership: %w", err)
+		return fmt.Errorf("get message probation: %w", err)
 	}
-
 	result.Stage = StageMembershipCheck
-	if isMember {
-		result.Skipped = true
-		result.SkipReason = messageSkipReasonAlreadyMember
-		return nil
+	if !recheck && probation == nil {
+		isMember, memberErr := r.s.IsMember(ctx, chat.ID, user.ID)
+		if memberErr != nil {
+			entry.WithField(logFieldError, memberErr.Error()).Error("Failed to check membership")
+			return fmt.Errorf("failed to check membership: %w", memberErr)
+		}
+		if isMember {
+			result.Skipped = true
+			result.SkipReason = messageSkipReasonAlreadyMember
+			return nil
+		}
 	}
 
 	result.Stage = StageBanCheck
@@ -124,43 +137,56 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 	if isNotSpammer {
 		result.Skipped = true
 		result.SkipReason = "User is manually marked as not spammer"
-		return r.rememberAuthorIfPossible(ctx, chat, user, entry)
+		if recheck {
+			return nil
+		}
+		_, err = r.rememberAuthorIfPossible(ctx, chat, user, entry)
+		return err
 	}
 
-	isKnownNonMember, err := r.store.IsChatKnownNonMember(ctx, chat.ID, user.ID)
-	if err != nil {
-		entry.WithField(logFieldError, err.Error()).Error("Failed to check known non-member state")
-		return fmt.Errorf("failed to check known non-member state: %w", err)
-	}
-	if isKnownNonMember {
-		skipReason, handled := r.handleKnownNonMember(ctx, chat, user, entry)
-		if handled {
+	if !recheck {
+		if settings != nil && !settings.LLMFirstMessageEnabled {
+			result.Stage = StageSpamCheck
 			result.Skipped = true
-			result.SkipReason = skipReason
+			result.SkipReason = "Message probation disabled"
+			if probation != nil {
+				return nil
+			}
+			_, err = r.rememberAuthorIfPossible(ctx, chat, user, entry)
+			return err
+		}
+		if probation != nil && probation.GraduatedAt.Valid {
+			result.Skipped = true
+			result.SkipReason = messageSkipReasonGraduatedProbation
 			return nil
+		}
+		if probation == nil {
+			probation, err = r.startMessageProbation(ctx, chat.ID, user.ID, observedAt, entry)
+			if err != nil {
+				return err
+			}
 		}
 	}
 
-	if settings != nil && !settings.LLMFirstMessageEnabled {
-		result.Stage = StageSpamCheck
-		result.Skipped = true
-		result.SkipReason = "LLM first message check disabled"
-		return r.rememberAuthorIfPossible(ctx, chat, user, entry)
-	}
-
 	result.Stage = StageContentCheck
+	if bot.ExtractTextFromMessage(msg) == "" {
+		result.Skipped = true
+		result.SkipReason = "Empty message content"
+		entry.WithField(logFieldMessageID, msg.MessageID).Debug("empty message content")
+		return nil
+	}
 	content := bot.ExtractContentFromMessage(msg)
 	if content == "" {
 		result.Skipped = true
 		result.SkipReason = "Empty message content"
-		entry.WithField("message_id", msg.MessageID).Debug("empty message content")
+		entry.WithField(logFieldMessageID, msg.MessageID).Debug("empty message content")
 		return nil
 	}
 
 	result.Stage = StageSpamCheck
 	heuristic := detectFirstMessageExternalQuoteHeuristic(msg)
 	if heuristic.Triggered {
-		result.SkipReason = "First-message external quote heuristic"
+		result.SkipReason = messageSkipReasonExternalQuote
 		result.IsSpam = tool.Ptr(true)
 		if err := handlersbase.IncrementDailyStat(ctx, r.stats, chat.ID, handlersbase.StatHeuristicSpam); err != nil {
 			entry.WithField(logFieldError, err.Error()).Warn("failed to increment heuristic spam stat")
@@ -194,13 +220,14 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 		}
 
 		entry.WithFields(log.Fields{
-			"has_external_reply": heuristic.HasExternalReply,
-			"has_quote":          heuristic.HasQuote,
-			"has_forward_origin": heuristic.HasForwardOrigin,
-			"has_via_bot":        heuristic.HasViaBot,
-			"origin_type":        heuristic.OriginType,
-			"origin_chat_id":     heuristic.OriginChatID,
-			"via_bot_id":         heuristic.ViaBotID,
+			"has_external_reply":   heuristic.HasExternalReply,
+			"has_quote":            heuristic.HasQuote,
+			"has_forward_origin":   heuristic.HasForwardOrigin,
+			"has_via_bot":          heuristic.HasViaBot,
+			"origin_type":          heuristic.OriginType,
+			"origin_chat_id":       heuristic.OriginChatID,
+			"via_bot_id":           heuristic.ViaBotID,
+			logFieldProbationPhase: messageProbationPhase(probation, observedAt),
 		}).Info("Detected spam with first-message external quote heuristic")
 		return nil
 	}
@@ -213,6 +240,11 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 
 	if isSpam != nil {
 		if *isSpam {
+			entry.WithFields(log.Fields{
+				logFieldMessageID:      msg.MessageID,
+				"edited":               recheck,
+				logFieldProbationPhase: messageProbationPhase(probation, observedAt),
+			}).Info("message probation detected spam")
 			processingResult, processErr := r.processDetectedSpam(ctx, msg, chat, language, settings)
 			if processErr != nil {
 				entry.WithField(logFieldError, processErr.Error()).Error("failed to process spam message")
@@ -233,12 +265,113 @@ func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api
 			return nil
 		}
 
-		if err := r.rememberAuthorIfPossible(ctx, chat, user, entry); err != nil {
-			return err
+		if recheck {
+			return nil
 		}
+		inserted, err := r.store.RecordChallengedMessage(ctx, chat.ID, user.ID, msg.MessageID)
+		if err != nil {
+			return fmt.Errorf("record challenged message: %w", err)
+		}
+		entry.WithFields(log.Fields{
+			logFieldMessageID:      msg.MessageID,
+			"inserted":             inserted,
+			logFieldProbationPhase: messageProbationPhase(probation, observedAt),
+		}).Debug("message probation checked safe content")
+		if !inserted || probation == nil || observedAt.Before(probation.EligibleAt) {
+			return nil
+		}
+		remembered, rememberErr := r.rememberAuthorIfPossible(ctx, chat, user, entry)
+		if rememberErr != nil {
+			return rememberErr
+		}
+		if !remembered {
+			return nil
+		}
+		if err := r.store.MarkMessageProbationGraduated(ctx, chat.ID, user.ID, observedAt); err != nil {
+			return fmt.Errorf("graduate message probation: %w", err)
+		}
+		entry.WithFields(log.Fields{
+			logFieldMessageID: msg.MessageID,
+			"eligible_at":     probation.EligibleAt,
+			"graduated_at":    observedAt,
+		}).Info("message probation graduated")
 	}
 
 	return nil
+}
+
+func (r *Reactor) ensureMessageProbationStarted(ctx context.Context, chat *api.Chat, user *api.User, settings *db.Settings) error {
+	if chat == nil || user == nil || settings == nil || !settings.LLMFirstMessageEnabled {
+		return nil
+	}
+	moderationAvailable, err := r.moderationAvailable(ctx, chat.ID)
+	if err != nil || !moderationAvailable || r.banService.IsKnownBanned(user.ID) {
+		return nil
+	}
+	probation, err := r.store.MessageProbation(ctx, chat.ID, user.ID)
+	if err != nil {
+		return fmt.Errorf("get routed message probation: %w", err)
+	}
+	if probation != nil {
+		return nil
+	}
+	isMember, err := r.s.IsMember(ctx, chat.ID, user.ID)
+	if err != nil {
+		return fmt.Errorf("check routed message membership: %w", err)
+	}
+	if isMember {
+		return nil
+	}
+	entry := r.getLogEntry().WithFields(log.Fields{
+		logFieldChatID: chat.ID,
+		logFieldUserID: user.ID,
+	})
+	if r.isChatAdministrator(ctx, chat.ID, user.ID, entry) {
+		return nil
+	}
+	isNotSpammer, err := r.store.IsChatNotSpammer(ctx, chat.ID, user.ID, user.UserName)
+	if err != nil {
+		return fmt.Errorf("check routed message not-spammer override: %w", err)
+	}
+	if isNotSpammer {
+		return nil
+	}
+	_, err = r.startMessageProbation(ctx, chat.ID, user.ID, r.currentTime(), entry)
+	return err
+}
+
+func (r *Reactor) startMessageProbation(
+	ctx context.Context,
+	chatID int64,
+	userID int64,
+	startedAt time.Time,
+	entry *log.Entry,
+) (*db.MessageProbation, error) {
+	eligibleAt := startedAt.Add(r.messageProbationDuration())
+	probation, created, err := r.store.GetOrCreateMessageProbation(ctx, chatID, userID, startedAt, eligibleAt)
+	if err != nil {
+		return nil, fmt.Errorf("get or create message probation: %w", err)
+	}
+	if created {
+		entry.WithFields(log.Fields{
+			"started_at":  probation.StartedAt,
+			"eligible_at": probation.EligibleAt,
+		}).Info("message probation started")
+	}
+	return probation, nil
+}
+
+func messageProbationPhase(probation *db.MessageProbation, observedAt time.Time) string {
+	if probation == nil {
+		return "none"
+	}
+	if probation.GraduatedAt.Valid {
+		return "graduated"
+	}
+	if observedAt.Before(probation.EligibleAt) {
+		return "active"
+	}
+	return "eligible"
 }
 
 func (r *Reactor) enforceBanlistedMessage(
@@ -436,47 +569,7 @@ func (r *Reactor) loadSpamExamples(ctx context.Context, chatID int64) []string {
 	return texts
 }
 
-func (r *Reactor) handleKnownNonMember(ctx context.Context, chat *api.Chat, user *api.User, entry *log.Entry) (string, bool) {
-	chatMember, err := bot.GetChatMember(ctx, r.bot, api.GetChatMemberConfig{
-		ChatConfigWithUser: api.ChatConfigWithUser{
-			ChatConfig: api.ChatConfig{
-				ChatID: chat.ID,
-			},
-			UserID: user.ID,
-		},
-	})
-	if err != nil {
-		entry.WithField(logFieldError, err.Error()).Warn("failed to verify known non-member state, trusting stored memory")
-		return messageSkipReasonRememberedNonMember, true
-	}
-
-	if chatMember.WasKicked() {
-		if deleteErr := r.store.DeleteChatKnownNonMember(ctx, chat.ID, user.ID); deleteErr != nil {
-			entry.WithField(logFieldError, deleteErr.Error()).Error("failed to delete kicked known non-member")
-		}
-		return "", false
-	}
-
-	if chatMember.HasLeft() {
-		return messageSkipReasonRememberedNonMember, true
-	}
-
-	entry.WithFields(log.Fields{
-		logFieldUserID: user.ID,
-		logFieldChatID: chat.ID,
-	}).Info("Promoting remembered non-member to member")
-
-	if insertErr := r.s.InsertMember(ctx, chat.ID, user.ID); insertErr != nil {
-		entry.WithField(logFieldError, insertErr.Error()).Error("failed to insert promoted member")
-		return messageSkipReasonRememberedNonMember, true
-	}
-	if deleteErr := r.store.DeleteChatKnownNonMember(ctx, chat.ID, user.ID); deleteErr != nil {
-		entry.WithField(logFieldError, deleteErr.Error()).Error("failed to delete promoted known non-member")
-	}
-	return messageSkipReasonAlreadyMember, true
-}
-
-func (r *Reactor) rememberAuthorIfPossible(ctx context.Context, chat *api.Chat, user *api.User, entry *log.Entry) error {
+func (r *Reactor) rememberAuthorIfPossible(ctx context.Context, chat *api.Chat, user *api.User, entry *log.Entry) (bool, error) {
 	chatMember, err := bot.GetChatMember(ctx, r.bot, api.GetChatMemberConfig{
 		ChatConfigWithUser: api.ChatConfigWithUser{
 			ChatConfig: api.ChatConfig{
@@ -488,10 +581,10 @@ func (r *Reactor) rememberAuthorIfPossible(ctx context.Context, chat *api.Chat, 
 	if err != nil {
 		if strings.Contains(strings.ToUpper(err.Error()), "CHAT_ADMIN_REQUIRED") {
 			entry.WithField(logFieldError, err.Error()).Warn("cannot inspect chat member without administrator rights")
-			return nil
+			return false, nil
 		}
 		entry.WithField(logFieldError, err.Error()).Error("failed to get chat member")
-		return err
+		return false, err
 	}
 
 	if chatMember.WasKicked() {
@@ -502,7 +595,7 @@ func (r *Reactor) rememberAuthorIfPossible(ctx context.Context, chat *api.Chat, 
 			logFieldUserID: user.ID,
 			logFieldChatID: chat.ID,
 		}).Info("User was kicked from the chat, skipping author memory update")
-		return nil
+		return false, nil
 	}
 
 	if chatMember.HasLeft() {
@@ -515,8 +608,9 @@ func (r *Reactor) rememberAuthorIfPossible(ctx context.Context, chat *api.Chat, 
 			UserID: user.ID,
 		}); upsertErr != nil {
 			entry.WithField(logFieldError, upsertErr.Error()).Error("failed to upsert known non-member")
+			return false, upsertErr
 		}
-		return nil
+		return true, nil
 	}
 
 	entry.WithFields(log.Fields{
@@ -525,9 +619,10 @@ func (r *Reactor) rememberAuthorIfPossible(ctx context.Context, chat *api.Chat, 
 	}).Info("Adding user as member after spam check")
 	if insertErr := r.s.InsertMember(ctx, chat.ID, user.ID); insertErr != nil {
 		entry.WithField(logFieldError, insertErr.Error()).Error("failed to insert member")
+		return false, insertErr
 	} else if deleteErr := r.store.DeleteChatKnownNonMember(ctx, chat.ID, user.ID); deleteErr != nil {
 		entry.WithField(logFieldError, deleteErr.Error()).Error("failed to delete known non-member after member insert")
 	}
 
-	return nil
+	return true, nil
 }

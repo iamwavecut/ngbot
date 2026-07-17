@@ -234,7 +234,7 @@ ngbot/
 │   ├── embed.go                   # //go:embed * — exposes entire resources/ subtree
 │   ├── i18n/translations.yml      # 30 languages, 135+ keys (English-as-key), ~4143 lines
 │   ├── gatekeeper/challenges/     # Per-language emoji→word maps (30 files)
-│   └── migrations/                # 36 Up/Down SQL migrations (embedded, sql-migrate)
+│   └── migrations/                # 40 Up/Down SQL migrations (embedded, sql-migrate)
 ├── docs/
 │   ├── CODEBASE_MAP.md            # This file
 │   └── superpowers/plans/2026-06-14-webapp-captcha-hardening.md  # WebApp hardening plan
@@ -475,7 +475,10 @@ Message arrives
     │
     NO
     ▼
-[4] IsMember? → YES → SKIP
+[4] MessageProbation exists?
+    ├── ACTIVE → continue checks even if membership appeared later
+    ├── GRADUATED → terminal ban checks still run, then SKIP
+    └── NONE → IsMember? → YES → SKIP (grandfathered trust)
     │
     NO
     ▼
@@ -491,15 +494,16 @@ Message arrives
     │
     NO
     ▼
-[8] IsChatKnownNonMember? → YES → handleKnownNonMember (re-verify, may SKIP)
-    │
-    NO
-    ▼
-[9] LLMFirstMessageEnabled? → NO → remember + SKIP
+[8] LLMFirstMessageEnabled?
+    ├── NO + active probation → pause without graduation
+    └── NO + no probation → preserve legacy remember + SKIP
     │
     YES
     ▼
-[10] Extract content → EMPTY → SKIP
+[9] GetOrCreateMessageProbation(started_at=now, eligible_at=now+duration)
+    │
+    ▼
+[10] Extract text + caption + visible RichMessage text → EMPTY → keep probation active + SKIP
     │
     HAS CONTENT
     ▼
@@ -509,13 +513,21 @@ Message arrives
     ▼
 [12] normalizeCyrillics → load per-chat examples (max 20) → LLM IsSpam + StatLLMChecked
          │
-         ├── SPAM → processSpam (voting ON) or processBanned (voting OFF) + rememberAuthorIfPossible
-         └── NOT SPAM → rememberAuthorIfPossible (promote to member / remember non-member)
+         ├── SPAM → processSpam (voting ON) or processBanned (voting OFF)
+         └── NOT SPAM → persist challenged-message binding
+                ├── duplicate / before eligible_at → remain in probation
+                └── new message at/after eligible_at → persist trust, then mark graduated
 ```
 
 > **Ordering note**: the first handler uses only the already-loaded effective banlist to recognize a terminal candidate, then verifies the bot's capability before Telegram I/O. It never performs online provider checks in no-rights mode. Cached banlist membership wins over remembered membership, chat-admin status and manual not-spammer overrides. Non-members receive the provider-backed `CheckBan` before those exemptions; only a clean result can enter semantic moderation.
 
-**Reaction Profile Check** (`reactor_reaction_profile_check.go`, gated by `settings.ReactionProfileCheckEnabled`): when an unknown user or anonymous channel **reacts** (additions only; removals ignored), builds a text profile (full name, @username, personal-chat bio/pinned/posts up to 10) and runs it through the LLM. Spam → wipe reactions + ban (permanent for actor-chats). Membership is double-checked live before escalating. This catches spammers who only drop a reaction and never text the group. Has an admin-panel toggle (ReactionProfileCheck leaf screen).
+**Durable message probation**: `chat_message_probations` stores the original per-chat deadline and graduation. Every new text, caption, or visible `RichMessage` block is checked while active, including the first new message at or after `eligible_at`; only a safe, newly bound message can persist trusted state and then graduate. Commands, mentions and media without semantic text create the probation but never classify or graduate. Duplicate updates, nil/error LLM decisions and edits cannot graduate. Active probation takes precedence over membership written by a partially completed release, so a failed graduation write is retried by later checked messages.
+
+Every safe probation message is also persisted as `{chat_id, message_id, user_id}` in `chat_challenged_messages`. While probation is active, any authored `edited_message` with text or caption is rechecked, even when the original message has no binding; after graduation, bound-message edits remain protected. Edits use `edit_date` for freshness and do not replay commands or mention-report actions. Reaction-profile results and `chat_known_non_members` do not confer message trust.
+
+Telegram Bot API does not publish deletion updates for ordinary group messages; `deleted_business_messages` applies only to connected business accounts. The bot therefore cannot revoke trust at deletion time. The three-hour safe-exit probation keeps later messages under review across repeated safe/delete cycles; deletion after durable graduation remains an API-level limitation.
+
+**Reaction Profile Check** (`reactor_reaction_profile_check.go`, gated by `settings.ReactionProfileCheckEnabled`): when an unknown user or anonymous channel **reacts** (additions only; removals ignored), builds a text profile (full name, @username, personal-chat bio/pinned/posts up to 10) and runs it through the LLM. Spam → wipe reactions + ban (permanent for actor-chats). Membership is double-checked live before escalating, but reaction handling never inserts `chat_members`; Telegram-confirmed membership and a clean reaction profile do not end message probation. This catches spammers who only drop a reaction and never text the group. Has an admin-panel toggle (ReactionProfileCheck leaf screen).
 
 **`voteBanCommand`** (report flow): triggered by `/voteban` (replying to a suspect) **or** mentioning the bot in a reply. It first checks the bot's restrict-member capability; without it the command returns an informational reply and performs no LLM or moderation work. Otherwise: (1) report-specific LLM check → confirmed spam = instant ban; (2) reporter has restrict permission = instant ban; (3) community voting disabled = refuse; (4) otherwise `processReported` starts a message-bound community vote.
 
@@ -647,7 +659,7 @@ Only members/administrators of the **source chat** can vote. A per-chat five-min
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `LLMFirstMessageEnabled` | bool | true | LLM spam check on first message |
+| `LLMFirstMessageEnabled` | bool | true | Compatibility switch for new-user message probation |
 | `ReactionProfileCheckEnabled` | bool | true | LLM check on unknown reactors |
 | `CommunityVotingEnabled` | bool | true | Community voting for suspects |
 | `CommunityVotingTimeoutOverrideNS` | int64 | -1 | Voting timeout override (ns) |
@@ -657,7 +669,7 @@ Only members/administrators of the **source chat** can vote. A per-chat five-min
 
 > Value `-1` (`SettingsOverrideInherit`) means "use global config". `Settings.Enabled` is normalized to `GatekeeperEnabled` on a local persistence copy. Legacy timeout values in `(0, 1s)` are interpreted as seconds by pure accessors; reads never mutate the `Settings` receiver.
 
-**Database Schema** (38 migrations):
+**Database Schema** (40 migrations):
 
 | Table | PK | Notes |
 |-------|-----|-------|
@@ -678,8 +690,10 @@ Only members/administrators of the **source chat** can vote. A per-chat five-min
 | `chat_spam_examples` | auto `id` | FK → chats CASCADE |
 | `chat_not_spammer_overrides` | auto `id` | Unique: `(match_type, match_value, normalized_scope)` |
 | `chat_known_non_members` | `(chat_id, user_id)` | — |
+| `chat_challenged_messages` | `(chat_id, message_id)` | Durable safe-message edit binding; index `(chat_id, user_id)`; FK → chats CASCADE |
+| `chat_message_probations` | `(chat_id, user_id)` | Original `started_at`/`eligible_at`, nullable `graduated_at`; FK → chats CASCADE |
 
-**Recent migrations of note**: `2026071400` removes confirmed FK orphans before enforcement; `2026071401` adds challenge generation/retry state; `2026071402` adds durable moderation scheduling; `2026071403` adds initial banlist provenance; `2026071500` records whether restriction happened and binds the 30-minute no-rights notice; `202607151900` retires legacy provenance and normalizes banlist source generations; `202607151910` requeues exhausted permanent DM-fallback failures for one terminal pass through the corrected handler. Every migration has Up/Down sections; applied files are never rewritten.
+**Recent migrations of note**: `2026071400` removes confirmed FK orphans before enforcement; `2026071401` adds challenge generation/retry state; `2026071402` adds durable moderation scheduling; `2026071403` adds initial banlist provenance; `2026071500` records whether restriction happened and binds the 30-minute no-rights notice; `202607151900` retires legacy provenance and normalizes banlist source generations; `202607151910` requeues exhausted permanent DM-fallback failures for one terminal pass through the corrected handler; `2026071600` binds semantically checked messages to future edits; `2026071601` adds per-chat durable message probation and safe graduation. Every migration has Up/Down sections; applied files are never rewritten.
 
 **Gotchas**:
 - `db.ErrNotFound` used for missing settings, but `(nil, nil)` for challenges/admin panel, `("", nil)` for KV — inconsistent not-found signaling
@@ -1127,6 +1141,7 @@ Loading is **env-only** via `sethvargo/go-envconfig` (no flags, no config file).
 | `NG_LLM_REQUEST_TIMEOUT` | `45s` | Deadline for every classification request |
 | `NG_SPAM_LOG_CHANNEL_USERNAME` | empty | Spam-log channel for voting posts |
 | `NG_SPAM_DEBUG_USER_ID` | `0` | Optional debug DM recipient for LLM verdicts |
+| `NG_SPAM_MESSAGE_PROBATION_DURATION` | `3h` | Minimum per-chat observation window; stored deadlines of existing probation rows do not change |
 | `NG_SPAM_MIN_VOTERS` | `2` | Min votes for action |
 | `NG_SPAM_MAX_VOTERS` | `10` | Max voters |
 | `NG_SPAM_MIN_VOTERS_PERCENTAGE` | `5` | Vote threshold % |
@@ -1142,6 +1157,7 @@ Loading is **env-only** via `sethvargo/go-envconfig` (no flags, no config file).
 | `RecoveryWindow > RequestTimeout` | Recovery must span multiple retry cycles |
 | `GatekeeperWebApp.PublicURL` absolute HTTPS when public; HTTP only for loopback | Telegram Mini App traffic must be encrypted outside local development |
 | `LLM.RequestTimeout > 0` | Classification calls must have a bounded deadline |
+| `SpamControl.MessageProbationDuration > 0` | New probation deadlines must advance beyond their start time |
 
 ### Log Redaction
 
@@ -1247,8 +1263,8 @@ Loading is **env-only** via `sethvargo/go-envconfig` (no flags, no config file).
 | 71 | Secret redaction thresholds | Token regexes require secret ≥30 chars and numeric id ≥6 digits; shorter `id:value` pairs are only masked via explicit `RegisterSecret` |
 | 72 | Explicit configuration | `config.Load()` has no global singleton; runtime constructors receive the validated config value from `cmd/ngbot` |
 | 73 | Dependency boundaries | `bot.Service` is settings/membership/language only; handlers receive Telegram and consumer-owned store ports directly |
-| 74 | Disabling LLM check does not disable gating | With `LLMFirstMessageEnabled=false` the pipeline returns early into `rememberAuthorIfPossible` (`reactor_message_pipeline.go:149-154`), which still promotes the non-member to member/known-non-member on first sight |
-| 75 | `@bot` mention short-circuits the normal pipeline | A reply mentioning the bot routes to `voteBanCommand` (`reactor.go:134-141`) and returns before `handleMessage` — it runs a report-specific `IsReportedSpam` check, NOT the standard `IsSpam` pipeline |
+| 74 | Disabling probation pauses active state | `LLMFirstMessageEnabled=false` creates no probation and cannot graduate an existing one; legacy authors with no probation still enter `rememberAuthorIfPossible` |
+| 75 | Commands and `@bot` mentions start the clock | Pre-routing trust checks create probation before command/report dispatch, but routed messages are not standard `IsSpam` checks and cannot graduate |
 | 76 | `UnmuteUser` restores ALL permissions | Unmute sends `unrestrictedChatPermissions()` (`ban_service_actions.go:50,124-141`) — the full set incl. CanPinMessages/CanManageTopics/CanInviteUsers; no prior-permission snapshot is stored |
 | 77 | Gemini cache-error detection is fragile | `isCacheUseError` (`gemini.go:306-313`) is a lowercase substring match (`"cached content"`, `"not found"`, `"expired"`, …) — broad substrings can match unrelated errors |
 | 78 | `service.Shutdown()` nils the caches | After shutdown `memberCache`/`settingsCache` are nil (`service.go:352-353`); a subsequent cache-miss **write-back** panics on nil-map assignment (reads are safe) |
@@ -1412,6 +1428,14 @@ Loading is **env-only** via `sethvargo/go-envconfig` (no flags, no config file).
 | `github.com/pkg/errors` | Error wrapping |
 
 ## Recent Changes (since 2026-05-08)
+
+### Durable Message Probation and Edit Evasion Defense
+
+- **Files**: `reactor.go`, `reactor_message_pipeline.go`, `reactor_reaction_profile_check.go`, `client_challenged_messages.go`, `client_message_probations.go`; migrations `20260716000000-add-chat-challenged-messages.sql` and `20260716010000-add-chat-message-probations.sql`.
+- **Change**: a previously untrusted author receives a durable per-chat three-hour probation. Every new text, caption, or visible `RichMessage` block is checked; release requires a distinct safe new message at or after the stored deadline. Commands and empty rich media start but cannot finish probation.
+- **Edits**: every semantic-text edit is checked while probation is active, even without a binding. After graduation, safe-message bindings preserve edit checks. Edits never extend or complete probation.
+- **Deletion boundary**: ordinary Telegram groups expose no message-deletion update. Timed safe-exit probation covers repeated safe/delete sequences until graduation, but deletion after graduation is not observable through Bot API.
+- **Priority**: reaction profiles and known-non-member memory cannot grant message trust. Cached terminal banlist and no-rights policies remain unchanged.
 
 ### Terminal Banlist Guard
 

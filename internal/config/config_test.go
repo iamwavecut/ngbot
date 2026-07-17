@@ -16,7 +16,8 @@ func TestValidateConfig(t *testing.T) {
 		{
 			name: "valid telegram timings",
 			cfg: Config{
-				LLM: LLM{RequestTimeout: 45 * time.Second},
+				LLM:         LLM{RequestTimeout: 45 * time.Second},
+				SpamControl: SpamControl{MessageProbationDuration: 3 * time.Hour},
 				Telegram: Telegram{
 					PollTimeout:    60 * time.Second,
 					RequestTimeout: 75 * time.Second,
@@ -27,7 +28,8 @@ func TestValidateConfig(t *testing.T) {
 		{
 			name: "request timeout must exceed poll timeout",
 			cfg: Config{
-				LLM: LLM{RequestTimeout: 45 * time.Second},
+				LLM:         LLM{RequestTimeout: 45 * time.Second},
+				SpamControl: SpamControl{MessageProbationDuration: 3 * time.Hour},
 				Telegram: Telegram{
 					PollTimeout:    60 * time.Second,
 					RequestTimeout: 60 * time.Second,
@@ -39,7 +41,8 @@ func TestValidateConfig(t *testing.T) {
 		{
 			name: "recovery window must exceed request timeout",
 			cfg: Config{
-				LLM: LLM{RequestTimeout: 45 * time.Second},
+				LLM:         LLM{RequestTimeout: 45 * time.Second},
+				SpamControl: SpamControl{MessageProbationDuration: 3 * time.Hour},
 				Telegram: Telegram{
 					PollTimeout:    60 * time.Second,
 					RequestTimeout: 75 * time.Second,
@@ -51,7 +54,8 @@ func TestValidateConfig(t *testing.T) {
 		{
 			name: "valid gatekeeper web app public url",
 			cfg: Config{
-				LLM: LLM{RequestTimeout: 45 * time.Second},
+				LLM:         LLM{RequestTimeout: 45 * time.Second},
+				SpamControl: SpamControl{MessageProbationDuration: 3 * time.Hour},
 				Telegram: Telegram{
 					PollTimeout:    60 * time.Second,
 					RequestTimeout: 75 * time.Second,
@@ -65,7 +69,8 @@ func TestValidateConfig(t *testing.T) {
 		{
 			name: "gatekeeper web app public url must be absolute",
 			cfg: Config{
-				LLM: LLM{RequestTimeout: 45 * time.Second},
+				LLM:         LLM{RequestTimeout: 45 * time.Second},
+				SpamControl: SpamControl{MessageProbationDuration: 3 * time.Hour},
 				Telegram: Telegram{
 					PollTimeout:    60 * time.Second,
 					RequestTimeout: 75 * time.Second,
@@ -80,7 +85,8 @@ func TestValidateConfig(t *testing.T) {
 		{
 			name: "public http web app url is rejected",
 			cfg: Config{
-				LLM: LLM{RequestTimeout: 45 * time.Second},
+				LLM:         LLM{RequestTimeout: 45 * time.Second},
+				SpamControl: SpamControl{MessageProbationDuration: 3 * time.Hour},
 				Telegram: Telegram{
 					PollTimeout:    60 * time.Second,
 					RequestTimeout: 75 * time.Second,
@@ -93,7 +99,8 @@ func TestValidateConfig(t *testing.T) {
 		{
 			name: "loopback http web app url is accepted",
 			cfg: Config{
-				LLM: LLM{RequestTimeout: 45 * time.Second},
+				LLM:         LLM{RequestTimeout: 45 * time.Second},
+				SpamControl: SpamControl{MessageProbationDuration: 3 * time.Hour},
 				Telegram: Telegram{
 					PollTimeout:    60 * time.Second,
 					RequestTimeout: 75 * time.Second,
@@ -105,6 +112,19 @@ func TestValidateConfig(t *testing.T) {
 		{
 			name: "llm request timeout must be positive",
 			cfg: Config{
+				SpamControl: SpamControl{MessageProbationDuration: 3 * time.Hour},
+				Telegram: Telegram{
+					PollTimeout:    60 * time.Second,
+					RequestTimeout: 75 * time.Second,
+					RecoveryWindow: 10 * time.Minute,
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "message probation duration must be positive",
+			cfg: Config{
+				LLM: LLM{RequestTimeout: 45 * time.Second},
 				Telegram: Telegram{
 					PollTimeout:    60 * time.Second,
 					RequestTimeout: 75 * time.Second,

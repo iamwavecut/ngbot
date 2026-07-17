@@ -698,6 +698,110 @@ func TestDurableStateMigrationsUpgradeExistingRowsAndPreserveLegacySpamQuery(t *
 	}
 }
 
+func TestChallengedMessagesMigrationUpgradesAndRollsBack(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	dbPath := filepath.Join(t.TempDir(), "challenged-messages.db")
+	sqlDB, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
+
+	source := &migrate.EmbedFileSystemMigrationSource{
+		FileSystem: resources.FS,
+		Root:       migrationsRoot,
+	}
+	const migration = "20260716000000-add-chat-challenged-messages.sql"
+	if _, err := migrate.ExecMax(sqlDB, "sqlite3", source, migrate.Up, migrationsBefore(t, migration)); err != nil {
+		t.Fatalf("execute migrations before challenged messages: %v", err)
+	}
+	if _, err := sqlDB.ExecContext(ctx, `INSERT INTO chats (id) VALUES (?)`, -100); err != nil {
+		t.Fatalf("insert existing chat: %v", err)
+	}
+	if _, err := migrate.ExecMax(sqlDB, "sqlite3", source, migrate.Up, 1); err != nil {
+		t.Fatalf("execute challenged messages migration: %v", err)
+	}
+	if _, err := sqlDB.ExecContext(ctx, `
+		INSERT INTO chat_challenged_messages (chat_id, message_id, user_id)
+		VALUES (?, ?, ?)
+	`, -100, 300, 200); err != nil {
+		t.Fatalf("insert challenged message: %v", err)
+	}
+
+	var rows int
+	if err := sqlDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM chat_challenged_messages`).Scan(&rows); err != nil {
+		t.Fatalf("count challenged messages: %v", err)
+	}
+	if rows != 1 {
+		t.Fatalf("challenged messages = %d, want 1", rows)
+	}
+	if _, err := migrate.ExecMax(sqlDB, "sqlite3", source, migrate.Down, 1); err != nil {
+		t.Fatalf("roll back challenged messages migration: %v", err)
+	}
+	if err := sqlDB.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM sqlite_master
+		WHERE type = 'table' AND name = 'chat_challenged_messages'
+	`).Scan(&rows); err != nil {
+		t.Fatalf("check challenged messages rollback: %v", err)
+	}
+	if rows != 0 {
+		t.Fatal("chat_challenged_messages survived rollback")
+	}
+}
+
+func TestMessageProbationsMigrationUpgradesAndRollsBack(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	dbPath := filepath.Join(t.TempDir(), "message-probations.db")
+	sqlDB, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
+
+	source := &migrate.EmbedFileSystemMigrationSource{FileSystem: resources.FS, Root: migrationsRoot}
+	const migration = "20260716010000-add-chat-message-probations.sql"
+	if _, err := migrate.ExecMax(sqlDB, "sqlite3", source, migrate.Up, migrationsBefore(t, migration)); err != nil {
+		t.Fatalf("execute migrations before message probation: %v", err)
+	}
+	if _, err := sqlDB.ExecContext(ctx, `INSERT INTO chats (id) VALUES (?)`, -100); err != nil {
+		t.Fatalf("insert existing chat: %v", err)
+	}
+	if _, err := migrate.ExecMax(sqlDB, "sqlite3", source, migrate.Up, 1); err != nil {
+		t.Fatalf("execute message probation migration: %v", err)
+	}
+	if _, err := sqlDB.ExecContext(ctx, `
+		INSERT INTO chat_message_probations (chat_id, user_id, started_at, eligible_at)
+		VALUES (?, ?, ?, ?)
+	`, -100, 200, time.Now(), time.Now().Add(3*time.Hour)); err != nil {
+		t.Fatalf("insert message probation: %v", err)
+	}
+
+	var rows int
+	if err := sqlDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM chat_message_probations`).Scan(&rows); err != nil {
+		t.Fatalf("count message probations: %v", err)
+	}
+	if rows != 1 {
+		t.Fatalf("message probations = %d, want 1", rows)
+	}
+	if _, err := migrate.ExecMax(sqlDB, "sqlite3", source, migrate.Down, 1); err != nil {
+		t.Fatalf("roll back message probation migration: %v", err)
+	}
+	if err := sqlDB.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM sqlite_master
+		WHERE type = 'table' AND name = 'chat_message_probations'
+	`).Scan(&rows); err != nil {
+		t.Fatalf("check message probation rollback: %v", err)
+	}
+	if rows != 0 {
+		t.Fatal("chat_message_probations survived rollback")
+	}
+}
+
 func TestBanlistGenerationMigrationRetiresLegacyAndPreservesActiveProviders(t *testing.T) {
 	t.Parallel()
 

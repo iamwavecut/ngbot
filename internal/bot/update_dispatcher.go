@@ -183,10 +183,10 @@ func (d *KeyedDispatcher) processSafely(ctx context.Context, key string, update 
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			d.logger.WithFields(log.Fields{
-				"dispatch_key": key,
-				"update_id":    update.UpdateID,
-				"panic":        recovered,
-				"stack":        string(debug.Stack()),
+				"dispatch_key":   key,
+				logFieldUpdateID: update.UpdateID,
+				"panic":          recovered,
+				"stack":          string(debug.Stack()),
 			}).Error("update handler panicked")
 		}
 	}()
@@ -195,8 +195,8 @@ func (d *KeyedDispatcher) processSafely(ctx context.Context, key string, update 
 	}
 	if err := d.process(ctx, update); err != nil && !errors.Is(err, context.Canceled) {
 		d.logger.WithError(err).WithFields(log.Fields{
-			"dispatch_key": key,
-			"update_id":    update.UpdateID,
+			"dispatch_key":   key,
+			logFieldUpdateID: update.UpdateID,
 		}).Error("failed to process update")
 	}
 }

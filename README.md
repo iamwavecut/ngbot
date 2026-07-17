@@ -13,19 +13,19 @@
 7. Optional greeting text can be shown immediately with the public CAPTCHA for direct joins, or after approval for join-request newcomers.
 
 ## Spam protection
-1. Every non-member's first message is checked through multiple fast paths:
+1. Every previously untrusted author enters a per-chat message probation. Each new text, caption, or visible rich-message text is checked for at least three hours, and the first safe new message after the deadline is required for release:
    - **Manual allowlist ("Indulgence") override**
    - **Known spammers lookup** from local imports and online checks against LoLs bot and CAS/Combot
    - **External quote heuristic** for obvious cross-chat spam patterns
    - **LLM-powered binary classification** with built-in and chat-specific spam examples
 2. If the message is considered spam, the user is either immediately banned or sent into community voting, depending on chat settings.
 3. Chat users can report missed spam with `/voteban` or by mentioning the bot in reply to the message. Reports are rechecked by the LLM first, then either moderated immediately or sent to community voting without pre-deleting the original message.
-4. If the message is clean, the user is remembered so repeat checks can be reduced where possible.
+4. Clean messages before the deadline remain bound for future edit checks. A distinct clean message after the deadline durably completes probation; commands and media without text start the clock but cannot complete it.
 
 ## Admin panel
 1. Run `/settings` in a group where the bot is an admin.
 2. The bot sends a deep-link that opens a private admin panel for that chat.
-3. From there you can configure gatekeeper, LLM first-message moderation, community voting, spam examples, language, and manual not-spammer overrides.
+3. From there you can configure gatekeeper, new-user message probation, community voting, spam examples, language, and manual not-spammer overrides.
 4. The home screen includes a one-tap `Recommended Protection` preset and a compact 7-day protection summary.
 
 ## Installation
@@ -97,6 +97,7 @@ See [.env.example](.env.example) for a quick reference of all available options.
 | | `NG_SPAM_LOG_CHANNEL_USERNAME` | Channel for spam logging | | Any valid channel username |
 | | `NG_SPAM_DEBUG_USER_ID` | User allowed to run diagnostics in private chat | `0` | Telegram user ID |
 | | `NG_SPAM_VERBOSE` | Verbose in-chat notifications | `false` | `true`, `false` |
+| | `NG_SPAM_MESSAGE_PROBATION_DURATION` | Minimum new-user message probation before a checked safe exit | `3h` | Any positive duration string |
 | | `NG_SPAM_VOTING_TIMEOUT` | Voting time limit | `5m` | Any valid duration string |
 | | `NG_SPAM_MIN_VOTERS` | Minimum required voters | `2` | Any positive integer |
 | | `NG_SPAM_MAX_VOTERS` | Maximum voters cap | `10` | Any positive integer |

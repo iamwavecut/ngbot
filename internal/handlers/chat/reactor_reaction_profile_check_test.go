@@ -232,8 +232,62 @@ func TestHandleMessageReactionSkipsKnownMemberAfterTelegramMembershipCheck(t *te
 	if detector.calls != 0 {
 		t.Fatalf("expected known member to bypass profile spam check, got %d calls", detector.calls)
 	}
-	if service.insertedMember != 1 {
-		t.Fatalf("expected member to be remembered after Telegram check, got %d inserts", service.insertedMember)
+	if service.insertedMember != 0 {
+		t.Fatalf("reaction granted message trust: %d inserts", service.insertedMember)
+	}
+}
+
+func TestHandleMessageReactionDoesNotEndSemanticProbation(t *testing.T) {
+	t.Parallel()
+
+	chat := &api.Chat{ID: -100123, Type: testChatTypeSupergroup, Title: testGroupTitle}
+	settings := db.DefaultSettings(chat.ID)
+	user := &api.User{ID: 777, FirstName: "Probation", UserName: "probation_member"}
+	service := &testBotService{settings: settings}
+	store := &testReactorStore{
+		challenged: map[messageResultKey]int64{
+			{ChatID: chat.ID, MessageID: 41}: user.ID,
+		},
+	}
+
+	botAPI := newTestBotAPI(t, func(method string, _ *http.Request) any {
+		if method != testTelegramMethodGetChatMember {
+			t.Fatalf("unexpected bot method: %s", method)
+		}
+		return testChatMemberResponse(telegramMemberStatus, false, false, false)
+	})
+	service.botAPI = botAPI
+	detector := &testSpamDetector{result: boolPtr(true)}
+	reactor := &Reactor{
+		s:            service,
+		bot:          botAPI,
+		store:        store,
+		spamDetector: detector,
+		banService:   &testBanService{},
+		lastResults:  make(map[messageResultKey]*MessageProcessingResult),
+		resultOrder:  make([]messageResultKey, 0, maxLastResults),
+	}
+
+	update := &api.Update{
+		MessageReaction: &api.MessageReactionUpdated{
+			Chat:      *chat,
+			MessageID: 42,
+			User:      user,
+			NewReaction: []api.ReactionType{{
+				Type:  api.ReactionTypeEmoji,
+				Emoji: "👍",
+			}},
+		},
+	}
+
+	if _, err := reactor.Handle(context.Background(), update, chat, user); err != nil {
+		t.Fatalf("handle reaction: %v", err)
+	}
+	if service.insertedMember != 0 {
+		t.Fatalf("reaction ended semantic probation: inserted=%d", service.insertedMember)
+	}
+	if detector.calls != 0 {
+		t.Fatalf("probationary member reaction reached profile LLM: calls=%d", detector.calls)
 	}
 }
 

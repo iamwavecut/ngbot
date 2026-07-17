@@ -160,7 +160,7 @@ func (a *Admin) Handle(ctx context.Context, u *api.Update, chat *api.Chat, user 
 	}
 
 	if u.Message == nil || user == nil || chat == nil {
-		entry.Debug("chat or user is nil, proceeding")
+		entry.Trace("chat or user is nil, proceeding")
 		return true, nil
 	}
 

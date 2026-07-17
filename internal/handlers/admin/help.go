@@ -82,8 +82,8 @@ func (a *Admin) renderHelpMarkdown(lang string) string {
 	writeHelpBullet(&builder, i18n.Get("Checks known spammers with LoLs bot, CAS, Combot, and the local banlist.", lang))
 	builder.WriteString("\n")
 
-	writeHelpSection(&builder, i18n.Get("LLM First Message", lang)+" / "+i18n.Get("Reaction Profile Check", lang))
-	writeHelpBullet(&builder, i18n.Get("Runs the LLM first-message check and reaction profile check when they are enabled.", lang))
+	writeHelpSection(&builder, i18n.Get("New-user message probation", lang)+" / "+i18n.Get("Reaction Profile Check", lang))
+	writeHelpBullet(&builder, i18n.Get("Runs new-user message probation and reaction profile checks when they are enabled.", lang))
 	builder.WriteString("\n")
 
 	writeHelpSection(&builder, i18n.Get("Community Voting", lang))

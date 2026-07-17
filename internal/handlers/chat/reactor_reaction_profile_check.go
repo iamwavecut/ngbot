@@ -72,7 +72,7 @@ func (r *Reactor) moderateReactionUser(ctx context.Context, reaction *api.Messag
 		return fmt.Errorf("check reaction user membership: %w", err)
 	}
 	if isMember {
-		entry.Debug("skipping reaction profile check for known member")
+		entry.Trace("skipping reaction profile check for known member")
 		return nil
 	}
 
@@ -81,7 +81,7 @@ func (r *Reactor) moderateReactionUser(ctx context.Context, reaction *api.Messag
 		return fmt.Errorf("check reaction user known non-member state: %w", err)
 	}
 	if isKnownNonMember {
-		entry.Debug("skipping reaction profile check for remembered non-member")
+		entry.Trace("skipping reaction profile check for remembered non-member")
 		return nil
 	}
 
@@ -92,10 +92,7 @@ func (r *Reactor) moderateReactionUser(ctx context.Context, reaction *api.Messag
 		},
 	})
 	if err == nil && !member.HasLeft() && !member.WasKicked() {
-		if insertErr := r.s.InsertMember(ctx, chat.ID, user.ID); insertErr != nil {
-			entry.WithError(insertErr).Warn("failed to remember reaction user as member")
-		}
-		entry.Debug("skipping reaction profile check for Telegram-confirmed member")
+		entry.Debug("skipping reaction profile check without granting message trust")
 		return nil
 	}
 	if err != nil {

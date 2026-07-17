@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	api "github.com/OvyFlash/telegram-bot-api"
 	log "github.com/sirupsen/logrus"
@@ -76,11 +77,17 @@ type Reactor struct {
 	lastResults     map[messageResultKey]*MessageProcessingResult
 	resultOrder     []messageResultKey
 	resultMutex     sync.Mutex
+	now             func() time.Time
 }
 
 type reactorStore interface {
 	ListChatSpamExamples(ctx context.Context, chatID int64, limit int, offset int) ([]*db.ChatSpamExample, error)
 	IsChatNotSpammer(ctx context.Context, chatID int64, userID int64, username string) (bool, error)
+	RecordChallengedMessage(ctx context.Context, chatID int64, userID int64, messageID int) (bool, error)
+	IsChallengedMessage(ctx context.Context, chatID int64, userID int64, messageID int) (bool, error)
+	MessageProbation(ctx context.Context, chatID int64, userID int64) (*db.MessageProbation, error)
+	GetOrCreateMessageProbation(ctx context.Context, chatID int64, userID int64, startedAt time.Time, eligibleAt time.Time) (*db.MessageProbation, bool, error)
+	MarkMessageProbationGraduated(ctx context.Context, chatID int64, userID int64, graduatedAt time.Time) error
 	IsChatKnownNonMember(ctx context.Context, chatID int64, userID int64) (bool, error)
 	UpsertChatKnownNonMember(ctx context.Context, record *db.ChatKnownNonMember) error
 	DeleteChatKnownNonMember(ctx context.Context, chatID int64, userID int64) error
@@ -101,6 +108,7 @@ func NewReactor(s bot.Service, botAPI *api.BotAPI, store reactorStore, stats han
 		processReported: spamControl.ProcessReportedMessage,
 		lastResults:     make(map[messageResultKey]*MessageProcessingResult),
 		resultOrder:     make([]messageResultKey, 0, maxLastResults),
+		now:             time.Now,
 	}
 	r.getLogEntry().Debug("created new reactor")
 	return r
@@ -134,6 +142,13 @@ func (r *Reactor) Handle(ctx context.Context, u *api.Update, chat *api.Chat, use
 	if u.MessageReaction != nil {
 		return r.handleMessageReaction(ctx, u.MessageReaction, chat, settings)
 	}
+	if u.EditedMessage != nil {
+		if err := r.handleEditedMessage(ctx, u.EditedMessage, chat, user, settings); err != nil {
+			entry.WithField(logFieldError, err.Error()).Error("error handling edited message")
+			return true, err
+		}
+		return true, nil
+	}
 
 	if u.Message != nil {
 		if user == nil {
@@ -143,6 +158,9 @@ func (r *Reactor) Handle(ctx context.Context, u *api.Update, chat *api.Chat, use
 			return true, nil
 		}
 		if u.Message.IsCommand() {
+			if err := r.ensureMessageProbationStarted(ctx, chat, user, settings); err != nil {
+				return true, err
+			}
 			if err := r.handleCommand(ctx, u.Message, chat, user, settings); err != nil {
 				entry.WithField(logFieldError, err.Error()).Error("error handling message")
 				return true, err
@@ -150,6 +168,9 @@ func (r *Reactor) Handle(ctx context.Context, u *api.Update, chat *api.Chat, use
 			return true, nil
 		}
 		if messageMentionsCurrentBot(u.Message, r.bot.Self) {
+			if err := r.ensureMessageProbationStarted(ctx, chat, user, settings); err != nil {
+				return true, err
+			}
 			if err := r.voteBanCommand(ctx, u.Message, chat, user, settings); err != nil {
 				entry.WithField(logFieldError, err.Error()).Error("error handling bot mention report")
 				return true, err
@@ -163,6 +184,52 @@ func (r *Reactor) Handle(ctx context.Context, u *api.Update, chat *api.Chat, use
 	}
 
 	return true, nil
+}
+
+func (r *Reactor) handleEditedMessage(ctx context.Context, msg *api.Message, chat *api.Chat, user *api.User, settings *db.Settings) error {
+	if msg == nil || chat == nil || user == nil {
+		return nil
+	}
+	if settings != nil && !settings.LLMFirstMessageEnabled {
+		return nil
+	}
+	moderationAvailable, err := r.moderationAvailable(ctx, chat.ID)
+	if err != nil || !moderationAvailable {
+		return nil
+	}
+	probation, err := r.store.MessageProbation(ctx, chat.ID, user.ID)
+	if err != nil {
+		return fmt.Errorf("get edited message probation: %w", err)
+	}
+	challenged, err := r.store.IsChallengedMessage(ctx, chat.ID, user.ID, msg.MessageID)
+	if err != nil {
+		return fmt.Errorf("check edited challenged message: %w", err)
+	}
+	activeProbation := probation != nil && !probation.GraduatedAt.Valid
+	if !activeProbation && !challenged {
+		return nil
+	}
+	r.getLogEntry().WithFields(log.Fields{
+		logFieldChatID:     chat.ID,
+		logFieldUserID:     user.ID,
+		logFieldMessageID:  msg.MessageID,
+		"active_probation": activeProbation,
+	}).Debug("rechecking edited probation message")
+	return r.handleMessageChallenge(ctx, msg, chat, user, settings, true)
+}
+
+func (r *Reactor) currentTime() time.Time {
+	if r.now == nil {
+		return time.Now().UTC()
+	}
+	return r.now().UTC()
+}
+
+func (r *Reactor) messageProbationDuration() time.Duration {
+	if r.config.SpamControl.MessageProbationDuration > 0 {
+		return r.config.SpamControl.MessageProbationDuration
+	}
+	return 3 * time.Hour
 }
 
 func (r *Reactor) handleCallbackQuery(ctx context.Context, u *api.Update, chat *api.Chat, user *api.User) (bool, error) {
@@ -234,11 +301,15 @@ func (r *Reactor) validateUpdate(u *api.Update, chat *api.Chat, user *api.User) 
 		return errors.New("nil update")
 	}
 
-	if u.Message != nil {
+	if u.Message != nil || u.EditedMessage != nil {
+		msg := u.Message
+		if msg == nil {
+			msg = u.EditedMessage
+		}
 		if chat == nil {
 			return errors.New("nil chat")
 		}
-		if user == nil && u.Message.SenderChat == nil {
+		if user == nil && msg.SenderChat == nil {
 			return errors.New("nil user")
 		}
 		return nil

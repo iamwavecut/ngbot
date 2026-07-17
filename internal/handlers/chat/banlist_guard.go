@@ -27,19 +27,27 @@ func NewBanlistGuard(botAPI *api.BotAPI, banService moderation.BanService) *Banl
 }
 
 func (g *BanlistGuard) Handle(ctx context.Context, u *api.Update, chat *api.Chat, user *api.User) (bool, error) {
-	if u == nil || u.Message == nil || u.Message.SenderChat != nil || len(u.Message.NewChatMembers) != 0 || chat == nil || user == nil || g.banService == nil {
+	if u == nil {
+		return true, nil
+	}
+	msg := u.Message
+	if msg == nil {
+		msg = u.EditedMessage
+	}
+	if msg == nil || msg.SenderChat != nil || len(msg.NewChatMembers) != 0 || chat == nil || user == nil || g.banService == nil {
 		return true, nil
 	}
 	if !g.banService.IsKnownBanned(user.ID) {
 		return true, nil
 	}
 
-	outcome := enforceBanlistedMessage(ctx, g.bot, g.banService, u.Message, chat, user)
+	outcome := enforceBanlistedMessage(ctx, g.bot, g.banService, msg, chat, user)
 	entry := log.WithFields(log.Fields{
 		"object":       "BanlistGuard",
 		logFieldChatID: chat.ID,
 		logFieldUserID: user.ID,
-		"message_id":   u.Message.MessageID,
+		"message_id":   msg.MessageID,
+		"edited":       u.EditedMessage != nil,
 	})
 	if outcome.err != nil {
 		entry.WithField(logFieldError, outcome.err.Error()).Error("failed to enforce terminal banlist action")

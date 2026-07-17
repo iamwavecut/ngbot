@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -12,7 +13,8 @@ import (
 )
 
 const (
-	UpdateTimeout = 5 * time.Minute
+	UpdateTimeout    = 5 * time.Minute
+	logFieldUpdateID = "update_id"
 )
 
 const (
@@ -80,24 +82,12 @@ func (up *UpdateProcessor) Process(ctx context.Context, u *api.Update) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	default:
-		var updateTime time.Time
-		switch {
-		case u.Message != nil:
-			updateTime = time.Unix(int64(u.Message.Date), 0)
-		case u.EditedMessage != nil:
-			updateTime = time.Unix(int64(u.EditedMessage.Date), 0)
-		case u.ChannelPost != nil:
-			updateTime = time.Unix(int64(u.ChannelPost.Date), 0)
-		case u.EditedChannelPost != nil:
-			updateTime = time.Unix(int64(u.EditedChannelPost.Date), 0)
-		default:
-			updateTime = time.Now()
-		}
-
-		if time.Since(updateTime) > UpdateTimeout {
+		if updateTime, updateType, ok := timestampedUpdate(u); ok && time.Since(updateTime) > UpdateTimeout {
 			log.WithFields(log.Fields{
-				"update_time": updateTime,
-				"age":         time.Since(updateTime),
+				logFieldUpdateID: u.UpdateID,
+				"update_type":    updateType,
+				"update_time":    updateTime,
+				"age":            time.Since(updateTime),
 			}).Debug("Skipping outdated update")
 			return nil
 		}
@@ -149,6 +139,32 @@ func (up *UpdateProcessor) Process(ctx context.Context, u *api.Update) error {
 			}
 		}
 		return nil
+	}
+}
+
+func timestampedUpdate(u *api.Update) (time.Time, string, bool) {
+	if u == nil {
+		return time.Time{}, "", false
+	}
+	switch {
+	case u.Message != nil:
+		return time.Unix(u.Message.Date, 0), "message", true
+	case u.EditedMessage != nil:
+		timestamp := u.EditedMessage.EditDate
+		if timestamp == 0 {
+			timestamp = u.EditedMessage.Date
+		}
+		return time.Unix(timestamp, 0), string(MessageTypeEditedMessage), true
+	case u.ChannelPost != nil:
+		return time.Unix(u.ChannelPost.Date, 0), string(MessageTypeChannelPost), true
+	case u.EditedChannelPost != nil:
+		timestamp := u.EditedChannelPost.EditDate
+		if timestamp == 0 {
+			timestamp = u.EditedChannelPost.Date
+		}
+		return time.Unix(timestamp, 0), string(MessageTypeEditedChannelPost), true
+	default:
+		return time.Time{}, "", false
 	}
 }
 
@@ -330,6 +346,10 @@ func GetFullName(user *api.User) string {
 }
 
 func ExtractContentFromMessage(msg *api.Message) (content string) {
+	if msg == nil {
+		return ""
+	}
+
 	var markupContent string
 	defer func() {
 		content = strings.TrimSpace(content)
@@ -339,7 +359,7 @@ func ExtractContentFromMessage(msg *api.Message) (content string) {
 		}
 	}()
 
-	content = strings.TrimSpace(msg.Text + " " + msg.Caption)
+	content = ExtractTextFromMessage(msg)
 
 	addMessageType := false
 	messageType := GetMessageType(msg)
@@ -392,6 +412,67 @@ func ExtractContentFromMessage(msg *api.Message) (content string) {
 	}
 
 	return content
+}
+
+func ExtractTextFromMessage(msg *api.Message) string {
+	if msg == nil {
+		return ""
+	}
+	parts := []string{msg.Text, msg.Caption, extractRichMessageText(msg.RichMessage)}
+	return strings.TrimSpace(strings.Join(parts, " "))
+}
+
+func extractRichMessageText(message *api.RichMessage) string {
+	if message == nil {
+		return ""
+	}
+	payload, err := json.Marshal(message.Blocks)
+	if err != nil {
+		return ""
+	}
+	var blocks []any
+	if err := json.Unmarshal(payload, &blocks); err != nil {
+		return ""
+	}
+	parts := make([]string, 0, len(blocks))
+	appendRichMessageText(&parts, blocks)
+	return strings.Join(parts, " ")
+}
+
+func appendRichMessageText(parts *[]string, value any) {
+	switch value := value.(type) {
+	case string:
+		if text := strings.TrimSpace(value); text != "" {
+			*parts = append(*parts, text)
+		}
+	case []any:
+		for _, item := range value {
+			appendRichMessageText(parts, item)
+		}
+	case map[string]any:
+		for _, key := range []string{
+			"text",
+			"summary",
+			"caption",
+			"credit",
+			"expression",
+			"alternative_text",
+			"label",
+			"url",
+			"email_address",
+			"phone_number",
+			"bank_card_number",
+			"username",
+			"hashtag",
+			"cashtag",
+			"bot_command",
+		} {
+			appendRichMessageText(parts, value[key])
+		}
+		for _, key := range []string{"blocks", "items", "cells"} {
+			appendRichMessageText(parts, value[key])
+		}
+	}
 }
 
 func GetMessageType(msg *api.Message) MessageType {

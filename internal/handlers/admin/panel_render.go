@@ -45,7 +45,7 @@ func (a *Admin) renderHome(ctx context.Context, session *db.AdminPanelSession, s
 		return "", nil, err
 	}
 
-	llmLabel := fmt.Sprintf("%s %s", statusEmoji(state.Features.LLMFirstMessageEnabled), i18n.Get("LLM First Message", lang))
+	llmLabel := fmt.Sprintf("%s %s", statusEmoji(state.Features.LLMFirstMessageEnabled), i18n.Get("New-user message probation", lang))
 	llmBtn, err := a.commandButton(ctx, session.ID, llmLabel, panelCommand{Action: panelActionOpenLLM})
 	if err != nil {
 		return "", nil, err
@@ -416,14 +416,14 @@ func (a *Admin) renderLLM(ctx context.Context, session *db.AdminPanelSession, st
 	lang := state.Language
 	text := fmt.Sprintf(
 		"%s\n\n%s %s\n\n%s",
-		i18n.Get("LLM First Message", lang),
+		i18n.Get("New-user message probation", lang),
 		statusEmoji(state.Features.LLMFirstMessageEnabled),
-		i18n.Get("LLM First Message", lang),
+		i18n.Get("New-user message probation", lang),
 		fmt.Sprintf(i18n.Get("Prompt examples cap: %d", lang), panelLLMExamplesCap),
 	)
-	text = appendPanelHelp(text, lang, i18n.Get("What this is: LLM-based first-message moderation module. Where used: analysis of a user's first message in chat. Value meaning: Master Switch enables or disables this spam check.", lang))
+	text = appendPanelHelp(text, lang, i18n.Get("What this is: three-hour LLM probation for previously untrusted message authors. Where used: every new text or caption until the deadline and one safe message after it. Value meaning: Master Switch enables or disables this spam check.", lang))
 
-	toggleBtn, err := a.commandButton(ctx, session.ID, fmt.Sprintf("%s %s", statusEmoji(state.Features.LLMFirstMessageEnabled), i18n.Get("LLM First Message", lang)), panelCommand{Action: panelActionToggleFeature, Feature: panelFeatureLLMFirst})
+	toggleBtn, err := a.commandButton(ctx, session.ID, fmt.Sprintf("%s %s", statusEmoji(state.Features.LLMFirstMessageEnabled), i18n.Get("New-user message probation", lang)), panelCommand{Action: panelActionToggleFeature, Feature: panelFeatureLLMFirst})
 	if err != nil {
 		return "", nil, err
 	}
@@ -499,7 +499,7 @@ func (a *Admin) renderExamplesList(ctx context.Context, session *db.AdminPanelSe
 		}
 	}
 	builder.WriteString("\n\n")
-	builder.WriteString(panelHelpBlock(lang, i18n.Get("What this is: list of spam examples used by LLM classifier. Where used: prompt context for first-message moderation. Value meaning: each example improves signal for spam patterns in this chat.", lang)))
+	builder.WriteString(panelHelpBlock(lang, i18n.Get("What this is: list of spam examples used by LLM classifier. Where used: prompt context for new-user message probation. Value meaning: each example improves signal for spam patterns in this chat.", lang)))
 
 	addBtn, err := a.commandButton(ctx, session.ID, i18n.Get("Add Example", lang), panelCommand{Action: panelActionAddExample})
 	if err != nil {

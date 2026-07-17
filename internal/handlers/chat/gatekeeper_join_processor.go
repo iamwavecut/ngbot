@@ -139,7 +139,7 @@ func (g *Gatekeeper) handleChatMember(ctx context.Context, u *api.Update, settin
 	}
 	subfeaturesEnabled := settings.GatekeeperEnabled && (settings.GatekeeperCaptchaEnabled || settings.GatekeeperGreetingEnabled)
 	if !isChatMemberJoinTransition(u.ChatMember) {
-		entry.Debug("chat member update is not a new join transition")
+		entry.Trace("chat member update is not a new join transition")
 		return
 	}
 
