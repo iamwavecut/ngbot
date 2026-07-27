@@ -219,11 +219,18 @@ func (r *Reactor) voteBanCommand(ctx context.Context, msg *api.Message, chat *ap
 	language := r.s.GetLanguage(ctx, chat.ID, user)
 	target := msg.ReplyToMessage
 	if r.banService != nil {
-		isBanlisted := r.banService.IsKnownBanned(target.From.ID)
-		if !isBanlisted {
-			isBanlisted, err = r.banService.CheckBan(ctx, target.From.ID)
-			if err != nil {
-				return errors.Wrap(err, "failed to check reported user banlist")
+		isNotSpammer, overrideErr := r.store.IsChatNotSpammer(ctx, chat.ID, target.From.ID, target.From.UserName)
+		if overrideErr != nil {
+			entry.WithError(overrideErr).Error("failed to check reported user manual not-spammer override; continuing moderation")
+		}
+		isBanlisted := false
+		if !isNotSpammer {
+			isBanlisted = r.banService.IsKnownBanned(target.From.ID)
+			if !isBanlisted {
+				isBanlisted, err = r.banService.CheckBan(ctx, target.From.ID)
+				if err != nil {
+					return errors.Wrap(err, "failed to check reported user banlist")
+				}
 			}
 		}
 		if isBanlisted {

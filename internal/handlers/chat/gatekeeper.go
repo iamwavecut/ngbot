@@ -52,6 +52,7 @@ const (
 	captchaSize            = 5
 	maxChallengeAttempts   = 3
 	testJoinCaptchaCommand = "test_join_captcha"
+	gatekeeperName         = "Gatekeeper"
 
 	updateTypeCallbackQuery   updateType = "callback_query"
 	updateTypeChatMember      updateType = "chat_member"
@@ -166,7 +167,7 @@ var privateChallengeKeys = []string{
 }
 
 func NewGatekeeper(s bot.Service, botAPI *api.BotAPI, store gatekeeperStore, stats handlersbase.StatsStore, config *config.Config, banChecker GatekeeperBanChecker) *Gatekeeper {
-	entry := log.WithFields(log.Fields{"object": "Gatekeeper", logFieldMethod: "NewGatekeeper"})
+	entry := log.WithFields(log.Fields{logFieldObject: gatekeeperName, logFieldMethod: "NewGatekeeper"})
 
 	g := &Gatekeeper{
 		s:          s,

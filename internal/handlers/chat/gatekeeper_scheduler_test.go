@@ -179,24 +179,12 @@ func (c *testGatekeeperBanChecker) BanUserWithMessage(_ context.Context, chatID 
 	return c.banErr
 }
 
-func TestProcessNewChatMembersNotSpammerOverrideAppliesAfterBanCheck(t *testing.T) {
+func TestProcessNewChatMembersNotSpammerOverridePrecedesBanCheck(t *testing.T) {
 	t.Parallel()
 
-	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
-		switch method {
-		case testTelegramMethodGetChatMember:
-			return map[string]any{
-				logFieldUser: map[string]any{
-					"id":              200,
-					testJSONIsBot:     false,
-					testJSONFirstName: testFirstNameUser,
-				},
-				logFieldStatus: telegramMemberStatus,
-			}
-		default:
-			t.Fatalf("unexpected bot method: %s", method)
-			return nil
-		}
+	botAPI := newTestBotAPI(t, func(method string, _ *http.Request) any {
+		t.Fatalf("unexpected bot method for manually allowlisted joiner: %s", method)
+		return nil
 	})
 
 	store := &testGatekeeperStore{
@@ -209,7 +197,7 @@ func TestProcessNewChatMembersNotSpammerOverrideAppliesAfterBanCheck(t *testing.
 		},
 		isNotSpammer: true,
 	}
-	banChecker := &testGatekeeperBanChecker{}
+	banChecker := &testGatekeeperBanChecker{banned: true}
 	gatekeeper := &Gatekeeper{
 		bot:        botAPI,
 		s:          &testBotService{botAPI: botAPI},
@@ -222,8 +210,11 @@ func TestProcessNewChatMembersNotSpammerOverrideAppliesAfterBanCheck(t *testing.
 		t.Fatalf("processNewChatMembers returned error: %v", err)
 	}
 
-	if banChecker.checkBanCalls != 1 {
-		t.Fatalf("expected ban checker before manual override, got %d calls", banChecker.checkBanCalls)
+	if banChecker.checkBanCalls != 0 {
+		t.Fatalf("expected manual override before ban checker, got %d calls", banChecker.checkBanCalls)
+	}
+	if len(banChecker.bans) != 0 {
+		t.Fatalf("expected no bans for manually allowlisted joiner, got %#v", banChecker.bans)
 	}
 	if len(store.processed) != 1 {
 		t.Fatalf("expected one processed joiner, got %d", len(store.processed))

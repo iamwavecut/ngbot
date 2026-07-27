@@ -10,9 +10,16 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+const logObjectBanlistGuard = "BanlistGuard"
+
 type BanlistGuard struct {
 	bot        *api.BotAPI
+	store      banlistGuardStore
 	banService moderation.BanService
+}
+
+type banlistGuardStore interface {
+	IsChatNotSpammer(ctx context.Context, chatID int64, userID int64, username string) (bool, error)
 }
 
 type banlistedMessageOutcome struct {
@@ -22,8 +29,8 @@ type banlistedMessageOutcome struct {
 	err                 error
 }
 
-func NewBanlistGuard(botAPI *api.BotAPI, banService moderation.BanService) *BanlistGuard {
-	return &BanlistGuard{bot: botAPI, banService: banService}
+func NewBanlistGuard(botAPI *api.BotAPI, store banlistGuardStore, banService moderation.BanService) *BanlistGuard {
+	return &BanlistGuard{bot: botAPI, store: store, banService: banService}
 }
 
 func (g *BanlistGuard) Handle(ctx context.Context, u *api.Update, chat *api.Chat, user *api.User) (bool, error) {
@@ -40,10 +47,21 @@ func (g *BanlistGuard) Handle(ctx context.Context, u *api.Update, chat *api.Chat
 	if !g.banService.IsKnownBanned(user.ID) {
 		return true, nil
 	}
+	isNotSpammer, err := g.store.IsChatNotSpammer(ctx, chat.ID, user.ID, user.UserName)
+	if err != nil {
+		log.WithFields(log.Fields{
+			logFieldObject: logObjectBanlistGuard,
+			logFieldChatID: chat.ID,
+			logFieldUserID: user.ID,
+			logFieldError:  err.Error(),
+		}).Error("failed to check manual not-spammer override; continuing banlist enforcement")
+	} else if isNotSpammer {
+		return true, nil
+	}
 
 	outcome := enforceBanlistedMessage(ctx, g.bot, g.banService, msg, chat, user)
 	entry := log.WithFields(log.Fields{
-		"object":       "BanlistGuard",
+		logFieldObject: logObjectBanlistGuard,
 		logFieldChatID: chat.ID,
 		logFieldUserID: user.ID,
 		"message_id":   msg.MessageID,

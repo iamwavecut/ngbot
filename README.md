@@ -5,7 +5,7 @@
 
 ## Join protection
 1. Triggered by new chat members and **join requests**.
-2. Checks known spammer sources before CAPTCHA or greeting. Known spammers are declined/banned immediately and join artifacts are cleaned up.
+2. Applies the chat's manual allowlist before checking known spammer sources. Non-allowlisted known spammers are declined/banned immediately and join artifacts are cleaned up.
 3. Restricts the newcomer while verification is active.
 4. Sends a CAPTCHA-style challenge with configurable option count and timeout.
 5. On success, the newcomer is approved/unrestricted and the challenge message is cleaned up.

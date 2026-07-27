@@ -500,6 +500,7 @@ func TestVoteBanCommandBanlistedTargetBypassesLLMAndModerationCase(t *testing.T)
 	reactor := &Reactor{
 		s:            &testBotService{botAPI: botAPI, language: "en"},
 		bot:          botAPI,
+		store:        &testReactorStore{},
 		spamDetector: detector,
 		banService:   banService,
 		processBanned: func(context.Context, *api.Message, *api.Chat, string) (*moderation.ProcessingResult, error) {
@@ -519,6 +520,50 @@ func TestVoteBanCommandBanlistedTargetBypassesLLMAndModerationCase(t *testing.T)
 	}
 	if deletedMessages["40"] != 1 || deletedMessages["50"] != 1 {
 		t.Fatalf("expected target and report cleanup, got %#v", deletedMessages)
+	}
+}
+
+func TestVoteBanCommandAllowlistedTargetBypassesBanlistShortcut(t *testing.T) {
+	t.Parallel()
+
+	botAPI := newTestBotAPI(t, func(method string, _ *http.Request) any {
+		if method != testTelegramMethodGetChatMember {
+			t.Fatalf("unexpected bot method: %s", method)
+		}
+		return testChatMemberResponse(telegramMemberStatus, false, false, false)
+	})
+	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
+	actor := &api.User{ID: 100, FirstName: testFirstNameActor}
+	target := &api.User{ID: 200, FirstName: testFirstNameTarget, UserName: "allowlisted"}
+	reply := &api.Message{MessageID: 40, Chat: *chat, From: target, Text: "reported text"}
+	command := &api.Message{MessageID: 50, Chat: *chat, From: actor, Text: testVoteBanCommand, ReplyToMessage: reply}
+	detector := &testSpamDetector{reportedResult: boolPtr(false)}
+	banService := &testBanService{knownBanned: true, checkBan: true}
+	reportedCalls := 0
+	reactor := &Reactor{
+		s:            &testBotService{botAPI: botAPI, language: "en"},
+		bot:          botAPI,
+		store:        &testNotSpammerStore{isNotSpammer: true},
+		spamDetector: detector,
+		banService:   banService,
+		processBanned: func(context.Context, *api.Message, *api.Chat, string) (*moderation.ProcessingResult, error) {
+			t.Fatal("manually allowlisted report target must not use the banlist shortcut")
+			return nil, nil
+		},
+		processReported: func(context.Context, *api.Message, *api.Message, *api.Chat, string) (*moderation.ProcessingResult, error) {
+			reportedCalls++
+			return &moderation.ProcessingResult{}, nil
+		},
+	}
+
+	if err := reactor.voteBanCommand(context.Background(), command, chat, actor, &db.Settings{CommunityVotingEnabled: true}); err != nil {
+		t.Fatalf("voteBanCommand returned error: %v", err)
+	}
+	if banService.checkBanCalls != 0 || len(banService.bans) != 0 {
+		t.Fatalf("expected manual override before banlist shortcut, checks=%d bans=%#v", banService.checkBanCalls, banService.bans)
+	}
+	if detector.reportedCalls != 1 || reportedCalls != 1 {
+		t.Fatalf("expected normal report flow, llm=%d reports=%d", detector.reportedCalls, reportedCalls)
 	}
 }
 

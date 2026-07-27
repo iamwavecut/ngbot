@@ -339,7 +339,7 @@ func (r *Reactor) getOrCreateSettings(ctx context.Context, chat *api.Chat) (*db.
 }
 
 func (r *Reactor) getLogEntry() *log.Entry {
-	return log.WithField("object", "Reactor")
+	return log.WithField(logFieldObject, "Reactor")
 }
 
 func (r *Reactor) storeLastResult(chatID int64, messageID int, result *MessageProcessingResult) {

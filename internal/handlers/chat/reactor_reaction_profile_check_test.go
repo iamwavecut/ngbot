@@ -370,6 +370,37 @@ func TestHandleMessageReactionBanlistedMemberBypassesProfileModeration(t *testin
 	}
 }
 
+func TestHandleMessageReactionAllowlistedUserBypassesBanlist(t *testing.T) {
+	t.Parallel()
+
+	botAPI := newTestBotAPI(t, func(method string, _ *http.Request) any {
+		t.Fatalf("unexpected bot method for manually allowlisted reaction: %s", method)
+		return nil
+	})
+	detector := &testSpamDetector{result: boolPtr(true)}
+	banService := &testBanService{checkBan: true}
+	reactor := &Reactor{
+		s:            &testBotService{botAPI: botAPI},
+		bot:          botAPI,
+		store:        &testNotSpammerStore{isNotSpammer: true},
+		spamDetector: detector,
+		banService:   banService,
+	}
+	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
+	user := &api.User{ID: 200, UserName: "allowlisted"}
+	reaction := &api.MessageReactionUpdated{Chat: *chat, MessageID: 42, User: user}
+
+	if err := reactor.moderateReactionUser(context.Background(), reaction, chat, user, reactor.getLogEntry()); err != nil {
+		t.Fatalf("moderate allowlisted reaction: %v", err)
+	}
+	if banService.checkBanCalls != 0 {
+		t.Fatalf("expected manual override before banlist, got %d checks", banService.checkBanCalls)
+	}
+	if detector.calls != 0 {
+		t.Fatalf("expected no profile LLM call, got %d", detector.calls)
+	}
+}
+
 func TestHandleMessageReactionModeratesActorChatProfileSpam(t *testing.T) {
 	t.Parallel()
 

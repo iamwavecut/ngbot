@@ -51,6 +51,15 @@ func (g *Gatekeeper) handleNewChatMembersV2(ctx context.Context, u *api.Update, 
 	}
 
 	for _, member := range u.Message.NewChatMembers {
+		isNotSpammer, err := g.store.IsChatNotSpammer(ctx, chat.ID, member.ID, member.UserName)
+		if err != nil {
+			entry.WithFields(log.Fields{
+				logFieldUserID: member.ID,
+				logFieldError:  err.Error(),
+			}).Error("failed to check manual not-spammer override; continuing moderation")
+		} else if isNotSpammer {
+			continue
+		}
 		if !moderationAvailable {
 			if !settings.GatekeeperEnabled {
 				continue
@@ -101,14 +110,6 @@ func (g *Gatekeeper) handleNewChatMembersV2(ctx context.Context, u *api.Update, 
 		if _, err := g.recordRecentJoiner(ctx, chat.ID, &member, u.Message.MessageID); err != nil {
 			entry.WithField(logFieldError, err.Error()).Error("failed to save recent joiner")
 		}
-		isNotSpammer, err := g.store.IsChatNotSpammer(ctx, chat.ID, member.ID, member.UserName)
-		if err != nil {
-			entry.WithField(logFieldError, err.Error()).Error("failed to check manual not-spammer override")
-			continue
-		}
-		if isNotSpammer {
-			continue
-		}
 		if member.IsBot {
 			continue
 		}
@@ -150,6 +151,15 @@ func (g *Gatekeeper) handleChatMember(ctx context.Context, u *api.Update, settin
 	}
 
 	chat := &u.ChatMember.Chat
+	isNotSpammer, err := g.store.IsChatNotSpammer(ctx, chat.ID, member.ID, member.UserName)
+	if err != nil {
+		entry.WithFields(log.Fields{
+			logFieldUserID: member.ID,
+			logFieldError:  err.Error(),
+		}).Error("failed to check manual not-spammer override; continuing moderation")
+	} else if isNotSpammer {
+		return
+	}
 	if !g.moderationAvailable(ctx, chat.ID) {
 		if !settings.GatekeeperEnabled {
 			return
@@ -209,18 +219,6 @@ func (g *Gatekeeper) handleChatMember(ctx context.Context, u *api.Update, settin
 			logFieldUserID: member.ID,
 			logFieldError:  err.Error(),
 		}).Error("failed to save recent joiner")
-	}
-
-	isNotSpammer, err := g.store.IsChatNotSpammer(ctx, chat.ID, member.ID, member.UserName)
-	if err != nil {
-		entry.WithFields(log.Fields{
-			logFieldUserID: member.ID,
-			logFieldError:  err.Error(),
-		}).Error("failed to check manual not-spammer override")
-		return
-	}
-	if isNotSpammer {
-		return
 	}
 
 	if member.IsBot {
@@ -311,7 +309,19 @@ func (g *Gatekeeper) handleChatJoinRequest(ctx context.Context, u *api.Update, s
 		entry.Debug("settings are nil")
 		return nil
 	}
-	if g.moderationAvailable(ctx, u.ChatJoinRequest.Chat.ID) {
+	isNotSpammer, err := g.store.IsChatNotSpammer(
+		ctx,
+		u.ChatJoinRequest.Chat.ID,
+		u.ChatJoinRequest.From.ID,
+		u.ChatJoinRequest.From.UserName,
+	)
+	if err != nil {
+		entry.WithFields(log.Fields{
+			logFieldUserID: u.ChatJoinRequest.From.ID,
+			logFieldError:  err.Error(),
+		}).Error("failed to check manual not-spammer override; continuing moderation")
+	}
+	if !isNotSpammer && g.moderationAvailable(ctx, u.ChatJoinRequest.Chat.ID) {
 		banned, err := g.banChecker.CheckBan(ctx, u.ChatJoinRequest.From.ID)
 		if err != nil {
 			entry.WithFields(log.Fields{

@@ -88,6 +88,19 @@ func (r *Reactor) handleMessageChallenge(ctx context.Context, msg *api.Message, 
 		result.SkipReason = messageSkipReasonNoModerationRights
 		return nil
 	}
+	result.Stage = StageOverrideCheck
+	isNotSpammer, err := r.store.IsChatNotSpammer(ctx, chat.ID, user.ID, user.UserName)
+	if err != nil {
+		entry.WithField(logFieldError, err.Error()).Error("failed to check manual not-spammer override; continuing moderation")
+	} else if isNotSpammer {
+		result.Skipped = true
+		result.SkipReason = "User is manually marked as not spammer"
+		if recheck {
+			return nil
+		}
+		_, err = r.rememberAuthorIfPossible(ctx, chat, user, entry)
+		return err
+	}
 	if r.banService.IsKnownBanned(user.ID) {
 		return r.enforceBanlistedMessage(ctx, msg, chat, user, result, entry)
 	}
@@ -127,22 +140,6 @@ func (r *Reactor) handleMessageChallenge(ctx context.Context, msg *api.Message, 
 	}
 
 	language := r.s.GetLanguage(ctx, chat.ID, user)
-	result.Stage = StageOverrideCheck
-
-	isNotSpammer, err := r.store.IsChatNotSpammer(ctx, chat.ID, user.ID, user.UserName)
-	if err != nil {
-		entry.WithField(logFieldError, err.Error()).Error("Failed to check manual not-spammer override")
-		return fmt.Errorf("failed to check manual not-spammer override: %w", err)
-	}
-	if isNotSpammer {
-		result.Skipped = true
-		result.SkipReason = "User is manually marked as not spammer"
-		if recheck {
-			return nil
-		}
-		_, err = r.rememberAuthorIfPossible(ctx, chat, user, entry)
-		return err
-	}
 
 	if !recheck {
 		if settings != nil && !settings.LLMFirstMessageEnabled {

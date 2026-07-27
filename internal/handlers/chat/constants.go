@@ -2,6 +2,7 @@ package handlers
 
 const (
 	captchaFallbackWord     = "apple"
+	logFieldObject          = "object"
 	logFieldMethod          = "method"
 	logFieldError           = "error"
 	logFieldChatID          = "chat_id"

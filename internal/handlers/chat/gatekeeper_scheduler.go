@@ -31,6 +31,18 @@ func (g *Gatekeeper) processNewChatMembers(ctx context.Context) error {
 		entry.WithField("count", len(recentJoiners)).Debug("processing new chat members")
 	}
 	for _, joiner := range recentJoiners {
+		isNotSpammer, err := g.store.IsChatNotSpammer(ctx, joiner.ChatID, joiner.UserID, joiner.Username)
+		if err != nil {
+			entry.WithFields(log.Fields{
+				logFieldUserID: joiner.UserID,
+				logFieldError:  err.Error(),
+			}).Error("failed to check manual not-spammer override; continuing moderation")
+		} else if isNotSpammer {
+			if err := g.store.ProcessRecentJoiner(ctx, joiner.ChatID, joiner.UserID, false); err != nil {
+				entry.WithField(logFieldError, err.Error()).Error("failed to process recent joiner")
+			}
+			continue
+		}
 		if !g.moderationAvailable(ctx, joiner.ChatID) {
 			if err := g.store.ProcessRecentJoiner(ctx, joiner.ChatID, joiner.UserID, false); err != nil {
 				entry.WithField(logFieldError, err.Error()).Error("failed to close no-rights recent joiner")
@@ -83,17 +95,6 @@ func (g *Gatekeeper) processNewChatMembers(ctx context.Context) error {
 			continue
 		}
 
-		isNotSpammer, err := g.store.IsChatNotSpammer(ctx, joiner.ChatID, joiner.UserID, joiner.Username)
-		if err != nil {
-			entry.WithField(logFieldError, err.Error()).Error("failed to check manual not-spammer override")
-			continue
-		}
-		if isNotSpammer {
-			if err := g.store.ProcessRecentJoiner(ctx, joiner.ChatID, joiner.UserID, false); err != nil {
-				entry.WithField(logFieldError, err.Error()).Error("failed to process recent joiner")
-			}
-			continue
-		}
 		if err := g.store.ProcessRecentJoiner(ctx, joiner.ChatID, joiner.UserID, false); err != nil {
 			entry.WithField(logFieldError, err.Error()).Error("failed to process recent joiner")
 		}

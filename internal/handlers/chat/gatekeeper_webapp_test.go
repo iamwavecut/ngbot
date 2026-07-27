@@ -1180,6 +1180,65 @@ func TestHandleJoinCaptchaAnswerDeclinesKnownBannedUser(t *testing.T) {
 	}
 }
 
+func TestHandleJoinCaptchaAnswerAllowsManuallyAllowlistedKnownBannedUser(t *testing.T) {
+	t.Parallel()
+
+	recorder := &botRequestRecorder{}
+	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
+		recorder.record(t, method, r)
+		switch method {
+		case testTelegramMethodJoinRequestQuery, testTelegramMethodBanChatMember:
+			return true
+		default:
+			t.Fatalf("unexpected bot method: %s", method)
+			return nil
+		}
+	})
+
+	store := newGatekeeperFlowStore()
+	store.isNotSpammer = true
+	challenge := newWebAppChallenge(time.Now().Add(3 * time.Minute))
+	if _, err := store.CreateChallenge(t.Context(), challenge); err != nil {
+		t.Fatalf("create challenge: %v", err)
+	}
+
+	gatekeeper := &Gatekeeper{
+		bot:    botAPI,
+		s:      &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI, language: "en"}, settings: webAppSettings()},
+		store:  store,
+		config: &config.Config{},
+		banChecker: &testGatekeeperBanChecker{
+			knownBanned: map[int64]bool{challenge.UserID: true},
+		},
+	}
+
+	form := url.Values{
+		testWebAppFormToken:    {challenge.WebAppToken},
+		testWebAppFormChoice:   {challenge.SuccessUUID},
+		testWebAppFormInitData: {signedWebAppInitData(t, botAPI.Token, challenge.JoinRequestQueryID, challenge.UserID)},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/gatekeeper/join-captcha/answer", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+
+	gatekeeper.handleJoinCaptchaAnswer(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 for manually allowlisted user, got %d: %s", rr.Code, rr.Body.String())
+	}
+	answers := recorder.byMethod(testTelegramMethodJoinRequestQuery)
+	if len(answers) != 1 {
+		t.Fatalf("expected one query answer, got %d", len(answers))
+	}
+	if got := answers[0].form.Get("result"); got != "approve" {
+		t.Fatalf("expected approve result for manually allowlisted user, got %q", got)
+	}
+	got := store.onlyChallenge(t)
+	if got.Status != db.ChallengeStatusPassedWaitingMemberJoin {
+		t.Fatalf("expected handoff status, got %q", got.Status)
+	}
+}
+
 func TestHandleJoinCaptchaMarksOpened(t *testing.T) {
 	t.Parallel()
 

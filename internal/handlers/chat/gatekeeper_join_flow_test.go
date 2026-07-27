@@ -470,7 +470,34 @@ func TestDisabledGatekeeperBannedChatMemberStillBans(t *testing.T) {
 	}
 }
 
-func TestBannedChatJoinRequestDeclinesAndBansBeforeCaptcha(t *testing.T) {
+func TestDisabledGatekeeperAllowlistedBannedChatMemberSkipsBan(t *testing.T) {
+	t.Parallel()
+
+	user := api.User{ID: 200, FirstName: testFirstNameUser}
+	chat := api.Chat{ID: -100, Type: testChatTypeSupergroup, Title: "Group"}
+	store := newGatekeeperFlowStore()
+	store.isNotSpammer = true
+	banChecker := &testGatekeeperBanChecker{banned: true}
+	gatekeeper := &Gatekeeper{
+		s:          &gatekeeperTestService{testBotService: testBotService{language: "en"}, settings: &db.Settings{GatekeeperEnabled: false}},
+		store:      store,
+		config:     &config.Config{},
+		banChecker: banChecker,
+	}
+
+	proceed, err := gatekeeper.Handle(t.Context(), newChatMemberJoinUpdate(chat, user, user), &chat, &user)
+	if err != nil {
+		t.Fatalf("handle disabled gatekeeper allowlisted member: %v", err)
+	}
+	if !proceed {
+		t.Fatal("expected gatekeeper join update to keep propagation")
+	}
+	if banChecker.checkBanCalls != 0 || len(banChecker.bans) != 0 {
+		t.Fatalf("expected manual override before terminal banlist, checks=%d bans=%#v", banChecker.checkBanCalls, banChecker.bans)
+	}
+}
+
+func TestAllowlistedBannedChatJoinRequestSkipsBanlist(t *testing.T) {
 	t.Parallel()
 
 	recorder := &botRequestRecorder{}
@@ -481,24 +508,11 @@ func TestBannedChatJoinRequestDeclinesAndBansBeforeCaptcha(t *testing.T) {
 
 	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
 		recorder.record(t, method, r)
-
-		switch method {
-		case testTelegramMethodDeclineJoinRequest:
-			return true
-		default:
-			t.Fatalf("unexpected bot method before captcha: %s", method)
-			return nil
-		}
+		t.Fatalf("unexpected bot method for manually allowlisted join request: %s", method)
+		return nil
 	})
 
-	settings := &db.Settings{
-		GatekeeperEnabled:             true,
-		GatekeeperCaptchaEnabled:      true,
-		GatekeeperGreetingEnabled:     true,
-		GatekeeperGreetingText:        testGreetingTemplate,
-		GatekeeperCaptchaOptionsCount: 3,
-		ChallengeTimeout:              (3 * time.Minute).Nanoseconds(),
-	}
+	settings := &db.Settings{GatekeeperEnabled: false}
 	banChecker := &testGatekeeperBanChecker{banned: true}
 	gatekeeper := &Gatekeeper{
 		bot:        botAPI,
@@ -519,17 +533,14 @@ func TestBannedChatJoinRequestDeclinesAndBansBeforeCaptcha(t *testing.T) {
 		t.Fatalf("handleChatJoinRequest returned error: %v", err)
 	}
 
-	if banChecker.checkBanCalls != 1 {
-		t.Fatalf("expected one ban check, got %d", banChecker.checkBanCalls)
+	if banChecker.checkBanCalls != 0 {
+		t.Fatalf("expected manual override before ban check, got %d checks", banChecker.checkBanCalls)
 	}
-	if len(banChecker.bans) != 1 {
-		t.Fatalf("expected one ban, got %d", len(banChecker.bans))
+	if len(banChecker.bans) != 0 {
+		t.Fatalf("expected no bans, got %#v", banChecker.bans)
 	}
-	if banChecker.bans[0].chatID != groupChat.ID || banChecker.bans[0].userID != user.ID || banChecker.bans[0].messageID != 0 {
-		t.Fatalf("unexpected ban call: %#v", banChecker.bans[0])
-	}
-	if len(recorder.byMethod(testTelegramMethodDeclineJoinRequest)) != 1 {
-		t.Fatalf("expected one join request decline, got %d", len(recorder.byMethod(testTelegramMethodDeclineJoinRequest)))
+	if len(recorder.requests) != 0 {
+		t.Fatalf("expected no Telegram actions, got %#v", recorder.requests)
 	}
 	if len(recorder.byMethod(testTelegramMethodSendMessage)) != 0 {
 		t.Fatalf("expected no captcha or greeting messages, got %d", len(recorder.byMethod(testTelegramMethodSendMessage)))

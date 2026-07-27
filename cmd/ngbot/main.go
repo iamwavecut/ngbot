@@ -272,7 +272,7 @@ func buildRuntime(ctx context.Context, cfg *config.Config, errChan chan<- shutdo
 
 	gatekeeperHandler := chatHandlers.NewGatekeeper(service, botAPI, dbClient, dbClient, cfg, banService)
 	adminHandler := adminHandlers.NewAdmin(service, botAPI, dbClient, dbClient, banService)
-	banlistGuard := chatHandlers.NewBanlistGuard(botAPI, banService)
+	banlistGuard := chatHandlers.NewBanlistGuard(botAPI, dbClient, banService)
 
 	llmAPI, err := configureLLM(cfg, log.WithField("context", "handlers"))
 	if err != nil {

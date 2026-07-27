@@ -279,11 +279,12 @@ func (s *testBanService) IsKnownBanned(int64) bool { return s.knownBanned }
 
 type testNotSpammerStore struct {
 	testReactorStore
-	isNotSpammer bool
+	isNotSpammer  bool
+	notSpammerErr error
 }
 
 func (s *testNotSpammerStore) IsChatNotSpammer(context.Context, int64, int64, string) (bool, error) {
-	return s.isNotSpammer, nil
+	return s.isNotSpammer, s.notSpammerErr
 }
 
 func boolPtr(value bool) *bool {
@@ -781,7 +782,7 @@ func TestHandleMessageNotSpammerOverrideBypassesBanAndLLM(t *testing.T) {
 
 	service := &testBotService{botAPI: botAPI, language: "ru"}
 	detector := &testSpamDetector{}
-	banService := &testBanService{}
+	banService := &testBanService{knownBanned: true, checkBan: true}
 	processSpamCalls := 0
 	r := &Reactor{
 		s:            service,
@@ -817,8 +818,11 @@ func TestHandleMessageNotSpammerOverrideBypassesBanAndLLM(t *testing.T) {
 	if detector.calls != 0 {
 		t.Fatalf("expected LLM detector not to be called, got %d calls", detector.calls)
 	}
-	if banService.checkBanCalls != 1 {
-		t.Fatalf("expected banlist to be checked before the override, got %d calls", banService.checkBanCalls)
+	if banService.checkBanCalls != 0 {
+		t.Fatalf("expected manual override before every banlist lookup, got %d calls", banService.checkBanCalls)
+	}
+	if len(banService.bans) != 0 {
+		t.Fatalf("expected no direct bans for manually allowlisted user, got %#v", banService.bans)
 	}
 	if processSpamCalls != 0 {
 		t.Fatalf("expected processSpam not to be called, got %d calls", processSpamCalls)
@@ -1231,7 +1235,7 @@ func TestHandleMessageKnownBannedMemberIsDirectlyBanned(t *testing.T) {
 	reactor := &Reactor{
 		s:            service,
 		bot:          service.GetBot(),
-		store:        &testNotSpammerStore{isNotSpammer: true},
+		store:        &testReactorStore{},
 		spamDetector: detector,
 		banService:   banService,
 		processBanned: func(context.Context, *api.Message, *api.Chat, string) (*moderation.ProcessingResult, error) {

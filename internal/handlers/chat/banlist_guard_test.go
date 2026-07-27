@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"testing"
 
@@ -20,7 +21,7 @@ func TestBanlistGuardStopsCommandBeforeDownstreamHandlers(t *testing.T) {
 		return true
 	})
 	banService := &testBanService{knownBanned: true}
-	guard := NewBanlistGuard(botAPI, banService)
+	guard := NewBanlistGuard(botAPI, &testNotSpammerStore{}, banService)
 	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
 	user := &api.User{ID: 200}
 	message := &api.Message{MessageID: 42, Chat: *chat, From: user, Text: "/settings"}
@@ -52,7 +53,7 @@ func TestBanlistGuardStopsEditedMessageBeforeDownstreamHandlers(t *testing.T) {
 		return true
 	})
 	banService := &testBanService{knownBanned: true}
-	guard := NewBanlistGuard(botAPI, banService)
+	guard := NewBanlistGuard(botAPI, &testNotSpammerStore{}, banService)
 	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
 	user := &api.User{ID: 200}
 	message := &api.Message{MessageID: 43, Chat: *chat, From: user, Text: "edited spam"}
@@ -80,7 +81,7 @@ func TestBanlistGuardNoRightsStopsWithoutTelegramRetry(t *testing.T) {
 		return nil
 	})
 	banService := &testBanService{knownBanned: true, moderationUnavailable: true}
-	guard := NewBanlistGuard(botAPI, banService)
+	guard := NewBanlistGuard(botAPI, &testNotSpammerStore{}, banService)
 	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
 	user := &api.User{ID: 200}
 	message := &api.Message{MessageID: 42, Chat: *chat, From: user, Text: "spam"}
@@ -101,7 +102,7 @@ func TestBanlistGuardLeavesJoinServiceMessageForGatekeeper(t *testing.T) {
 	t.Parallel()
 
 	banService := &testBanService{knownBanned: true}
-	guard := NewBanlistGuard(&api.BotAPI{}, banService)
+	guard := NewBanlistGuard(&api.BotAPI{}, &testNotSpammerStore{}, banService)
 	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
 	actor := &api.User{ID: 200}
 	joined := api.User{ID: 300}
@@ -116,5 +117,58 @@ func TestBanlistGuardLeavesJoinServiceMessageForGatekeeper(t *testing.T) {
 	}
 	if len(banService.bans) != 0 {
 		t.Fatalf("join actor was incorrectly banned: %#v", banService.bans)
+	}
+}
+
+func TestBanlistGuardAllowsManuallyAllowlistedUser(t *testing.T) {
+	t.Parallel()
+
+	botAPI := newTestBotAPI(t, func(method string, _ *http.Request) any {
+		t.Fatalf("unexpected bot method for manually allowlisted user: %s", method)
+		return nil
+	})
+	banService := &testBanService{knownBanned: true}
+	guard := NewBanlistGuard(botAPI, &testNotSpammerStore{isNotSpammer: true}, banService)
+	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
+	user := &api.User{ID: 200, UserName: "allowlisted"}
+	message := &api.Message{MessageID: 42, Chat: *chat, From: user, Text: "/settings"}
+
+	proceed, err := guard.Handle(context.Background(), &api.Update{Message: message}, chat, user)
+	if err != nil {
+		t.Fatalf("handle manually allowlisted command: %v", err)
+	}
+	if !proceed {
+		t.Fatal("expected manually allowlisted user to reach downstream handlers")
+	}
+	if len(banService.bans) != 0 {
+		t.Fatalf("manually allowlisted user was incorrectly banned: %#v", banService.bans)
+	}
+}
+
+func TestBanlistGuardAllowlistLookupFailureContinuesBan(t *testing.T) {
+	t.Parallel()
+
+	botAPI := newTestBotAPI(t, func(method string, _ *http.Request) any {
+		if method != testTelegramMethodDeleteMessage {
+			t.Fatalf("unexpected bot method: %s", method)
+		}
+		return true
+	})
+	banService := &testBanService{knownBanned: true}
+	store := &testNotSpammerStore{notSpammerErr: errors.New("database unavailable")}
+	guard := NewBanlistGuard(botAPI, store, banService)
+	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
+	user := &api.User{ID: 200, UserName: "candidate"}
+	message := &api.Message{MessageID: 42, Chat: *chat, From: user, Text: "message"}
+
+	proceed, err := guard.Handle(context.Background(), &api.Update{Message: message}, chat, user)
+	if err != nil {
+		t.Fatalf("handle allowlist lookup failure: %v", err)
+	}
+	if proceed {
+		t.Fatal("expected allowlist lookup failure not to grant an exemption")
+	}
+	if len(banService.bans) != 1 {
+		t.Fatalf("expected banlist enforcement after lookup failure, got %#v", banService.bans)
 	}
 }

@@ -59,6 +59,14 @@ func (r *Reactor) moderateReactionUser(ctx context.Context, reaction *api.Messag
 		logFieldUsername: user.UserName,
 	})
 
+	isNotSpammer, err := r.store.IsChatNotSpammer(ctx, chat.ID, user.ID, user.UserName)
+	if err != nil {
+		entry.WithField(logFieldError, err.Error()).Error("failed to check manual not-spammer override; continuing moderation")
+	} else if isNotSpammer {
+		entry.Trace("skipping reaction moderation for manually allowlisted user")
+		return nil
+	}
+
 	isBanned, err := r.banService.CheckBan(ctx, user.ID)
 	if err != nil {
 		return fmt.Errorf("check reaction user banlist: %w", err)

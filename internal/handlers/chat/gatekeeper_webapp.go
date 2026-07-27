@@ -176,7 +176,7 @@ var joinCaptchaBlockedCrawlerUserAgents = []string{
 
 var joinCaptchaCopies = map[string]joinCaptchaCopy{
 	"en": {
-		Kicker:                  "Gatekeeper",
+		Kicker:                  gatekeeperName,
 		Title:                   "Human check",
 		PromptTemplate:          "Select {target} to continue into the chat.",
 		SecondsLabel:            "seconds",
@@ -931,7 +931,14 @@ func (g *Gatekeeper) handleJoinCaptchaAnswer(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	if g.banChecker != nil && g.banChecker.IsKnownBanned(challenge.UserID) {
+	isNotSpammer, err := g.store.IsChatNotSpammer(r.Context(), challenge.ChatID, challenge.UserID, "")
+	if err != nil {
+		g.getLogEntry().
+			WithField(logFieldUserID, challenge.UserID).
+			WithField(logFieldError, err.Error()).
+			Error("failed to check manual not-spammer override; continuing moderation")
+	}
+	if !isNotSpammer && g.banChecker != nil && g.banChecker.IsKnownBanned(challenge.UserID) {
 		if err := g.declineWebAppChallenge(r.Context(), challenge); err != nil {
 			g.getLogEntry().WithField(logFieldError, err.Error()).Error("failed to decline banned web app challenge")
 		}
