@@ -132,27 +132,27 @@ func (g *Gatekeeper) handleNewChatMembersV2(ctx context.Context, u *api.Update, 
 	return nil
 }
 
-func (g *Gatekeeper) handleChatMember(ctx context.Context, u *api.Update, settings *db.Settings) {
+func (g *Gatekeeper) handleChatMember(ctx context.Context, u *api.Update, settings *db.Settings) error {
 	entry := g.getLogEntry().WithField(logFieldMethod, "handleChatMember")
 
 	if u == nil || u.ChatMember == nil {
 		entry.Debug("chat member update is nil")
-		return
+		return nil
 	}
 	if settings == nil {
 		entry.Debug("settings are nil")
-		return
+		return nil
 	}
 	subfeaturesEnabled := settings.GatekeeperEnabled && (settings.GatekeeperCaptchaEnabled || settings.GatekeeperGreetingEnabled)
 	if !isChatMemberJoinTransition(u.ChatMember) {
 		entry.Trace("chat member update is not a new join transition")
-		return
+		return nil
 	}
 
 	member := u.ChatMember.NewChatMember.User
 	if member == nil {
 		entry.Debug("chat member user is nil")
-		return
+		return nil
 	}
 
 	chat := &u.ChatMember.Chat
@@ -163,11 +163,11 @@ func (g *Gatekeeper) handleChatMember(ctx context.Context, u *api.Update, settin
 			logFieldErrorCode: db.SafeGatekeeperErrorCode(err),
 		}).Error("failed to check manual not-spammer override; continuing moderation")
 	} else if isNotSpammer {
-		return
+		return nil
 	}
 	if !g.moderationAvailable(ctx, chat.ID) {
 		if !settings.GatekeeperEnabled {
-			return
+			return nil
 		}
 		if _, err := g.recordRecentJoiner(ctx, chat.ID, member, 0); err != nil {
 			entry.WithFields(log.Fields{
@@ -176,7 +176,7 @@ func (g *Gatekeeper) handleChatMember(ctx context.Context, u *api.Update, settin
 			}).Error("failed to save recent joiner")
 		}
 		if member.IsBot || !subfeaturesEnabled {
-			return
+			return nil
 		}
 		if settings.GatekeeperCaptchaEnabled {
 			if err := g.ensurePublicChallenge(ctx, u, member, chat, settings); err != nil {
@@ -193,7 +193,7 @@ func (g *Gatekeeper) handleChatMember(ctx context.Context, u *api.Update, settin
 				}).Error("failed to send no-rights greeting")
 			}
 		}
-		return
+		return nil
 	}
 
 	banned, err := g.banChecker.CheckBan(ctx, member.ID)
@@ -202,7 +202,7 @@ func (g *Gatekeeper) handleChatMember(ctx context.Context, u *api.Update, settin
 			logFieldUserID: member.ID,
 			logFieldError:  err.Error(),
 		}).Error("failed to check ban for chat member")
-		return
+		return nil
 	}
 	if banned {
 		joiner, recordErr := g.recordRecentJoiner(ctx, chat.ID, member, 0)
@@ -214,10 +214,13 @@ func (g *Gatekeeper) handleChatMember(ctx context.Context, u *api.Update, settin
 		}
 		banErr := g.processKnownBannedJoinedUser(ctx, chat.ID, member.ID, joinerMessageID(joiner, 0))
 		g.completeKnownBannedRecentJoiner(ctx, chat.ID, member.ID, banErr)
-		return
+		if banErr != nil && db.SafeGatekeeperErrorCode(banErr) != db.GatekeeperErrorPermission {
+			return banErr
+		}
+		return nil
 	}
 	if !settings.GatekeeperEnabled {
-		return
+		return nil
 	}
 	if _, err := g.recordRecentJoiner(ctx, chat.ID, member, 0); err != nil {
 		entry.WithFields(log.Fields{
@@ -227,12 +230,12 @@ func (g *Gatekeeper) handleChatMember(ctx context.Context, u *api.Update, settin
 	}
 
 	if member.IsBot {
-		return
+		return nil
 	}
 
 	if !subfeaturesEnabled {
 		entry.Debug("gatekeeper subfeatures are disabled")
-		return
+		return nil
 	}
 
 	handoffChallenge, err := g.store.GetPassedJoinRequestChallengeByChatUser(ctx, chat.ID, member.ID)
@@ -255,7 +258,7 @@ func (g *Gatekeeper) handleChatMember(ctx context.Context, u *api.Update, settin
 				logFieldError:  err.Error(),
 			}).Error("failed to delete approved join request handoff challenge")
 		}
-		return
+		return nil
 	}
 
 	if u.ChatMember.ViaJoinRequest {
@@ -265,7 +268,7 @@ func (g *Gatekeeper) handleChatMember(ctx context.Context, u *api.Update, settin
 				logFieldError:  err.Error(),
 			}).Error("failed to send gatekeeper greeting for approved join request")
 		}
-		return
+		return nil
 	}
 
 	switch {
@@ -284,6 +287,7 @@ func (g *Gatekeeper) handleChatMember(ctx context.Context, u *api.Update, settin
 			}).Error("failed to send gatekeeper greeting for new member")
 		}
 	}
+	return nil
 }
 
 func (g *Gatekeeper) ensurePublicChallenge(ctx context.Context, u *api.Update, user *api.User, chat *api.Chat, settings *db.Settings) error {

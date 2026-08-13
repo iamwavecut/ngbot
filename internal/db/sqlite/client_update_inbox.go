@@ -12,7 +12,8 @@ import (
 
 const telegramUpdateColumns = `
 	update_id, dispatch_key, payload, security_relevant, status, attempt_count,
-	available_at, received_at, started_at, completed_at, last_error, outcome_source
+	available_at, received_at, started_at, completed_at, last_error, outcome_source,
+	lease_owner, lease_version, lease_until
 `
 
 func (c *sqliteClient) EnqueueTelegramUpdate(ctx context.Context, update *db.TelegramUpdate) (bool, error) {
@@ -101,12 +102,16 @@ func (c *sqliteClient) TelegramUpdate(ctx context.Context, updateID int) (*db.Te
 	return &update, true, nil
 }
 
-func (c *sqliteClient) ClaimTelegramUpdate(ctx context.Context, updateID int, now time.Time) (*db.TelegramUpdate, bool, error) {
+func (c *sqliteClient) ClaimTelegramUpdate(ctx context.Context, updateID int, owner string, now, leaseUntil time.Time) (*db.TelegramUpdate, bool, error) {
+	if owner == "" || !leaseUntil.After(now) {
+		return nil, false, fmt.Errorf("telegram update lease is incomplete")
+	}
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 	result, err := c.db.ExecContext(ctx, `
 		UPDATE telegram_update_inbox AS candidate
-		SET status = ?, attempt_count = attempt_count + 1, started_at = ?, last_error = ''
+		SET status = ?, attempt_count = attempt_count + 1, started_at = ?, last_error = '',
+			lease_owner = ?, lease_version = lease_version + 1, lease_until = ?
 		WHERE candidate.update_id = ?
 			AND candidate.status IN (?, ?)
 			AND candidate.available_at <= ?
@@ -117,7 +122,7 @@ func (c *sqliteClient) ClaimTelegramUpdate(ctx context.Context, updateID int, no
 					AND predecessor.update_id < candidate.update_id
 					AND predecessor.status NOT IN (?, ?)
 			)
-	`, db.TelegramUpdateStatusProcessing, now, updateID, db.TelegramUpdateStatusPending, db.TelegramUpdateStatusRetry, now, db.TelegramUpdateStatusCompleted, db.TelegramUpdateStatusDeadLetter)
+	`, db.TelegramUpdateStatusProcessing, now, owner, leaseUntil, updateID, db.TelegramUpdateStatusPending, db.TelegramUpdateStatusRetry, now, db.TelegramUpdateStatusCompleted, db.TelegramUpdateStatusDeadLetter)
 	if err != nil {
 		return nil, false, fmt.Errorf("claim telegram update: %w", err)
 	}
@@ -135,15 +140,33 @@ func (c *sqliteClient) ClaimTelegramUpdate(ctx context.Context, updateID int, no
 	return &update, true, nil
 }
 
-func (c *sqliteClient) ScheduleTelegramUpdateRetry(ctx context.Context, updateID int, nextAttemptAt time.Time, source, lastError string) (bool, error) {
-	return c.transitionProcessingTelegramUpdate(ctx, updateID, db.TelegramUpdateStatusRetry, nextAttemptAt, source, lastError)
+func (c *sqliteClient) RenewTelegramUpdateLease(ctx context.Context, updateID int, owner string, version int64, leaseUntil, now time.Time) (bool, error) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	result, err := c.db.ExecContext(ctx, `
+		UPDATE telegram_update_inbox
+		SET lease_until = ?, started_at = ?
+		WHERE update_id = ? AND status = ? AND lease_owner = ? AND lease_version = ?
+	`, leaseUntil, now, updateID, db.TelegramUpdateStatusProcessing, owner, version)
+	if err != nil {
+		return false, fmt.Errorf("renew telegram update lease: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("read telegram update lease renewal: %w", err)
+	}
+	return rows == 1, nil
 }
 
-func (c *sqliteClient) CompleteTelegramUpdate(ctx context.Context, updateID int, source string, now time.Time) (bool, error) {
-	return c.transitionProcessingTelegramUpdate(ctx, updateID, db.TelegramUpdateStatusCompleted, now, source, "")
+func (c *sqliteClient) ScheduleTelegramUpdateRetry(ctx context.Context, updateID int, owner string, version int64, nextAttemptAt time.Time, source, lastError string) (bool, error) {
+	return c.transitionProcessingTelegramUpdate(ctx, updateID, owner, version, db.TelegramUpdateStatusRetry, nextAttemptAt, source, lastError)
 }
 
-func (c *sqliteClient) transitionProcessingTelegramUpdate(ctx context.Context, updateID int, status string, at time.Time, source, lastError string) (bool, error) {
+func (c *sqliteClient) CompleteTelegramUpdate(ctx context.Context, updateID int, owner string, version int64, source string, now time.Time) (bool, error) {
+	return c.transitionProcessingTelegramUpdate(ctx, updateID, owner, version, db.TelegramUpdateStatusCompleted, now, source, "")
+}
+
+func (c *sqliteClient) transitionProcessingTelegramUpdate(ctx context.Context, updateID int, owner string, version int64, status string, at time.Time, source, lastError string) (bool, error) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 	var completedAt any
@@ -152,9 +175,10 @@ func (c *sqliteClient) transitionProcessingTelegramUpdate(ctx context.Context, u
 	}
 	result, err := c.db.ExecContext(ctx, `
 		UPDATE telegram_update_inbox
-		SET status = ?, available_at = ?, completed_at = ?, last_error = ?, outcome_source = ?
-		WHERE update_id = ? AND status = ?
-	`, status, at, completedAt, lastError, source, updateID, db.TelegramUpdateStatusProcessing)
+		SET status = ?, available_at = ?, completed_at = ?, last_error = ?, outcome_source = ?,
+			lease_owner = '', lease_until = NULL
+		WHERE update_id = ? AND status = ? AND lease_owner = ? AND lease_version = ?
+	`, status, at, completedAt, lastError, source, updateID, db.TelegramUpdateStatusProcessing, owner, version)
 	if err != nil {
 		return false, fmt.Errorf("transition telegram update to %s: %w", status, err)
 	}
@@ -165,7 +189,7 @@ func (c *sqliteClient) transitionProcessingTelegramUpdate(ctx context.Context, u
 	return rows == 1, nil
 }
 
-func (c *sqliteClient) DeadLetterTelegramUpdate(ctx context.Context, updateID int, source, reason, lastError string, now time.Time) (bool, error) {
+func (c *sqliteClient) DeadLetterTelegramUpdate(ctx context.Context, updateID int, owner string, version int64, source, reason, lastError string, now time.Time) (bool, error) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 	tx, err := c.db.BeginTxx(ctx, nil)
@@ -175,9 +199,10 @@ func (c *sqliteClient) DeadLetterTelegramUpdate(ctx context.Context, updateID in
 	defer func() { _ = tx.Rollback() }()
 	result, err := tx.ExecContext(ctx, `
 		UPDATE telegram_update_inbox
-		SET status = ?, completed_at = ?, last_error = ?, outcome_source = ?
-		WHERE update_id = ? AND status = ?
-	`, db.TelegramUpdateStatusDeadLetter, now, lastError, source, updateID, db.TelegramUpdateStatusProcessing)
+		SET status = ?, completed_at = ?, last_error = ?, outcome_source = ?,
+			lease_owner = '', lease_until = NULL
+		WHERE update_id = ? AND status = ? AND lease_owner = ? AND lease_version = ?
+	`, db.TelegramUpdateStatusDeadLetter, now, lastError, source, updateID, db.TelegramUpdateStatusProcessing, owner, version)
 	if err != nil {
 		return false, fmt.Errorf("mark telegram update dead letter: %w", err)
 	}
@@ -206,19 +231,19 @@ func (c *sqliteClient) DeadLetterTelegramUpdate(ctx context.Context, updateID in
 }
 
 func (c *sqliteClient) RecoverTelegramUpdates(ctx context.Context, now time.Time) (int64, error) {
-	return c.RecoverStaleTelegramUpdates(ctx, now, now)
+	return c.RecoverStaleTelegramUpdates(ctx, now)
 }
 
-func (c *sqliteClient) RecoverStaleTelegramUpdates(ctx context.Context, now, startedBefore time.Time) (int64, error) {
+func (c *sqliteClient) RecoverStaleTelegramUpdates(ctx context.Context, now time.Time) (int64, error) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 	result, err := c.db.ExecContext(ctx, `
 		UPDATE telegram_update_inbox
-		SET status = ?, available_at = ?, started_at = NULL,
+		SET status = ?, available_at = ?, started_at = NULL, lease_owner = '', lease_until = NULL,
 			last_error = CASE WHEN last_error = '' THEN 'interrupted before terminal outcome' ELSE last_error END,
 			outcome_source = 'restart'
-		WHERE status = ? AND started_at <= ?
-	`, db.TelegramUpdateStatusRetry, now, db.TelegramUpdateStatusProcessing, startedBefore)
+		WHERE status = ? AND lease_until <= ?
+	`, db.TelegramUpdateStatusRetry, now, db.TelegramUpdateStatusProcessing, now)
 	if err != nil {
 		return 0, fmt.Errorf("recover telegram updates: %w", err)
 	}

@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	api "github.com/OvyFlash/telegram-bot-api"
+	"github.com/iamwavecut/ngbot/internal/bot"
 	"github.com/iamwavecut/ngbot/internal/config"
 	"github.com/iamwavecut/ngbot/internal/db"
 	"github.com/pborman/uuid"
@@ -621,6 +623,13 @@ func newChatMemberJoinUpdate(chat api.Chat, joinedUser api.User, actor api.User)
 	}
 }
 
+func mustHandleChatMember(t *testing.T, gatekeeper *Gatekeeper, update *api.Update, settings *db.Settings) {
+	t.Helper()
+	if err := gatekeeper.handleChatMember(t.Context(), update, settings); err != nil {
+		t.Fatalf("handle chat member: %v", err)
+	}
+}
+
 func TestDisabledGatekeeperCleanChatMemberOnlyChecksBanlist(t *testing.T) {
 	t.Parallel()
 
@@ -668,6 +677,48 @@ func TestDisabledGatekeeperBannedChatMemberStillBans(t *testing.T) {
 	}
 	if banChecker.checkBanCalls != 1 || len(banChecker.bans) != 1 {
 		t.Fatalf("expected terminal ban despite disabled captcha, checks=%d bans=%#v", banChecker.checkBanCalls, banChecker.bans)
+	}
+}
+
+func TestChatMemberKnownBannedBanFailurePropagatesTypedOutcome(t *testing.T) {
+	t.Parallel()
+
+	user := api.User{ID: 200, FirstName: testFirstNameUser}
+	chat := api.Chat{ID: -100, Type: testChatTypeSupergroup, Title: "Group"}
+	for _, test := range []struct {
+		name            string
+		banErr          error
+		wantErr         bool
+		wantDisposition bot.UpdateFailureDisposition
+	}{
+		{name: "rate limited", banErr: api.Error{Code: http.StatusTooManyRequests, Message: "Too Many Requests"}, wantErr: true, wantDisposition: bot.UpdateFailureRetryable},
+		{name: "no rights", banErr: errors.New("Bad Request: CHAT_ADMIN_REQUIRED")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			store := newGatekeeperFlowStore()
+			banChecker := &testGatekeeperBanChecker{banned: true, banErr: test.banErr}
+			gatekeeper := &Gatekeeper{
+				s:     &gatekeeperTestService{testBotService: testBotService{language: "en"}, settings: &db.Settings{GatekeeperEnabled: false}},
+				store: store, config: &config.Config{}, banChecker: banChecker,
+			}
+			proceed, err := gatekeeper.Handle(t.Context(), newChatMemberJoinUpdate(chat, user, user), &chat, &user)
+			if !proceed {
+				t.Fatal("chat member update did not retain propagation")
+			}
+			if got := err != nil; got != test.wantErr {
+				t.Fatalf("handle error=%v, want error=%t", err, test.wantErr)
+			}
+			if err != nil {
+				failure := bot.ClassifyUpdateFailure(err)
+				if failure.Source != bot.UpdateFailureTelegram || failure.Disposition != test.wantDisposition {
+					t.Fatalf("failure = %#v", failure)
+				}
+			}
+			if !test.wantErr && !banChecker.markedUnavailable {
+				t.Fatal("no-rights failure did not enter terminal no-rights mode")
+			}
+		})
 	}
 }
 
@@ -961,7 +1012,7 @@ func TestBannedChatMemberSkipsCaptchaAndDeletesKnownJoinArtifacts(t *testing.T) 
 	}
 
 	memberUpdate := newChatMemberJoinUpdate(groupChat, user, user)
-	gatekeeper.handleChatMember(context.Background(), memberUpdate, settings)
+	mustHandleChatMember(t, gatekeeper, memberUpdate, settings)
 
 	if banChecker.checkBanCalls != 1 {
 		t.Fatalf("expected one ban check, got %d", banChecker.checkBanCalls)
@@ -1276,7 +1327,7 @@ func TestJoinRequestCaptchaSuccessHandoffSkipsSecondCaptchaAndSendsGreetingOnce(
 
 	memberUpdate := newChatMemberJoinUpdate(groupChat, user, user)
 	memberUpdate.ChatMember.ViaJoinRequest = true
-	gatekeeper.handleChatMember(context.Background(), memberUpdate, settings)
+	mustHandleChatMember(t, gatekeeper, memberUpdate, settings)
 
 	requestMessages = recorder.byMethod(testTelegramMethodSendMessage)
 	if len(requestMessages) != 3 {
@@ -1385,7 +1436,7 @@ func TestJoinRequestCaptchaSuccessHandoffSkipsPublicCaptchaWithoutViaJoinRequest
 	}
 
 	memberUpdate := newChatMemberJoinUpdate(groupChat, user, user)
-	gatekeeper.handleChatMember(context.Background(), memberUpdate, settings)
+	mustHandleChatMember(t, gatekeeper, memberUpdate, settings)
 
 	sendMessages := recorder.byMethod(testTelegramMethodSendMessage)
 	if len(sendMessages) != 3 {
@@ -1442,7 +1493,7 @@ func TestManualJoinRequestApprovalSkipsPublicCaptchaAndSendsOnlyGreeting(t *test
 
 	update := newChatMemberJoinUpdate(groupChat, user, api.User{ID: 777, FirstName: testFirstNameAdmin})
 	update.ChatMember.ViaJoinRequest = true
-	gatekeeper.handleChatMember(context.Background(), update, settings)
+	mustHandleChatMember(t, gatekeeper, update, settings)
 
 	sendMessages := recorder.byMethod(testTelegramMethodSendMessage)
 	if len(sendMessages) != 1 {
@@ -1517,7 +1568,7 @@ func TestDirectJoinCaptchaIncludesGreetingImmediatelyAndBackfillsJoinMessageID(t
 	}
 
 	update := newChatMemberJoinUpdate(groupChat, user, user)
-	gatekeeper.handleChatMember(context.Background(), update, settings)
+	mustHandleChatMember(t, gatekeeper, update, settings)
 
 	sendMessages := recorder.byMethod(testTelegramMethodSendMessage)
 	if len(sendMessages) != 1 {
@@ -1608,7 +1659,7 @@ func TestDirectJoinCaptchaUsesMarkdownV2ForNormalizedGreetingTemplate(t *testing
 	}
 
 	update := newChatMemberJoinUpdate(groupChat, user, user)
-	gatekeeper.handleChatMember(context.Background(), update, settings)
+	mustHandleChatMember(t, gatekeeper, update, settings)
 
 	sendMessages := recorder.byMethod(testTelegramMethodSendMessage)
 	if len(sendMessages) != 1 {
@@ -1696,7 +1747,7 @@ func TestNonJoinRequestChatMemberJoinsStillStartPublicCaptcha(t *testing.T) {
 
 			update := newChatMemberJoinUpdate(groupChat, user, tc.actor)
 			tc.prepare(update)
-			gatekeeper.handleChatMember(context.Background(), update, settings)
+			mustHandleChatMember(t, gatekeeper, update, settings)
 
 			sendMessages := recorder.byMethod(testTelegramMethodSendMessage)
 			if len(sendMessages) != 1 {
@@ -2693,7 +2744,7 @@ func TestNoRightsPublicCaptchaPassDeletesCaptchaWithoutModeration(t *testing.T) 
 	chat := api.Chat{ID: -100123, Type: testChatTypeSupergroup, Title: testGroupTitle}
 	user := api.User{ID: 42, FirstName: testFirstNameNeo}
 
-	gatekeeper.handleChatMember(context.Background(), newChatMemberJoinUpdate(chat, user, user), settings)
+	mustHandleChatMember(t, gatekeeper, newChatMemberJoinUpdate(chat, user, user), settings)
 	challenge := store.onlyChallenge(t)
 	if challenge.UserRestricted {
 		t.Fatal("no-rights public challenge was persisted as restricted")
@@ -2746,7 +2797,7 @@ func TestNoRightsPublicCaptchaFailureKeepsNoticeForThirtyMinutes(t *testing.T) {
 	chat := api.Chat{ID: -100123, Type: testChatTypeSupergroup, Title: testGroupTitle}
 	user := api.User{ID: 42, FirstName: testFirstNameNeo}
 
-	gatekeeper.handleChatMember(context.Background(), newChatMemberJoinUpdate(chat, user, user), settings)
+	mustHandleChatMember(t, gatekeeper, newChatMemberJoinUpdate(chat, user, user), settings)
 	challenge := store.onlyChallenge(t)
 	startedAt := time.Now()
 	if err := gatekeeper.failChallenge(context.Background(), challenge, "failed", time.Minute); err != nil {
@@ -2814,7 +2865,7 @@ func TestNoRightsGreetingStillRunsWhenCaptchaIsDisabled(t *testing.T) {
 	chat := api.Chat{ID: -100123, Type: testChatTypeSupergroup, Title: testGroupTitle}
 	user := api.User{ID: 42, FirstName: testFirstNameNeo}
 
-	gatekeeper.handleChatMember(context.Background(), newChatMemberJoinUpdate(chat, user, user), settings)
+	mustHandleChatMember(t, gatekeeper, newChatMemberJoinUpdate(chat, user, user), settings)
 	sends := recorder.byMethod(testTelegramMethodSendMessage)
 	if len(sends) != 1 || !strings.Contains(sends[0].form.Get("text"), "Welcome") {
 		t.Fatalf("no-rights greeting was not sent: %#v", sends)

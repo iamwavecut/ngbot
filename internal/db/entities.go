@@ -198,6 +198,9 @@ type (
 		CompletedAt      sql.NullTime `db:"completed_at"`
 		LastError        string       `db:"last_error"`
 		OutcomeSource    string       `db:"outcome_source"`
+		LeaseOwner       string       `db:"lease_owner"`
+		LeaseVersion     int64        `db:"lease_version"`
+		LeaseUntil       sql.NullTime `db:"lease_until"`
 	}
 
 	TelegramUpdateFailure struct {

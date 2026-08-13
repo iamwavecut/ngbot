@@ -11,6 +11,7 @@ import (
 
 	api "github.com/OvyFlash/telegram-bot-api"
 	"github.com/iamwavecut/ngbot/internal/db"
+	"github.com/pborman/uuid"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -30,12 +31,13 @@ type DurableUpdateStore interface {
 	EnqueueTelegramUpdate(ctx context.Context, update *db.TelegramUpdate) (bool, error)
 	ListRunnableTelegramUpdates(ctx context.Context, now time.Time, limit int) ([]*db.TelegramUpdate, error)
 	NextTelegramUpdateAvailableAt(ctx context.Context) (time.Time, bool, error)
-	ClaimTelegramUpdate(ctx context.Context, updateID int, now time.Time) (*db.TelegramUpdate, bool, error)
-	ScheduleTelegramUpdateRetry(ctx context.Context, updateID int, nextAttemptAt time.Time, source, lastError string) (bool, error)
-	CompleteTelegramUpdate(ctx context.Context, updateID int, source string, now time.Time) (bool, error)
-	DeadLetterTelegramUpdate(ctx context.Context, updateID int, source, reason, lastError string, now time.Time) (bool, error)
+	ClaimTelegramUpdate(ctx context.Context, updateID int, owner string, now, leaseUntil time.Time) (*db.TelegramUpdate, bool, error)
+	RenewTelegramUpdateLease(ctx context.Context, updateID int, owner string, version int64, leaseUntil, now time.Time) (bool, error)
+	ScheduleTelegramUpdateRetry(ctx context.Context, updateID int, owner string, version int64, nextAttemptAt time.Time, source, lastError string) (bool, error)
+	CompleteTelegramUpdate(ctx context.Context, updateID int, owner string, version int64, source string, now time.Time) (bool, error)
+	DeadLetterTelegramUpdate(ctx context.Context, updateID int, owner string, version int64, source, reason, lastError string, now time.Time) (bool, error)
 	RecoverTelegramUpdates(ctx context.Context, now time.Time) (int64, error)
-	RecoverStaleTelegramUpdates(ctx context.Context, now, startedBefore time.Time) (int64, error)
+	RecoverStaleTelegramUpdates(ctx context.Context, now time.Time) (int64, error)
 	CleanupTelegramUpdates(ctx context.Context, completedBefore, deadLetterBefore time.Time) (int64, error)
 }
 
@@ -240,7 +242,9 @@ func (d *DurableUpdateDispatcher) execute(ctx context.Context, submitted *api.Up
 	if submitted == nil {
 		return nil
 	}
-	record, claimed, err := d.store.ClaimTelegramUpdate(ctx, submitted.UpdateID, time.Now())
+	now := time.Now()
+	owner := uuid.New()
+	record, claimed, err := d.store.ClaimTelegramUpdate(ctx, submitted.UpdateID, owner, now, now.Add(d.options.ProcessingTimeout))
 	if err != nil {
 		d.removeScheduled(submitted.UpdateID)
 		d.deferScheduler()
@@ -261,10 +265,20 @@ func (d *DurableUpdateDispatcher) execute(ctx context.Context, submitted *api.Up
 		return d.finishFailure(ctx, record, &update, failure)
 	}
 
-	processErr := d.callProcessor(ctx, &update)
+	processCtx, cancelProcess := context.WithCancel(ctx)
+	stopHeartbeat := make(chan struct{})
+	heartbeatDone := make(chan error, 1)
+	go d.heartbeatLease(processCtx, cancelProcess, record, stopHeartbeat, heartbeatDone)
+	processErr := d.callProcessor(processCtx, &update)
+	close(stopHeartbeat)
+	heartbeatErr := <-heartbeatDone
+	cancelProcess()
+	if heartbeatErr != nil && processErr == nil {
+		processErr = heartbeatErr
+	}
 	if processErr == nil {
 		changed, completeErr := d.retryStoreTransition(ctx, func() (bool, error) {
-			return d.store.CompleteTelegramUpdate(ctx, record.UpdateID, "handler", time.Now())
+			return d.store.CompleteTelegramUpdate(ctx, record.UpdateID, record.LeaseOwner, record.LeaseVersion, "handler", time.Now())
 		})
 		d.removeScheduled(record.UpdateID)
 		if completeErr != nil {
@@ -278,6 +292,34 @@ func (d *DurableUpdateDispatcher) execute(ctx context.Context, submitted *api.Up
 		return nil
 	}
 	return d.finishFailure(ctx, record, &update, ClassifyUpdateFailure(processErr))
+}
+
+func (d *DurableUpdateDispatcher) heartbeatLease(ctx context.Context, cancelProcess context.CancelFunc, record *db.TelegramUpdate, stop <-chan struct{}, done chan<- error) {
+	interval := max(d.options.ProcessingTimeout/3, time.Millisecond)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			done <- nil
+			return
+		case <-stop:
+			done <- nil
+			return
+		case now := <-ticker.C:
+			renewed, err := d.retryStoreTransition(ctx, func() (bool, error) {
+				return d.store.RenewTelegramUpdateLease(ctx, record.UpdateID, record.LeaseOwner, record.LeaseVersion, now.Add(d.options.ProcessingTimeout), now)
+			})
+			if err != nil || !renewed {
+				cancelProcess()
+				if err == nil {
+					err = errors.New("telegram update lease ownership was lost")
+				}
+				done <- NewTerminalUpdateFailure(UpdateFailureRuntime, "ambiguous_handler_lease_lost", err)
+				return
+			}
+		}
+	}
 }
 
 func (d *DurableUpdateDispatcher) callProcessor(ctx context.Context, update *api.Update) (err error) {
@@ -304,7 +346,7 @@ func (d *DurableUpdateDispatcher) finishFailure(ctx context.Context, record *db.
 	if failure.Disposition == UpdateFailureRetryable && record.AttemptCount < d.options.MaxAttempts {
 		nextAttemptAt := time.Now().Add(d.retryDelay(record.AttemptCount))
 		changed, err := d.retryStoreTransition(ctx, func() (bool, error) {
-			return d.store.ScheduleTelegramUpdateRetry(ctx, record.UpdateID, nextAttemptAt, string(failure.Source), lastError)
+			return d.store.ScheduleTelegramUpdateRetry(ctx, record.UpdateID, record.LeaseOwner, record.LeaseVersion, nextAttemptAt, string(failure.Source), lastError)
 		})
 		d.removeScheduled(record.UpdateID)
 		if err != nil {
@@ -328,7 +370,7 @@ func (d *DurableUpdateDispatcher) finishFailure(ctx context.Context, record *db.
 		}
 	}
 	changed, err := d.retryStoreTransition(ctx, func() (bool, error) {
-		return d.store.DeadLetterTelegramUpdate(ctx, record.UpdateID, string(failure.Source), reason, lastError, time.Now())
+		return d.store.DeadLetterTelegramUpdate(ctx, record.UpdateID, record.LeaseOwner, record.LeaseVersion, string(failure.Source), reason, lastError, time.Now())
 	})
 	d.removeScheduled(record.UpdateID)
 	if err != nil {
@@ -388,7 +430,7 @@ func (d *DurableUpdateDispatcher) runScheduler(ctx context.Context) {
 	for {
 		now := time.Now()
 		if !now.Before(nextRecovery) {
-			if _, err := d.store.RecoverStaleTelegramUpdates(ctx, now, now.Add(-d.options.ProcessingTimeout)); err != nil && ctx.Err() == nil {
+			if _, err := d.store.RecoverStaleTelegramUpdates(ctx, now); err != nil && ctx.Err() == nil {
 				d.logger.WithError(err).Error("failed to recover stale telegram updates")
 				d.deferScheduler()
 			}

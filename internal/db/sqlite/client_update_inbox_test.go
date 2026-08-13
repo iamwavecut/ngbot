@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"bytes"
+	"fmt"
 	"testing"
 	"time"
 
@@ -100,12 +101,12 @@ func TestTelegramUpdateInboxBlocksLaterChatUpdateThroughRetry(t *testing.T) {
 	if err != nil || len(updates) != 1 || updates[0].UpdateID != 10 {
 		t.Fatalf("initial runnable updates = %#v, err=%v", updates, err)
 	}
-	claimed, ok, err := client.ClaimTelegramUpdate(t.Context(), 10, now)
+	claimed, ok, err := client.ClaimTelegramUpdate(t.Context(), 10, "owner-10", now, now.Add(time.Minute))
 	if err != nil || !ok || claimed.AttemptCount != 1 {
 		t.Fatalf("claim first: update=%#v claimed=%t err=%v", claimed, ok, err)
 	}
 	retryAt := now.Add(time.Minute)
-	changed, err := client.ScheduleTelegramUpdateRetry(t.Context(), 10, retryAt, "sqlite", "database is busy")
+	changed, err := client.ScheduleTelegramUpdateRetry(t.Context(), 10, claimed.LeaseOwner, claimed.LeaseVersion, retryAt, "sqlite", "database is busy")
 	if err != nil || !changed {
 		t.Fatalf("schedule retry: changed=%t err=%v", changed, err)
 	}
@@ -139,18 +140,19 @@ func TestTelegramUpdateInboxRecoversProcessingAndDeadLettersPoison(t *testing.T)
 	if err != nil || !inserted {
 		t.Fatalf("enqueue update: inserted=%t err=%v", inserted, err)
 	}
-	if _, claimed, claimErr := client.ClaimTelegramUpdate(t.Context(), 55, now); claimErr != nil || !claimed {
+	_, claimed, claimErr := client.ClaimTelegramUpdate(t.Context(), 55, "owner-55", now, now.Add(time.Minute))
+	if claimErr != nil || !claimed {
 		t.Fatalf("claim before crash: claimed=%t err=%v", claimed, claimErr)
 	}
 	recovered, err := client.RecoverTelegramUpdates(t.Context(), now.Add(time.Minute))
 	if err != nil || recovered != 1 {
 		t.Fatalf("recover processing update: recovered=%d err=%v", recovered, err)
 	}
-	claimed, ok, err := client.ClaimTelegramUpdate(t.Context(), 55, now.Add(time.Minute))
-	if err != nil || !ok || claimed.AttemptCount != 2 {
-		t.Fatalf("claim recovered update: update=%#v claimed=%t err=%v", claimed, ok, err)
+	claimedRecord, ok, err := client.ClaimTelegramUpdate(t.Context(), 55, "owner-55b", now.Add(time.Minute), now.Add(2*time.Minute))
+	if err != nil || !ok || claimedRecord.AttemptCount != 2 {
+		t.Fatalf("claim recovered update: update=%#v claimed=%t err=%v", claimedRecord, ok, err)
 	}
-	changed, err := client.DeadLetterTelegramUpdate(t.Context(), 55, "payload", "malformed_update", "missing update body", now.Add(2*time.Minute))
+	changed, err := client.DeadLetterTelegramUpdate(t.Context(), 55, claimedRecord.LeaseOwner, claimedRecord.LeaseVersion, "payload", "malformed_update", "missing update body", now.Add(2*time.Minute))
 	if err != nil || !changed {
 		t.Fatalf("dead letter poison update: changed=%t err=%v", changed, err)
 	}
@@ -182,14 +184,14 @@ func TestTelegramUpdateInboxRetentionKeepsRecentAndUnresolvedWork(t *testing.T) 
 		}
 	}
 	for _, updateID := range []int{1, 2} {
-		if _, claimed, claimErr := client.ClaimTelegramUpdate(t.Context(), updateID, now); claimErr != nil || !claimed {
+		if _, claimed, claimErr := client.ClaimTelegramUpdate(t.Context(), updateID, fmt.Sprintf("owner-%d", updateID), now, now.Add(time.Minute)); claimErr != nil || !claimed {
 			t.Fatalf("claim %d: claimed=%t err=%v", updateID, claimed, claimErr)
 		}
 	}
-	if changed, completeErr := client.CompleteTelegramUpdate(t.Context(), 1, "handler", now.Add(-24*time.Hour)); completeErr != nil || !changed {
+	if changed, completeErr := client.CompleteTelegramUpdate(t.Context(), 1, "owner-1", 1, "handler", now.Add(-24*time.Hour)); completeErr != nil || !changed {
 		t.Fatalf("complete old update: changed=%t err=%v", changed, completeErr)
 	}
-	if changed, completeErr := client.CompleteTelegramUpdate(t.Context(), 2, "handler", now); completeErr != nil || !changed {
+	if changed, completeErr := client.CompleteTelegramUpdate(t.Context(), 2, "owner-2", 1, "handler", now); completeErr != nil || !changed {
 		t.Fatalf("complete recent update: changed=%t err=%v", changed, completeErr)
 	}
 	deleted, err := client.CleanupTelegramUpdates(t.Context(), now.Add(-time.Hour), now.Add(-time.Hour))
