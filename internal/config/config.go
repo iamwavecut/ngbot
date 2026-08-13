@@ -34,8 +34,10 @@ type (
 	}
 
 	GatekeeperWebApp struct {
-		PublicURL  string `env:"GATEKEEPER_WEBAPP_PUBLIC_URL"`
-		ListenAddr string `env:"GATEKEEPER_WEBAPP_LISTEN_ADDR,default=:8080"`
+		PublicURL         string `env:"GATEKEEPER_WEBAPP_PUBLIC_URL"`
+		ListenAddr        string `env:"GATEKEEPER_WEBAPP_LISTEN_ADDR,default=127.0.0.1:8080"`
+		MaxConcurrent     int    `env:"GATEKEEPER_WEBAPP_MAX_CONCURRENT,default=32"`
+		RequestsPerMinute int    `env:"GATEKEEPER_WEBAPP_REQUESTS_PER_MINUTE,default=120"`
 	}
 
 	LLM struct {
@@ -82,6 +84,9 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("get user home directory: %w", err)
 	}
 	cfg.DotPath = strings.Replace(cfg.DotPath, "~", home, 1)
+	if strings.TrimSpace(cfg.GatekeeperWebApp.ListenAddr) == "" {
+		cfg.GatekeeperWebApp.ListenAddr = "127.0.0.1:8080"
+	}
 	if err := validateConfig(cfg); err != nil {
 		return Config{}, err
 	}
@@ -122,6 +127,12 @@ func validateConfig(cfg *Config) error {
 		if parsed.User != nil || (parsed.Path != "" && parsed.Path != "/") || parsed.RawQuery != "" || parsed.Fragment != "" {
 			return fmt.Errorf("gatekeeper web app public url must contain only scheme and authority")
 		}
+	}
+	if cfg.GatekeeperWebApp.MaxConcurrent < 0 {
+		return fmt.Errorf("gatekeeper web app maximum concurrent requests must be positive")
+	}
+	if cfg.GatekeeperWebApp.RequestsPerMinute < 0 {
+		return fmt.Errorf("gatekeeper web app requests per minute must be positive")
 	}
 	return nil
 }

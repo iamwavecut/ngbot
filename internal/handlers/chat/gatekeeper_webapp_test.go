@@ -1,13 +1,16 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	stderrors "errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -21,7 +24,147 @@ import (
 	api "github.com/OvyFlash/telegram-bot-api"
 	"github.com/iamwavecut/ngbot/internal/config"
 	"github.com/iamwavecut/ngbot/internal/db"
+	log "github.com/sirupsen/logrus"
 )
+
+func TestJoinCaptchaHealthReflectsReadiness(t *testing.T) {
+	t.Parallel()
+
+	gatekeeper := &Gatekeeper{config: &config.Config{GatekeeperWebApp: config.GatekeeperWebApp{
+		MaxConcurrent:     2,
+		RequestsPerMinute: 10,
+	}}}
+	handler := gatekeeper.joinCaptchaWebAppHandler()
+
+	live := httptest.NewRecorder()
+	handler.ServeHTTP(live, httptest.NewRequest(http.MethodGet, "/livez", nil))
+	if live.Code != http.StatusOK {
+		t.Fatalf("liveness status = %d", live.Code)
+	}
+
+	notReady := httptest.NewRecorder()
+	handler.ServeHTTP(notReady, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if notReady.Code != http.StatusServiceUnavailable {
+		t.Fatalf("initial readiness status = %d, want 503", notReady.Code)
+	}
+
+	gatekeeper.webAppReady.Store(true)
+	ready := httptest.NewRecorder()
+	handler.ServeHTTP(ready, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if ready.Code != http.StatusOK {
+		t.Fatalf("ready status = %d", ready.Code)
+	}
+}
+
+func TestJoinCaptchaRateLimitUsesTrustedForwardedClient(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 13, 16, 0, 0, 0, time.UTC)
+	limiter := newJoinCaptchaRateLimiter(1, time.Minute, func() time.Time { return now })
+	handler := joinCaptchaRateLimitMiddleware(limiter, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	request := func(forwardedFor string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, joinCaptchaPath, nil)
+		req.RemoteAddr = "127.0.0.1:42000"
+		req.Header.Set("X-Forwarded-For", forwardedFor)
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+		return rr
+	}
+
+	if got := request("203.0.113.10").Code; got != http.StatusNoContent {
+		t.Fatalf("first request status = %d", got)
+	}
+	if got := request("203.0.113.10").Code; got != http.StatusTooManyRequests {
+		t.Fatalf("repeated client status = %d, want 429", got)
+	}
+	if got := request("203.0.113.11").Code; got != http.StatusNoContent {
+		t.Fatalf("distinct client status = %d", got)
+	}
+}
+
+func TestJoinCaptchaAdmissionRejectsOverflow(t *testing.T) {
+	t.Parallel()
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	handler := joinCaptchaAdmissionMiddleware(1, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		close(entered)
+		<-release
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	firstDone := make(chan struct{})
+	go func() {
+		defer close(firstDone)
+		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, joinCaptchaPath, nil))
+	}()
+	<-entered
+
+	overflow := httptest.NewRecorder()
+	handler.ServeHTTP(overflow, httptest.NewRequest(http.MethodGet, joinCaptchaPath, nil))
+	if overflow.Code != http.StatusServiceUnavailable {
+		t.Fatalf("overflow status = %d, want 503", overflow.Code)
+	}
+	close(release)
+	<-firstDone
+}
+
+func TestJoinCaptchaTelemetryDoesNotLogBearerOrToken(t *testing.T) {
+	t.Parallel()
+
+	var output bytes.Buffer
+	logger := log.New()
+	logger.SetOutput(&output)
+	logger.SetFormatter(&log.JSONFormatter{})
+	handler := joinCaptchaTelemetryMiddleware(log.NewEntry(logger), http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	req := httptest.NewRequest(http.MethodGet, joinCaptchaPath+"?token=webapp-bearer-secret", nil)
+	req.Header.Set("Authorization", "Bearer authorization-secret")
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	logged := output.String()
+	for _, secret := range []string{"webapp-bearer-secret", "authorization-secret", "Authorization"} {
+		if strings.Contains(logged, secret) {
+			t.Fatalf("telemetry leaked %q in %q", secret, logged)
+		}
+	}
+	if !strings.Contains(logged, joinCaptchaPath) || !strings.Contains(logged, `"status":204`) {
+		t.Fatalf("telemetry is missing safe request metadata: %q", logged)
+	}
+}
+
+func TestWebAppServeFailureIsReportedAsFatal(t *testing.T) {
+	t.Parallel()
+
+	serveErr := stderrors.New("serve failed")
+	reported := make(chan error, 1)
+	gatekeeper := &Gatekeeper{
+		config: &config.Config{GatekeeperWebApp: config.GatekeeperWebApp{
+			ListenAddr:        "127.0.0.1:0",
+			MaxConcurrent:     2,
+			RequestsPerMinute: 10,
+		}},
+		serveWebApp: func(*http.Server, net.Listener) error { return serveErr },
+		webAppFatalError: func(err error) {
+			reported <- err
+		},
+	}
+	if err := gatekeeper.startWebAppServer(t.Context()); err != nil {
+		t.Fatalf("startWebAppServer: %v", err)
+	}
+	select {
+	case err := <-reported:
+		if !stderrors.Is(err, serveErr) {
+			t.Fatalf("reported error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("WebApp Serve failure was not reported")
+	}
+}
 
 func TestJoinCaptchaRenderedClientPostsOneAnswerWithoutUncaughtException(t *testing.T) {
 	t.Parallel()

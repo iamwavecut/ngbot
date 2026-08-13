@@ -1,6 +1,7 @@
 package config
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -25,6 +26,66 @@ func TestLoadUsesProviderSpecificCredential(t *testing.T) {
 	}
 	if got := cfg.LLM.APIKeyForProvider(); got != "gemini-specific" {
 		t.Fatalf("selected credential = %q", got)
+	}
+}
+
+func TestLoadDefaultsNativeWebAppToLoopback(t *testing.T) {
+	t.Setenv("NG_TOKEN", "telegram-token")
+	t.Setenv("NG_HANDLERS", "admin,gatekeeper")
+	t.Setenv("NG_DOT_PATH", t.TempDir())
+	t.Setenv("NG_TELEGRAM_POLL_TIMEOUT", "60s")
+	t.Setenv("NG_TELEGRAM_REQUEST_TIMEOUT", "75s")
+	t.Setenv("NG_TELEGRAM_RECOVERY_WINDOW", "10m")
+	t.Setenv("NG_SPAM_MESSAGE_PROBATION_DURATION", "3h")
+	t.Setenv("NG_GATEKEEPER_WEBAPP_PUBLIC_URL", "")
+	t.Setenv("NG_GATEKEEPER_WEBAPP_LISTEN_ADDR", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if cfg.GatekeeperWebApp.ListenAddr != "127.0.0.1:8080" {
+		t.Fatalf("native WebApp listen address = %q, want loopback", cfg.GatekeeperWebApp.ListenAddr)
+	}
+}
+
+func TestValidateConfigRejectsInvalidWebAppAdmissionLimits(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		webApp GatekeeperWebApp
+		want   string
+	}{
+		{
+			name: "requests per minute",
+			webApp: GatekeeperWebApp{
+				MaxConcurrent:     32,
+				RequestsPerMinute: -1,
+			},
+			want: "requests per minute",
+		},
+		{
+			name: "maximum concurrent requests",
+			webApp: GatekeeperWebApp{
+				MaxConcurrent:     -1,
+				RequestsPerMinute: 120,
+			},
+			want: "concurrent",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := validConfigForLLM()
+			cfg.EnabledHandlers = []string{"admin", "gatekeeper"}
+			cfg.GatekeeperWebApp = tt.webApp
+			err := validateConfig(&cfg)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("validateConfig error = %v, want %q", err, tt.want)
+			}
+		})
 	}
 }
 

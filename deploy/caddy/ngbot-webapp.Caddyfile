@@ -3,14 +3,12 @@
 	header {
 		Cache-Control "no-store, no-cache, must-revalidate, private, max-age=0"
 		Cross-Origin-Opener-Policy "same-origin"
-		Cross-Origin-Resource-Policy "same-origin"
 		Origin-Agent-Cluster "?1"
 		Permissions-Policy "accelerometer=(), ambient-light-sensor=(), autoplay=(), battery=(), camera=(), clipboard-read=(), clipboard-write=(), display-capture=(), document-domain=(), encrypted-media=(), fullscreen=(), gamepad=(), geolocation=(), gyroscope=(), hid=(), identity-credentials-get=(), interest-cohort=(), local-fonts=(), magnetometer=(), microphone=(), midi=(), otp-credentials=(), payment=(), picture-in-picture=(), publickey-credentials-create=(), publickey-credentials-get=(), screen-wake-lock=(), serial=(), storage-access=(), usb=(), web-share=(), xr-spatial-tracking=()"
 		Pragma "no-cache"
 		Referrer-Policy "no-referrer"
 		Strict-Transport-Security "max-age=31536000"
 		X-Content-Type-Options "nosniff"
-		X-Frame-Options "DENY"
 		X-Permitted-Cross-Domain-Policies "none"
 		X-Robots-Tag "noindex, nofollow, noarchive, nosnippet, noimageindex, notranslate, noai, noimageai"
 	}

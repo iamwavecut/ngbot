@@ -5,12 +5,14 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"path"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -23,6 +25,46 @@ import (
 	"github.com/iamwavecut/ngbot/internal/db/sqlite"
 	log "github.com/sirupsen/logrus"
 )
+
+func TestVersionTextIdentifiesRevisionAndBuild(t *testing.T) {
+	t.Parallel()
+
+	text := versionText(buildIdentity{
+		Version:   "v1.2.3",
+		Revision:  "0123456789abcdef",
+		BuildDate: "2026-08-13T16:00:00Z",
+	})
+	for _, want := range []string{"v1.2.3", "0123456789abcdef", "2026-08-13T16:00:00Z"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("version text %q is missing %q", text, want)
+		}
+	}
+}
+
+func TestRunHealthcheckRejectsUnhealthyResponse(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "not ready", http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(server.Close)
+
+	err := runHealthcheck(t.Context(), server.Client(), server.URL)
+	if err == nil || !strings.Contains(err.Error(), "503") {
+		t.Fatalf("runHealthcheck error = %v, want unhealthy status", err)
+	}
+}
+
+func TestWebAppFatalErrorRequestsRestart(t *testing.T) {
+	t.Parallel()
+
+	shutdowns := make(chan shutdownSignal, 1)
+	reportWebAppFatalError(shutdowns)(errors.New("listener failed"))
+	shutdown := <-shutdowns
+	if shutdown.exitCode != 1 || !strings.Contains(shutdown.message, "WebApp") {
+		t.Fatalf("shutdown = %+v, want fatal WebApp restart", shutdown)
+	}
+}
 
 func TestGatekeeperReconciliationCLIListsRedactedAndResolvesWithCAS(t *testing.T) {
 	dataDir := t.TempDir()

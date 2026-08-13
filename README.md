@@ -37,17 +37,19 @@
 git clone https://github.com/iamwavecut/ngbot.git
 cd ngbot
 ```
-3. Copy the example environment file and configure it:
+3. Create a mode-`0600` environment file and configure it. `compose.yaml` is the tracked deployment source; do not copy or maintain a second Compose file:
 ```bash
-cp compose.yaml.dist compose.yaml
-cp .env.example .env
-# Edit .env with your favorite editor and set required variables
+install -m 0600 /dev/null .env
+sed '/^[[:space:]]*#/d; /^[[:space:]]*$/d' .env.example > .env
+chmod 0600 .env
+# Edit .env and set NG_TOKEN, NGBOT_DATA_PATH, and the selected LLM credential.
 ```
-4. Create the writable data directory from `compose.yaml` and give the distroless `nonroot` user ownership:
+Never commit `.env`, paste it into logs, or pass it on a command line. See [Operator deployment guide](deploy/README.md) for secret rotation and release identity checks.
+4. Create the writable data directory named by `NGBOT_DATA_PATH` and give the distroless `nonroot` user ownership:
 ```bash
 sudo install -d -m 0700 -o 65532 -g 65532 /home/username/.ngbot
 ```
-The image runs as UID/GID `65532:65532`; update the bind-mount `device` path in `compose.yaml` before starting it.
+The image runs as UID/GID `65532:65532`; set `NGBOT_DATA_PATH=/home/username/.ngbot`. Compose always mounts that host path at `/data`, and the application always uses `NG_DOT_PATH=/data` in the container.
 5. Start the bot:
 ```bash
 docker compose up -d
@@ -59,20 +61,32 @@ docker compose up -d
 10. Optional: Open `/settings` as a group admin and apply `Recommended Protection`.
 
 ### Manual Installation
-1. Follow steps 1-3 from Quick Start.
-2. Build and run:
+1. Create the bot and a mode-`0600` `.env` as above.
+2. Export the variables before starting the native binary. The Go binary does **not** load `.env` by itself:
 ```bash
+set -a
+. ./.env
+set +a
 go mod download
 go run ./cmd/ngbot
 ```
+The native Mini App server defaults to loopback at `127.0.0.1:8080`. Only the Compose deployment overrides it to `0.0.0.0:8080` inside the isolated container; Docker publishes it exclusively on host loopback.
 
 ## Configuration
 All configuration is done through environment variables. You can:
 - Set them in your environment
-- Use a `.env` file (recommended)
-- Pass them directly to docker compose or the binary
+- Let Docker Compose read a mode-`0600` `.env` file
+- Source a mode-`0600` `.env` before running the native binary
 
-See [.env.example](.env.example) for a quick reference of all available options.
+See [.env.example](.env.example) for a quick reference. `NGBOT_*` variables configure only the Compose/build workflow; `NG_*` variables configure the application.
+
+| Compose/build variable | Purpose | Default |
+| --- | --- | --- |
+| `NGBOT_DATA_PATH` | Secured host directory mounted at `/data` | Required |
+| `NGBOT_WEBAPP_HOST_PORT` | WebApp port published on host loopback | `18080` |
+| `NGBOT_VERSION` | Release version stored in the binary and OCI label | `dev` |
+| `NGBOT_REVISION` | Exact Git revision stored in the binary and OCI label | `unknown` |
+| `NGBOT_BUILD_DATE` | RFC 3339 build time stored in the binary and OCI label | `unknown` |
 
 ### Configuration Options
 
@@ -87,8 +101,9 @@ See [.env.example](.env.example) for a quick reference of all available options.
 | | `NG_TELEGRAM_REQUEST_TIMEOUT` | Telegram HTTP request timeout | `75s` | Must be greater than poll timeout |
 | | `NG_TELEGRAM_RECOVERY_WINDOW` | Maximum degraded polling window before restart | `10m` | Must be greater than request timeout |
 | | `NG_GATEKEEPER_WEBAPP_PUBLIC_URL` | Public HTTPS origin for join-request CAPTCHA Mini App | | Absolute URL, e.g. `https://captcha.example.com` |
-| | `NG_GATEKEEPER_WEBAPP_LISTEN_ADDR` | Embedded Mini App server listen address inside the container | `:8080` | Keep `:8080` with the default Compose port mapping |
-| | `NG_GATEKEEPER_WEBAPP_HOST_PORT` | Compose-only localhost port for Caddy reverse proxy | `18080` | Host port bound to `127.0.0.1` |
+| | `NG_GATEKEEPER_WEBAPP_LISTEN_ADDR` | Native embedded Mini App server listen address | `127.0.0.1:8080` | Compose enforces `0.0.0.0:8080` inside the container |
+| | `NG_GATEKEEPER_WEBAPP_MAX_CONCURRENT` | Maximum in-flight Mini App requests | `32` | Positive integer |
+| | `NG_GATEKEEPER_WEBAPP_REQUESTS_PER_MINUTE` | Per-client Mini App request limit | `120` | Positive integer |
 | | `NG_LLM_GEMINI_API_KEY` | Gemini credential; required when `reactor` uses Gemini | | Preferred over the legacy key |
 | | `NG_LLM_OPENAI_API_KEY` | OpenAI credential; required when `reactor` uses OpenAI | | Preferred over the legacy key |
 | | `NG_LLM_API_KEY` | Legacy credential fallback for the selected provider | | Used only when its dedicated key is empty |
@@ -106,22 +121,24 @@ See [.env.example](.env.example) for a quick reference of all available options.
 | | `NG_SPAM_MIN_VOTERS_PERCENTAGE` | Minimum voter percentage | `5` | Any positive float |
 | | `NG_SPAM_SUSPECT_NOTIFICATION_TIMEOUT` | Suspect notification timeout | `2m` | Any valid duration string |
 
+The language codes in `NG_LANG` are the same complete locale catalog used by the admin UI and CAPTCHA resources. CI verifies that translation keys remain complete across that catalog.
+
 ### Caddy reverse proxy
 
-The Docker Compose file binds the Mini App server to `127.0.0.1:${NG_GATEKEEPER_WEBAPP_HOST_PORT:-18080}` on the host. A matching Caddy template is available at `deploy/caddy/ngbot-webapp.Caddyfile`.
+The Docker Compose file binds the Mini App server to `127.0.0.1:${NGBOT_WEBAPP_HOST_PORT:-18080}` on the host. A matching Caddy template is available at `deploy/caddy/ngbot-webapp.Caddyfile`.
 
 Set these values on the host before enabling the Caddy site:
 
 ```bash
 export NGBOT_GATEKEEPER_WEBAPP_DOMAIN=antifraud.rtfm.rsvp
-export NG_GATEKEEPER_WEBAPP_HOST_PORT=18080
+export NGBOT_WEBAPP_HOST_PORT=18080
 ```
 
 Then configure the bot with:
 
 ```bash
 NG_GATEKEEPER_WEBAPP_PUBLIC_URL=https://antifraud.rtfm.rsvp
-NG_GATEKEEPER_WEBAPP_LISTEN_ADDR=:8080
+NG_GATEKEEPER_WEBAPP_LISTEN_ADDR=127.0.0.1:8080 # native only; Compose overrides this safely
 ```
 
 The Mini App endpoint is intentionally hostile to indexing and unauthorized embedding:
@@ -138,6 +155,9 @@ The Mini App endpoint is intentionally hostile to indexing and unauthorized embe
 10. POST bodies are size-limited before form parsing.
 11. Known crawler and LLM user agents are rejected before challenge lookup.
 12. MIME sniffing and legacy cross-domain policies are disabled.
+13. Concurrent admission and per-client request rates are bounded; access telemetry records only method, path, status, and duration, never query strings, authorization headers, or bearer tokens.
+
+The embedded server exposes `GET /livez` for process liveness and `GET /readyz` for readiness. A fatal serving error triggers graceful process shutdown with exit status 1 so Compose can restart the service. Container health checks use `/readyz`; use `./ngbot --version` and the OCI revision label to verify a deployed artifact.
 
 ### Production SQLite maintenance
 

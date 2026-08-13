@@ -5,11 +5,192 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
+
+	log "github.com/sirupsen/logrus"
 )
+
+type joinCaptchaRateWindowState struct {
+	count   int
+	resetAt time.Time
+}
+
+type joinCaptchaRateLimiter struct {
+	limit  int
+	window time.Duration
+	now    func() time.Time
+
+	mu      sync.Mutex
+	clients map[string]joinCaptchaRateWindowState
+}
+
+type joinCaptchaStatusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *joinCaptchaStatusRecorder) WriteHeader(status int) {
+	if r.status != 0 {
+		return
+	}
+	r.status = status
+	r.ResponseWriter.WriteHeader(status)
+}
+
+func (r *joinCaptchaStatusRecorder) Write(data []byte) (int, error) {
+	if r.status == 0 {
+		r.WriteHeader(http.StatusOK)
+	}
+	return r.ResponseWriter.Write(data)
+}
+
+func newJoinCaptchaRateLimiter(limit int, window time.Duration, now func() time.Time) *joinCaptchaRateLimiter {
+	return &joinCaptchaRateLimiter{
+		limit:   limit,
+		window:  window,
+		now:     now,
+		clients: make(map[string]joinCaptchaRateWindowState),
+	}
+}
+
+func (l *joinCaptchaRateLimiter) allow(client string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	now := l.now()
+	state, ok := l.clients[client]
+	if ok && !now.Before(state.resetAt) {
+		delete(l.clients, client)
+		ok = false
+	}
+	if !ok && len(l.clients) >= joinCaptchaRateClientLimit {
+		for key, candidate := range l.clients {
+			if !now.Before(candidate.resetAt) {
+				delete(l.clients, key)
+			}
+		}
+		if len(l.clients) >= joinCaptchaRateClientLimit {
+			return false
+		}
+	}
+	if !ok {
+		l.clients[client] = joinCaptchaRateWindowState{count: 1, resetAt: now.Add(l.window)}
+		return true
+	}
+	if state.count >= l.limit {
+		return false
+	}
+	state.count++
+	l.clients[client] = state
+	return true
+}
+
+func joinCaptchaRateLimitMiddleware(limiter *joinCaptchaRateLimiter, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isJoinCaptchaHealthPath(r.URL.Path) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if !limiter.allow(joinCaptchaClientAddress(r)) {
+			w.Header().Set("Retry-After", "60")
+			http.Error(w, "too many requests", http.StatusTooManyRequests)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func joinCaptchaAdmissionMiddleware(limit int, next http.Handler) http.Handler {
+	admission := make(chan struct{}, limit)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isJoinCaptchaHealthPath(r.URL.Path) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		select {
+		case admission <- struct{}{}:
+			defer func() { <-admission }()
+			next.ServeHTTP(w, r)
+		default:
+			w.Header().Set("Retry-After", "1")
+			http.Error(w, "service busy", http.StatusServiceUnavailable)
+		}
+	})
+}
+
+func joinCaptchaTelemetryMiddleware(logger *log.Entry, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		started := time.Now()
+		recorder := &joinCaptchaStatusRecorder{ResponseWriter: w}
+		next.ServeHTTP(recorder, r)
+		if recorder.status == 0 {
+			recorder.status = http.StatusOK
+		}
+		entry := logger.WithFields(log.Fields{
+			"duration_ms":  time.Since(started).Milliseconds(),
+			"http_method":  r.Method,
+			"http_path":    r.URL.Path,
+			logFieldStatus: recorder.status,
+		})
+		if recorder.status >= http.StatusInternalServerError {
+			entry.Warn("gatekeeper web app request")
+			return
+		}
+		entry.Info("gatekeeper web app request")
+	})
+}
+
+func joinCaptchaClientAddress(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	remoteIP := net.ParseIP(strings.TrimSpace(host))
+	if remoteIP != nil && remoteIP.IsLoopback() {
+		forwarded, _, _ := strings.Cut(r.Header.Get("X-Forwarded-For"), ",")
+		if forwardedIP := net.ParseIP(strings.TrimSpace(forwarded)); forwardedIP != nil {
+			return forwardedIP.String()
+		}
+	}
+	if remoteIP != nil {
+		return remoteIP.String()
+	}
+	return "unknown"
+}
+
+func isJoinCaptchaHealthPath(path string) bool {
+	return path == joinCaptchaLivePath || path == joinCaptchaReadyHealthPath
+}
+
+func handleJoinCaptchaLive(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", strings.Join([]string{http.MethodGet, http.MethodHead}, ", "))
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+}
+
+func (g *Gatekeeper) handleJoinCaptchaReadiness(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", strings.Join([]string{http.MethodGet, http.MethodHead}, ", "))
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	if !g.webAppReady.Load() {
+		http.Error(w, "not ready", http.StatusServiceUnavailable)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
 
 func parseWebAppInitData(raw string) (webAppInitData, error) {
 	values, err := url.ParseQuery(raw)

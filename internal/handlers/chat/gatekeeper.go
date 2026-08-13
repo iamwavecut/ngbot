@@ -27,10 +27,12 @@ graph BusinessFlow
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/iamwavecut/ngbot/internal/config"
@@ -78,12 +80,15 @@ type Gatekeeper struct {
 
 	Variants map[string]map[string]string `yaml:"variants"`
 
-	logger         *log.Entry
-	workerCancel   context.CancelFunc
-	webAppServer   *http.Server
-	workerWG       sync.WaitGroup
-	startStopMutex sync.Mutex
-	started        bool
+	logger           *log.Entry
+	workerCancel     context.CancelFunc
+	webAppServer     *http.Server
+	serveWebApp      func(*http.Server, net.Listener) error
+	webAppFatalError func(error)
+	webAppReady      atomic.Bool
+	workerWG         sync.WaitGroup
+	startStopMutex   sync.Mutex
+	started          bool
 }
 
 type GatekeeperBanChecker interface {
@@ -216,6 +221,10 @@ func NewGatekeeper(s bot.Service, botAPI *api.BotAPI, store gatekeeperStore, sta
 	return g
 }
 
+func (g *Gatekeeper) SetWebAppFatalErrorHandler(handler func(error)) {
+	g.webAppFatalError = handler
+}
+
 func (g *Gatekeeper) Start(ctx context.Context) error {
 	g.startStopMutex.Lock()
 	defer g.startStopMutex.Unlock()
@@ -226,11 +235,9 @@ func (g *Gatekeeper) Start(ctx context.Context) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	g.workerCancel = cancel
 
-	if g.joinCaptchaPublicURL() != "" {
-		if err := g.startWebAppServer(runCtx); err != nil {
-			cancel()
-			return err
-		}
+	if err := g.startWebAppServer(runCtx); err != nil {
+		cancel()
+		return err
 	}
 
 	g.workerWG.Go(func() {
@@ -288,6 +295,7 @@ func (g *Gatekeeper) Start(ctx context.Context) error {
 	})
 
 	g.started = true
+	g.webAppReady.Store(true)
 	return nil
 }
 
@@ -298,6 +306,7 @@ func (g *Gatekeeper) Stop(ctx context.Context) error {
 		return nil
 	}
 	g.started = false
+	g.webAppReady.Store(false)
 	cancel := g.workerCancel
 	g.startStopMutex.Unlock()
 

@@ -45,6 +45,12 @@ const (
 	joinCaptchaStateRejected       = "rejected"
 	joinCaptchaStateUnavailable    = "unavailable"
 	joinCaptchaTokenParameter      = "token"
+	joinCaptchaLivePath            = "/livez"
+	joinCaptchaReadyHealthPath     = "/readyz"
+	joinCaptchaDefaultConcurrent   = 32
+	joinCaptchaDefaultRate         = 120
+	joinCaptchaRateWindow          = time.Minute
+	joinCaptchaRateClientLimit     = 4096
 )
 
 type webAppCaptchaOption struct {
@@ -661,10 +667,22 @@ func (g *Gatekeeper) startWebAppServer(context.Context) error {
 	}
 	g.webAppServer = server
 
+	serve := server.Serve
+	if g.serveWebApp != nil {
+		serve = func(listener net.Listener) error {
+			return g.serveWebApp(server, listener)
+		}
+	}
 	g.workerWG.Go(func() {
-		err := server.Serve(listener)
+		defer func() { _ = listener.Close() }()
+		err := serve(listener)
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			g.getLogEntry().WithField(logFieldError, err.Error()).Error("gatekeeper web app server stopped")
+			fatalErr := fmt.Errorf("serve gatekeeper web app: %w", err)
+			g.webAppReady.Store(false)
+			g.getLogEntry().WithField(logFieldError, fatalErr.Error()).Error("gatekeeper web app server stopped")
+			if g.webAppFatalError != nil {
+				g.webAppFatalError(fatalErr)
+			}
 		}
 	})
 	return nil
@@ -672,13 +690,29 @@ func (g *Gatekeeper) startWebAppServer(context.Context) error {
 
 func (g *Gatekeeper) joinCaptchaWebAppHandler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc(joinCaptchaLivePath, handleJoinCaptchaLive)
+	mux.HandleFunc(joinCaptchaReadyHealthPath, g.handleJoinCaptchaReadiness)
 	mux.HandleFunc(joinCaptchaRobotsPath, handleJoinCaptchaRobots)
 	mux.HandleFunc(joinCaptchaSitemapPath, handleJoinCaptchaSitemap)
 	mux.HandleFunc(joinCaptchaPath, g.handleJoinCaptcha)
 	mux.HandleFunc(joinCaptchaAnswerPath, g.handleJoinCaptchaAnswer)
 	mux.HandleFunc(joinCaptchaReadyPath, g.handleJoinCaptchaReady)
 	mux.HandleFunc(joinCaptchaStatusPath, g.handleJoinCaptchaStatus)
-	return joinCaptchaSecurityMiddleware(mux)
+	maxConcurrent := joinCaptchaDefaultConcurrent
+	requestsPerMinute := joinCaptchaDefaultRate
+	if g.config != nil {
+		if g.config.GatekeeperWebApp.MaxConcurrent > 0 {
+			maxConcurrent = g.config.GatekeeperWebApp.MaxConcurrent
+		}
+		if g.config.GatekeeperWebApp.RequestsPerMinute > 0 {
+			requestsPerMinute = g.config.GatekeeperWebApp.RequestsPerMinute
+		}
+	}
+	var handler http.Handler = mux
+	handler = joinCaptchaSecurityMiddleware(handler)
+	handler = joinCaptchaAdmissionMiddleware(maxConcurrent, handler)
+	handler = joinCaptchaRateLimitMiddleware(newJoinCaptchaRateLimiter(requestsPerMinute, joinCaptchaRateWindow, time.Now), handler)
+	return joinCaptchaTelemetryMiddleware(g.getLogEntry(), handler)
 }
 
 func (g *Gatekeeper) stopWebAppServer(ctx context.Context) error {
@@ -699,7 +733,7 @@ func (g *Gatekeeper) joinCaptchaPublicURL() string {
 
 func (g *Gatekeeper) joinCaptchaListenAddr() string {
 	if g == nil || g.config == nil || strings.TrimSpace(g.config.GatekeeperWebApp.ListenAddr) == "" {
-		return ":8080"
+		return "127.0.0.1:8080"
 	}
 	return strings.TrimSpace(g.config.GatekeeperWebApp.ListenAddr)
 }

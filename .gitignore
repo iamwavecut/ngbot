@@ -9,6 +9,5 @@ ngbot
 !/.github/workflows/*.yml
 dbconfig.yml
 .env
-compose.yaml
 __debug*
 .qodo

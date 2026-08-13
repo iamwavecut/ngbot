@@ -48,7 +48,21 @@ const (
 	adminSettingsCommandDescription = "Bot settings"
 	databaseMaintenanceArgument     = "--database-maintenance"
 	gatekeeperReconcileArgument     = "--gatekeeper-reconcile="
+	healthcheckArgumentPrefix       = "--healthcheck="
+	versionArgument                 = "--version"
 )
+
+var (
+	version   = "dev"
+	revision  = "unknown"
+	buildDate = "unknown"
+)
+
+type buildIdentity struct {
+	Version   string
+	Revision  string
+	BuildDate string
+}
 
 type updateLoopComponent struct {
 	botAPI       *api.BotAPI
@@ -163,6 +177,22 @@ func (u *updateLoopComponent) Stop(ctx context.Context) error {
 }
 
 func main() {
+	for _, argument := range os.Args[1:] {
+		if argument == versionArgument {
+			_, _ = fmt.Fprintln(os.Stdout, versionText(currentBuildIdentity()))
+			return
+		}
+		if healthURL, ok := strings.CutPrefix(argument, healthcheckArgumentPrefix); ok {
+			healthCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			if err := runHealthcheck(healthCtx, &http.Client{Timeout: 3 * time.Second}, healthURL); err != nil {
+				_, _ = fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+			return
+		}
+	}
+
 	cfg, err := config.Load()
 	if err != nil {
 		log.WithField("error", err.Error()).Error("cant load config")
@@ -178,6 +208,12 @@ func main() {
 	log.SetOutput(os.Stdout)
 	log.SetLevel(log.Level(cfg.LogLevel))
 	tool.SetLogger(log.StandardLogger())
+	identity := currentBuildIdentity()
+	log.WithFields(log.Fields{
+		"build_date": identity.BuildDate,
+		"revision":   identity.Revision,
+		"version":    identity.Version,
+	}).Info("Starting ngbot")
 	for _, argument := range os.Args[1:] {
 		if command, ok := strings.CutPrefix(argument, gatekeeperReconcileArgument); ok {
 			reconcileCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -372,6 +408,7 @@ func buildRuntime(ctx context.Context, cfg *config.Config, errChan chan<- shutdo
 	spamControl := moderationHandlers.NewSpamControl(service, botAPI, dbClient, cfg.SpamControl, banService, cfg.SpamControl.Verbose)
 
 	gatekeeperHandler := chatHandlers.NewGatekeeper(service, botAPI, dbClient, dbClient, cfg, banService)
+	gatekeeperHandler.SetWebAppFatalErrorHandler(reportWebAppFatalError(errChan))
 	adminHandler := adminHandlers.NewAdmin(service, botAPI, dbClient, dbClient, banService)
 	banlistGuard := chatHandlers.NewBanlistGuard(botAPI, dbClient, banService)
 
@@ -409,6 +446,40 @@ func buildRuntime(ctx context.Context, cfg *config.Config, errChan chan<- shutdo
 		updateLoop,
 	)
 	return runtime, nil
+}
+
+func currentBuildIdentity() buildIdentity {
+	return buildIdentity{Version: version, Revision: revision, BuildDate: buildDate}
+}
+
+func versionText(identity buildIdentity) string {
+	return fmt.Sprintf("ngbot version=%s revision=%s build_date=%s", identity.Version, identity.Revision, identity.BuildDate)
+}
+
+func runHealthcheck(ctx context.Context, client *http.Client, endpoint string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return fmt.Errorf("create healthcheck request: %w", err)
+	}
+	response, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("perform healthcheck: %w", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("healthcheck returned HTTP %d", response.StatusCode)
+	}
+	return nil
+}
+
+func reportWebAppFatalError(errChan chan<- shutdownSignal) func(error) {
+	return func(err error) {
+		select {
+		case errChan <- shutdownSignal{message: fmt.Sprintf("WebApp server failed: %v", err), exitCode: 1}:
+		default:
+			log.WithError(err).Error("WebApp fatal error dropped")
+		}
+	}
 }
 
 func newTelegramBotAPI(token, endpoint string, client *http.Client) (*api.BotAPI, error) {

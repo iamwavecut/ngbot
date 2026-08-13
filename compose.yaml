@@ -1,0 +1,70 @@
+services:
+  ngbot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VERSION: ${NGBOT_VERSION:-dev}
+        REVISION: ${NGBOT_REVISION:-unknown}
+        BUILD_DATE: ${NGBOT_BUILD_DATE:-unknown}
+    environment:
+      NG_TOKEN: ${NG_TOKEN:?set NG_TOKEN in the mode-0600 .env file}
+      NG_LANG: ${NG_LANG:-en}
+      NG_HANDLERS: ${NG_HANDLERS:-admin,gatekeeper,reactor}
+      NG_LOG_LEVEL: ${NG_LOG_LEVEL:-2}
+      NG_DOT_PATH: /data
+      NG_TELEGRAM_POLL_TIMEOUT: ${NG_TELEGRAM_POLL_TIMEOUT:-60s}
+      NG_TELEGRAM_REQUEST_TIMEOUT: ${NG_TELEGRAM_REQUEST_TIMEOUT:-75s}
+      NG_TELEGRAM_RECOVERY_WINDOW: ${NG_TELEGRAM_RECOVERY_WINDOW:-10m}
+      NG_GATEKEEPER_WEBAPP_PUBLIC_URL: ${NG_GATEKEEPER_WEBAPP_PUBLIC_URL:-}
+      NG_GATEKEEPER_WEBAPP_LISTEN_ADDR: 0.0.0.0:8080
+      NG_GATEKEEPER_WEBAPP_MAX_CONCURRENT: ${NG_GATEKEEPER_WEBAPP_MAX_CONCURRENT:-32}
+      NG_GATEKEEPER_WEBAPP_REQUESTS_PER_MINUTE: ${NG_GATEKEEPER_WEBAPP_REQUESTS_PER_MINUTE:-120}
+      NG_LLM_API_KEY: ${NG_LLM_API_KEY:-}
+      NG_LLM_GEMINI_API_KEY: ${NG_LLM_GEMINI_API_KEY:-}
+      NG_LLM_OPENAI_API_KEY: ${NG_LLM_OPENAI_API_KEY:-}
+      NG_LLM_API_URL: ${NG_LLM_API_URL:-https://api.openai.com/v1}
+      NG_LLM_API_MODEL: ${NG_LLM_API_MODEL:-}
+      NG_LLM_API_TYPE: ${NG_LLM_API_TYPE:-openai}
+      NG_LLM_REQUEST_TIMEOUT: ${NG_LLM_REQUEST_TIMEOUT:-45s}
+      NG_SPAM_LOG_CHANNEL_USERNAME: ${NG_SPAM_LOG_CHANNEL_USERNAME:-}
+      NG_SPAM_DEBUG_USER_ID: ${NG_SPAM_DEBUG_USER_ID:-0}
+      NG_SPAM_VERBOSE: ${NG_SPAM_VERBOSE:-false}
+      NG_SPAM_MESSAGE_PROBATION_DURATION: ${NG_SPAM_MESSAGE_PROBATION_DURATION:-3h}
+      NG_SPAM_VOTING_TIMEOUT: ${NG_SPAM_VOTING_TIMEOUT:-5m}
+      NG_SPAM_MIN_VOTERS: ${NG_SPAM_MIN_VOTERS:-2}
+      NG_SPAM_MAX_VOTERS: ${NG_SPAM_MAX_VOTERS:-10}
+      NG_SPAM_MIN_VOTERS_PERCENTAGE: ${NG_SPAM_MIN_VOTERS_PERCENTAGE:-5}
+      NG_SPAM_SUSPECT_NOTIFICATION_TIMEOUT: ${NG_SPAM_SUSPECT_NOTIFICATION_TIMEOUT:-2m}
+    volumes:
+      - type: bind
+        source: ${NGBOT_DATA_PATH:?set NGBOT_DATA_PATH to the secured host data directory}
+        target: /data
+        bind:
+          create_host_path: false
+    ports:
+      - name: webapp
+        target: 8080
+        published: ${NGBOT_WEBAPP_HOST_PORT:-18080}
+        host_ip: 127.0.0.1
+        protocol: tcp
+    healthcheck:
+      test: ["CMD", "./ngbot", "--healthcheck=http://127.0.0.1:8080/readyz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    init: true
+    restart: unless-stopped
