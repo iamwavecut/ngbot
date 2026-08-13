@@ -142,7 +142,11 @@ func (r *Reactor) moderateReactionActorChat(ctx context.Context, chat *api.Chat,
 		"actor_id":       actorChat.ID,
 		logFieldUsername: actorChat.UserName,
 	})
-	if reason, trusted := r.trustedSenderChatIdentity(ctx, actorChat, chat, false, entry); trusted {
+	reason, trusted, err := r.trustedSenderChatIdentity(ctx, actorChat, chat, false, entry)
+	if err != nil {
+		return bot.NewRetryableUpdateFailure(bot.UpdateFailureTelegram, "sender_chat_classification_failed", err)
+	}
+	if trusted {
 		entry.WithField("reason", reason).Debug("skipping trusted reaction actor chat")
 		return nil
 	}

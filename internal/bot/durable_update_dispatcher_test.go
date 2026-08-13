@@ -2,14 +2,18 @@ package bot
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"runtime"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	api "github.com/OvyFlash/telegram-bot-api"
+	"github.com/iamwavecut/ngbot/internal/db"
 	"github.com/iamwavecut/ngbot/internal/db/sqlite"
 )
 
@@ -191,10 +195,10 @@ func TestDurableUpdateDispatcherDegradesAfterBoundedLLMRetries(t *testing.T) {
 	if attempts.Load() != 3 || degradations.Load() != 1 {
 		t.Fatalf("attempts=%d degradations=%d, want 3 and 1", attempts.Load(), degradations.Load())
 	}
-	failures, err := store.ListTelegramUpdateFailures(t.Context(), 10)
-	if err != nil || len(failures) != 1 || failures[0].FailureReason != "retry_exhausted" {
-		t.Fatalf("exhausted failure ledger = %#v err=%v", failures, err)
-	}
+	waitForCondition(t, func() bool {
+		failures, listErr := store.ListTelegramUpdateFailures(t.Context(), 10)
+		return listErr == nil && len(failures) == 1 && failures[0].FailureReason == "retry_exhausted"
+	})
 }
 
 func TestDurableUpdateDispatcherKeepsPersistedUpdateWhenQueueIsSaturated(t *testing.T) {
@@ -231,18 +235,252 @@ func TestDurableUpdateDispatcherKeepsPersistedUpdateWhenQueueIsSaturated(t *test
 	if err := dispatcher.Submit(t.Context(), first); err != nil {
 		t.Fatalf("submit first: %v", err)
 	}
-	submitCtx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
-	defer cancel()
-	if err := dispatcher.Submit(submitCtx, second); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("saturated submit error = %v, want deadline exceeded", err)
+	if err := dispatcher.Submit(t.Context(), second); err != nil {
+		t.Fatalf("notify scheduler for persisted second update: %v", err)
 	}
 	updates, err := store.ListRunnableTelegramUpdates(t.Context(), time.Now(), 10)
 	if err != nil {
 		t.Fatalf("list persisted updates: %v", err)
 	}
-	if len(updates) != 1 || updates[0].UpdateID != second.UpdateID {
-		t.Fatalf("saturated persisted updates = %#v", updates)
+	foundSecond := false
+	for _, persisted := range updates {
+		foundSecond = foundSecond || persisted.UpdateID == second.UpdateID
 	}
+	if !foundSecond {
+		t.Fatalf("saturated second update was not durable: %#v", updates)
+	}
+}
+
+func TestDurableUpdateDispatcherWakesForFutureRetryAfterRestart(t *testing.T) {
+	t.Parallel()
+
+	store, err := sqlite.NewSQLiteClient(t.Context(), t.TempDir(), "test.db")
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	update := messageUpdate(130, -130, 1)
+	payload, err := json.Marshal(update)
+	if err != nil {
+		t.Fatalf("marshal update: %v", err)
+	}
+	now := time.Now()
+	inserted, err := store.EnqueueTelegramUpdate(t.Context(), &db.TelegramUpdate{
+		UpdateID: update.UpdateID, DispatchKey: updateDispatchKey(&update), Payload: payload, ReceivedAt: now,
+	})
+	if err != nil || !inserted {
+		t.Fatalf("enqueue future retry: inserted=%t err=%v", inserted, err)
+	}
+	if _, claimed, claimErr := store.ClaimTelegramUpdate(t.Context(), update.UpdateID, now); claimErr != nil || !claimed {
+		t.Fatalf("claim future retry: claimed=%t err=%v", claimed, claimErr)
+	}
+	dueAt := now.Add(80 * time.Millisecond)
+	if changed, retryErr := store.ScheduleTelegramUpdateRetry(t.Context(), update.UpdateID, dueAt, "llm", "unavailable"); retryErr != nil || !changed {
+		t.Fatalf("schedule future retry: changed=%t err=%v", changed, retryErr)
+	}
+
+	processed := make(chan time.Time, 1)
+	dispatcher := NewDurableUpdateDispatcher(store, func(context.Context, *api.Update) error {
+		processed <- time.Now()
+		return nil
+	}, nil, testDurableDispatcherOptions(), nil)
+	if err := dispatcher.Start(t.Context()); err != nil {
+		t.Fatalf("start dispatcher: %v", err)
+	}
+	t.Cleanup(func() { _ = dispatcher.Stop(context.Background()) })
+	select {
+	case at := <-processed:
+		t.Fatalf("future retry ran %s early", dueAt.Sub(at))
+	case <-time.After(30 * time.Millisecond):
+	}
+	select {
+	case at := <-processed:
+		if at.Before(dueAt) {
+			t.Fatalf("future retry ran before available_at: at=%s due=%s", at, dueAt)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("future retry was not recovered after restart")
+	}
+}
+
+func TestDurableUpdateDispatcherUsesOneSchedulerDuringManyChatOutage(t *testing.T) {
+	store, err := sqlite.NewSQLiteClient(t.Context(), t.TempDir(), "test.db")
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	const updateCount = 4096
+	var attempts atomic.Int32
+	dispatcher := NewDurableUpdateDispatcher(store, func(context.Context, *api.Update) error {
+		attempts.Add(1)
+		return NewRetryableUpdateFailure(UpdateFailureLLM, "provider_error", errors.New("outage"))
+	}, nil, DurableUpdateDispatcherOptions{
+		MaxWorkers: 8, PendingBudget: 32, MaxAttempts: 2,
+		InitialBackoff: time.Hour, MaxBackoff: time.Hour,
+	}, nil)
+	if err := dispatcher.Start(t.Context()); err != nil {
+		t.Fatalf("start dispatcher: %v", err)
+	}
+	t.Cleanup(func() { _ = dispatcher.Stop(context.Background()) })
+	for i := range updateCount {
+		update := messageUpdate(10_000+i, int64(-10_000-i), i+1)
+		if err := dispatcher.Persist(t.Context(), update); err != nil {
+			t.Fatalf("persist outage update %d: %v", i, err)
+		}
+		if err := dispatcher.Submit(t.Context(), update); err != nil {
+			t.Fatalf("submit outage update %d: %v", i, err)
+		}
+	}
+	waitForConditionTimeout(t, 15*time.Second, func() bool { return attempts.Load() == updateCount })
+	stack := make([]byte, 8<<20)
+	stack = stack[:runtime.Stack(stack, true)]
+	if count := strings.Count(string(stack), "(*DurableUpdateDispatcher).scheduleRetry"); count != 0 {
+		t.Fatalf("outage created %d per-retry timer goroutines", count)
+	}
+	dispatcher.mu.Lock()
+	scheduled := len(dispatcher.scheduled)
+	dispatcher.mu.Unlock()
+	if scheduled > 32 {
+		t.Fatalf("scheduled in-memory updates = %d, want <= 32", scheduled)
+	}
+}
+
+func TestDurableUpdateDispatcherCleansRetentionWhileRunning(t *testing.T) {
+	t.Parallel()
+
+	store, err := sqlite.NewSQLiteClient(t.Context(), t.TempDir(), "test.db")
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	dispatcher := NewDurableUpdateDispatcher(store, func(context.Context, *api.Update) error { return nil }, nil, DurableUpdateDispatcherOptions{
+		MaxWorkers: 1, PendingBudget: 1, CleanupInterval: 10 * time.Millisecond,
+	}, nil)
+	if err := dispatcher.Start(t.Context()); err != nil {
+		t.Fatalf("start dispatcher: %v", err)
+	}
+	t.Cleanup(func() { _ = dispatcher.Stop(context.Background()) })
+
+	old := time.Now().Add(-40 * 24 * time.Hour)
+	update := messageUpdate(140, -140, 1)
+	payload, err := json.Marshal(update)
+	if err != nil {
+		t.Fatalf("marshal retained update: %v", err)
+	}
+	inserted, err := store.EnqueueTelegramUpdate(t.Context(), &db.TelegramUpdate{
+		UpdateID: update.UpdateID, DispatchKey: updateDispatchKey(&update), Payload: payload, ReceivedAt: old,
+	})
+	if err != nil || !inserted {
+		t.Fatalf("enqueue retained update: inserted=%t err=%v", inserted, err)
+	}
+	if _, claimed, claimErr := store.ClaimTelegramUpdate(t.Context(), update.UpdateID, time.Now()); claimErr != nil || !claimed {
+		t.Fatalf("claim retained update: claimed=%t err=%v", claimed, claimErr)
+	}
+	if changed, completeErr := store.CompleteTelegramUpdate(t.Context(), update.UpdateID, "handler", old); completeErr != nil || !changed {
+		t.Fatalf("complete retained update: changed=%t err=%v", changed, completeErr)
+	}
+	waitForConditionTimeout(t, time.Second, func() bool {
+		updates, listErr := store.ListRunnableTelegramUpdates(t.Context(), time.Now(), 10)
+		if listErr != nil || len(updates) != 0 {
+			return false
+		}
+		stored, found, getErr := store.TelegramUpdate(t.Context(), update.UpdateID)
+		return getErr == nil && !found && stored == nil
+	})
+}
+
+func TestDurableUpdateDispatcherRetriesBusyInboxTransitions(t *testing.T) {
+	t.Parallel()
+
+	for _, transition := range []string{"claim", "complete", "dead_letter"} {
+		t.Run(transition, func(t *testing.T) {
+			t.Parallel()
+			base, err := sqlite.NewSQLiteClient(t.Context(), t.TempDir(), "test.db")
+			if err != nil {
+				t.Fatalf("open database: %v", err)
+			}
+			t.Cleanup(func() { _ = base.Close() })
+			store := &busyTransitionStore{DurableUpdateStore: base, transition: transition, remaining: 2}
+			processed := make(chan struct{}, 1)
+			dispatcher := NewDurableUpdateDispatcher(store, func(context.Context, *api.Update) error {
+				processed <- struct{}{}
+				if transition == "dead_letter" {
+					return NewTerminalUpdateFailure(UpdateFailurePayload, "poison", errors.New("poison"))
+				}
+				return nil
+			}, nil, DurableUpdateDispatcherOptions{
+				MaxWorkers: 1, PendingBudget: 1, MaxAttempts: 1,
+				SchedulerBackoff: time.Millisecond, MaxBackoff: time.Millisecond,
+				RecoveryInterval: 5 * time.Millisecond, ProcessingTimeout: 5 * time.Millisecond,
+			}, nil)
+			if err := dispatcher.Start(t.Context()); err != nil {
+				t.Fatalf("start dispatcher: %v", err)
+			}
+			t.Cleanup(func() { _ = dispatcher.Stop(context.Background()) })
+			update := messageUpdate(200, -200, 1)
+			if err := dispatcher.Persist(t.Context(), update); err != nil {
+				t.Fatalf("persist update: %v", err)
+			}
+			if err := dispatcher.Submit(t.Context(), update); err != nil {
+				t.Fatalf("submit update: %v", err)
+			}
+			waitForConditionTimeout(t, time.Second, func() bool {
+				record, found, recordErr := base.TelegramUpdate(t.Context(), update.UpdateID)
+				if recordErr != nil || !found {
+					return false
+				}
+				if transition == "dead_letter" {
+					return record.Status == db.TelegramUpdateStatusDeadLetter
+				}
+				return record.Status == db.TelegramUpdateStatusCompleted
+			})
+			if store.calls.Load() < 3 {
+				t.Fatalf("%s transition calls = %d, want at least 3", transition, store.calls.Load())
+			}
+		})
+	}
+}
+
+type busyTransitionStore struct {
+	DurableUpdateStore
+	transition string
+	remaining  int32
+	calls      atomic.Int32
+}
+
+func (s *busyTransitionStore) fail(name string) error {
+	if s.transition != name {
+		return nil
+	}
+	s.calls.Add(1)
+	if s.remaining > 0 {
+		s.remaining--
+		return codedSQLiteError{code: 5}
+	}
+	return nil
+}
+
+func (s *busyTransitionStore) ClaimTelegramUpdate(ctx context.Context, updateID int, now time.Time) (*db.TelegramUpdate, bool, error) {
+	if err := s.fail("claim"); err != nil {
+		return nil, false, err
+	}
+	return s.DurableUpdateStore.ClaimTelegramUpdate(ctx, updateID, now)
+}
+
+func (s *busyTransitionStore) CompleteTelegramUpdate(ctx context.Context, updateID int, source string, now time.Time) (bool, error) {
+	if err := s.fail("complete"); err != nil {
+		return false, err
+	}
+	return s.DurableUpdateStore.CompleteTelegramUpdate(ctx, updateID, source, now)
+}
+
+func (s *busyTransitionStore) DeadLetterTelegramUpdate(ctx context.Context, updateID int, source, reason, lastError string, now time.Time) (bool, error) {
+	if err := s.fail("dead_letter"); err != nil {
+		return false, err
+	}
+	return s.DurableUpdateStore.DeadLetterTelegramUpdate(ctx, updateID, source, reason, lastError, now)
 }
 
 func testDurableDispatcherOptions() DurableUpdateDispatcherOptions {
@@ -252,5 +490,16 @@ func testDurableDispatcherOptions() DurableUpdateDispatcherOptions {
 		MaxAttempts:    3,
 		InitialBackoff: time.Millisecond,
 		MaxBackoff:     time.Millisecond,
+	}
+}
+
+func waitForConditionTimeout(t *testing.T, timeout time.Duration, condition func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for !condition() {
+		if time.Now().After(deadline) {
+			t.Fatal("condition was not satisfied before timeout")
+		}
+		time.Sleep(time.Millisecond)
 	}
 }

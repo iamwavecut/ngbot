@@ -2,11 +2,15 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"time"
 
 	api "github.com/OvyFlash/telegram-bot-api"
 	"github.com/iamwavecut/ngbot/internal/bot"
+	"github.com/iamwavecut/ngbot/internal/db"
 	moderation "github.com/iamwavecut/ngbot/internal/handlers/moderation"
+	"github.com/pborman/uuid"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -20,6 +24,15 @@ type BanlistGuard struct {
 
 type banlistGuardStore interface {
 	IsChatNotSpammer(ctx context.Context, chatID int64, userID int64, username string) (bool, error)
+}
+
+type moderationActionStore interface {
+	BeginModerationAction(ctx context.Context, action *db.ModerationActionFence, owner string, now time.Time) (*db.ModerationActionFence, error)
+	AdvanceModerationAction(ctx context.Context, actionKey, owner, expectedStatus, nextStatus, lastError string, now time.Time) (bool, error)
+}
+
+type deadlineBanService interface {
+	BanUserWithMessageUntil(ctx context.Context, chatID, userID int64, messageID int, until time.Time) error
 }
 
 type banlistedMessageOutcome struct {
@@ -59,7 +72,12 @@ func (g *BanlistGuard) Handle(ctx context.Context, u *api.Update, chat *api.Chat
 		return true, nil
 	}
 
-	outcome := enforceBanlistedMessage(ctx, g.bot, g.banService, msg, chat, user)
+	var outcome banlistedMessageOutcome
+	if actionStore, ok := g.store.(moderationActionStore); ok {
+		outcome = g.enforceDurableBanlistedMessage(ctx, actionStore, u.UpdateID, msg, chat, user)
+	} else {
+		outcome = enforceBanlistedMessage(ctx, g.bot, g.banService, msg, chat, user)
+	}
 	entry := log.WithFields(log.Fields{
 		logFieldObject: logObjectBanlistGuard,
 		logFieldChatID: chat.ID,
@@ -76,6 +94,81 @@ func (g *BanlistGuard) Handle(ctx context.Context, u *api.Update, chat *api.Chat
 		entry.Info("terminal banlist action applied")
 	}
 	return false, nil
+}
+
+func (g *BanlistGuard) enforceDurableBanlistedMessage(ctx context.Context, store moderationActionStore, updateID int, msg *api.Message, chat *api.Chat, user *api.User) banlistedMessageOutcome {
+	available, err := g.banService.ModerationAvailable(ctx, chat.ID)
+	if err != nil {
+		return banlistedMessageOutcome{err: bot.NewRetryableUpdateFailure(bot.UpdateFailureCapability, "capability_unknown", err)}
+	}
+	if !available {
+		return banlistedMessageOutcome{}
+	}
+	now := time.Now()
+	owner := uuid.New()
+	actionKey := fmt.Sprintf("banlist:%d:%d:%d:%d", updateID, chat.ID, user.ID, msg.MessageID)
+	action, err := store.BeginModerationAction(ctx, &db.ModerationActionFence{
+		ActionKey: actionKey, ChatID: chat.ID, UserID: user.ID, MessageID: msg.MessageID, BanUntil: now.Add(10 * time.Minute),
+	}, owner, now)
+	if err != nil {
+		return banlistedMessageOutcome{moderationAvailable: true, err: bot.NewRetryableUpdateFailure(bot.UpdateFailureSQLite, "moderation_fence_unavailable", err)}
+	}
+	outcome := banlistedMessageOutcome{moderationAvailable: true}
+	switch action.Status {
+	case db.ModerationActionCompleted:
+		outcome.userBanned = true
+		outcome.messageDeleted = true
+		return outcome
+	case db.ModerationActionReconciliation:
+		outcome.err = bot.NewTerminalUpdateFailure(bot.UpdateFailureRuntime, "moderation_effect_ambiguous", errors.New("moderation action requires reconciliation"))
+		return outcome
+	case db.ModerationActionStarted:
+		if action.Owner != owner {
+			_, advanceErr := store.AdvanceModerationAction(ctx, action.ActionKey, action.Owner, db.ModerationActionStarted, db.ModerationActionReconciliation, "effect outcome unknown after restart", now)
+			outcome.err = bot.NewTerminalUpdateFailure(bot.UpdateFailureRuntime, "moderation_effect_ambiguous", errors.Join(errors.New("moderation effect outcome unknown after restart"), advanceErr))
+			return outcome
+		}
+		if service, ok := g.banService.(deadlineBanService); ok {
+			err = service.BanUserWithMessageUntil(ctx, chat.ID, user.ID, msg.MessageID, action.BanUntil)
+		} else {
+			err = g.banService.BanUserWithMessage(ctx, chat.ID, user.ID, msg.MessageID)
+		}
+		if err != nil {
+			if moderation.IsTelegramPrivilegeError(err) {
+				g.banService.MarkModerationUnavailable(chat.ID)
+				_, advanceErr := store.AdvanceModerationAction(ctx, action.ActionKey, owner, db.ModerationActionStarted, db.ModerationActionCompleted, "permission denied", time.Now())
+				outcome.err = advanceErr
+				outcome.moderationAvailable = false
+				return outcome
+			}
+			_, advanceErr := store.AdvanceModerationAction(ctx, action.ActionKey, owner, db.ModerationActionStarted, db.ModerationActionReconciliation, db.SafeGatekeeperErrorCode(err), time.Now())
+			outcome.err = bot.NewTerminalUpdateFailure(bot.UpdateFailureRuntime, "moderation_effect_ambiguous", errors.Join(err, advanceErr))
+			return outcome
+		}
+		advanced, advanceErr := store.AdvanceModerationAction(ctx, action.ActionKey, owner, db.ModerationActionStarted, db.ModerationActionBanned, "", time.Now())
+		if advanceErr != nil || !advanced {
+			outcome.err = bot.NewRetryableUpdateFailure(bot.UpdateFailureSQLite, "persist_ban_effect", errors.Join(advanceErr, errors.New("ban effect fence changed")))
+			return outcome
+		}
+		action.Status = db.ModerationActionBanned
+		action.Owner = owner
+		outcome.userBanned = true
+	case db.ModerationActionBanned:
+		outcome.userBanned = true
+	default:
+		outcome.err = bot.NewTerminalUpdateFailure(bot.UpdateFailurePayload, "invalid_moderation_action", fmt.Errorf("unexpected moderation action status %q", action.Status))
+		return outcome
+	}
+	if err := bot.DeleteChatMessage(ctx, g.bot, chat.ID, msg.MessageID); err != nil && !isTelegramMessageAlreadyDeleted(err) {
+		outcome.err = err
+		return outcome
+	}
+	outcome.messageDeleted = true
+	advanced, err := store.AdvanceModerationAction(ctx, action.ActionKey, action.Owner, db.ModerationActionBanned, db.ModerationActionCompleted, "", time.Now())
+	if err != nil || !advanced {
+		outcome.err = bot.NewRetryableUpdateFailure(bot.UpdateFailureSQLite, "complete_moderation_fence", errors.Join(err, errors.New("moderation completion fence changed")))
+	}
+	return outcome
 }
 
 func enforceBanlistedMessage(

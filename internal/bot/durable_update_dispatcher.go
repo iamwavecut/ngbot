@@ -20,43 +20,55 @@ const (
 	defaultUpdateMaxBackoff     = time.Minute
 	completedUpdateRetention    = 7 * 24 * time.Hour
 	failedUpdateRetention       = 30 * 24 * time.Hour
+	defaultSchedulerBackoff     = time.Second
+	defaultProcessingTimeout    = 5 * time.Minute
+	defaultRecoveryInterval     = time.Minute
+	defaultCleanupInterval      = 24 * time.Hour
 )
 
 type DurableUpdateStore interface {
 	EnqueueTelegramUpdate(ctx context.Context, update *db.TelegramUpdate) (bool, error)
 	ListRunnableTelegramUpdates(ctx context.Context, now time.Time, limit int) ([]*db.TelegramUpdate, error)
+	NextTelegramUpdateAvailableAt(ctx context.Context) (time.Time, bool, error)
 	ClaimTelegramUpdate(ctx context.Context, updateID int, now time.Time) (*db.TelegramUpdate, bool, error)
 	ScheduleTelegramUpdateRetry(ctx context.Context, updateID int, nextAttemptAt time.Time, source, lastError string) (bool, error)
 	CompleteTelegramUpdate(ctx context.Context, updateID int, source string, now time.Time) (bool, error)
 	DeadLetterTelegramUpdate(ctx context.Context, updateID int, source, reason, lastError string, now time.Time) (bool, error)
 	RecoverTelegramUpdates(ctx context.Context, now time.Time) (int64, error)
+	RecoverStaleTelegramUpdates(ctx context.Context, now, startedBefore time.Time) (int64, error)
 	CleanupTelegramUpdates(ctx context.Context, completedBefore, deadLetterBefore time.Time) (int64, error)
 }
 
 type UpdateFailureDegrader func(ctx context.Context, update *api.Update, failure UpdateFailure) error
 
 type DurableUpdateDispatcherOptions struct {
-	MaxWorkers     int
-	PendingBudget  int
-	MaxAttempts    int
-	InitialBackoff time.Duration
-	MaxBackoff     time.Duration
+	MaxWorkers        int
+	PendingBudget     int
+	MaxAttempts       int
+	InitialBackoff    time.Duration
+	MaxBackoff        time.Duration
+	SchedulerBackoff  time.Duration
+	ProcessingTimeout time.Duration
+	RecoveryInterval  time.Duration
+	CleanupInterval   time.Duration
 }
 
 type DurableUpdateDispatcher struct {
-	store    DurableUpdateStore
-	process  UpdateProcessorFunc
-	degrade  UpdateFailureDegrader
-	options  DurableUpdateDispatcherOptions
-	logger   *log.Entry
-	inner    *KeyedDispatcher
-	runCtx   context.Context
-	cancel   context.CancelFunc
-	timersWG sync.WaitGroup
+	store       DurableUpdateStore
+	process     UpdateProcessorFunc
+	degrade     UpdateFailureDegrader
+	options     DurableUpdateDispatcherOptions
+	logger      *log.Entry
+	inner       *KeyedDispatcher
+	runCtx      context.Context
+	cancel      context.CancelFunc
+	schedulerWG sync.WaitGroup
+	wake        chan struct{}
 
-	mu        sync.Mutex
-	started   bool
-	scheduled map[int]struct{}
+	mu             sync.Mutex
+	started        bool
+	scheduled      map[int]struct{}
+	retryNotBefore time.Time
 }
 
 func NewDurableUpdateDispatcher(
@@ -77,6 +89,7 @@ func NewDurableUpdateDispatcher(
 		options:   options,
 		logger:    logger,
 		scheduled: make(map[int]struct{}),
+		wake:      make(chan struct{}, 1),
 	}
 	dispatcher.inner = NewKeyedDispatcher(dispatcher.execute, options.MaxWorkers, options.PendingBudget, logger)
 	return dispatcher
@@ -100,6 +113,18 @@ func normalizeDurableUpdateDispatcherOptions(options DurableUpdateDispatcherOpti
 	}
 	if options.MaxBackoff < options.InitialBackoff {
 		options.MaxBackoff = options.InitialBackoff
+	}
+	if options.SchedulerBackoff <= 0 {
+		options.SchedulerBackoff = defaultSchedulerBackoff
+	}
+	if options.ProcessingTimeout <= 0 {
+		options.ProcessingTimeout = defaultProcessingTimeout
+	}
+	if options.RecoveryInterval <= 0 {
+		options.RecoveryInterval = defaultRecoveryInterval
+	}
+	if options.CleanupInterval <= 0 {
+		options.CleanupInterval = defaultCleanupInterval
 	}
 	return options
 }
@@ -131,11 +156,8 @@ func (d *DurableUpdateDispatcher) Start(ctx context.Context) error {
 		d.resetStart()
 		return fmt.Errorf("start keyed update dispatcher: %w", err)
 	}
-	if err := d.wakeRunnable(runCtx); err != nil {
-		_ = d.inner.Stop(context.Background())
-		d.resetStart()
-		return fmt.Errorf("dispatch recovered telegram updates: %w", err)
-	}
+	d.schedulerWG.Go(func() { d.runScheduler(runCtx) })
+	d.notifyScheduler()
 	return nil
 }
 
@@ -165,25 +187,24 @@ func (d *DurableUpdateDispatcher) Persist(ctx context.Context, update api.Update
 	if err != nil {
 		return fmt.Errorf("persist telegram update %d: %w", update.UpdateID, err)
 	}
+	d.notifyScheduler()
 	return nil
 }
 
 func (d *DurableUpdateDispatcher) Submit(ctx context.Context, update api.Update) error {
+	_ = update
 	d.mu.Lock()
 	if !d.started {
 		d.mu.Unlock()
 		return ErrDispatcherClosed
 	}
-	if _, exists := d.scheduled[update.UpdateID]; exists {
-		d.mu.Unlock()
-		return nil
-	}
-	d.scheduled[update.UpdateID] = struct{}{}
 	d.mu.Unlock()
-	if err := d.inner.Submit(ctx, update); err != nil {
-		d.removeScheduled(update.UpdateID)
-		return err
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
 	}
+	d.notifyScheduler()
 	return nil
 }
 
@@ -205,7 +226,7 @@ func (d *DurableUpdateDispatcher) Stop(ctx context.Context) error {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		d.timersWG.Wait()
+		d.schedulerWG.Wait()
 	}()
 	select {
 	case <-ctx.Done():
@@ -222,6 +243,7 @@ func (d *DurableUpdateDispatcher) execute(ctx context.Context, submitted *api.Up
 	record, claimed, err := d.store.ClaimTelegramUpdate(ctx, submitted.UpdateID, time.Now())
 	if err != nil {
 		d.removeScheduled(submitted.UpdateID)
+		d.deferScheduler()
 		return err
 	}
 	if !claimed {
@@ -241,15 +263,18 @@ func (d *DurableUpdateDispatcher) execute(ctx context.Context, submitted *api.Up
 
 	processErr := d.callProcessor(ctx, &update)
 	if processErr == nil {
-		changed, completeErr := d.store.CompleteTelegramUpdate(ctx, record.UpdateID, "handler", time.Now())
+		changed, completeErr := d.retryStoreTransition(ctx, func() (bool, error) {
+			return d.store.CompleteTelegramUpdate(ctx, record.UpdateID, "handler", time.Now())
+		})
 		d.removeScheduled(record.UpdateID)
 		if completeErr != nil {
+			d.deferScheduler()
 			return completeErr
 		}
 		if !changed {
 			return fmt.Errorf("telegram update %d completion fence was lost", record.UpdateID)
 		}
-		d.scheduleWake()
+		d.notifyScheduler()
 		return nil
 	}
 	return d.finishFailure(ctx, record, &update, ClassifyUpdateFailure(processErr))
@@ -278,15 +303,18 @@ func (d *DurableUpdateDispatcher) finishFailure(ctx context.Context, record *db.
 	}
 	if failure.Disposition == UpdateFailureRetryable && record.AttemptCount < d.options.MaxAttempts {
 		nextAttemptAt := time.Now().Add(d.retryDelay(record.AttemptCount))
-		changed, err := d.store.ScheduleTelegramUpdateRetry(ctx, record.UpdateID, nextAttemptAt, string(failure.Source), lastError)
+		changed, err := d.retryStoreTransition(ctx, func() (bool, error) {
+			return d.store.ScheduleTelegramUpdateRetry(ctx, record.UpdateID, nextAttemptAt, string(failure.Source), lastError)
+		})
 		d.removeScheduled(record.UpdateID)
 		if err != nil {
+			d.deferScheduler()
 			return err
 		}
 		if !changed {
 			return fmt.Errorf("telegram update %d retry fence was lost", record.UpdateID)
 		}
-		d.scheduleRetry(update, nextAttemptAt)
+		d.notifyScheduler()
 		return nil
 	}
 
@@ -299,9 +327,12 @@ func (d *DurableUpdateDispatcher) finishFailure(ctx context.Context, record *db.
 			}
 		}
 	}
-	changed, err := d.store.DeadLetterTelegramUpdate(ctx, record.UpdateID, string(failure.Source), reason, lastError, time.Now())
+	changed, err := d.retryStoreTransition(ctx, func() (bool, error) {
+		return d.store.DeadLetterTelegramUpdate(ctx, record.UpdateID, string(failure.Source), reason, lastError, time.Now())
+	})
 	d.removeScheduled(record.UpdateID)
 	if err != nil {
+		d.deferScheduler()
 		return err
 	}
 	if !changed {
@@ -313,7 +344,7 @@ func (d *DurableUpdateDispatcher) finishFailure(ctx context.Context, record *db.
 		"failure_reason":    reason,
 		"security_relevant": record.SecurityRelevant,
 	}).WithError(failure.Cause).Error("telegram update moved to durable failure ledger")
-	d.scheduleWake()
+	d.notifyScheduler()
 	return nil
 }
 
@@ -328,62 +359,143 @@ func (d *DurableUpdateDispatcher) retryDelay(attempt int) time.Duration {
 	return min(delay, d.options.MaxBackoff)
 }
 
-func (d *DurableUpdateDispatcher) scheduleRetry(update *api.Update, at time.Time) {
-	if update == nil {
-		return
-	}
-	d.mu.Lock()
-	runCtx := d.runCtx
-	started := d.started
-	d.mu.Unlock()
-	if !started || runCtx == nil {
-		return
-	}
-	copyUpdate := *update
-	d.timersWG.Go(func() {
-		timer := time.NewTimer(max(time.Until(at), 0))
-		defer timer.Stop()
-		select {
-		case <-runCtx.Done():
-			return
-		case <-timer.C:
-			if err := d.Submit(runCtx, copyUpdate); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, ErrDispatcherClosed) {
-				d.logger.WithError(err).WithField(logFieldUpdateID, copyUpdate.UpdateID).Error("failed to resubmit durable telegram update")
-			}
-		}
-	})
-}
-
-func (d *DurableUpdateDispatcher) scheduleWake() {
-	d.mu.Lock()
-	runCtx := d.runCtx
-	started := d.started
-	d.mu.Unlock()
-	if !started || runCtx == nil {
-		return
-	}
-	d.timersWG.Go(func() {
-		if err := d.wakeRunnable(runCtx); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, ErrDispatcherClosed) {
-			d.logger.WithError(err).Error("failed to wake durable telegram updates")
-		}
-	})
-}
-
-func (d *DurableUpdateDispatcher) wakeRunnable(ctx context.Context) error {
+func (d *DurableUpdateDispatcher) dispatchRunnable(ctx context.Context) (int, bool, error) {
 	updates, err := d.store.ListRunnableTelegramUpdates(ctx, time.Now(), d.options.PendingBudget)
 	if err != nil {
-		return err
+		return 0, false, err
 	}
+	dispatched := 0
 	for _, record := range updates {
+		if !d.markScheduled(record.UpdateID) {
+			continue
+		}
 		var update api.Update
 		if err := json.Unmarshal(record.Payload, &update); err != nil {
 			update.UpdateID = record.UpdateID
 		}
-		if err := d.Submit(ctx, update); err != nil {
-			return err
+		if err := d.inner.Submit(ctx, update); err != nil {
+			d.removeScheduled(record.UpdateID)
+			return dispatched, true, err
+		}
+		dispatched++
+	}
+	return dispatched, len(updates) > 0, nil
+}
+
+func (d *DurableUpdateDispatcher) runScheduler(ctx context.Context) {
+	nextRecovery := time.Now().Add(d.options.RecoveryInterval)
+	nextCleanup := time.Now().Add(d.options.CleanupInterval)
+	for {
+		now := time.Now()
+		if !now.Before(nextRecovery) {
+			if _, err := d.store.RecoverStaleTelegramUpdates(ctx, now, now.Add(-d.options.ProcessingTimeout)); err != nil && ctx.Err() == nil {
+				d.logger.WithError(err).Error("failed to recover stale telegram updates")
+				d.deferScheduler()
+			}
+			nextRecovery = now.Add(d.options.RecoveryInterval)
+		}
+		if !now.Before(nextCleanup) {
+			if _, err := d.store.CleanupTelegramUpdates(ctx, now.Add(-completedUpdateRetention), now.Add(-failedUpdateRetention)); err != nil && ctx.Err() == nil {
+				d.logger.WithError(err).Error("failed to clean up telegram updates")
+				d.deferScheduler()
+			}
+			nextCleanup = now.Add(d.options.CleanupInterval)
+		}
+
+		dispatched, dueScheduled, err := d.dispatchRunnable(ctx)
+		if err != nil && ctx.Err() == nil && !errors.Is(err, ErrDispatcherClosed) {
+			d.logger.WithError(err).Error("failed to dispatch durable telegram updates")
+			d.deferScheduler()
+		}
+		waitUntil := minTime(nextRecovery, nextCleanup)
+		if err == nil && dispatched > 0 {
+			waitUntil = time.Now()
+		} else if err == nil && !dueScheduled {
+			if next, ok, nextErr := d.store.NextTelegramUpdateAvailableAt(ctx); nextErr != nil {
+				if ctx.Err() == nil {
+					d.logger.WithError(nextErr).Error("failed to read next telegram update availability")
+					d.deferScheduler()
+				}
+			} else if ok {
+				waitUntil = minTime(waitUntil, next)
+			}
+		}
+		d.mu.Lock()
+		if d.retryNotBefore.After(waitUntil) || waitUntil.IsZero() {
+			waitUntil = d.retryNotBefore
+		}
+		d.mu.Unlock()
+		if !d.waitForScheduler(ctx, waitUntil) {
+			return
 		}
 	}
-	return nil
+}
+
+func (d *DurableUpdateDispatcher) waitForScheduler(ctx context.Context, until time.Time) bool {
+	delay := max(time.Until(until), 0)
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-d.wake:
+		return true
+	case <-timer.C:
+		return true
+	}
+}
+
+func (d *DurableUpdateDispatcher) notifyScheduler() {
+	select {
+	case d.wake <- struct{}{}:
+	default:
+	}
+}
+
+func (d *DurableUpdateDispatcher) deferScheduler() {
+	d.mu.Lock()
+	d.retryNotBefore = time.Now().Add(d.options.SchedulerBackoff)
+	d.mu.Unlock()
+	d.notifyScheduler()
+}
+
+func (d *DurableUpdateDispatcher) retryStoreTransition(ctx context.Context, transition func() (bool, error)) (bool, error) {
+	backoff := d.options.SchedulerBackoff
+	for {
+		changed, err := transition()
+		if err == nil {
+			return changed, nil
+		}
+		failure := ClassifyUpdateFailure(err)
+		if failure.Source != UpdateFailureSQLite || failure.Disposition != UpdateFailureRetryable {
+			return false, err
+		}
+		timer := time.NewTimer(backoff)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return false, errors.Join(err, ctx.Err())
+		case <-timer.C:
+		}
+		backoff = min(backoff*2, d.options.MaxBackoff)
+	}
+}
+
+func (d *DurableUpdateDispatcher) markScheduled(updateID int) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if _, exists := d.scheduled[updateID]; exists {
+		return false
+	}
+	d.scheduled[updateID] = struct{}{}
+	return true
+}
+
+func minTime(first, second time.Time) time.Time {
+	if first.IsZero() || (!second.IsZero() && second.Before(first)) {
+		return second
+	}
+	return first
 }
 
 func (d *DurableUpdateDispatcher) removeScheduled(updateID int) {

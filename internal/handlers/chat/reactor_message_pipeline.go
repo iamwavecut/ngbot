@@ -62,7 +62,11 @@ func (r *Reactor) handleMessageChallenge(ctx context.Context, msg *api.Message, 
 	}
 	r.storeLastResult(chat.ID, msg.MessageID, result)
 
-	if skipReason, trusted := r.trustedSenderChat(ctx, msg, chat, entry); trusted {
+	skipReason, trusted, err := r.trustedSenderChat(ctx, msg, chat, entry)
+	if err != nil {
+		return bot.NewRetryableUpdateFailure(bot.UpdateFailureTelegram, "sender_chat_classification_failed", err)
+	}
+	if trusted {
 		result.Stage = StageSpamCheck
 		result.Skipped = true
 		result.SkipReason = skipReason
@@ -485,25 +489,25 @@ func detectFirstMessageExternalQuoteHeuristic(msg *api.Message) firstMessageExte
 	return result
 }
 
-func (r *Reactor) trustedSenderChat(ctx context.Context, msg *api.Message, chat *api.Chat, entry *log.Entry) (string, bool) {
+func (r *Reactor) trustedSenderChat(ctx context.Context, msg *api.Message, chat *api.Chat, entry *log.Entry) (string, bool, error) {
 	if msg == nil || chat == nil || msg.SenderChat == nil {
-		return "", false
+		return "", false, nil
 	}
 	return r.trustedSenderChatIdentity(ctx, msg.SenderChat, chat, msg.IsAutomaticForward, entry)
 }
 
-func (r *Reactor) trustedSenderChatIdentity(ctx context.Context, senderChat *api.Chat, chat *api.Chat, automaticForward bool, entry *log.Entry) (string, bool) {
+func (r *Reactor) trustedSenderChatIdentity(ctx context.Context, senderChat *api.Chat, chat *api.Chat, automaticForward bool, entry *log.Entry) (string, bool, error) {
 	if senderChat == nil || chat == nil {
-		return "", false
+		return "", false, nil
 	}
 	if senderChat.ID == chat.ID {
-		return messageSkipReasonChatSender, true
+		return messageSkipReasonChatSender, true, nil
 	}
 	if !senderChat.IsChannel() {
-		return "", false
+		return "", false, nil
 	}
 	if automaticForward {
-		return messageSkipReasonLinkedChannelSender, true
+		return messageSkipReasonLinkedChannelSender, true, nil
 	}
 
 	fullChat, err := bot.GetChat(ctx, r.bot, api.ChatInfoConfig{
@@ -511,9 +515,9 @@ func (r *Reactor) trustedSenderChatIdentity(ctx context.Context, senderChat *api
 	})
 	if err != nil {
 		entry.WithField(logFieldError, err.Error()).Warn("failed to verify linked channel sender")
-		return "", false
+		return "", false, err
 	}
-	return messageSkipReasonLinkedChannelSender, fullChat.LinkedChatID == senderChat.ID
+	return messageSkipReasonLinkedChannelSender, fullChat.LinkedChatID == senderChat.ID, nil
 }
 
 func (r *Reactor) isChatAdministrator(ctx context.Context, chatID int64, userID int64, entry *log.Entry) bool {

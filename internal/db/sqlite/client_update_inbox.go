@@ -2,6 +2,8 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -62,6 +64,41 @@ func (c *sqliteClient) ListRunnableTelegramUpdates(ctx context.Context, now time
 		return nil, fmt.Errorf("list runnable telegram updates: %w", err)
 	}
 	return updates, nil
+}
+
+func (c *sqliteClient) NextTelegramUpdateAvailableAt(ctx context.Context) (time.Time, bool, error) {
+	var next time.Time
+	if err := c.db.GetContext(ctx, &next, `
+		SELECT candidate.available_at
+		FROM telegram_update_inbox AS candidate
+		WHERE candidate.status IN (?, ?)
+			AND NOT EXISTS (
+				SELECT 1
+				FROM telegram_update_inbox AS predecessor
+				WHERE predecessor.dispatch_key = candidate.dispatch_key
+					AND predecessor.update_id < candidate.update_id
+					AND predecessor.status NOT IN (?, ?)
+			)
+		ORDER BY candidate.available_at
+		LIMIT 1
+	`, db.TelegramUpdateStatusPending, db.TelegramUpdateStatusRetry, db.TelegramUpdateStatusCompleted, db.TelegramUpdateStatusDeadLetter); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return time.Time{}, false, nil
+		}
+		return time.Time{}, false, fmt.Errorf("read next telegram update availability: %w", err)
+	}
+	return next, true, nil
+}
+
+func (c *sqliteClient) TelegramUpdate(ctx context.Context, updateID int) (*db.TelegramUpdate, bool, error) {
+	var update db.TelegramUpdate
+	if err := c.db.GetContext(ctx, &update, `SELECT `+telegramUpdateColumns+` FROM telegram_update_inbox WHERE update_id = ?`, updateID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("read telegram update: %w", err)
+	}
+	return &update, true, nil
 }
 
 func (c *sqliteClient) ClaimTelegramUpdate(ctx context.Context, updateID int, now time.Time) (*db.TelegramUpdate, bool, error) {
@@ -169,6 +206,10 @@ func (c *sqliteClient) DeadLetterTelegramUpdate(ctx context.Context, updateID in
 }
 
 func (c *sqliteClient) RecoverTelegramUpdates(ctx context.Context, now time.Time) (int64, error) {
+	return c.RecoverStaleTelegramUpdates(ctx, now, now)
+}
+
+func (c *sqliteClient) RecoverStaleTelegramUpdates(ctx context.Context, now, startedBefore time.Time) (int64, error) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 	result, err := c.db.ExecContext(ctx, `
@@ -176,8 +217,8 @@ func (c *sqliteClient) RecoverTelegramUpdates(ctx context.Context, now time.Time
 		SET status = ?, available_at = ?, started_at = NULL,
 			last_error = CASE WHEN last_error = '' THEN 'interrupted before terminal outcome' ELSE last_error END,
 			outcome_source = 'restart'
-		WHERE status = ?
-	`, db.TelegramUpdateStatusRetry, now, db.TelegramUpdateStatusProcessing)
+		WHERE status = ? AND started_at <= ?
+	`, db.TelegramUpdateStatusRetry, now, db.TelegramUpdateStatusProcessing, startedBefore)
 	if err != nil {
 		return 0, fmt.Errorf("recover telegram updates: %w", err)
 	}

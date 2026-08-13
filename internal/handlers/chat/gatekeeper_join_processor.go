@@ -104,6 +104,9 @@ func (g *Gatekeeper) handleNewChatMembersV2(ctx context.Context, u *api.Update, 
 			}
 			banErr := g.processKnownBannedJoinedUser(ctx, chat.ID, member.ID, joinerMessageID(joiner, u.Message.MessageID))
 			g.completeKnownBannedRecentJoiner(ctx, chat.ID, member.ID, banErr)
+			if banErr != nil && db.SafeGatekeeperErrorCode(banErr) != db.GatekeeperErrorPermission {
+				return banErr
+			}
 			continue
 		}
 		if !settings.GatekeeperEnabled {
@@ -422,8 +425,7 @@ func (g *Gatekeeper) handleChatJoinRequest(ctx context.Context, u *api.Update, s
 			return safeGatekeeperError(checkErr)
 		}
 		if banned {
-			g.processKnownBannedJoinRequest(ctx, u.ChatJoinRequest)
-			return nil
+			return g.processKnownBannedJoinRequest(ctx, u.ChatJoinRequest)
 		}
 	}
 	if webAppQueued {
@@ -669,9 +671,9 @@ func (g *Gatekeeper) recordRecentJoiner(ctx context.Context, chatID int64, user 
 	return g.store.AddChatRecentJoiner(ctx, recentJoiner)
 }
 
-func (g *Gatekeeper) processKnownBannedJoinRequest(ctx context.Context, request *api.ChatJoinRequest) {
+func (g *Gatekeeper) processKnownBannedJoinRequest(ctx context.Context, request *api.ChatJoinRequest) error {
 	if request == nil {
-		return
+		return nil
 	}
 
 	entry := g.getLogEntry().WithField(logFieldMethod, "processKnownBannedJoinRequest")
@@ -691,8 +693,9 @@ func (g *Gatekeeper) processKnownBannedJoinRequest(ctx context.Context, request 
 		}).Error("failed to decline banned join request")
 		if moderation.IsTelegramPrivilegeError(err) {
 			g.banChecker.MarkModerationUnavailable(chatID)
-			return
+			return nil
 		}
+		return gatekeeperUpdateFailure(err)
 	}
 	if g.banChecker != nil {
 		if err := g.banChecker.BanUserWithMessage(ctx, chatID, userID, 0); err != nil {
@@ -702,12 +705,14 @@ func (g *Gatekeeper) processKnownBannedJoinRequest(ctx context.Context, request 
 			}).Error("failed to ban known banned join requester")
 			if moderation.IsTelegramPrivilegeError(err) {
 				g.banChecker.MarkModerationUnavailable(chatID)
-				return
+				return nil
 			}
+			return gatekeeperUpdateFailure(err)
 		}
 	}
 
 	g.cleanupKnownBannedArtifacts(ctx, chatID, userID, 0)
+	return nil
 }
 
 func (g *Gatekeeper) processKnownBannedJoinedUser(ctx context.Context, chatID, userID int64, joinMessageID int) error {
@@ -721,13 +726,22 @@ func (g *Gatekeeper) processKnownBannedJoinedUser(ctx context.Context, chatID, u
 			}).Error("failed to ban known banned joined user")
 			if moderation.IsTelegramPrivilegeError(err) {
 				g.banChecker.MarkModerationUnavailable(chatID)
+				return safeGatekeeperError(err)
 			}
-			return safeGatekeeperError(err)
+			return gatekeeperUpdateFailure(err)
 		}
 	}
 
 	g.cleanupKnownBannedArtifacts(ctx, chatID, userID, joinMessageID)
 	return nil
+}
+
+func gatekeeperUpdateFailure(err error) error {
+	failure := bot.ClassifyUpdateFailure(err)
+	if failure.Disposition == bot.UpdateFailureTerminal {
+		return bot.NewTerminalUpdateFailure(failure.Source, failure.Reason, err)
+	}
+	return bot.NewRetryableUpdateFailure(failure.Source, failure.Reason, err)
 }
 
 func (g *Gatekeeper) completeKnownBannedRecentJoiner(ctx context.Context, chatID, userID int64, banErr error) {

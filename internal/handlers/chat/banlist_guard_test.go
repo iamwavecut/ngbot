@@ -5,10 +5,49 @@ import (
 	"errors"
 	"net/http"
 	"testing"
+	"time"
 
 	api "github.com/OvyFlash/telegram-bot-api"
 	"github.com/iamwavecut/ngbot/internal/bot"
+	"github.com/iamwavecut/ngbot/internal/db"
 )
+
+type testModerationFenceStore struct {
+	testNotSpammerStore
+	action          *db.ModerationActionFence
+	failBanPersist  bool
+	reconciliations int
+}
+
+func (s *testModerationFenceStore) BeginModerationAction(_ context.Context, action *db.ModerationActionFence, owner string, now time.Time) (*db.ModerationActionFence, error) {
+	if s.action == nil {
+		copy := *action
+		copy.Status = db.ModerationActionStarted
+		copy.Owner = owner
+		copy.CreatedAt = now
+		copy.UpdatedAt = now
+		s.action = &copy
+	}
+	copy := *s.action
+	return &copy, nil
+}
+
+func (s *testModerationFenceStore) AdvanceModerationAction(_ context.Context, _ string, owner, expectedStatus, nextStatus, lastError string, now time.Time) (bool, error) {
+	if s.failBanPersist && expectedStatus == db.ModerationActionStarted && nextStatus == db.ModerationActionBanned {
+		s.failBanPersist = false
+		return false, errors.New("simulated crash before ban persistence")
+	}
+	if s.action.Owner != owner || s.action.Status != expectedStatus {
+		return false, nil
+	}
+	s.action.Status = nextStatus
+	s.action.LastError = lastError
+	s.action.UpdatedAt = now
+	if nextStatus == db.ModerationActionReconciliation {
+		s.reconciliations++
+	}
+	return true, nil
+}
 
 func TestBanlistGuardStopsCommandBeforeDownstreamHandlers(t *testing.T) {
 	t.Parallel()
@@ -190,5 +229,44 @@ func TestBanlistGuardAllowlistLookupFailureContinuesBan(t *testing.T) {
 	}
 	if len(banService.bans) != 1 {
 		t.Fatalf("expected banlist enforcement after lookup failure, got %#v", banService.bans)
+	}
+}
+
+func TestBanlistGuardDoesNotRepeatAmbiguousBanAfterCrash(t *testing.T) {
+	t.Parallel()
+
+	deleteCalls := 0
+	botAPI := newTestBotAPI(t, func(method string, _ *http.Request) any {
+		if method == testTelegramMethodDeleteMessage {
+			deleteCalls++
+			return true
+		}
+		t.Fatalf("unexpected bot method: %s", method)
+		return nil
+	})
+	store := &testModerationFenceStore{failBanPersist: true}
+	banService := &testBanService{knownBanned: true}
+	guard := NewBanlistGuard(botAPI, store, banService)
+	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
+	user := &api.User{ID: 200}
+	message := &api.Message{MessageID: 42, Chat: *chat, From: user, Text: "spam"}
+	update := &api.Update{UpdateID: 900, Message: message}
+
+	if _, err := guard.Handle(t.Context(), update, chat, user); err == nil {
+		t.Fatal("expected persistence failure after Telegram ban")
+	}
+	_, err := guard.Handle(t.Context(), update, chat, user)
+	failure := bot.ClassifyUpdateFailure(err)
+	if failure.Disposition != bot.UpdateFailureTerminal || failure.Reason != "moderation_effect_ambiguous" {
+		t.Fatalf("replay failure = %#v", failure)
+	}
+	if len(banService.bans) != 1 {
+		t.Fatalf("Telegram ban calls = %d, want 1", len(banService.bans))
+	}
+	if deleteCalls != 0 || store.reconciliations != 1 {
+		t.Fatalf("delete calls=%d reconciliations=%d", deleteCalls, store.reconciliations)
+	}
+	if len(banService.banDeadlines) != 1 || !banService.banDeadlines[0].Equal(store.action.BanUntil) {
+		t.Fatalf("stable ban deadlines = %#v, action=%#v", banService.banDeadlines, store.action)
 	}
 }

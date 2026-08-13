@@ -154,6 +154,7 @@ func (r *Reactor) Handle(ctx context.Context, u *api.Update, chat *api.Chat, use
 		if user == nil {
 			if err := r.handleMessage(ctx, u.Message, chat, nil, settings); err != nil {
 				entry.WithError(err).Warn("failed to classify anonymous sender chat message")
+				return true, err
 			}
 			return true, nil
 		}

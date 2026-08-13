@@ -69,8 +69,11 @@ func (s *defaultBanService) UnmuteUser(ctx context.Context, chatID, userID int64
 }
 
 func (s *defaultBanService) BanUserWithMessage(ctx context.Context, chatID, userID int64, messageID int) error {
+	return s.BanUserWithMessageUntil(ctx, chatID, userID, messageID, time.Now().Add(10*time.Minute))
+}
+
+func (s *defaultBanService) BanUserWithMessageUntil(ctx context.Context, chatID, userID int64, messageID int, expiresAt time.Time) error {
 	_ = messageID
-	expiresAt := time.Now().Add(10 * time.Minute)
 	config := api.BanChatMemberConfig{
 		ChatMemberConfig: api.ChatMemberConfig{
 			ChatConfig: api.ChatConfig{

@@ -191,6 +191,32 @@ func timestampedUpdate(u *api.Update) (time.Time, string, bool) {
 			timestamp = u.EditedChannelPost.Date
 		}
 		return time.Unix(timestamp, 0), string(MessageTypeEditedChannelPost), true
+	case u.BusinessConnection != nil:
+		return time.Unix(u.BusinessConnection.Date, 0), "business_connection", true
+	case u.BusinessMessage != nil:
+		return time.Unix(u.BusinessMessage.Date, 0), "business_message", true
+	case u.EditedBusinessMessage != nil:
+		timestamp := u.EditedBusinessMessage.EditDate
+		if timestamp == 0 {
+			timestamp = u.EditedBusinessMessage.Date
+		}
+		return time.Unix(timestamp, 0), "edited_business_message", true
+	case u.GuestMessage != nil:
+		return time.Unix(u.GuestMessage.Date, 0), "guest_message", true
+	case u.MessageReaction != nil:
+		return time.Unix(u.MessageReaction.Date, 0), "message_reaction", true
+	case u.MessageReactionCount != nil:
+		return time.Unix(u.MessageReactionCount.Date, 0), "message_reaction_count", true
+	case u.MyChatMember != nil:
+		return time.Unix(u.MyChatMember.Date, 0), string(MessageTypeMyChatMember), true
+	case u.ChatMember != nil:
+		return time.Unix(u.ChatMember.Date, 0), string(MessageTypeChatMember), true
+	case u.ChatJoinRequest != nil:
+		return time.Unix(u.ChatJoinRequest.Date, 0), string(MessageTypeChatJoinRequest), true
+	case u.ChatBoost != nil:
+		return time.Unix(u.ChatBoost.Boost.AddDate, 0), string(MessageTypeChatBoost), true
+	case u.ChatBoostRemoved != nil:
+		return time.Unix(u.ChatBoostRemoved.RemoveDate, 0), "removed_chat_boost", true
 	default:
 		return time.Time{}, "", false
 	}

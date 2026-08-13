@@ -379,6 +379,7 @@ type testBanService struct {
 	checkBan              bool
 	knownBanned           bool
 	bans                  []testGatekeeperBan
+	banDeadlines          []time.Time
 	moderationUnavailable bool
 	moderationErr         error
 	markedUnavailable     bool
@@ -408,6 +409,10 @@ func (s *testBanService) UnmuteUser(context.Context, int64, int64) error { retur
 func (s *testBanService) BanUserWithMessage(_ context.Context, chatID, userID int64, messageID int) error {
 	s.bans = append(s.bans, testGatekeeperBan{chatID: chatID, userID: userID, messageID: messageID})
 	return nil
+}
+func (s *testBanService) BanUserWithMessageUntil(ctx context.Context, chatID, userID int64, messageID int, until time.Time) error {
+	s.banDeadlines = append(s.banDeadlines, until)
+	return s.BanUserWithMessage(ctx, chatID, userID, messageID)
 }
 func (s *testBanService) UnbanUser(context.Context, int64, int64) error            { return nil }
 func (s *testBanService) IsRestricted(context.Context, int64, int64) (bool, error) { return false, nil }
@@ -1180,6 +1185,29 @@ func TestHandleMessageLinkedChannelSenderBypassesSpamPipeline(t *testing.T) {
 	}
 	if result.SkipReason != "Linked channel sender" {
 		t.Fatalf("unexpected skip reason: %q", result.SkipReason)
+	}
+}
+
+func TestHandleMessageSenderChatLookupFailureIsRetryable(t *testing.T) {
+	t.Parallel()
+
+	botAPI := newTestBotAPI(t, func(method string, _ *http.Request) any {
+		if method != testTelegramMethodGetChat {
+			t.Fatalf("unexpected bot method: %s", method)
+		}
+		return &testBotAPIError{code: http.StatusBadGateway, description: "temporary upstream failure"}
+	})
+	service := &testBotService{botAPI: botAPI}
+	reactor := &Reactor{
+		s: service, bot: botAPI, store: &testReactorStore{}, spamDetector: &testSpamDetector{},
+		banService: &testBanService{}, lastResults: make(map[messageResultKey]*MessageProcessingResult),
+	}
+	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
+	message := &api.Message{MessageID: 16, Chat: *chat, SenderChat: &api.Chat{ID: -200, Type: testChatTypeChannel}, Text: "candidate"}
+	_, err := reactor.Handle(t.Context(), &api.Update{Message: message}, chat, nil)
+	failure := botservice.ClassifyUpdateFailure(err)
+	if failure.Disposition != botservice.UpdateFailureRetryable || failure.Source != botservice.UpdateFailureTelegram {
+		t.Fatalf("failure = %#v, want retryable Telegram classification", failure)
 	}
 }
 
