@@ -227,6 +227,30 @@ type testSpamDetector struct {
 	err              error
 }
 
+func TestCheckMessageForSpamDoesNotMirrorRawContent(t *testing.T) {
+	t.Parallel()
+
+	telegramCalls := 0
+	botAPI := newTestBotAPI(t, func(method string, _ *http.Request) any {
+		telegramCalls++
+		t.Fatalf("classification diagnostics must not call Telegram method %s", method)
+		return true
+	})
+	reactor := &Reactor{
+		bot:          botAPI,
+		store:        &testReactorStore{},
+		spamDetector: &testSpamDetector{err: errors.New("classification unavailable")},
+		config: Config{SpamControl: config.SpamControl{
+			DebugUserID: 42,
+		}},
+	}
+
+	_, _ = reactor.checkMessageForSpam(t.Context(), 1, "private-message-content")
+	if telegramCalls != 0 {
+		t.Fatalf("classification diagnostics made %d Telegram calls", telegramCalls)
+	}
+}
+
 func (d *testSpamDetector) IsSpam(_ context.Context, message string, _ []string) (*bool, error) {
 	d.calls++
 	d.messages = append(d.messages, message)

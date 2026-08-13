@@ -13,6 +13,7 @@ import (
 type API struct {
 	client *openai.Client
 	model  string
+	logger *log.Entry
 }
 
 const (
@@ -23,12 +24,14 @@ const (
 )
 
 func NewOpenAI(apiKey, model, baseURL string, logger *log.Entry) (adapters.LLM, error) {
-	_ = logger
 	if apiKey == "" {
 		return nil, fmt.Errorf("openai API key is empty")
 	}
 	if model == "" {
 		model = DefaultModel
+	}
+	if logger == nil {
+		logger = log.New().WithField("adapter", "openai")
 	}
 
 	config := openai.DefaultConfig(apiKey)
@@ -39,6 +42,7 @@ func NewOpenAI(apiKey, model, baseURL string, logger *log.Entry) (adapters.LLM, 
 	return &API{
 		client: openai.NewClientWithConfig(config),
 		model:  model,
+		logger: logger.WithFields(log.Fields{"provider": "openai", "model": model}),
 	}, nil
 }
 
@@ -49,16 +53,28 @@ func (o *API) ChatCompletion(ctx context.Context, messages []llm.ChatCompletionM
 
 	openaiMessages := make([]openai.ChatCompletionMessage, 0, len(messages)+1)
 	systemPrompt := ""
+	seenConversation := false
 
 	for _, msg := range messages {
-		if msg.Role == llm.RoleSystem {
+		switch msg.Role {
+		case llm.RoleSystem:
+			if seenConversation {
+				return llm.ChatCompletionResponse{}, fmt.Errorf("system message must precede conversation contents")
+			}
 			systemPrompt = msg.Content
-			continue
+		case llm.RoleUser, llm.RoleAssistant, "":
+			seenConversation = true
+			role := msg.Role
+			if role == "" {
+				role = llm.RoleUser
+			}
+			openaiMessages = append(openaiMessages, openai.ChatCompletionMessage{
+				Role:    role,
+				Content: msg.Content,
+			})
+		default:
+			return llm.ChatCompletionResponse{}, fmt.Errorf("unsupported message role: %s", msg.Role)
 		}
-		openaiMessages = append(openaiMessages, openai.ChatCompletionMessage{
-			Role:    msg.Role,
-			Content: msg.Content,
-		})
 	}
 
 	if systemPrompt != "" {
@@ -82,6 +98,11 @@ func (o *API) ChatCompletion(ctx context.Context, messages []llm.ChatCompletionM
 	if len(resp.Choices) == 0 {
 		return llm.ChatCompletionResponse{}, nil
 	}
+	o.logger.WithFields(log.Fields{
+		"prompt_tokens":     resp.Usage.PromptTokens,
+		"completion_tokens": resp.Usage.CompletionTokens,
+		"total_tokens":      resp.Usage.TotalTokens,
+	}).Debug("OpenAI usage metadata")
 
 	return llm.ChatCompletionResponse{
 		Choices: []llm.ChatCompletionChoice{{

@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"strconv"
 	"strings"
 	"time"
 
@@ -166,46 +165,30 @@ func messageLogFields(message string) log.Fields {
 }
 
 func (d *spamDetector) checkWithPrompt(ctx context.Context, prompt string, message string, extraExamples []string) (*bool, error) {
+	var instruction strings.Builder
+	instruction.WriteString(prompt)
+	instruction.WriteString("\n\nClassification examples:\n")
+	for _, item := range examples {
+		writeClassificationExample(&instruction, item.Message, item.Response)
+	}
+	for _, text := range extraExamples {
+		text = strings.TrimSpace(text)
+		if text != "" {
+			writeClassificationExample(&instruction, text, 1)
+		}
+	}
+
 	messagesChain := []llm.ChatCompletionMessage{
 		{
 			Role:      llm.RoleSystem,
-			Content:   prompt,
+			Content:   instruction.String(),
 			Cacheable: true,
 		},
-	}
-
-	for _, item := range examples {
-		messagesChain = append(messagesChain, llm.ChatCompletionMessage{
-			Role:      llm.RoleUser,
-			Content:   item.Message,
-			Cacheable: true,
-		})
-		messagesChain = append(messagesChain, llm.ChatCompletionMessage{
-			Role:      llm.RoleAssistant,
-			Content:   strconv.Itoa(item.Response),
-			Cacheable: true,
-		})
-	}
-
-	for _, text := range extraExamples {
-		text = strings.TrimSpace(text)
-		if text == "" {
-			continue
-		}
-		messagesChain = append(messagesChain, llm.ChatCompletionMessage{
+		{
 			Role:    llm.RoleUser,
-			Content: text,
-		})
-		messagesChain = append(messagesChain, llm.ChatCompletionMessage{
-			Role:    llm.RoleAssistant,
-			Content: "1",
-		})
+			Content: message,
+		},
 	}
-
-	messagesChain = append(messagesChain, llm.ChatCompletionMessage{
-		Role:    llm.RoleUser,
-		Content: message,
-	})
 
 	requestCtx, cancel := context.WithTimeout(ctx, d.requestTimeout)
 	defer cancel()
@@ -222,25 +205,27 @@ func (d *spamDetector) checkWithPrompt(ctx context.Context, prompt string, messa
 		return nil, errors.New("no response from LLM")
 	}
 
-	if len(resp.Choices) == 0 || resp.Choices[0].Message.Content == "" {
+	if strings.TrimSpace(resp.Choices[0].Message.Content) == "" {
 		return nil, errors.New("empty response from LLM")
 	}
-	choice := resp.Choices[0].Message.Content
-	cleanedChoice := strings.Map(func(r rune) rune {
-		if r >= '0' && r <= '1' {
-			return r
-		}
-		return -1
-	}, choice)
-
-	switch cleanedChoice {
+	choice := strings.TrimSpace(resp.Choices[0].Message.Content)
+	switch choice {
 	case "1":
 		return tool.Ptr(true), nil
 	case "0":
 		return tool.Ptr(false), nil
 	default:
-		return nil, errors.New("unknown response from LLM: " + cleanedChoice + " (" + choice + ")")
+		d.logger.WithFields(messageLogFields(choice)).Warn("LLM returned malformed classification output")
+		return nil, errors.New("unknown response from LLM")
 	}
+}
+
+func writeClassificationExample(instruction *strings.Builder, message string, response int) {
+	instruction.WriteString("Message:\n")
+	instruction.WriteString(message)
+	instruction.WriteString("\nClassification: ")
+	instruction.WriteByte(byte('0' + response))
+	instruction.WriteByte('\n')
 }
 
 const spamDetectionPrompt = `Ты ассистент для обнаружения спама, анализирующий сообщения на различных языках. Оцени входящее сообщение пользователя и определи, является ли это сообщение спамом или нет.

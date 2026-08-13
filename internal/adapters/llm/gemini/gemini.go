@@ -4,8 +4,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"iter"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -29,11 +31,19 @@ type API struct {
 	createCache     createCacheFunc
 	listCaches      listCachesFunc
 	cacheMutex      sync.Mutex
-	localCaches     map[string]*genai.CachedContent
+	cacheEntries    map[string]*cacheEntry
+}
+
+type cacheEntry struct {
+	cache      *genai.CachedContent
+	ready      chan struct{}
+	err        error
+	retryAfter time.Time
 }
 
 type promptSegments struct {
 	systemInstruction *genai.Content
+	cacheableSystem   bool
 	cacheablePrefix   []llm.ChatCompletionMessage
 	cachedContents    []*genai.Content
 	liveContents      []*genai.Content
@@ -41,16 +51,25 @@ type promptSegments struct {
 
 const (
 	DefaultModel           = "gemini-2.5-flash-lite"
-	defaultTemperature     = float32(0)
-	defaultTopK            = float32(1)
-	defaultTopP            = float32(1)
 	defaultMaxOutputTokens = int32(16)
-	defaultThinkingBudget  = int32(0)
 	defaultCacheTTL        = 6 * time.Hour
+	cacheFailureBackoff    = 30 * time.Second
 	cacheDisplayPrefix     = "ngbot-spam-"
 	cacheHashLength        = 12
 	logFieldCacheName      = "cache_name"
 	logFieldCacheDisplay   = "display"
+	providerName           = "gemini"
+	statusInvalidArgument  = "INVALID_ARGUMENT"
+)
+
+type requestCapability uint8
+
+const (
+	capabilityExplicitCache requestCapability = 1 << iota
+	capabilityPrefilledModelTurns
+	capabilitySamplingControls
+	capabilityThinking
+	classificationCapabilities = capabilityExplicitCache
 )
 
 func NewGemini(apiKey, model string, logger *log.Entry) (adapters.LLM, error) {
@@ -74,7 +93,7 @@ func NewGemini(apiKey, model string, logger *log.Entry) (adapters.LLM, error) {
 
 	return &API{
 		model:           model,
-		logger:          logger,
+		logger:          logger.WithFields(log.Fields{"provider": providerName, "model": model}),
 		generateContent: client.Models.GenerateContent,
 		createCache:     client.Caches.Create,
 		listCaches:      client.Caches.All,
@@ -95,11 +114,14 @@ func (g *API) ChatCompletion(ctx context.Context, messages []llm.ChatCompletionM
 	}
 
 	var resp *genai.GenerateContentResponse
-	if len(segments.cachedContents) > 0 {
+	if classificationCapabilities&capabilityExplicitCache != 0 && (segments.cacheableSystem || len(segments.cachedContents) > 0) {
 		fingerprint := cacheFingerprint(g.model, segments.systemInstruction, segments.cacheablePrefix)
 		cache, cacheErr := g.loadOrCreateCache(ctx, segments)
 		if cacheErr != nil {
-			g.logger.WithField("error", cacheErr.Error()).Warn("failed to prepare Gemini explicit cache, falling back to uncached request")
+			fields := cacheUseErrorLogFields(cacheErr)
+			fields["cache_outcome"] = "prepare_failed"
+			fields["provider"] = providerName
+			g.logger.WithFields(fields).Warn("failed to prepare Gemini explicit cache, falling back to uncached request")
 		}
 		if cache != nil {
 			config := classificationConfig()
@@ -113,18 +135,22 @@ func (g *API) ChatCompletion(ctx context.Context, messages []llm.ChatCompletionM
 				fields := emptyResponseLogFields(resp)
 				fields[logFieldCacheName] = cache.Name
 				fields[logFieldCacheDisplay] = cache.DisplayName
+				fields["cache_outcome"] = "empty_response"
+				fields["provider"] = providerName
 				g.logger.WithFields(fields).Warn("Gemini cached response was empty, retrying without cache")
+				g.invalidateLocalCache(fingerprint, cache.Name)
 			}
 			if err != nil && !isCacheUseError(err) {
 				return llm.ChatCompletionResponse{}, fmt.Errorf("generate gemini content with cache: %w", err)
 			}
 			if err != nil {
 				g.invalidateLocalCache(fingerprint, cache.Name)
-				g.logger.WithFields(log.Fields{
-					logFieldCacheName:    cache.Name,
-					logFieldCacheDisplay: cache.DisplayName,
-					"error":              err.Error(),
-				}).Warn("Gemini explicit cache could not be used, retrying without cache")
+				fields := cacheUseErrorLogFields(err)
+				fields[logFieldCacheName] = cache.Name
+				fields[logFieldCacheDisplay] = cache.DisplayName
+				fields["cache_outcome"] = "use_failed"
+				fields["provider"] = providerName
+				g.logger.WithFields(fields).Warn("Gemini explicit cache could not be used, retrying without cache")
 			}
 		}
 	}
@@ -153,17 +179,20 @@ func (g *API) ChatCompletion(ctx context.Context, messages []llm.ChatCompletionM
 }
 
 func classificationConfig() *genai.GenerateContentConfig {
-	return &genai.GenerateContentConfig{
-		Temperature:      genai.Ptr(defaultTemperature),
-		TopK:             genai.Ptr(defaultTopK),
-		TopP:             genai.Ptr(defaultTopP),
+	config := &genai.GenerateContentConfig{
 		MaxOutputTokens:  defaultMaxOutputTokens,
 		ResponseMIMEType: "text/plain",
 		SafetySettings:   defaultSafetySettings(),
-		ThinkingConfig: &genai.ThinkingConfig{
-			ThinkingBudget: genai.Ptr(defaultThinkingBudget),
-		},
 	}
+	if classificationCapabilities&capabilitySamplingControls != 0 {
+		config.Temperature = genai.Ptr(float32(0))
+		config.TopK = genai.Ptr(float32(1))
+		config.TopP = genai.Ptr(float32(1))
+	}
+	if classificationCapabilities&capabilityThinking != 0 {
+		config.ThinkingConfig = &genai.ThinkingConfig{ThinkingBudget: genai.Ptr(int32(0))}
+	}
+	return config
 }
 
 func splitPromptSegments(messages []llm.ChatCompletionMessage) (promptSegments, error) {
@@ -178,7 +207,13 @@ func splitPromptSegments(messages []llm.ChatCompletionMessage) (promptSegments, 
 				return promptSegments{}, fmt.Errorf("system message must precede conversation contents")
 			}
 			segments.systemInstruction = genai.NewContentFromText(message.Content, genai.RoleUser)
-		case llm.RoleAssistant, llm.RoleUser, "":
+			segments.cacheableSystem = message.Cacheable
+		case llm.RoleAssistant:
+			if classificationCapabilities&capabilityPrefilledModelTurns == 0 {
+				return promptSegments{}, fmt.Errorf("prefilled assistant messages are not supported by the Gemini classification contract")
+			}
+			fallthrough
+		case llm.RoleUser, "":
 			seenConversation = true
 			content, err := toGeminiContent(message)
 			if err != nil {
@@ -213,18 +248,60 @@ func toGeminiContent(message llm.ChatCompletionMessage) (*genai.Content, error) 
 func (g *API) loadOrCreateCache(ctx context.Context, segments promptSegments) (*genai.CachedContent, error) {
 	fingerprint := cacheFingerprint(g.model, segments.systemInstruction, segments.cacheablePrefix)
 	displayName := cacheDisplayPrefix + fingerprint
-	g.cacheMutex.Lock()
-	defer g.cacheMutex.Unlock()
-	if cache := g.localCaches[fingerprint]; cacheIsUsable(cache, time.Now()) {
-		return cache, nil
-	}
+	for {
+		now := time.Now()
+		g.cacheMutex.Lock()
+		if g.cacheEntries == nil {
+			g.cacheEntries = make(map[string]*cacheEntry)
+		}
+		entry := g.cacheEntries[fingerprint]
+		if entry != nil && cacheIsUsable(entry.cache, now) {
+			cache := entry.cache
+			g.cacheMutex.Unlock()
+			return cache, nil
+		}
+		if entry != nil && entry.ready != nil {
+			ready := entry.ready
+			g.cacheMutex.Unlock()
+			select {
+			case <-ctx.Done():
+				return nil, fmt.Errorf("wait for Gemini explicit cache: %w", ctx.Err())
+			case <-ready:
+				continue
+			}
+		}
+		if entry != nil && now.Before(entry.retryAfter) {
+			err := entry.err
+			g.cacheMutex.Unlock()
+			return nil, fmt.Errorf("gemini explicit cache preparation is backing off: %w", err)
+		}
+		entry = &cacheEntry{ready: make(chan struct{})}
+		g.cacheEntries[fingerprint] = entry
+		g.cacheMutex.Unlock()
 
+		cache, err := g.findOrCreateCache(ctx, segments, displayName, fingerprint)
+		g.cacheMutex.Lock()
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			delete(g.cacheEntries, fingerprint)
+		} else if err != nil {
+			entry.err = err
+			entry.retryAfter = time.Now().Add(cacheFailureBackoff)
+		} else {
+			entry.cache = cache
+		}
+		close(entry.ready)
+		entry.ready = nil
+		g.cacheMutex.Unlock()
+		return cache, err
+	}
+}
+
+func (g *API) findOrCreateCache(ctx context.Context, segments promptSegments, displayName, fingerprint string) (*genai.CachedContent, error) {
 	cache, err := g.findCacheByDisplayName(ctx, displayName)
 	if err != nil {
 		return nil, fmt.Errorf("find Gemini explicit cache: %w", err)
 	}
 	if cache != nil {
-		g.rememberLocalCache(fingerprint, cache)
 		g.logger.WithFields(log.Fields{
 			logFieldCacheName:    cache.Name,
 			logFieldCacheDisplay: cache.DisplayName,
@@ -243,13 +320,15 @@ func (g *API) loadOrCreateCache(ctx context.Context, segments promptSegments) (*
 	if err != nil {
 		return nil, fmt.Errorf("create Gemini explicit cache: %w", err)
 	}
+	if cache == nil || cache.Name == "" {
+		return nil, fmt.Errorf("create Gemini explicit cache returned an invalid handle")
+	}
 	if cache.DisplayName == "" {
 		cache.DisplayName = displayName
 	}
 	if cache.ExpireTime.IsZero() {
 		cache.ExpireTime = time.Now().Add(defaultCacheTTL)
 	}
-	g.rememberLocalCache(fingerprint, cache)
 
 	g.logger.WithFields(log.Fields{
 		logFieldCacheName:    cache.Name,
@@ -262,19 +341,15 @@ func (g *API) loadOrCreateCache(ctx context.Context, segments promptSegments) (*
 	return cache, nil
 }
 
-func (g *API) rememberLocalCache(fingerprint string, cache *genai.CachedContent) {
-	if g.localCaches == nil {
-		g.localCaches = make(map[string]*genai.CachedContent)
-	}
-	g.localCaches[fingerprint] = cache
-}
-
 func (g *API) invalidateLocalCache(fingerprint, cacheName string) {
 	g.cacheMutex.Lock()
 	defer g.cacheMutex.Unlock()
-	cache := g.localCaches[fingerprint]
-	if cache == nil || cacheName == "" || cache.Name == cacheName {
-		delete(g.localCaches, fingerprint)
+	entry := g.cacheEntries[fingerprint]
+	if entry == nil || entry.ready != nil {
+		return
+	}
+	if entry.cache == nil || cacheName == "" || entry.cache.Name == cacheName {
+		delete(g.cacheEntries, fingerprint)
 	}
 }
 
@@ -351,12 +426,25 @@ func writeNormalized(hasher interface{ Write([]byte) (int, error) }, value strin
 }
 
 func isCacheUseError(err error) bool {
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "cached content") ||
-		strings.Contains(msg, "cachedcontent") ||
-		strings.Contains(msg, "cache entry") ||
-		strings.Contains(msg, "not found") ||
-		strings.Contains(msg, "expired")
+	var apiErr genai.APIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	status := strings.ToUpper(strings.TrimSpace(apiErr.Status))
+	return (apiErr.Code == http.StatusBadRequest && status == statusInvalidArgument) ||
+		apiErr.Code == http.StatusNotFound || apiErr.Code == http.StatusGone
+}
+
+func cacheUseErrorLogFields(err error) log.Fields {
+	fields := log.Fields{}
+	var apiErr genai.APIError
+	if errors.As(err, &apiErr) {
+		fields["provider_error_code"] = apiErr.Code
+		fields["provider_error_status"] = apiErr.Status
+		return fields
+	}
+	fields["provider_error_type"] = fmt.Sprintf("%T", err)
+	return fields
 }
 
 func toChatCompletionResponse(resp *genai.GenerateContentResponse) llm.ChatCompletionResponse {

@@ -160,6 +160,8 @@ func main() {
 
 	config.RegisterSecret(cfg.TelegramAPIToken)
 	config.RegisterSecret(cfg.LLM.APIKey)
+	config.RegisterSecret(cfg.LLM.GeminiAPIKey)
+	config.RegisterSecret(cfg.LLM.OpenAIAPIKey)
 
 	log.SetFormatter(&config.NbFormatter{})
 	log.SetOutput(os.Stdout)
@@ -248,6 +250,11 @@ func runDatabaseMaintenance(ctx context.Context, cfg *config.Config) error {
 }
 
 func buildRuntime(ctx context.Context, cfg *config.Config, errChan chan<- shutdownSignal) (*lifecycle.Runtime, error) {
+	llmAPI, err := configureLLM(cfg, log.WithField("context", "handlers"))
+	if err != nil {
+		return nil, fmt.Errorf("configure llm: %w", err)
+	}
+
 	botAPI, err := newTelegramBotAPI(
 		cfg.TelegramAPIToken,
 		api.APIEndpoint,
@@ -274,12 +281,10 @@ func buildRuntime(ctx context.Context, cfg *config.Config, errChan chan<- shutdo
 	adminHandler := adminHandlers.NewAdmin(service, botAPI, dbClient, dbClient, banService)
 	banlistGuard := chatHandlers.NewBanlistGuard(botAPI, dbClient, banService)
 
-	llmAPI, err := configureLLM(cfg, log.WithField("context", "handlers"))
-	if err != nil {
-		_ = dbClient.Close()
-		return nil, fmt.Errorf("configure llm: %w", err)
+	var spamDetector chatHandlers.SpamDetectorInterface
+	if llmAPI != nil {
+		spamDetector = moderationHandlers.NewSpamDetector(llmAPI, log.WithField("context", "spam_detector"), cfg.LLM.RequestTimeout)
 	}
-	spamDetector := moderationHandlers.NewSpamDetector(llmAPI, log.WithField("context", "spam_detector"), cfg.LLM.RequestTimeout)
 
 	reactorHandler := chatHandlers.NewReactor(service, botAPI, dbClient, dbClient, banService, spamControl, spamDetector, chatHandlers.Config{
 		SpamControl: cfg.SpamControl,
@@ -348,21 +353,27 @@ func maskConfiguration(cfg *config.Config) *config.Config {
 	}
 	maskedConfig.TelegramAPIToken = maskSecret(cfg.TelegramAPIToken)
 	maskedConfig.LLM.APIKey = maskSecret(cfg.LLM.APIKey)
+	maskedConfig.LLM.GeminiAPIKey = maskSecret(cfg.LLM.GeminiAPIKey)
+	maskedConfig.LLM.OpenAIAPIKey = maskSecret(cfg.LLM.OpenAIAPIKey)
 	return &maskedConfig
 }
 
 func configureLLM(cfg *config.Config, logger *log.Entry) (adapters.LLM, error) {
+	if !slices.Contains(cfg.EnabledHandlers, handlerReactor) {
+		return nil, nil
+	}
+	apiKey := cfg.LLM.APIKeyForProvider()
 	switch cfg.LLM.Type {
-	case "openai":
+	case config.LLMProviderOpenAI:
 		return openai.NewOpenAI(
-			cfg.LLM.APIKey,
+			apiKey,
 			cfg.LLM.Model,
 			cfg.LLM.BaseURL,
 			logger.WithField("context", "llm"),
 		)
-	case "gemini":
+	case config.LLMProviderGemini:
 		return gemini.NewGemini(
-			cfg.LLM.APIKey,
+			apiKey,
 			cfg.LLM.Model,
 			logger.WithField("context", "llm"),
 		)

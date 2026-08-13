@@ -79,7 +79,6 @@ See [.env.example](.env.example) for a quick reference of all available options.
 | Required | Variable name | Description | Default | Options |
 | --- | --- | --- | --- | --- |
 | :heavy_check_mark: | `NG_TOKEN` | Telegram BOT API token | | |
-| :heavy_check_mark: | `NG_LLM_API_KEY` | LLM provider API key for content analysis | | |
 | | `NG_LANG` | Default language to use in new chats | `en` | `be`, `bg`, `cs`, `da`, `de`, `el`, `en`, `es`, `et`, `fi`, `fr`, `hu`, `id`, `it`, `ja`, `ko`, `lt`, `lv`, `nb`, `nl`, `pl`, `pt`, `ro`, `ru`, `sk`, `sl`, `sv`, `tr`, `uk`, `zh` |
 | | `NG_HANDLERS` | Enabled bot handlers | `admin,gatekeeper,reactor` | Comma-separated list of handlers |
 | | `NG_LOG_LEVEL` | Logging verbosity | `2` | `0`=Panic, `1`=Fatal, `2`=Error, `3`=Warn, `4`=Info, `5`=Debug, `6`=Trace |
@@ -90,6 +89,9 @@ See [.env.example](.env.example) for a quick reference of all available options.
 | | `NG_GATEKEEPER_WEBAPP_PUBLIC_URL` | Public HTTPS origin for join-request CAPTCHA Mini App | | Absolute URL, e.g. `https://captcha.example.com` |
 | | `NG_GATEKEEPER_WEBAPP_LISTEN_ADDR` | Embedded Mini App server listen address inside the container | `:8080` | Keep `:8080` with the default Compose port mapping |
 | | `NG_GATEKEEPER_WEBAPP_HOST_PORT` | Compose-only localhost port for Caddy reverse proxy | `18080` | Host port bound to `127.0.0.1` |
+| | `NG_LLM_GEMINI_API_KEY` | Gemini credential; required when `reactor` uses Gemini | | Preferred over the legacy key |
+| | `NG_LLM_OPENAI_API_KEY` | OpenAI credential; required when `reactor` uses OpenAI | | Preferred over the legacy key |
+| | `NG_LLM_API_KEY` | Legacy credential fallback for the selected provider | | Used only when its dedicated key is empty |
 | | `NG_LLM_API_MODEL` | Optional LLM model override | Provider-specific | Any valid OpenAI or Gemini model |
 | | `NG_LLM_API_URL` | OpenAI-compatible API base URL | `https://api.openai.com/v1` | Used when `NG_LLM_API_TYPE=openai` |
 | | `NG_LLM_API_TYPE` | LLM provider | `openai` | `openai`, `gemini` |

@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -38,7 +39,9 @@ type (
 	}
 
 	LLM struct {
-		APIKey         string        `env:"LLM_API_KEY,required"`
+		APIKey         string        `env:"LLM_API_KEY"`
+		GeminiAPIKey   string        `env:"LLM_GEMINI_API_KEY"`
+		OpenAIAPIKey   string        `env:"LLM_OPENAI_API_KEY"`
 		Model          string        `env:"LLM_API_MODEL"`
 		BaseURL        string        `env:"LLM_API_URL,default=https://api.openai.com/v1"`
 		Type           string        `env:"LLM_API_TYPE,default=openai"`
@@ -57,6 +60,11 @@ type (
 		VotingTimeoutMinutes       time.Duration `env:"SPAM_VOTING_TIMEOUT,default=5m"`
 		SuspectNotificationTimeout time.Duration `env:"SPAM_SUSPECT_NOTIFICATION_TIMEOUT,default=2m"`
 	}
+)
+
+const (
+	LLMProviderGemini = "gemini"
+	LLMProviderOpenAI = "openai"
 )
 
 func Load() (Config, error) {
@@ -81,6 +89,7 @@ func Load() (Config, error) {
 }
 
 func validateConfig(cfg *Config) error {
+	normalizeLLMConfig(&cfg.LLM)
 	if cfg.Telegram.PollTimeout <= 0 {
 		return fmt.Errorf("telegram poll timeout must be positive")
 	}
@@ -90,8 +99,10 @@ func validateConfig(cfg *Config) error {
 	if cfg.Telegram.RecoveryWindow <= cfg.Telegram.RequestTimeout {
 		return fmt.Errorf("telegram recovery window must be greater than request timeout")
 	}
-	if cfg.LLM.RequestTimeout <= 0 {
-		return fmt.Errorf("llm request timeout must be positive")
+	if slices.Contains(cfg.EnabledHandlers, "reactor") {
+		if err := validateLLMConfig(cfg.LLM); err != nil {
+			return err
+		}
 	}
 	if cfg.SpamControl.MessageProbationDuration <= 0 {
 		return fmt.Errorf("spam message probation duration must be positive")
@@ -109,6 +120,58 @@ func validateConfig(cfg *Config) error {
 		}
 	}
 	return nil
+}
+
+func normalizeLLMConfig(cfg *LLM) {
+	cfg.APIKey = strings.TrimSpace(cfg.APIKey)
+	cfg.GeminiAPIKey = strings.TrimSpace(cfg.GeminiAPIKey)
+	cfg.OpenAIAPIKey = strings.TrimSpace(cfg.OpenAIAPIKey)
+	cfg.Model = strings.TrimSpace(cfg.Model)
+	cfg.BaseURL = strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
+	cfg.Type = strings.ToLower(strings.TrimSpace(cfg.Type))
+}
+
+func validateLLMConfig(cfg LLM) error {
+	if cfg.RequestTimeout <= 0 {
+		return fmt.Errorf("llm request timeout must be positive")
+	}
+	if cfg.Model != "" && len(strings.Fields(cfg.Model)) != 1 {
+		return fmt.Errorf("llm model must not contain whitespace")
+	}
+	if cfg.APIKeyForProvider() == "" {
+		return fmt.Errorf("%s LLM API key is empty", cfg.Type)
+	}
+	switch cfg.Type {
+	case LLMProviderGemini:
+		return nil
+	case LLMProviderOpenAI:
+		endpoint, err := url.Parse(cfg.BaseURL)
+		if err != nil || endpoint.Scheme != "https" || endpoint.Host == "" {
+			return fmt.Errorf("openai LLM API URL must be an absolute HTTPS URL")
+		}
+		if endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" {
+			return fmt.Errorf("openai LLM API URL must not contain credentials, query, or fragment")
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported LLM type %q", cfg.Type)
+	}
+}
+
+func (cfg LLM) APIKeyForProvider() string {
+	switch cfg.Type {
+	case LLMProviderGemini:
+		if cfg.GeminiAPIKey != "" {
+			return cfg.GeminiAPIKey
+		}
+	case LLMProviderOpenAI:
+		if cfg.OpenAIAPIKey != "" {
+			return cfg.OpenAIAPIKey
+		}
+	default:
+		return ""
+	}
+	return cfg.APIKey
 }
 
 func isLoopbackHost(host string) bool {

@@ -13,8 +13,11 @@ import (
 	"time"
 
 	api "github.com/OvyFlash/telegram-bot-api"
+	"github.com/iamwavecut/ngbot/internal/adapters/llm/gemini"
+	"github.com/iamwavecut/ngbot/internal/adapters/llm/openai"
 	"github.com/iamwavecut/ngbot/internal/bot"
 	"github.com/iamwavecut/ngbot/internal/config"
+	log "github.com/sirupsen/logrus"
 )
 
 type testUpdateHandler struct {
@@ -43,7 +46,9 @@ func TestMaskConfigurationRedactsCredentialsCompletely(t *testing.T) {
 	cfg := &config.Config{
 		TelegramAPIToken: "telegram-prefix-secret-suffix",
 		LLM: config.LLM{
-			APIKey: "llm-prefix-secret-suffix",
+			APIKey:       "llm-prefix-secret-suffix",
+			GeminiAPIKey: "gemini-prefix-secret-suffix",
+			OpenAIAPIKey: "openai-prefix-secret-suffix",
 		},
 	}
 
@@ -53,6 +58,60 @@ func TestMaskConfigurationRedactsCredentialsCompletely(t *testing.T) {
 	}
 	if masked.LLM.APIKey != redactedConfigurationValue {
 		t.Fatalf("llm key = %q", masked.LLM.APIKey)
+	}
+	if masked.LLM.GeminiAPIKey != redactedConfigurationValue {
+		t.Fatalf("Gemini key = %q", masked.LLM.GeminiAPIKey)
+	}
+	if masked.LLM.OpenAIAPIKey != redactedConfigurationValue {
+		t.Fatalf("OpenAI key = %q", masked.LLM.OpenAIAPIKey)
+	}
+}
+
+func TestConfigureLLMUsesSelectedProviderCredential(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		llm  config.LLM
+		want any
+	}{
+		{
+			name: "Gemini",
+			llm:  config.LLM{Type: "gemini", GeminiAPIKey: "gemini-key"},
+			want: (*gemini.API)(nil),
+		},
+		{
+			name: "OpenAI",
+			llm:  config.LLM{Type: "openai", OpenAIAPIKey: "openai-key", BaseURL: "https://api.openai.com/v1"},
+			want: (*openai.API)(nil),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := configureLLM(&config.Config{EnabledHandlers: []string{handlerReactor}, LLM: tt.llm}, log.NewEntry(log.New()))
+			if err != nil {
+				t.Fatalf("configureLLM returned error: %v", err)
+			}
+			if fmt.Sprintf("%T", got) != fmt.Sprintf("%T", tt.want) {
+				t.Fatalf("adapter type = %T, want %T", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestConfigureLLMSkipsUnusedProvider(t *testing.T) {
+	t.Parallel()
+
+	got, err := configureLLM(&config.Config{
+		EnabledHandlers: []string{handlerAdmin, handlerGatekeeper},
+		LLM:             config.LLM{Type: "unsupported"},
+	}, log.NewEntry(log.New()))
+	if err != nil {
+		t.Fatalf("unused LLM returned error: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("unused LLM adapter = %T, want nil", got)
 	}
 }
 

@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"strings"
 	"testing"
@@ -42,33 +43,74 @@ func TestSpamDetectorIncludesExtraExamplesInPrompt(t *testing.T) {
 		t.Fatalf("expected non-spam result, got %v", result)
 	}
 
-	if len(llmStub.lastMessages) < 3 {
-		t.Fatalf("expected prompt to contain extra examples and candidate message, got %d messages", len(llmStub.lastMessages))
+	if len(llmStub.lastMessages) != 2 {
+		t.Fatalf("expected one static instruction and one live candidate, got %d messages", len(llmStub.lastMessages))
 	}
 	if !llmStub.lastMessages[0].Cacheable {
 		t.Fatalf("expected system prompt to be cacheable")
 	}
-	if len(llmStub.lastMessages) < 3 || !llmStub.lastMessages[1].Cacheable || !llmStub.lastMessages[2].Cacheable {
-		t.Fatalf("expected built-in few-shot example prefix to be cacheable")
+	for _, message := range llmStub.lastMessages {
+		if message.Role == llm.RoleAssistant {
+			t.Fatalf("classification prompt must not contain prefilled assistant turns: %#v", message)
+		}
 	}
-	tail := llmStub.lastMessages[len(llmStub.lastMessages)-3:]
-	if tail[0].Role != llm.RoleUser || tail[0].Content != extra {
-		t.Fatalf("expected extra example user message, got %#v", tail[0])
+	if !strings.Contains(llmStub.lastMessages[0].Content, extra) {
+		t.Fatal("expected custom spam example in the static classification instruction")
 	}
-	if tail[0].Cacheable {
-		t.Fatalf("expected extra example user message to stay live")
+	tail := llmStub.lastMessages[len(llmStub.lastMessages)-1]
+	if tail.Role != llm.RoleUser || tail.Content != candidate {
+		t.Fatalf("expected candidate message at tail, got %#v", tail)
 	}
-	if tail[1].Role != llm.RoleAssistant || tail[1].Content != "1" {
-		t.Fatalf("expected extra example assistant response \"1\", got %#v", tail[1])
-	}
-	if tail[1].Cacheable {
-		t.Fatalf("expected extra example assistant response to stay live")
-	}
-	if tail[2].Role != llm.RoleUser || tail[2].Content != candidate {
-		t.Fatalf("expected candidate message at tail, got %#v", tail[2])
-	}
-	if tail[2].Cacheable {
+	if tail.Cacheable {
 		t.Fatalf("expected candidate message to stay live")
+	}
+}
+
+func TestSpamDetectorRejectsMalformedOutputWithoutLeakingIt(t *testing.T) {
+	t.Parallel()
+
+	const malformed = "classification-secret: result=1"
+	var logs bytes.Buffer
+	logger := log.New()
+	logger.SetOutput(&logs)
+	logger.SetLevel(log.DebugLevel)
+	detector := NewSpamDetector(&spamDetectorTestLLM{
+		response: llm.ChatCompletionResponse{
+			Choices: []llm.ChatCompletionChoice{{
+				Message: llm.ChatCompletionMessage{Role: llm.RoleAssistant, Content: malformed},
+			}},
+		},
+	}, log.NewEntry(logger), time.Minute)
+
+	result, err := detector.IsSpam(t.Context(), "candidate", nil)
+	if err == nil {
+		t.Fatal("expected malformed model output to fail closed")
+	}
+	if result != nil {
+		t.Fatalf("malformed model output produced classification: %v", result)
+	}
+	if strings.Contains(err.Error(), malformed) || strings.Contains(logs.String(), malformed) {
+		t.Fatalf("malformed model output leaked into diagnostics: err=%v logs=%q", err, logs.String())
+	}
+}
+
+func TestSpamDetectorAcceptsTrimmedBinaryOutput(t *testing.T) {
+	t.Parallel()
+
+	detector := NewSpamDetector(&spamDetectorTestLLM{
+		response: llm.ChatCompletionResponse{
+			Choices: []llm.ChatCompletionChoice{{
+				Message: llm.ChatCompletionMessage{Role: llm.RoleAssistant, Content: "\n 1 \t"},
+			}},
+		},
+	}, log.New().WithField("test", "spam_detector"), time.Minute)
+
+	result, err := detector.IsSpam(t.Context(), "candidate", nil)
+	if err != nil {
+		t.Fatalf("IsSpam returned error: %v", err)
+	}
+	if result == nil || !*result {
+		t.Fatalf("expected spam result, got %v", result)
 	}
 }
 

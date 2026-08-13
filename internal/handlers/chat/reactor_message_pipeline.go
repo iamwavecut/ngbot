@@ -508,19 +508,6 @@ func (r *Reactor) checkMessageForSpam(ctx context.Context, chatID int64, content
 			r.getLogEntry().WithField(logFieldError, statErr.Error()).Warn("failed to increment LLM checked stat")
 		}
 	}
-	if r.config.SpamControl.DebugUserID != 0 {
-		debugMsg := tool.ExecTemplate(`
-{{- .content }}
-
----
-Is Spam result: {{ .isSpam -}}
-`, map[string]any{
-			"content": content,
-			"isSpam":  isSpam,
-		})
-		_, _ = bot.Send(ctx, r.bot, api.NewMessage(r.config.SpamControl.DebugUserID, debugMsg))
-	}
-
 	return isSpam, err
 }
 
