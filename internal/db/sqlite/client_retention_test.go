@@ -1,6 +1,8 @@
 package sqlite
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -206,6 +208,78 @@ func TestRetentionCleanupRunsAfterCrashRestart(t *testing.T) {
 		if count != 0 {
 			t.Fatalf("stale %s survived restart cleanup: %d", table, count)
 		}
+	}
+}
+
+func TestCleanupRetainedRecordsDrainsMultipleBoundedBatches(t *testing.T) {
+	ctx := t.Context()
+	client, err := NewSQLiteClient(ctx, t.TempDir(), "test.db")
+	if err != nil {
+		t.Fatalf("new sqlite client: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+
+	now := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
+	if err := client.SetSettings(ctx, db.DefaultSettings(-100)); err != nil {
+		t.Fatalf("create chat: %v", err)
+	}
+	if _, err := client.db.ExecContext(ctx, `
+		WITH RECURSIVE sequence(id) AS (
+			SELECT 1
+			UNION ALL
+			SELECT id + 1 FROM sequence WHERE id < 1201
+		)
+		INSERT INTO recent_joiners (
+			join_message_id, chat_id, user_id, username, joined_at, processed, is_spammer
+		)
+		SELECT id, -100, 10000 + id, 'legacy', ?, 1, 0 FROM sequence
+	`, now.Add(-processedRecentJoinerRetention-time.Hour)); err != nil {
+		t.Fatalf("seed legacy recent joiners: %v", err)
+	}
+
+	if err := client.CleanupRetainedRecords(ctx, now, retentionCleanupBatchSize); err != nil {
+		t.Fatalf("drain retained records: %v", err)
+	}
+	assertIDs(t, client, "recent_joiners", "id", nil)
+}
+
+func TestCleanupRetainedRecordsObservesCancellationBetweenBatches(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	client, err := NewSQLiteClient(ctx, t.TempDir(), "test.db")
+	if err != nil {
+		t.Fatalf("new sqlite client: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+
+	now := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
+	if err := client.SetSettings(ctx, db.DefaultSettings(-100)); err != nil {
+		t.Fatalf("create chat: %v", err)
+	}
+	if _, err := client.db.ExecContext(ctx, `
+		WITH RECURSIVE sequence(id) AS (
+			SELECT 1
+			UNION ALL
+			SELECT id + 1 FROM sequence WHERE id < 501
+		)
+		INSERT INTO recent_joiners (
+			join_message_id, chat_id, user_id, username, joined_at, processed, is_spammer
+		)
+		SELECT id, -100, 20000 + id, 'legacy', ?, 1, 0 FROM sequence
+	`, now.Add(-processedRecentJoinerRetention-time.Hour)); err != nil {
+		t.Fatalf("seed legacy recent joiners: %v", err)
+	}
+	client.retentionCleanupBetweenBatches = cancel
+
+	err = client.CleanupRetainedRecords(ctx, now, retentionCleanupBatchSize)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("cleanup error = %v, want context cancellation", err)
+	}
+	var remaining int
+	if err := client.db.GetContext(t.Context(), &remaining, `SELECT COUNT(*) FROM recent_joiners`); err != nil {
+		t.Fatalf("count retained records: %v", err)
+	}
+	if remaining != 1 {
+		t.Fatalf("remaining records = %d, want one record after a bounded 500-row batch", remaining)
 	}
 }
 

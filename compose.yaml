@@ -1,5 +1,6 @@
 services:
   ngbot:
+    image: ${NGBOT_IMAGE:-ngbot:local}
     build:
       context: .
       dockerfile: Dockerfile

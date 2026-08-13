@@ -23,6 +23,7 @@ type service struct {
 	settingsCache   map[int64]*db.Settings
 	cacheMutex      sync.RWMutex
 	memberRevision  uint64
+	memberRevisions map[memberCacheKey]uint64
 	cacheExpiration time.Duration
 	defaultLanguage string
 	log             *logrus.Entry
@@ -31,6 +32,11 @@ type service struct {
 	workersWG       sync.WaitGroup
 	startStopMutex  sync.Mutex
 	started         bool
+}
+
+type memberCacheKey struct {
+	chatID int64
+	userID int64
 }
 
 type serviceStore interface {
@@ -51,6 +57,7 @@ func NewService(ctx context.Context, bot *api.BotAPI, dbClient serviceStore, def
 		bot:             bot,
 		dbClient:        dbClient,
 		memberCache:     make(map[int64]map[int64]time.Time),
+		memberRevisions: make(map[memberCacheKey]uint64),
 		settingsCache:   make(map[int64]*db.Settings),
 		cacheExpiration: 5 * time.Minute,
 		defaultLanguage: defaultLanguage,
@@ -104,7 +111,10 @@ func (s *service) IsMember(ctx context.Context, chatID, userID int64) (bool, err
 	case <-ctx.Done():
 		return false, fmt.Errorf("context cancelled: %w", ctx.Err())
 	default:
+		key := memberCacheKey{chatID: chatID, userID: userID}
 		s.cacheMutex.RLock()
+		lookupRevision := s.memberRevision
+		memberLookupRevision := s.memberRevisions[key]
 		if chatMembers, ok := s.memberCache[chatID]; ok {
 			if expTime, ok := chatMembers[userID]; ok {
 				if time.Now().Before(expTime) {
@@ -153,6 +163,10 @@ func (s *service) IsMember(ctx context.Context, chatID, userID int64) (bool, err
 			}
 
 			s.cacheMutex.Lock()
+			if s.memberRevision != lookupRevision || s.memberRevisions[key] != memberLookupRevision {
+				s.cacheMutex.Unlock()
+				return isMember, nil
+			}
 			if _, ok := s.memberCache[chatID]; !ok {
 				s.memberCache[chatID] = make(map[int64]time.Time)
 			}
@@ -195,7 +209,7 @@ func (s *service) InsertMember(ctx context.Context, chatID, userID int64) error 
 
 		s.cacheMutex.Lock()
 		defer s.cacheMutex.Unlock()
-		s.memberRevision++
+		s.bumpMemberRevision(chatID, userID)
 
 		if _, ok := s.memberCache[chatID]; !ok {
 			s.memberCache[chatID] = make(map[int64]time.Time)
@@ -217,13 +231,19 @@ func (s *service) DeleteMember(ctx context.Context, chatID, userID int64) error 
 
 		s.cacheMutex.Lock()
 		defer s.cacheMutex.Unlock()
-		s.memberRevision++
+		s.bumpMemberRevision(chatID, userID)
 		if members, ok := s.memberCache[chatID]; ok {
 			delete(members, userID)
 		}
 
 		return nil
 	}
+}
+
+func (s *service) bumpMemberRevision(chatID, userID int64) {
+	s.memberRevision++
+	key := memberCacheKey{chatID: chatID, userID: userID}
+	s.memberRevisions[key]++
 }
 
 func (s *service) GetSettings(ctx context.Context, chatID int64) (*db.Settings, error) {

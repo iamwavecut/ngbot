@@ -414,6 +414,25 @@ type recordingBanStore struct {
 	banlistCleanupErr   error
 }
 
+type periodicRetentionStore struct {
+	*recordingBanStore
+	mutex    sync.Mutex
+	calls    int
+	periodic chan struct{}
+	once     sync.Once
+}
+
+func (s *periodicRetentionStore) CleanupRetainedRecords(context.Context, time.Time, int) error {
+	s.mutex.Lock()
+	s.calls++
+	calls := s.calls
+	s.mutex.Unlock()
+	if calls >= 2 {
+		s.once.Do(func() { close(s.periodic) })
+	}
+	return nil
+}
+
 type blockingOnlineBanStore struct {
 	*recordingBanStore
 	started     chan struct{}
@@ -645,6 +664,32 @@ func TestBanServiceStartCleansExpiredRestrictions(t *testing.T) {
 	}
 	if store.retentionCalls != 1 || store.retentionLimit != retainedRecordsCleanupBatchSize {
 		t.Fatalf("startup retention cleanup = %d calls with limit %d", store.retentionCalls, store.retentionLimit)
+	}
+}
+
+func TestBanServiceRunsRetentionCleanupPeriodically(t *testing.T) {
+	store := &periodicRetentionStore{
+		recordingBanStore: newRecordingBanStore(),
+		periodic:          make(chan struct{}),
+	}
+	now := time.Now().Format(time.RFC3339)
+	store.kv[kvKeyLastDailyFetch] = now
+	store.kv[kvKeyLastHourlyFetch] = now
+	service := &defaultBanService{
+		db:                  store,
+		httpClient:          http.DefaultClient,
+		knownBanned:         map[int64]struct{}{},
+		maintenanceInterval: time.Millisecond,
+	}
+	if err := service.Start(t.Context()); err != nil {
+		t.Fatalf("start ban service: %v", err)
+	}
+	t.Cleanup(func() { _ = service.Stop(context.Background()) })
+
+	select {
+	case <-store.periodic:
+	case <-time.After(time.Second):
+		t.Fatal("periodic retention cleanup did not run")
 	}
 }
 

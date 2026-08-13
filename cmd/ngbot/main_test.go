@@ -126,6 +126,20 @@ func TestGatekeeperReconciliationCLIRequiresExclusiveProcessLock(t *testing.T) {
 	}
 }
 
+func TestDatabaseMaintenanceRequiresExclusiveProcessLock(t *testing.T) {
+	dataDir := t.TempDir()
+	lock, err := sqlite.AcquireProcessLock(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = lock.Close() }()
+
+	err = runDatabaseMaintenance(t.Context(), &config.Config{DotPath: dataDir})
+	if err == nil || !strings.Contains(err.Error(), "in use") {
+		t.Fatalf("maintenance error = %v, want held process lock failure", err)
+	}
+}
+
 type testUpdateHandler struct {
 	name string
 }

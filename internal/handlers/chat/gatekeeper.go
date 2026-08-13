@@ -86,6 +86,7 @@ type Gatekeeper struct {
 	serveWebApp      func(*http.Server, net.Listener) error
 	webAppFatalError func(error)
 	webAppReady      atomic.Bool
+	runtimeReady     func() bool
 	workerWG         sync.WaitGroup
 	startStopMutex   sync.Mutex
 	started          bool
@@ -223,6 +224,10 @@ func NewGatekeeper(s bot.Service, botAPI *api.BotAPI, store gatekeeperStore, sta
 
 func (g *Gatekeeper) SetWebAppFatalErrorHandler(handler func(error)) {
 	g.webAppFatalError = handler
+}
+
+func (g *Gatekeeper) SetRuntimeReadiness(ready func() bool) {
+	g.runtimeReady = ready
 }
 
 func (g *Gatekeeper) Start(ctx context.Context) error {

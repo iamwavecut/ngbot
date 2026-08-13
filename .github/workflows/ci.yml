@@ -37,4 +37,20 @@ jobs:
       - name: Validate deployment configuration
         run: ./scripts/validate-deployment.sh
       - name: Build container
-        run: docker build --build-arg VERSION=ci --build-arg REVISION="$GITHUB_SHA" --build-arg BUILD_DATE=1970-01-01T00:00:00Z .
+        run: docker build --tag ngbot:ci --build-arg VERSION=ci --build-arg REVISION="$GITHUB_SHA" --build-arg BUILD_DATE=1970-01-01T00:00:00Z .
+      - name: Verify container identity and persistent migrations
+        run: |
+          set -eu
+          test "$(docker image inspect ngbot:ci --format '{{ index .Config.Labels \"org.opencontainers.image.revision\" }}')" = "$GITHUB_SHA"
+          test "$(docker run --rm --entrypoint ./ngbot ngbot:ci --version)" = "ngbot version=ci revision=$GITHUB_SHA build_date=1970-01-01T00:00:00Z"
+          docker volume create ngbot-ci-data >/dev/null
+          trap 'docker volume rm ngbot-ci-data >/dev/null' EXIT
+          for pass in 1 2; do
+            docker run --rm --mount source=ngbot-ci-data,target=/data \
+              --env NG_TOKEN=validation-token \
+              --env NG_DOT_PATH=/data \
+              --env NG_LLM_OPENAI_API_KEY=validation-key \
+              ngbot:ci --database-maintenance
+          done
+      - name: Validate Caddy configuration
+        run: docker run --rm --env NGBOT_GATEKEEPER_WEBAPP_DOMAIN=antifraud.example.com --env NGBOT_WEBAPP_HOST_PORT=18080 --volume "$PWD/deploy/caddy/ngbot-webapp.Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2.10.2 caddy validate --config /etc/caddy/Caddyfile

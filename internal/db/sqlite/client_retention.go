@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime"
 	"time"
 
 	"github.com/iamwavecut/ngbot/internal/db"
@@ -24,8 +25,24 @@ type RetentionResult struct {
 }
 
 func (c *sqliteClient) CleanupRetainedRecords(ctx context.Context, now time.Time, limit int) error {
-	_, err := c.CleanupRetention(ctx, now, limit)
-	return err
+	for {
+		result, err := c.CleanupRetention(ctx, now, limit)
+		if err != nil {
+			return err
+		}
+		if result.ChallengedMessages < limit && result.ProcessedRecentJoiners < limit && result.TerminalSpamCases < limit {
+			return nil
+		}
+		if c.retentionCleanupBetweenBatches != nil {
+			c.retentionCleanupBetweenBatches()
+		}
+		runtime.Gosched()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+	}
 }
 
 func (c *sqliteClient) CleanupRetention(ctx context.Context, now time.Time, limit int) (RetentionResult, error) {

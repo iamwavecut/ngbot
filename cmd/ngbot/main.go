@@ -366,6 +366,12 @@ func parseReconciliationTarget(value string) (int64, int64, error) {
 }
 
 func runDatabaseMaintenance(ctx context.Context, cfg *config.Config) error {
+	processLock, err := sqlite.AcquireProcessLock(cfg.DotPath)
+	if err != nil {
+		return fmt.Errorf("acquire database process lock: %w", err)
+	}
+	defer func() { _ = processLock.Close() }()
+
 	dbClient, err := sqlite.NewSQLiteClient(ctx, cfg.DotPath, "bot.db")
 	if err != nil {
 		return fmt.Errorf("apply database migrations: %w", err)
@@ -458,6 +464,7 @@ func buildRuntime(ctx context.Context, cfg *config.Config, errChan chan<- shutdo
 		adminHandler,
 		updateLoop,
 	)
+	gatekeeperHandler.SetRuntimeReadiness(runtime.Ready)
 	return runtime, nil
 }
 

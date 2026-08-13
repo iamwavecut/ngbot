@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync/atomic"
 )
 
 type Component interface {
@@ -13,6 +14,7 @@ type Component interface {
 
 type Runtime struct {
 	components []Component
+	ready      atomic.Bool
 }
 
 func NewRuntime(components ...Component) *Runtime {
@@ -27,6 +29,7 @@ func (r *Runtime) Register(component Component) {
 }
 
 func (r *Runtime) Start(ctx context.Context) error {
+	r.ready.Store(false)
 	started := make([]Component, 0, len(r.components))
 	for _, component := range r.components {
 		if component == nil {
@@ -38,11 +41,17 @@ func (r *Runtime) Start(ctx context.Context) error {
 		}
 		started = append(started, component)
 	}
+	r.ready.Store(true)
 	return nil
 }
 
 func (r *Runtime) Stop(ctx context.Context) error {
+	r.ready.Store(false)
 	return stopComponents(ctx, r.components)
+}
+
+func (r *Runtime) Ready() bool {
+	return r.ready.Load()
 }
 
 func stopComponents(ctx context.Context, components []Component) error {

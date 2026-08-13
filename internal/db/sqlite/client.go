@@ -37,13 +37,14 @@ const (
 var errMigrationRollbackUnsupported = errors.New("application migration rollback is unsupported")
 
 type sqliteClient struct {
-	db                           *sqlx.DB
-	mutex                        sync.RWMutex
-	banlistImportMutex           sync.Mutex
-	banlistCleanupBatchLocked    func()
-	banlistCleanupBetweenBatches func()
-	telegramUpdateInboxLimits    db.TelegramUpdateInboxLimits
-	databaseFreeBytes            func() (uint64, error)
+	db                             *sqlx.DB
+	mutex                          sync.RWMutex
+	banlistImportMutex             sync.Mutex
+	banlistCleanupBatchLocked      func()
+	banlistCleanupBetweenBatches   func()
+	retentionCleanupBetweenBatches func()
+	telegramUpdateInboxLimits      db.TelegramUpdateInboxLimits
+	databaseFreeBytes              func() (uint64, error)
 }
 
 func NewSQLiteClient(ctx context.Context, dataDir string, dbPath string) (*sqliteClient, error) {

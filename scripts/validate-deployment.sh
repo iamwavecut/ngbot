@@ -30,6 +30,7 @@ validation_port=19090
 NG_TOKEN=validation-token \
 NGBOT_DATA_PATH="$validation_dir/data" \
 NGBOT_WEBAPP_HOST_PORT="$validation_port" \
+NGBOT_IMAGE=ngbot:0123456789abcdef \
 NGBOT_VERSION=v0.0.0-validation \
 NGBOT_REVISION=0123456789abcdef \
 NGBOT_BUILD_DATE=2026-08-13T16:00:00Z \
@@ -37,6 +38,7 @@ NGBOT_BUILD_DATE=2026-08-13T16:00:00Z \
 
 jq -e --arg data "$validation_dir/data" --arg port "$validation_port" '
   .services.ngbot.environment.NG_DOT_PATH == "/data" and
+  .services.ngbot.image == "ngbot:0123456789abcdef" and
   .services.ngbot.environment.NG_GATEKEEPER_WEBAPP_LISTEN_ADDR == "0.0.0.0:8080" and
   any(.services.ngbot.volumes[]; .type == "bind" and .source == $data and .target == "/data") and
   any(.services.ngbot.ports[]; .host_ip == "127.0.0.1" and .target == 8080 and .published == $port) and
@@ -58,3 +60,10 @@ grep -q 'Content-Security-Policy' deploy/caddy/ngbot-webapp.Caddyfile
 grep -q 'Referrer-Policy "no-referrer"' deploy/caddy/ngbot-webapp.Caddyfile
 grep -q 'X-Content-Type-Options "nosniff"' deploy/caddy/ngbot-webapp.Caddyfile
 grep -q 'reverse_proxy 127.0.0.1:{$NGBOT_WEBAPP_HOST_PORT:18080}' deploy/caddy/ngbot-webapp.Caddyfile
+
+test -x scripts/release.sh
+sh -n scripts/release.sh
+if scripts/release.sh >/dev/null 2>&1; then
+	echo "release verifier must reject a missing action" >&2
+	exit 1
+fi

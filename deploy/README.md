@@ -28,17 +28,26 @@ Set `NGBOT_DATA_PATH=/home/username/.ngbot`, `NG_TOKEN`, and only the LLM creden
 
 ## Release identity and health
 
-Set immutable metadata before building:
+Use the executable verifier for releases. It derives the exact revision from `HEAD`, builds and tags that image through the canonical `compose.yaml`, verifies OCI labels and `./ngbot --version`, and refuses a non-HTTPS public endpoint. It also records the previous image ID under a rollback tag, takes mode-`0600` online and stopped SQLite snapshots, validates both snapshots, runs offline maintenance, waits for container health, probes direct `/livez` and `/readyz`, validates and reloads Caddy, checks the running image ID, and performs a restart/OOM/fatal-log soak.
 
 ```sh
 export NGBOT_VERSION=vX.Y.Z
-export NGBOT_REVISION="$(git rev-parse HEAD)"
-export NGBOT_BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+export NGBOT_PUBLIC_URL=https://antifraud.example.com
+export NGBOT_CADDYFILE=/etc/caddy/Caddyfile
+export NGBOT_BACKUP_DIR=/var/backups/ngbot
 ./scripts/validate-deployment.sh
-docker compose build ngbot
-docker compose up -d ngbot
-docker compose exec ngbot ./ngbot --version
-docker image inspect ngbot-ngbot --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}'
+./scripts/release.sh release
+```
+
+The final output identifies the exact revision, immutable release image and image ID, and the mode-`0600` state file. Preserve that file and both database snapshots.
+
+Image rollback does not reverse migrations. Review the migration range and restore a verified stopped snapshot when an older binary cannot read the current schema. Only after that check, run:
+
+```sh
+export NGBOT_ROLLBACK_STATE=/var/backups/ngbot/release-YYYYMMDDTHHMMSSZ.state
+export NGBOT_SCHEMA_COMPATIBLE=yes
+export NGBOT_PUBLIC_URL=https://antifraud.example.com
+./scripts/release.sh rollback
 ```
 
 `/livez` means the embedded HTTP process is serving. `/readyz` becomes healthy only after all runtime components start, and becomes unhealthy before shutdown. Docker probes `/readyz`; an unexpected WebApp serving failure exits the process so `restart: unless-stopped` can recover it. Caddy must proxy only from host loopback and terminate TLS.

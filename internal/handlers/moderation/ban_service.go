@@ -28,13 +28,14 @@ const (
 
 	accoutsAPIURLTemplate = "https://api.lols.bot/account?id=%v"
 
-	banServiceHTTPTimeout  = 10 * time.Second
-	banServiceMaxRetries   = 3
-	banServiceRetryStep    = 300 * time.Millisecond
-	banlistHourlyTTL       = 26 * time.Hour
-	banlistOnlineTTL       = 24 * time.Hour
-	onlineBanQueueCapacity = 1_024
-	moderationStatusTTL    = 5 * time.Minute
+	banServiceHTTPTimeout         = 10 * time.Second
+	banServiceMaxRetries          = 3
+	banServiceRetryStep           = 300 * time.Millisecond
+	banlistHourlyTTL              = 26 * time.Hour
+	banlistOnlineTTL              = 24 * time.Hour
+	onlineBanQueueCapacity        = 1_024
+	moderationStatusTTL           = 5 * time.Minute
+	banServiceMaintenanceInterval = time.Hour
 
 	banlistFeedDaily                = "daily"
 	banlistFeedHourly               = "hourly"
@@ -98,10 +99,11 @@ type defaultBanService struct {
 	moderationM    sync.RWMutex
 	onlineBanQueue chan onlineBanObservation
 
-	runMutex  sync.Mutex
-	started   bool
-	runCancel context.CancelFunc
-	workersWg sync.WaitGroup
+	runMutex            sync.Mutex
+	started             bool
+	runCancel           context.CancelFunc
+	workersWg           sync.WaitGroup
+	maintenanceInterval time.Duration
 }
 
 type onlineBanObservation struct {
@@ -118,12 +120,13 @@ var ErrNoPrivileges = fmt.Errorf("no privileges")
 
 func NewBanService(bot *api.BotAPI, db banStore) BanService {
 	return &defaultBanService{
-		bot:         bot,
-		db:          db,
-		httpClient:  &http.Client{Timeout: banServiceHTTPTimeout},
-		providers:   defaultBanlistProviders(),
-		knownBanned: map[int64]struct{}{},
-		moderation:  map[int64]moderationStatus{},
+		bot:                 bot,
+		db:                  db,
+		httpClient:          &http.Client{Timeout: banServiceHTTPTimeout},
+		providers:           defaultBanlistProviders(),
+		knownBanned:         map[int64]struct{}{},
+		moderation:          map[int64]moderationStatus{},
+		maintenanceInterval: banServiceMaintenanceInterval,
 	}
 }
 
@@ -204,7 +207,7 @@ func (s *defaultBanService) Start(ctx context.Context) error {
 	if err := s.cleanupExpiredRestrictions(ctx); err != nil {
 		return err
 	}
-	if err := s.db.CleanupRetainedRecords(ctx, time.Now().UTC(), retainedRecordsCleanupBatchSize); err != nil {
+	if err := s.cleanupRetainedRecords(ctx, time.Now().UTC()); err != nil {
 		return fmt.Errorf("clean retained records: %w", err)
 	}
 
@@ -222,7 +225,11 @@ func (s *defaultBanService) Start(ctx context.Context) error {
 	})
 
 	s.workersWg.Go(func() {
-		ticker := time.NewTicker(time.Hour)
+		interval := s.maintenanceInterval
+		if interval <= 0 {
+			interval = banServiceMaintenanceInterval
+		}
+		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 
 		for {
@@ -230,8 +237,12 @@ func (s *defaultBanService) Start(ctx context.Context) error {
 			case <-runCtx.Done():
 				return
 			case <-ticker.C:
+				now := time.Now().UTC()
 				if err := s.cleanupExpiredRestrictions(runCtx); err != nil && !errorsIsCanceled(err) {
 					log.WithError(err).Error("Failed to clean up expired restrictions")
+				}
+				if err := s.cleanupRetainedRecords(runCtx, now); err != nil && !errorsIsCanceled(err) {
+					log.WithError(err).Error("Failed to clean retained records")
 				}
 				if err := s.refreshKnownBanned(runCtx); err != nil && !errorsIsCanceled(err) {
 					log.WithError(err).Error("Failed to refresh known banned users")
@@ -242,6 +253,13 @@ func (s *defaultBanService) Start(ctx context.Context) error {
 
 	s.started = true
 	return nil
+}
+
+func (s *defaultBanService) cleanupRetainedRecords(ctx context.Context, now time.Time) error {
+	if s.db == nil {
+		return nil
+	}
+	return s.db.CleanupRetainedRecords(ctx, now, retainedRecordsCleanupBatchSize)
 }
 
 func (s *defaultBanService) cleanupExpiredRestrictions(ctx context.Context) error {

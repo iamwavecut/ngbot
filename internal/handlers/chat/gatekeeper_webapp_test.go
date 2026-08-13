@@ -24,8 +24,28 @@ import (
 	api "github.com/OvyFlash/telegram-bot-api"
 	"github.com/iamwavecut/ngbot/internal/config"
 	"github.com/iamwavecut/ngbot/internal/db"
+	"github.com/iamwavecut/ngbot/internal/lifecycle"
 	log "github.com/sirupsen/logrus"
 )
+
+type readinessTestComponent struct {
+	start func(context.Context) error
+	stop  func(context.Context) error
+}
+
+func (c readinessTestComponent) Start(ctx context.Context) error {
+	if c.start == nil {
+		return nil
+	}
+	return c.start(ctx)
+}
+
+func (c readinessTestComponent) Stop(ctx context.Context) error {
+	if c.stop == nil {
+		return nil
+	}
+	return c.stop(ctx)
+}
 
 func TestJoinCaptchaHealthReflectsReadiness(t *testing.T) {
 	t.Parallel()
@@ -49,10 +69,74 @@ func TestJoinCaptchaHealthReflectsReadiness(t *testing.T) {
 	}
 
 	gatekeeper.webAppReady.Store(true)
+	gatekeeper.SetRuntimeReadiness(func() bool { return true })
 	ready := httptest.NewRecorder()
 	handler.ServeHTTP(ready, httptest.NewRequest(http.MethodGet, "/readyz", nil))
 	if ready.Code != http.StatusOK {
 		t.Fatalf("ready status = %d", ready.Code)
+	}
+}
+
+func TestJoinCaptchaReadinessTracksCompleteRuntimeLifecycle(t *testing.T) {
+	gatekeeper := &Gatekeeper{config: &config.Config{GatekeeperWebApp: config.GatekeeperWebApp{
+		MaxConcurrent:     2,
+		RequestsPerMinute: 10,
+	}}}
+	gatekeeper.webAppReady.Store(true)
+	startEntered := make(chan struct{})
+	releaseStart := make(chan struct{})
+	later := readinessTestComponent{start: func(ctx context.Context) error {
+		close(startEntered)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-releaseStart:
+			return nil
+		}
+	}}
+	runtime := lifecycle.NewRuntime(readinessTestComponent{}, later)
+	gatekeeper.SetRuntimeReadiness(runtime.Ready)
+
+	startDone := make(chan error, 1)
+	go func() { startDone <- runtime.Start(t.Context()) }()
+	<-startEntered
+	assertJoinCaptchaReadinessStatus(t, gatekeeper, http.StatusServiceUnavailable)
+	close(releaseStart)
+	if err := <-startDone; err != nil {
+		t.Fatalf("start runtime: %v", err)
+	}
+	assertJoinCaptchaReadinessStatus(t, gatekeeper, http.StatusOK)
+	if err := runtime.Stop(t.Context()); err != nil {
+		t.Fatalf("stop runtime: %v", err)
+	}
+	assertJoinCaptchaReadinessStatus(t, gatekeeper, http.StatusServiceUnavailable)
+}
+
+func TestJoinCaptchaReadinessStaysDownAfterLaterStartFailure(t *testing.T) {
+	gatekeeper := &Gatekeeper{config: &config.Config{GatekeeperWebApp: config.GatekeeperWebApp{
+		MaxConcurrent:     2,
+		RequestsPerMinute: 10,
+	}}}
+	gatekeeper.webAppReady.Store(true)
+	startErr := stderrors.New("later component failed")
+	runtime := lifecycle.NewRuntime(
+		readinessTestComponent{},
+		readinessTestComponent{start: func(context.Context) error { return startErr }},
+	)
+	gatekeeper.SetRuntimeReadiness(runtime.Ready)
+
+	if err := runtime.Start(t.Context()); !stderrors.Is(err, startErr) {
+		t.Fatalf("start runtime error = %v, want %v", err, startErr)
+	}
+	assertJoinCaptchaReadinessStatus(t, gatekeeper, http.StatusServiceUnavailable)
+}
+
+func assertJoinCaptchaReadinessStatus(t *testing.T, gatekeeper *Gatekeeper, want int) {
+	t.Helper()
+	recorder := httptest.NewRecorder()
+	gatekeeper.joinCaptchaWebAppHandler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, joinCaptchaReadyHealthPath, nil))
+	if recorder.Code != want {
+		t.Fatalf("readiness status = %d, want %d", recorder.Code, want)
 	}
 }
 

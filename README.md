@@ -166,15 +166,18 @@ The Mini App endpoint is intentionally hostile to indexing and unauthorized embe
 12. MIME sniffing and legacy cross-domain policies are disabled.
 13. Concurrent admission and per-client request rates are bounded; access telemetry records only method, an allowlisted route name, status, and duration, never raw paths, query strings, authorization headers, or bearer tokens.
 
-The embedded server exposes `GET /livez` for process liveness and `GET /readyz` for readiness. A fatal serving error triggers graceful process shutdown with exit status 1 so Compose can restart the service. Container health checks use `/readyz`; use `./ngbot --version` and the OCI revision label to verify a deployed artifact.
+The embedded server exposes `GET /livez` for WebApp process liveness and `GET /readyz` for application readiness. Readiness is published only after every lifecycle component, including the durable update loop, starts successfully and is withdrawn before shutdown. A fatal serving error triggers graceful process shutdown with exit status 1 so Compose can restart the service. Container health checks use `/readyz`; use `./ngbot --version`, the OCI revision label, and the running container image ID to verify a deployed artifact. See [deploy/README.md](deploy/README.md) for the executable release and rollback procedure.
 
 ### Production SQLite maintenance
 
 Do not run `PRAGMA quick_check`, `integrity_check`, or other long scans against the live database file. Create a consistent online snapshot first, then run integrity and migration checks against the snapshot:
 
 ```bash
-sqlite3 /home/username/.ngbot/bot.db ".backup '/home/username/.ngbot/bot-audit.db'"
-sqlite3 /home/username/.ngbot/bot-audit.db "PRAGMA quick_check; PRAGMA foreign_key_check;"
+umask 077
+sqlite3 /home/username/.ngbot/bot.db ".backup '/var/backups/ngbot/bot-audit.db'"
+chmod 0600 /var/backups/ngbot/bot-audit.db
+test "$(sqlite3 /var/backups/ngbot/bot-audit.db 'PRAGMA quick_check;')" = ok
+test -z "$(sqlite3 /var/backups/ngbot/bot-audit.db 'PRAGMA foreign_key_check;')"
 ```
 
 Delete the audit snapshot after verification. A direct long-running read can hold a SQLite shared lock long enough for application writes to reach the configured busy timeout.

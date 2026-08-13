@@ -2,6 +2,10 @@ package bot
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -37,6 +41,23 @@ type memberWarmupBarrierStore struct {
 	serviceStore
 	snapshotLoaded  chan struct{}
 	releaseSnapshot chan struct{}
+}
+
+type memberLookupBarrierStore struct {
+	serviceStore
+	loaded  chan struct{}
+	release chan struct{}
+}
+
+func (s *memberLookupBarrierStore) IsMember(ctx context.Context, chatID, userID int64) (bool, error) {
+	isMember, err := s.serviceStore.IsMember(ctx, chatID, userID)
+	close(s.loaded)
+	select {
+	case <-ctx.Done():
+		return false, ctx.Err()
+	case <-s.release:
+		return isMember, err
+	}
 }
 
 func (s *memberWarmupBarrierStore) GetAllMembers(ctx context.Context) (map[int64][]int64, error) {
@@ -308,5 +329,68 @@ func TestMemberWarmupDoesNotResurrectConcurrentDeletion(t *testing.T) {
 	}
 	if stored {
 		t.Fatal("deleted member survived in SQLite")
+	}
+}
+
+func TestIsMemberDoesNotCachePositiveLookupAcrossDeleteMember(t *testing.T) {
+	ctx := t.Context()
+	dbClient, err := sqlite.NewSQLiteClient(ctx, t.TempDir(), "test.db")
+	if err != nil {
+		t.Fatalf("new sqlite client: %v", err)
+	}
+	t.Cleanup(func() { _ = dbClient.Close() })
+
+	const (
+		chatID = int64(-1004567)
+		userID = int64(9876)
+	)
+	if err := dbClient.SetSettings(ctx, db.DefaultSettings(chatID)); err != nil {
+		t.Fatalf("set settings: %v", err)
+	}
+	if err := dbClient.InsertMember(ctx, chatID, userID); err != nil {
+		t.Fatalf("insert member: %v", err)
+	}
+
+	telegram := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var result any
+		switch r.URL.Path {
+		case "/botTEST/getMe":
+			result = map[string]any{"id": 1, "is_bot": true, "first_name": "test"}
+		case "/botTEST/getChatMember":
+			result = map[string]any{"status": "member", "user": map[string]any{"id": userID, "is_bot": false, "first_name": "member"}}
+		default:
+			t.Fatalf("unexpected Telegram path %q", r.URL.Path)
+		}
+		if err := json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": result}); err != nil {
+			t.Fatalf("encode Telegram response: %v", err)
+		}
+	}))
+	t.Cleanup(telegram.Close)
+	botAPI, err := api.NewBotAPIWithOptions("TEST", api.WithAPIEndpoint(fmt.Sprintf("%s/bot%%s/%%s", telegram.URL)), api.WithHTTPClient(telegram.Client()))
+	if err != nil {
+		t.Fatalf("new Telegram bot API: %v", err)
+	}
+	store := &memberLookupBarrierStore{serviceStore: dbClient, loaded: make(chan struct{}), release: make(chan struct{})}
+	service := NewService(ctx, botAPI, store, "en", log.NewEntry(log.New()))
+
+	lookupDone := make(chan error, 1)
+	go func() {
+		_, lookupErr := service.IsMember(ctx, chatID, userID)
+		lookupDone <- lookupErr
+	}()
+	<-store.loaded
+	if err := service.DeleteMember(ctx, chatID, userID); err != nil {
+		t.Fatalf("delete member while lookup is paused: %v", err)
+	}
+	close(store.release)
+	if err := <-lookupDone; err != nil {
+		t.Fatalf("complete membership lookup: %v", err)
+	}
+
+	service.cacheMutex.RLock()
+	_, resurrected := service.memberCache[chatID][userID]
+	service.cacheMutex.RUnlock()
+	if resurrected {
+		t.Fatal("stale membership lookup republished a deleted member")
 	}
 }
