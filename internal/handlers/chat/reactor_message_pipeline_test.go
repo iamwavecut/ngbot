@@ -253,7 +253,7 @@ func TestCheckMessageForSpamDoesNotMirrorRawContent(t *testing.T) {
 	}
 }
 
-func TestNormalMessageClassificationTimeoutFailsOpen(t *testing.T) {
+func TestNormalMessageClassificationTimeoutReturnsRetryableFailure(t *testing.T) {
 	t.Parallel()
 
 	botAPI := newTestBotAPI(t, func(method string, _ *http.Request) any {
@@ -275,12 +275,56 @@ func TestNormalMessageClassificationTimeoutFailsOpen(t *testing.T) {
 	user := &api.User{ID: 200, FirstName: testFirstNameUser}
 	message := &api.Message{MessageID: 302, Chat: *chat, From: user, Text: "normal-message-secret"}
 
-	if err := reactor.handleMessage(t.Context(), message, chat, user, &db.Settings{LLMFirstMessageEnabled: true}); err != nil {
-		t.Fatalf("classification timeout did not fail open: %v", err)
+	err := reactor.handleMessage(t.Context(), message, chat, user, &db.Settings{LLMFirstMessageEnabled: true})
+	failure := botservice.ClassifyUpdateFailure(err)
+	if failure.Source != botservice.UpdateFailureLLM || failure.Disposition != botservice.UpdateFailureRetryable {
+		t.Fatalf("classification timeout failure = %#v", failure)
 	}
-	result := reactor.GetLastProcessingResult(chat.ID, message.MessageID)
-	if result == nil || !result.Skipped || result.SkipReason != messageSkipReasonLLMUnavailable {
-		t.Fatalf("unexpected fail-open result: %#v", result)
+}
+
+func TestMessageCapabilityLookupFailureReturnsRetryableFailure(t *testing.T) {
+	t.Parallel()
+
+	reactor := &Reactor{
+		store:       &testReactorStore{},
+		banService:  &testBanService{moderationErr: errors.New("telegram unavailable")},
+		lastResults: make(map[messageResultKey]*MessageProcessingResult),
+	}
+	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
+	user := &api.User{ID: 200}
+	err := reactor.handleMessage(t.Context(), &api.Message{MessageID: 1, Chat: *chat, From: user, Text: "candidate"}, chat, user, &db.Settings{LLMFirstMessageEnabled: true})
+	failure := botservice.ClassifyUpdateFailure(err)
+	if failure.Source != botservice.UpdateFailureCapability || failure.Disposition != botservice.UpdateFailureRetryable {
+		t.Fatalf("capability failure = %#v", failure)
+	}
+}
+
+func TestExhaustedLLMFailureQuarantinesOnlyWithKnownRights(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name        string
+		unavailable bool
+		wantMutes   int
+	}{
+		{name: "known rights", wantMutes: 1},
+		{name: "known no rights", unavailable: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			banService := &testBanService{moderationUnavailable: test.unavailable}
+			reactor := &Reactor{banService: banService}
+			chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
+			user := &api.User{ID: 200}
+			update := &api.Update{UpdateID: 1, Message: &api.Message{MessageID: 2, Chat: *chat, From: user, Text: "candidate"}}
+			failure := botservice.ClassifyUpdateFailure(botservice.NewRetryableUpdateFailure(botservice.UpdateFailureLLM, "provider_error", errors.New("unavailable")))
+			if err := reactor.HandleExhaustedUpdateFailure(t.Context(), update, chat, user, failure); err != nil {
+				t.Fatalf("degrade exhausted LLM failure: %v", err)
+			}
+			if banService.muteCalls != test.wantMutes {
+				t.Fatalf("mute calls = %d, want %d", banService.muteCalls, test.wantMutes)
+			}
+		})
 	}
 }
 
@@ -336,7 +380,9 @@ type testBanService struct {
 	knownBanned           bool
 	bans                  []testGatekeeperBan
 	moderationUnavailable bool
+	moderationErr         error
 	markedUnavailable     bool
+	muteCalls             int
 }
 
 func (s *testBanService) Start(context.Context) error { return nil }
@@ -347,14 +393,17 @@ func (s *testBanService) CheckBan(context.Context, int64) (bool, error) {
 }
 
 func (s *testBanService) ModerationAvailable(context.Context, int64) (bool, error) {
-	return !s.moderationUnavailable, nil
+	return !s.moderationUnavailable, s.moderationErr
 }
 
 func (s *testBanService) MarkModerationUnavailable(int64) {
 	s.moderationUnavailable = true
 	s.markedUnavailable = true
 }
-func (s *testBanService) MuteUser(context.Context, int64, int64) error   { return nil }
+func (s *testBanService) MuteUser(context.Context, int64, int64) error {
+	s.muteCalls++
+	return nil
+}
 func (s *testBanService) UnmuteUser(context.Context, int64, int64) error { return nil }
 func (s *testBanService) BanUserWithMessage(_ context.Context, chatID, userID int64, messageID int) error {
 	s.bans = append(s.bans, testGatekeeperBan{chatID: chatID, userID: userID, messageID: messageID})

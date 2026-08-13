@@ -3,6 +3,7 @@ package bot
 import (
 	"context"
 	stdErrors "errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -102,14 +103,20 @@ func TestGetUpdatesChansFailsAfterRecoveryWindow(t *testing.T) {
 	}
 }
 
-func TestGetUpdatesChansDropsMalformedUpdates(t *testing.T) {
+func TestGetUpdatesChansDeliversMalformedUpdatesToDurableFailurePolicy(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	var calls atomic.Int32
-	updates, errs := getUpdatesChansWithFetcher(ctx, 2, api.NewUpdate(0), testPollingOptions(), func(ctx context.Context, config api.UpdateConfig) ([]api.Update, error) {
+	options := testPollingOptions()
+	var persisted []int
+	options.Persist = func(_ context.Context, update api.Update) error {
+		persisted = append(persisted, update.UpdateID)
+		return nil
+	}
+	updates, errs := getUpdatesChansWithFetcher(ctx, 2, api.NewUpdate(0), options, func(ctx context.Context, config api.UpdateConfig) ([]api.Update, error) {
 		if calls.Add(1) == 1 {
 			return []api.Update{
 				{UpdateID: 1},
@@ -129,8 +136,8 @@ func TestGetUpdatesChansDropsMalformedUpdates(t *testing.T) {
 	case err := <-errs:
 		t.Fatalf("unexpected polling error: %v", err)
 	case update := <-updates:
-		if update.UpdateID != 2 {
-			t.Fatalf("expected valid update 2, got %d", update.UpdateID)
+		if update.UpdateID != 1 {
+			t.Fatalf("expected malformed update 1 to reach durable policy, got %d", update.UpdateID)
 		}
 	case <-time.After(100 * time.Millisecond):
 		t.Fatal("timed out waiting for valid update")
@@ -138,12 +145,60 @@ func TestGetUpdatesChansDropsMalformedUpdates(t *testing.T) {
 
 	select {
 	case update := <-updates:
-		t.Fatalf("unexpected malformed update delivered: %+v", update)
-	default:
+		if update.UpdateID != 2 {
+			t.Fatalf("expected valid update 2, got %d", update.UpdateID)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("timed out waiting for valid update")
+	}
+	if len(persisted) != 2 || persisted[0] != 1 || persisted[1] != 2 {
+		t.Fatalf("persisted update IDs = %v, want [1 2]", persisted)
 	}
 
 	cancel()
 	waitErrChannelClosed(t, errs)
+}
+
+func TestGetUpdatesChansDoesNotAdvanceOffsetUntilPersistenceSucceeds(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	options := testPollingOptions()
+	var persistCalls atomic.Int32
+	options.Persist = func(_ context.Context, _ api.Update) error {
+		if persistCalls.Add(1) == 1 {
+			return stdErrors.New("database busy")
+		}
+		return nil
+	}
+	var mu sync.Mutex
+	offsets := make([]int, 0, 2)
+	updates, errs := getUpdatesChansWithFetcher(ctx, 1, api.NewUpdate(0), options, func(ctx context.Context, config api.UpdateConfig) ([]api.Update, error) {
+		mu.Lock()
+		offsets = append(offsets, config.Offset)
+		mu.Unlock()
+		return []api.Update{messageUpdate(7, -7, 1)}, nil
+	})
+
+	select {
+	case update := <-updates:
+		if update.UpdateID != 7 {
+			t.Fatalf("delivered update = %d, want 7", update.UpdateID)
+		}
+	case err := <-errs:
+		t.Fatalf("unexpected polling error: %v", err)
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("timed out waiting for persisted update")
+	}
+	mu.Lock()
+	gotOffsets := append([]int(nil), offsets...)
+	mu.Unlock()
+	if len(gotOffsets) < 2 || gotOffsets[0] != 0 || gotOffsets[1] != 0 {
+		t.Fatalf("poll offsets before durable persistence = %v, want prefix [0 0]", gotOffsets)
+	}
+	cancel()
 }
 
 func TestGetUpdatesChansStopsOnContextCancel(t *testing.T) {

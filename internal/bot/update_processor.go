@@ -32,6 +32,10 @@ type (
 	MessageType string
 )
 
+type ExhaustedUpdateFailureHandler interface {
+	HandleExhaustedUpdateFailure(ctx context.Context, update *api.Update, chat *api.Chat, user *api.User, failure UpdateFailure) error
+}
+
 const (
 	MessageTypeText              MessageType = "text"
 	MessageTypeAnimation         MessageType = "animation"
@@ -89,36 +93,13 @@ func (up *UpdateProcessor) Process(ctx context.Context, u *api.Update) error {
 				"update_time":    updateTime,
 				"age":            time.Since(updateTime),
 			}).Debug("Skipping outdated update")
+			if isSecurityRelevantUpdate(u) {
+				return NewTerminalUpdateFailure(UpdateFailurePayload, "stale_security_update", errors.New("moderation-relevant update exceeded freshness window"))
+			}
 			return nil
 		}
 
-		chat := u.FromChat()
-		if chat == nil {
-			switch {
-			case u.ChatJoinRequest != nil:
-				chat = &u.ChatJoinRequest.Chat
-			case u.MyChatMember != nil:
-				chat = &u.MyChatMember.Chat
-			case u.ChatMember != nil:
-				chat = &u.ChatMember.Chat
-			case u.MessageReaction != nil:
-				chat = &u.MessageReaction.Chat
-			}
-		}
-
-		user := u.SentFrom()
-		if user == nil {
-			switch {
-			case u.ChatJoinRequest != nil:
-				user = &u.ChatJoinRequest.From
-			case u.MyChatMember != nil:
-				user = &u.MyChatMember.From
-			case u.ChatMember != nil:
-				user = &u.ChatMember.From
-			case u.MessageReaction != nil:
-				user = u.MessageReaction.User
-			}
-		}
+		chat, user := updateContext(u)
 
 		for _, handler := range up.updateHandlers {
 			if handler == nil {
@@ -140,6 +121,53 @@ func (up *UpdateProcessor) Process(ctx context.Context, u *api.Update) error {
 		}
 		return nil
 	}
+}
+
+func (up *UpdateProcessor) Degrade(ctx context.Context, update *api.Update, failure UpdateFailure) error {
+	chat, user := updateContext(update)
+	for _, handler := range up.updateHandlers {
+		failureHandler, ok := handler.(ExhaustedUpdateFailureHandler)
+		if !ok {
+			continue
+		}
+		if err := failureHandler.HandleExhaustedUpdateFailure(ctx, update, chat, user, failure); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func updateContext(update *api.Update) (*api.Chat, *api.User) {
+	if update == nil {
+		return nil, nil
+	}
+	chat := update.FromChat()
+	if chat == nil {
+		switch {
+		case update.ChatJoinRequest != nil:
+			chat = &update.ChatJoinRequest.Chat
+		case update.MyChatMember != nil:
+			chat = &update.MyChatMember.Chat
+		case update.ChatMember != nil:
+			chat = &update.ChatMember.Chat
+		case update.MessageReaction != nil:
+			chat = &update.MessageReaction.Chat
+		}
+	}
+	user := update.SentFrom()
+	if user == nil {
+		switch {
+		case update.ChatJoinRequest != nil:
+			user = &update.ChatJoinRequest.From
+		case update.MyChatMember != nil:
+			user = &update.MyChatMember.From
+		case update.ChatMember != nil:
+			user = &update.ChatMember.From
+		case update.MessageReaction != nil:
+			user = update.MessageReaction.User
+		}
+	}
+	return chat, user
 }
 
 func timestampedUpdate(u *api.Update) (time.Time, string, bool) {

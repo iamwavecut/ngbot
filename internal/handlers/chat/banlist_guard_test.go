@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	api "github.com/OvyFlash/telegram-bot-api"
+	"github.com/iamwavecut/ngbot/internal/bot"
 )
 
 func TestBanlistGuardStopsCommandBeforeDownstreamHandlers(t *testing.T) {
@@ -95,6 +96,25 @@ func TestBanlistGuardNoRightsStopsWithoutTelegramRetry(t *testing.T) {
 	}
 	if len(banService.bans) != 0 {
 		t.Fatalf("expected no Telegram ban retry, got %#v", banService.bans)
+	}
+}
+
+func TestBanlistGuardCapabilityUnknownReturnsRetryableFailure(t *testing.T) {
+	t.Parallel()
+
+	banService := &testBanService{knownBanned: true, moderationErr: errors.New("telegram unavailable")}
+	guard := NewBanlistGuard(&api.BotAPI{}, &testNotSpammerStore{}, banService)
+	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
+	user := &api.User{ID: 200}
+	message := &api.Message{MessageID: 42, Chat: *chat, From: user, Text: "spam"}
+
+	proceed, err := guard.Handle(t.Context(), &api.Update{Message: message}, chat, user)
+	if proceed {
+		t.Fatal("capability-unknown banlist update reached downstream handlers")
+	}
+	failure := bot.ClassifyUpdateFailure(err)
+	if failure.Source != bot.UpdateFailureCapability || failure.Disposition != bot.UpdateFailureRetryable {
+		t.Fatalf("capability failure = %#v", failure)
 	}
 }
 

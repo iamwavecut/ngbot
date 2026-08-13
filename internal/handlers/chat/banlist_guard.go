@@ -69,6 +69,7 @@ func (g *BanlistGuard) Handle(ctx context.Context, u *api.Update, chat *api.Chat
 	})
 	if outcome.err != nil {
 		entry.WithField(logFieldError, outcome.err.Error()).Error("failed to enforce terminal banlist action")
+		return false, outcome.err
 	} else if !outcome.moderationAvailable {
 		entry.Info("terminal banlist action skipped in no-rights mode")
 	} else {
@@ -91,7 +92,7 @@ func enforceBanlistedMessage(
 
 	available, err := banService.ModerationAvailable(ctx, chat.ID)
 	if err != nil {
-		return banlistedMessageOutcome{err: fmt.Errorf("inspect moderation rights: %w", err)}
+		return banlistedMessageOutcome{err: bot.NewRetryableUpdateFailure(bot.UpdateFailureCapability, "capability_unknown", err)}
 	}
 	if !available {
 		return banlistedMessageOutcome{}

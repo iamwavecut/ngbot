@@ -82,9 +82,10 @@ func (r *Reactor) handleMessageChallenge(ctx context.Context, msg *api.Message, 
 	}
 	moderationAvailable, err := r.moderationAvailable(ctx, chat.ID)
 	if err != nil {
-		entry.WithField(logFieldError, err.Error()).Warn("failed to inspect moderation rights; skipping spam pipeline")
+		entry.WithField(logFieldError, err.Error()).Warn("failed to inspect moderation rights; scheduling durable retry")
+		return bot.NewRetryableUpdateFailure(bot.UpdateFailureCapability, "capability_unknown", err)
 	}
-	if err != nil || !moderationAvailable {
+	if !moderationAvailable {
 		result.Stage = StageSpamCheck
 		result.Skipped = true
 		result.SkipReason = messageSkipReasonNoModerationRights
@@ -235,8 +236,8 @@ func (r *Reactor) handleMessageChallenge(ctx context.Context, msg *api.Message, 
 	if err != nil {
 		result.Skipped = true
 		result.SkipReason = messageSkipReasonLLMUnavailable
-		entry.WithFields(classificationFailureLogFields(err, "message", "allow_message")).Warn("message LLM classification failed open")
-		return nil
+		entry.WithFields(classificationFailureLogFields(err, "message", "durable_retry")).Warn("message LLM classification scheduled for durable retry")
+		return bot.NewRetryableUpdateFailure(bot.UpdateFailureLLM, string(llm.FailureKindOf(err)), err)
 	}
 	result.IsSpam = isSpam
 
@@ -415,6 +416,36 @@ func (r *Reactor) moderationAvailable(ctx context.Context, chatID int64) (bool, 
 		return true, nil
 	}
 	return r.banService.ModerationAvailable(ctx, chatID)
+}
+
+func (r *Reactor) HandleExhaustedUpdateFailure(
+	ctx context.Context,
+	update *api.Update,
+	chat *api.Chat,
+	user *api.User,
+	failure bot.UpdateFailure,
+) error {
+	if failure.Source != bot.UpdateFailureLLM || update == nil || chat == nil || user == nil || r.banService == nil {
+		return nil
+	}
+	message := update.Message
+	if message == nil {
+		message = update.EditedMessage
+	}
+	if message == nil {
+		return nil
+	}
+	available, err := r.moderationAvailable(ctx, chat.ID)
+	if err != nil {
+		return fmt.Errorf("inspect moderation rights for LLM degradation: %w", err)
+	}
+	if !available {
+		return nil
+	}
+	if err := r.banService.MuteUser(ctx, chat.ID, user.ID); err != nil {
+		return fmt.Errorf("quarantine user after LLM exhaustion: %w", err)
+	}
+	return nil
 }
 
 func (r *Reactor) markModerationUnavailableOnPrivilege(chatID int64, err error) {

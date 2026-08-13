@@ -185,6 +185,34 @@ type (
 		GraduatedAt sql.NullTime `db:"graduated_at"`
 	}
 
+	TelegramUpdate struct {
+		UpdateID         int          `db:"update_id"`
+		DispatchKey      string       `db:"dispatch_key"`
+		Payload          []byte       `db:"payload"`
+		SecurityRelevant bool         `db:"security_relevant"`
+		Status           string       `db:"status"`
+		AttemptCount     int          `db:"attempt_count"`
+		AvailableAt      time.Time    `db:"available_at"`
+		ReceivedAt       time.Time    `db:"received_at"`
+		StartedAt        sql.NullTime `db:"started_at"`
+		CompletedAt      sql.NullTime `db:"completed_at"`
+		LastError        string       `db:"last_error"`
+		OutcomeSource    string       `db:"outcome_source"`
+	}
+
+	TelegramUpdateFailure struct {
+		ID               int64        `db:"id"`
+		UpdateID         int          `db:"update_id"`
+		DispatchKey      string       `db:"dispatch_key"`
+		SecurityRelevant bool         `db:"security_relevant"`
+		AttemptCount     int          `db:"attempt_count"`
+		FailureSource    string       `db:"failure_source"`
+		FailureReason    string       `db:"failure_reason"`
+		LastError        string       `db:"last_error"`
+		CreatedAt        time.Time    `db:"created_at"`
+		ResolvedAt       sql.NullTime `db:"resolved_at"`
+	}
+
 	ChatNotSpammerOverride struct {
 		ID              int64     `db:"id"`
 		ChatID          int64     `db:"chat_id"`
@@ -217,6 +245,11 @@ const (
 	SpamCaseStatusSpam                     = "spam"
 	SpamCaseStatusFalsePositive            = "false_positive"
 	SpamCaseStatusNotEnforced              = "not_enforced"
+	TelegramUpdateStatusPending            = "pending"
+	TelegramUpdateStatusProcessing         = "processing"
+	TelegramUpdateStatusRetry              = "retry"
+	TelegramUpdateStatusCompleted          = "completed"
+	TelegramUpdateStatusDeadLetter         = "dead_letter"
 )
 
 const (

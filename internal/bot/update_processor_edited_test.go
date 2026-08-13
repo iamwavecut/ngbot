@@ -21,9 +21,10 @@ func TestUpdateProcessorUsesEditDateForFreshness(t *testing.T) {
 		name     string
 		editDate time.Time
 		wantCall bool
+		wantErr  bool
 	}{
 		{name: "fresh edit of old message", editDate: time.Now(), wantCall: true},
-		{name: "stale edit", editDate: time.Now().Add(-UpdateTimeout - time.Minute)},
+		{name: "stale edit", editDate: time.Now().Add(-UpdateTimeout - time.Minute), wantErr: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -47,8 +48,15 @@ func TestUpdateProcessorUsesEditDateForFreshness(t *testing.T) {
 				},
 			}
 
-			if err := processor.Process(t.Context(), update); err != nil {
-				t.Fatalf("process edited update: %v", err)
+			err := processor.Process(t.Context(), update)
+			if got := err != nil; got != test.wantErr {
+				t.Fatalf("process edited update error = %v, want error=%t", err, test.wantErr)
+			}
+			if err != nil {
+				failure := ClassifyUpdateFailure(err)
+				if failure.Disposition != UpdateFailureTerminal || failure.Reason != "stale_security_update" {
+					t.Fatalf("stale edit failure = %#v", failure)
+				}
 			}
 			if got := calls == 1; got != test.wantCall {
 				t.Fatalf("handler called = %t, want %t", got, test.wantCall)

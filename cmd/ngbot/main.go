@@ -54,7 +54,7 @@ type updateLoopComponent struct {
 	botAPI       *api.BotAPI
 	updateConfig api.UpdateConfig
 	polling      bot.PollingOptions
-	dispatcher   *bot.KeyedDispatcher
+	dispatcher   *bot.DurableUpdateDispatcher
 	errChan      chan<- shutdownSignal
 
 	cancel context.CancelFunc
@@ -66,18 +66,24 @@ type shutdownSignal struct {
 	exitCode int
 }
 
-func newUpdateLoopComponent(botAPI *api.BotAPI, updateConfig api.UpdateConfig, polling bot.PollingOptions, updateProcess *bot.UpdateProcessor, errChan chan<- shutdownSignal) *updateLoopComponent {
+func newUpdateLoopComponent(botAPI *api.BotAPI, updateConfig api.UpdateConfig, polling bot.PollingOptions, updateStore bot.DurableUpdateStore, updateProcess *bot.UpdateProcessor, errChan chan<- shutdownSignal) *updateLoopComponent {
+	dispatcher := bot.NewDurableUpdateDispatcher(
+		updateStore,
+		updateProcess.Process,
+		updateProcess.Degrade,
+		bot.DurableUpdateDispatcherOptions{
+			MaxWorkers:    8,
+			PendingBudget: botAPI.Buffer,
+		},
+		log.WithField("context", "update_dispatcher"),
+	)
+	polling.Persist = dispatcher.Persist
 	return &updateLoopComponent{
 		botAPI:       botAPI,
 		updateConfig: updateConfig,
 		polling:      polling,
-		dispatcher: bot.NewKeyedDispatcher(
-			updateProcess.Process,
-			8,
-			botAPI.Buffer,
-			log.WithField("context", "update_dispatcher"),
-		),
-		errChan: errChan,
+		dispatcher:   dispatcher,
+		errChan:      errChan,
 	}
 }
 
@@ -389,6 +395,7 @@ func buildRuntime(ctx context.Context, cfg *config.Config, errChan chan<- shutdo
 		botAPI,
 		configureUpdates(cfg.Telegram.PollTimeout),
 		bot.NewPollingOptions(cfg.Telegram.RequestTimeout, cfg.Telegram.RecoveryWindow),
+		dbClient,
 		bot.NewUpdateProcessor(service, updateHandlers...),
 		errChan,
 	)

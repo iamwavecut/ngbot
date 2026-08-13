@@ -19,6 +19,7 @@ type PollingOptions struct {
 	RecoveryWindow time.Duration
 	InitialBackoff time.Duration
 	MaxBackoff     time.Duration
+	Persist        func(ctx context.Context, update api.Update) error
 }
 
 type PollingRecoveryError struct {
@@ -99,16 +100,17 @@ func getUpdatesChansWithFetcher(ctx context.Context, buffer int, config api.Upda
 			}
 
 			healthyResponse := false
-			droppedUpdates := 0
+			var persistErr error
 
 			for _, update := range updates {
+				if options.Persist != nil {
+					if err := options.Persist(ctx, update); err != nil {
+						persistErr = fmt.Errorf("persist telegram update %d: %w", update.UpdateID, err)
+						break
+					}
+				}
 				if update.UpdateID >= config.Offset {
 					config.Offset = update.UpdateID + 1
-				}
-				if isStructurallyEmptyUpdate(&update) {
-					droppedUpdates++
-					log.WithField(logFieldUpdateID, update.UpdateID).Warn("Dropping empty update")
-					continue
 				}
 				healthyResponse = true
 
@@ -118,6 +120,25 @@ func getUpdatesChansWithFetcher(ctx context.Context, buffer int, config api.Upda
 					return
 				}
 			}
+			if persistErr != nil {
+				if healthyResponse {
+					lastHealthyPollAt = time.Now()
+				}
+				sinceLastHealthy := time.Since(lastHealthyPollAt)
+				log.WithError(persistErr).WithFields(log.Fields{
+					"backoff":            backoff,
+					"since_last_healthy": sinceLastHealthy,
+				}).Error("Failed to durably persist polled update")
+				if sinceLastHealthy > options.RecoveryWindow {
+					sendPollingError(chErr, &PollingRecoveryError{Cause: persistErr, SinceLastHealthy: sinceLastHealthy})
+					return
+				}
+				if !waitPollingBackoff(ctx, backoff) {
+					return
+				}
+				backoff = nextPollingBackoff(backoff, options.MaxBackoff)
+				continue
+			}
 
 			if healthyResponse {
 				lastHealthyPollAt = time.Now()
@@ -125,23 +146,8 @@ func getUpdatesChansWithFetcher(ctx context.Context, buffer int, config api.Upda
 				continue
 			}
 
-			sinceLastHealthy := time.Since(lastHealthyPollAt)
-			log.WithFields(log.Fields{
-				"dropped_updates":    droppedUpdates,
-				"backoff":            backoff,
-				"since_last_healthy": sinceLastHealthy,
-			}).Warn("Received malformed update batch")
-			if sinceLastHealthy > options.RecoveryWindow {
-				sendPollingError(chErr, &PollingRecoveryError{
-					Cause:            fmt.Errorf("received malformed update batches for %s", sinceLastHealthy),
-					SinceLastHealthy: sinceLastHealthy,
-				})
-				return
-			}
-			if !waitPollingBackoff(ctx, backoff) {
-				return
-			}
-			backoff = nextPollingBackoff(backoff, options.MaxBackoff)
+			lastHealthyPollAt = time.Now()
+			backoff = options.InitialBackoff
 		}
 	}()
 
