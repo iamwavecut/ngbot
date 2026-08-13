@@ -37,10 +37,10 @@ func (sc *SpamControl) RecordVote(ctx context.Context, caseID int64, voterID int
 		}
 	}
 	available, err := sc.banService.ModerationAvailable(ctx, spamCase.ChatID)
-	if err != nil || !available {
-		if err != nil {
-			log.WithError(err).WithField(logFieldChatID, spamCase.ChatID).Warn("failed to inspect moderation rights before vote")
-		}
+	if err != nil {
+		return 0, 0, bot.NewRetryableUpdateFailure(bot.UpdateFailureCapability, "capability_unknown", err)
+	}
+	if !available {
 		if finalizeErr := sc.finalizeWithoutModeration(ctx, spamCase); finalizeErr != nil {
 			return 0, 0, finalizeErr
 		}
@@ -173,8 +173,9 @@ func (sc *SpamControl) resolveClaimedCase(ctx context.Context, spamCase *db.Spam
 	}
 	available, err := sc.banService.ModerationAvailable(ctx, spamCase.ChatID)
 	if err != nil {
-		log.WithError(err).WithField(logFieldChatID, spamCase.ChatID).Warn("failed to refresh moderation rights before resolution")
-	} else if !available {
+		return bot.NewRetryableUpdateFailure(bot.UpdateFailureCapability, "capability_unknown", err)
+	}
+	if !available {
 		return errors.Join(ErrNoPrivileges, sc.finalizeWithoutModeration(ctx, spamCase))
 	}
 	var actionErr error

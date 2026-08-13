@@ -599,6 +599,10 @@ func (s *recordingBanStore) AddRestriction(context.Context, *db.UserRestriction)
 	return nil
 }
 
+func (s *recordingBanStore) EnsureRestrictionSnapshot(_ context.Context, restriction *db.UserRestriction) (*db.UserRestriction, error) {
+	return restriction, nil
+}
+
 func (s *recordingBanStore) RemoveRestriction(context.Context, int64, int64) error {
 	return nil
 }

@@ -2,10 +2,12 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
 	api "github.com/OvyFlash/telegram-bot-api"
+	"github.com/iamwavecut/ngbot/internal/adapters/llm"
 	"github.com/iamwavecut/ngbot/internal/bot"
 	"github.com/iamwavecut/ngbot/internal/db"
 	log "github.com/sirupsen/logrus"
@@ -30,9 +32,10 @@ func (r *Reactor) handleMessageReaction(ctx context.Context, reaction *api.Messa
 	}
 	moderationAvailable, err := r.moderationAvailable(ctx, chat.ID)
 	if err != nil {
-		entry.WithError(err).Warn("failed to inspect moderation rights; skipping reaction moderation")
+		entry.WithError(err).Warn("failed to inspect moderation rights; scheduling reaction retry")
+		return false, bot.NewRetryableUpdateFailure(bot.UpdateFailureCapability, "capability_unknown", err)
 	}
-	if err != nil || !moderationAvailable {
+	if !moderationAvailable {
 		return true, nil
 	}
 
@@ -117,12 +120,11 @@ func (r *Reactor) moderateReactionUser(ctx context.Context, reaction *api.Messag
 
 	isSpam, err := r.spamDetector.IsSpam(ctx, profileText, nil)
 	if err != nil {
-		entry.WithFields(classificationFailureLogFields(err, "reaction_user_profile", "allow_reaction")).Warn("reaction user profile LLM classification failed open")
-		return nil
+		entry.WithFields(classificationFailureLogFields(err, "reaction_user_profile", "durable_retry")).Warn("reaction user profile LLM classification scheduled for retry")
+		return bot.NewRetryableUpdateFailure(bot.UpdateFailureLLM, string(llm.FailureKindOf(err)), err)
 	}
 	if isSpam == nil {
-		entry.Debug("reaction user profile spam check returned no decision")
-		return nil
+		return bot.NewRetryableUpdateFailure(bot.UpdateFailureLLM, string(llm.FailureMalformedOutput), errors.New("reaction user profile spam check returned no decision"))
 	}
 	if !*isSpam {
 		if upsertErr := r.store.UpsertChatKnownNonMember(ctx, &db.ChatKnownNonMember{
@@ -160,10 +162,13 @@ func (r *Reactor) moderateReactionActorChat(ctx context.Context, chat *api.Chat,
 
 	isSpam, err := r.spamDetector.IsSpam(ctx, profileText, nil)
 	if err != nil {
-		entry.WithFields(classificationFailureLogFields(err, "reaction_actor_profile", "allow_reaction")).Warn("reaction actor profile LLM classification failed open")
-		return nil
+		entry.WithFields(classificationFailureLogFields(err, "reaction_actor_profile", "durable_retry")).Warn("reaction actor profile LLM classification scheduled for retry")
+		return bot.NewRetryableUpdateFailure(bot.UpdateFailureLLM, string(llm.FailureKindOf(err)), err)
 	}
-	if isSpam == nil || !*isSpam {
+	if isSpam == nil {
+		return bot.NewRetryableUpdateFailure(bot.UpdateFailureLLM, string(llm.FailureMalformedOutput), errors.New("reaction actor profile spam check returned no decision"))
+	}
+	if !*isSpam {
 		entry.Debug("reaction actor chat profile is not spam")
 		return nil
 	}

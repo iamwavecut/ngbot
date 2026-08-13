@@ -21,13 +21,14 @@ func (s *sqliteClient) AddRestriction(ctx context.Context, restriction *db.UserR
 	defer s.mutex.Unlock()
 
 	query := `
-		INSERT INTO user_restrictions (user_id, chat_id, restricted_at, expires_at, reason, prior_permissions_json)
-		VALUES (?, ?, ?, ?, ?, ?)
+		INSERT INTO user_restrictions (user_id, chat_id, restricted_at, expires_at, reason, prior_permissions_json, prior_until_date)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(chat_id, user_id) DO UPDATE SET
 			restricted_at = excluded.restricted_at,
 			expires_at = excluded.expires_at,
 			reason = excluded.reason,
-			prior_permissions_json = excluded.prior_permissions_json
+			prior_permissions_json = excluded.prior_permissions_json,
+			prior_until_date = excluded.prior_until_date
 	`
 	_, err := s.db.ExecContext(
 		ctx, query,
@@ -37,8 +38,27 @@ func (s *sqliteClient) AddRestriction(ctx context.Context, restriction *db.UserR
 		restriction.ExpiresAt,
 		restriction.Reason,
 		restriction.PriorPermissionsJSON,
+		restriction.PriorUntilDate,
 	)
 	return err
+}
+
+func (s *sqliteClient) EnsureRestrictionSnapshot(ctx context.Context, restriction *db.UserRestriction) (*db.UserRestriction, error) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	if _, err := s.db.ExecContext(ctx, `
+		INSERT INTO user_restrictions (
+			user_id, chat_id, restricted_at, expires_at, reason, prior_permissions_json, prior_until_date
+		) VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(chat_id, user_id) DO NOTHING
+	`, restriction.UserID, restriction.ChatID, restriction.RestrictedAt, restriction.ExpiresAt, restriction.Reason, restriction.PriorPermissionsJSON, restriction.PriorUntilDate); err != nil {
+		return nil, err
+	}
+	var stored db.UserRestriction
+	if err := s.db.GetContext(ctx, &stored, `SELECT * FROM user_restrictions WHERE chat_id = ? AND user_id = ?`, restriction.ChatID, restriction.UserID); err != nil {
+		return nil, err
+	}
+	return &stored, nil
 }
 
 func (s *sqliteClient) RemoveRestriction(ctx context.Context, chatID int64, userID int64) error {

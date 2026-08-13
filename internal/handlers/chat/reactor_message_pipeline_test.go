@@ -301,6 +301,89 @@ func TestMessageCapabilityLookupFailureReturnsRetryableFailure(t *testing.T) {
 	}
 }
 
+func TestSenderChatCapabilityLookupFailureReturnsRetryableFailure(t *testing.T) {
+	t.Parallel()
+
+	reactor := &Reactor{
+		store:       &testReactorStore{},
+		banService:  &testBanService{moderationErr: errors.New("telegram unavailable")},
+		lastResults: make(map[messageResultKey]*MessageProcessingResult),
+	}
+	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
+	message := &api.Message{MessageID: 2, Chat: *chat, SenderChat: &api.Chat{ID: -200, Type: testChatTypeChannel}, Text: "candidate"}
+	err := reactor.handleSenderChatContent(t.Context(), message, chat, &MessageProcessingResult{}, reactor.getLogEntry())
+	failure := botservice.ClassifyUpdateFailure(err)
+	if failure.Source != botservice.UpdateFailureCapability || failure.Disposition != botservice.UpdateFailureRetryable {
+		t.Fatalf("capability failure = %#v", failure)
+	}
+}
+
+func TestSenderChatMalformedClassificationReturnsRetryableFailure(t *testing.T) {
+	t.Parallel()
+
+	reactor := &Reactor{
+		store:        &testReactorStore{},
+		spamDetector: &testSpamDetector{err: llm.NewFailure(llm.FailureMalformedOutput, errors.New("empty"))},
+		banService:   &testBanService{},
+		lastResults:  make(map[messageResultKey]*MessageProcessingResult),
+	}
+	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
+	message := &api.Message{MessageID: 3, Chat: *chat, SenderChat: &api.Chat{ID: -200, Type: testChatTypeChannel}, Text: "candidate"}
+	err := reactor.handleSenderChatContent(t.Context(), message, chat, &MessageProcessingResult{}, reactor.getLogEntry())
+	failure := botservice.ClassifyUpdateFailure(err)
+	if failure.Source != botservice.UpdateFailureLLM || failure.Disposition != botservice.UpdateFailureRetryable {
+		t.Fatalf("classification failure = %#v", failure)
+	}
+}
+
+func TestDetectedSpamActionFailurePropagates(t *testing.T) {
+	t.Parallel()
+
+	actionErr := errors.New("persistence unavailable")
+	botAPI := newTestBotAPI(t, func(method string, _ *http.Request) any {
+		if method != testTelegramMethodGetChatMember {
+			t.Fatalf("unexpected bot method: %s", method)
+		}
+		return testChatMemberResponse(telegramMemberStatus, false, false, false)
+	})
+	reactor := &Reactor{
+		s:            &testBotService{botAPI: botAPI},
+		bot:          botAPI,
+		store:        &testReactorStore{},
+		spamDetector: &testSpamDetector{result: boolPtr(true)},
+		banService:   &testBanService{},
+		processSpam: func(context.Context, *api.Message, *api.Chat, string) (*moderation.ProcessingResult, error) {
+			return nil, actionErr
+		},
+		lastResults: make(map[messageResultKey]*MessageProcessingResult),
+	}
+	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
+	user := &api.User{ID: 200}
+	message := &api.Message{MessageID: 4, Chat: *chat, From: user, Text: "spam"}
+	err := reactor.handleMessage(t.Context(), message, chat, user, &db.Settings{LLMFirstMessageEnabled: true, CommunityVotingEnabled: true})
+	if !errors.Is(err, actionErr) {
+		t.Fatalf("action error = %v, want %v", err, actionErr)
+	}
+}
+
+func TestModerationRouterForwardsExhaustedLLMDegradation(t *testing.T) {
+	t.Parallel()
+
+	banService := &testBanService{}
+	reactor := &Reactor{banService: banService}
+	router := NewModerationRouter(nil, reactor)
+	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
+	user := &api.User{ID: 200}
+	update := &api.Update{Message: &api.Message{MessageID: 5, Chat: *chat, From: user, Text: "candidate"}}
+	failure := botservice.ClassifyUpdateFailure(botservice.NewRetryableUpdateFailure(botservice.UpdateFailureLLM, "provider", errors.New("unavailable")))
+	if err := router.HandleExhaustedUpdateFailure(t.Context(), update, chat, user, failure); err != nil {
+		t.Fatalf("degrade through router: %v", err)
+	}
+	if banService.muteCalls != 1 {
+		t.Fatalf("mute calls = %d, want 1", banService.muteCalls)
+	}
+}
+
 func TestExhaustedLLMFailureQuarantinesOnlyWithKnownRights(t *testing.T) {
 	t.Parallel()
 

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	api "github.com/OvyFlash/telegram-bot-api"
+	"github.com/iamwavecut/ngbot/internal/bot"
 	moderation "github.com/iamwavecut/ngbot/internal/handlers/moderation"
 )
 
@@ -28,6 +29,13 @@ func NewModerationRouter(banlist *BanlistGuard, content *Reactor, features ...*R
 		router.features = features[0]
 	}
 	return router
+}
+
+func (m *ModerationRouter) HandleExhaustedUpdateFailure(ctx context.Context, update *api.Update, chat *api.Chat, user *api.User, failure bot.UpdateFailure) error {
+	if m == nil || m.content == nil {
+		return nil
+	}
+	return m.content.HandleExhaustedUpdateFailure(ctx, update, chat, user, failure)
 }
 
 func (m *ModerationRouter) Handle(ctx context.Context, update *api.Update, chat *api.Chat, user *api.User) (bool, error) {

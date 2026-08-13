@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 	"strings"
 	"time"
@@ -215,6 +216,7 @@ func (r *Reactor) handleMessageChallenge(ctx context.Context, msg *api.Message, 
 				"via_bot_id":         heuristic.ViaBotID,
 			}).Error("failed to process spam message from external quote heuristic")
 			result.Actions.Error = processErr.Error()
+			return processErr
 		} else if processingResult != nil {
 			result.Actions.MessageDeleted = processingResult.MessageDeleted
 			result.Actions.UserBanned = processingResult.UserBanned
@@ -262,6 +264,7 @@ func (r *Reactor) handleMessageChallenge(ctx context.Context, msg *api.Message, 
 			if processErr != nil {
 				entry.WithField(logFieldError, processErr.Error()).Error("failed to process spam message")
 				result.Actions.Error = processErr.Error()
+				return processErr
 			} else if processingResult != nil {
 				result.Actions.MessageDeleted = processingResult.MessageDeleted
 				result.Actions.UserBanned = processingResult.UserBanned
@@ -315,7 +318,12 @@ func (r *Reactor) handleMessageChallenge(ctx context.Context, msg *api.Message, 
 
 func (r *Reactor) handleSenderChatContent(ctx context.Context, msg *api.Message, chat *api.Chat, result *MessageProcessingResult, entry *log.Entry) error {
 	available, err := r.moderationAvailable(ctx, chat.ID)
-	if err != nil || !available {
+	if err != nil {
+		result.Skipped = true
+		result.SkipReason = messageSkipReasonNoModerationRights
+		return bot.NewRetryableUpdateFailure(bot.UpdateFailureCapability, "capability_unknown", err)
+	}
+	if !available {
 		result.Skipped = true
 		result.SkipReason = messageSkipReasonNoModerationRights
 		return nil
@@ -331,26 +339,31 @@ func (r *Reactor) handleSenderChatContent(ctx context.Context, msg *api.Message,
 	if err != nil {
 		result.Skipped = true
 		result.SkipReason = messageSkipReasonLLMUnavailable
-		return nil
+		return bot.NewRetryableUpdateFailure(bot.UpdateFailureLLM, string(llm.FailureKindOf(err)), err)
 	}
 	result.IsSpam = isSpam
 	if isSpam == nil || !*isSpam {
 		return nil
 	}
+	var actionErr error
 	if err := bot.DeleteChatMessage(ctx, r.bot, chat.ID, msg.MessageID); err != nil && !isTelegramMessageAlreadyDeleted(err) {
-		result.Actions.Error = err.Error()
-		return fmt.Errorf("delete sender chat message: %w", err)
+		actionErr = stderrors.Join(actionErr, fmt.Errorf("delete sender chat message: %w", err))
+	} else {
+		result.Actions.MessageDeleted = true
 	}
-	result.Actions.MessageDeleted = true
 	if _, err := r.bot.RequestWithContext(ctx, api.BanChatSenderChatConfig{
 		ChatConfig:   api.ChatConfig{ChatID: chat.ID},
 		SenderChatID: msg.SenderChat.ID,
 	}); err != nil {
 		r.markModerationUnavailableOnPrivilege(chat.ID, err)
-		result.Actions.Error = err.Error()
-		return fmt.Errorf("ban sender chat: %w", err)
+		actionErr = stderrors.Join(actionErr, fmt.Errorf("ban sender chat: %w", err))
+	} else {
+		result.Actions.UserBanned = true
 	}
-	result.Actions.UserBanned = true
+	if actionErr != nil {
+		result.Actions.Error = actionErr.Error()
+		return actionErr
+	}
 	entry.WithField("sender_chat_id", msg.SenderChat.ID).Info("moderated untrusted sender chat")
 	return nil
 }
@@ -419,6 +432,7 @@ func (r *Reactor) enforceBanlistedMessage(
 	if outcome.err != nil {
 		result.Actions.Error = outcome.err.Error()
 		entry.WithField(logFieldError, outcome.err.Error()).Error("failed to enforce terminal banlist action")
+		return outcome.err
 	}
 	return nil
 }

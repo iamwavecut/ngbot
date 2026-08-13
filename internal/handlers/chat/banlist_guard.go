@@ -28,6 +28,7 @@ type banlistGuardStore interface {
 
 type moderationActionStore interface {
 	BeginModerationAction(ctx context.Context, action *db.ModerationActionFence, owner string, now time.Time) (*db.ModerationActionFence, error)
+	MarkModerationActionEffectStarted(ctx context.Context, actionKey, owner string, now time.Time) (bool, error)
 	AdvanceModerationAction(ctx context.Context, actionKey, owner, expectedStatus, nextStatus, lastError string, now time.Time) (bool, error)
 }
 
@@ -171,8 +172,17 @@ func (g *BanlistGuard) enforceDurableBanlistedMessage(ctx context.Context, store
 		return outcome
 	case db.ModerationActionStarted:
 		if action.Owner != owner {
+			if !action.EffectStartedAt.Valid {
+				outcome.err = bot.NewRetryableUpdateFailure(bot.UpdateFailureSQLite, "moderation_fence_claim_failed", errors.New("pre-effect moderation action ownership was not reclaimed"))
+				return outcome
+			}
 			_, advanceErr := store.AdvanceModerationAction(ctx, action.ActionKey, action.Owner, db.ModerationActionStarted, db.ModerationActionReconciliation, "effect outcome unknown after restart", now)
 			outcome.err = bot.NewTerminalUpdateFailure(bot.UpdateFailureRuntime, "moderation_effect_ambiguous", errors.Join(errors.New("moderation effect outcome unknown after restart"), advanceErr))
+			return outcome
+		}
+		started, startErr := store.MarkModerationActionEffectStarted(ctx, action.ActionKey, owner, time.Now())
+		if startErr != nil || !started {
+			outcome.err = bot.NewRetryableUpdateFailure(bot.UpdateFailureSQLite, "mark_moderation_effect_started", errors.Join(startErr, errors.New("moderation effect start fence changed")))
 			return outcome
 		}
 		if service, ok := g.banService.(deadlineBanService); ok {

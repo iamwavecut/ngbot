@@ -210,7 +210,10 @@ func (r *Reactor) handleEditedMessage(ctx context.Context, msg *api.Message, cha
 		return nil
 	}
 	moderationAvailable, err := r.moderationAvailable(ctx, chat.ID)
-	if err != nil || !moderationAvailable {
+	if err != nil {
+		return bot.NewRetryableUpdateFailure(bot.UpdateFailureCapability, "capability_unknown", err)
+	}
+	if !moderationAvailable {
 		return nil
 	}
 	probation, err := r.store.MessageProbation(ctx, chat.ID, user.ID)
@@ -297,7 +300,7 @@ func (r *Reactor) handleCallbackQuery(ctx context.Context, u *api.Update, chat *
 			return true, nil
 		}
 		entry.WithField(logFieldError, err.Error()).Error("failed to record spam vote")
-		return true, nil
+		return false, err
 	}
 
 	language := r.s.GetLanguage(ctx, chat.ID, user)
@@ -306,12 +309,12 @@ func (r *Reactor) handleCallbackQuery(ctx context.Context, u *api.Update, chat *
 	edit := api.NewEditMessageText(chat.ID, u.CallbackQuery.Message.MessageID, text)
 	edit.ReplyMarkup = u.CallbackQuery.Message.ReplyMarkup
 	if _, err := bot.Send(ctx, r.bot, edit); err != nil {
-		entry.WithField(logFieldError, err.Error()).Error("failed to update vote count")
+		return false, fmt.Errorf("update vote count: %w", err)
 	}
 
 	_, err = r.bot.RequestWithContext(ctx, api.NewCallback(u.CallbackQuery.ID, i18n.Get("✓ Vote recorded", language)))
 	if err != nil {
-		entry.WithField(logFieldError, err.Error()).Error("failed to acknowledge callback")
+		return false, fmt.Errorf("acknowledge vote callback: %w", err)
 	}
 
 	return true, nil

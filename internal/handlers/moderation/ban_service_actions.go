@@ -3,7 +3,6 @@ package handlers
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"time"
 
@@ -15,7 +14,7 @@ import (
 const restrictionRecoveryMargin = 5 * time.Minute
 
 func (s *defaultBanService) MuteUser(ctx context.Context, chatID, userID int64, until time.Time) error {
-	priorPermissions, err := s.effectiveMemberPermissions(ctx, chatID, userID)
+	priorPermissions, priorUntilDate, err := s.effectiveMemberPermissions(ctx, chatID, userID)
 	if err != nil {
 		return fmt.Errorf("capture permissions before restriction: %w", err)
 	}
@@ -27,6 +26,14 @@ func (s *defaultBanService) MuteUser(ctx context.Context, chatID, userID int64, 
 	if until.IsZero() {
 		expiresAt = time.Now().Add(10 * time.Minute)
 	}
+	restriction, err := s.db.EnsureRestrictionSnapshot(ctx, &db.UserRestriction{
+		UserID: userID, ChatID: chatID, RestrictedAt: time.Now(), ExpiresAt: expiresAt,
+		Reason: "Spam suspect", PriorPermissionsJSON: string(priorPermissionsJSON), PriorUntilDate: priorUntilDate,
+	})
+	if err != nil {
+		return fmt.Errorf("persist permissions before restriction: %w", err)
+	}
+	expiresAt = restriction.ExpiresAt
 	config := api.RestrictChatMemberConfig{
 		ChatMemberConfig: api.ChatMemberConfig{
 			ChatConfig: api.ChatConfig{ChatID: chatID},
@@ -45,23 +52,6 @@ func (s *defaultBanService) MuteUser(ctx context.Context, chatID, userID int64, 
 		return withPrivilegeError(err, "restrict")
 	}
 
-	restriction := &db.UserRestriction{
-		UserID:               userID,
-		ChatID:               chatID,
-		RestrictedAt:         time.Now(),
-		ExpiresAt:            expiresAt,
-		Reason:               "Spam suspect",
-		PriorPermissionsJSON: string(priorPermissionsJSON),
-	}
-
-	if err := s.db.AddRestriction(ctx, restriction); err != nil {
-		persistErr := fmt.Errorf("failed to add restriction: %w", err)
-		if restoreErr := s.restorePermissions(ctx, chatID, userID, priorPermissions); restoreErr != nil {
-			return errors.Join(persistErr, fmt.Errorf("restore permissions after persistence failure: %w", restoreErr))
-		}
-		return persistErr
-	}
-
 	return nil
 }
 
@@ -74,7 +64,7 @@ func (s *defaultBanService) UnmuteUser(ctx context.Context, chatID, userID int64
 	if err != nil {
 		return err
 	}
-	if err := s.restorePermissions(ctx, chatID, userID, permissions); err != nil {
+	if err := s.restorePermissionsUntil(ctx, chatID, userID, permissions, restriction.PriorUntilDate); err != nil {
 		return err
 	}
 
@@ -86,12 +76,17 @@ func (s *defaultBanService) UnmuteUser(ctx context.Context, chatID, userID int64
 }
 
 func (s *defaultBanService) restorePermissions(ctx context.Context, chatID, userID int64, permissions *api.ChatPermissions) error {
+	return s.restorePermissionsUntil(ctx, chatID, userID, permissions, 0)
+}
+
+func (s *defaultBanService) restorePermissionsUntil(ctx context.Context, chatID, userID int64, permissions *api.ChatPermissions, untilDate int64) error {
 	config := api.RestrictChatMemberConfig{
 		ChatMemberConfig: api.ChatMemberConfig{
 			ChatConfig: api.ChatConfig{ChatID: chatID},
 			UserID:     userID,
 		},
 		Permissions:                   permissions,
+		UntilDate:                     untilDate,
 		UseIndependentChatPermissions: true,
 	}
 
@@ -170,23 +165,23 @@ func (s *defaultBanService) IsRestricted(ctx context.Context, chatID, userID int
 	return restriction != nil && restriction.ExpiresAt.After(time.Now()), nil
 }
 
-func (s *defaultBanService) effectiveMemberPermissions(ctx context.Context, chatID, userID int64) (*api.ChatPermissions, error) {
+func (s *defaultBanService) effectiveMemberPermissions(ctx context.Context, chatID, userID int64) (*api.ChatPermissions, int64, error) {
 	member, err := bot.GetChatMember(ctx, s.bot, api.NewGetChatMember(chatID, userID))
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	if member.Status == "restricted" {
-		return chatMemberPermissions(member), nil
+		return chatMemberPermissions(member), member.UntilDate, nil
 	}
 	chat, err := bot.GetChat(ctx, s.bot, api.ChatInfoConfig{ChatConfig: api.ChatConfig{ChatID: chatID}})
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	if chat.Permissions == nil {
-		return &api.ChatPermissions{}, nil
+		return &api.ChatPermissions{}, 0, nil
 	}
 	permissions := *chat.Permissions
-	return &permissions, nil
+	return &permissions, 0, nil
 }
 
 func (s *defaultBanService) permissionsBeforeRestriction(ctx context.Context, chatID int64, restriction *db.UserRestriction) (*api.ChatPermissions, error) {

@@ -27,13 +27,20 @@ func TestModerationActionFencePersistsStableDeadlineAndPhases(t *testing.T) {
 	if err != nil {
 		t.Fatalf("replay action: %v", err)
 	}
-	if replayed.Owner != "owner-a" || !replayed.BanUntil.Equal(deadline) {
+	if replayed.Owner != "owner-b" || replayed.EffectStartedAt.Valid || !replayed.BanUntil.Equal(deadline) {
 		t.Fatalf("replay changed fence = %#v", replayed)
 	}
-	if ok, err := client.AdvanceModerationAction(t.Context(), action.ActionKey, "owner-a", db.ModerationActionStarted, db.ModerationActionBanned, "", deadline); err != nil || !ok {
+	if ok, err := client.MarkModerationActionEffectStarted(t.Context(), action.ActionKey, "owner-b", deadline); err != nil || !ok {
+		t.Fatalf("mark effect started: ok=%t err=%v", ok, err)
+	}
+	ambiguous, err := client.BeginModerationAction(t.Context(), action, "owner-c", deadline)
+	if err != nil || ambiguous.Owner != "owner-b" || !ambiguous.EffectStartedAt.Valid {
+		t.Fatalf("post-effect replay = %#v err=%v", ambiguous, err)
+	}
+	if ok, err := client.AdvanceModerationAction(t.Context(), action.ActionKey, "owner-b", db.ModerationActionStarted, db.ModerationActionBanned, "", deadline); err != nil || !ok {
 		t.Fatalf("mark banned: ok=%t err=%v", ok, err)
 	}
-	if ok, err := client.AdvanceModerationAction(t.Context(), action.ActionKey, "owner-a", db.ModerationActionBanned, db.ModerationActionCompleted, "", deadline); err != nil || !ok {
+	if ok, err := client.AdvanceModerationAction(t.Context(), action.ActionKey, "owner-b", db.ModerationActionBanned, db.ModerationActionCompleted, "", deadline); err != nil || !ok {
 		t.Fatalf("complete action: ok=%t err=%v", ok, err)
 	}
 }

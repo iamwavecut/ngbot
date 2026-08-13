@@ -268,7 +268,11 @@ func (r *Reactor) voteBanCommand(ctx context.Context, msg *api.Message, chat *ap
 		return nil
 	}
 
-	if r.reporterCanRestrictMembers(ctx, chat.ID, user.ID) {
+	reporterCanRestrict, err := r.reporterCanRestrictMembers(ctx, chat.ID, user.ID)
+	if err != nil {
+		return bot.NewRetryableUpdateFailure(bot.UpdateFailureCapability, "vote_authority_unknown", err)
+	}
+	if reporterCanRestrict {
 		_, err := r.processBanned(ctx, target, chat, language)
 		if err != nil {
 			entry.WithError(err).Error("Failed to process spam message")
@@ -294,7 +298,7 @@ func (r *Reactor) voteBanCommand(ctx context.Context, msg *api.Message, chat *ap
 	return nil
 }
 
-func (r *Reactor) reporterCanRestrictMembers(ctx context.Context, chatID int64, userID int64) bool {
+func (r *Reactor) reporterCanRestrictMembers(ctx context.Context, chatID int64, userID int64) (bool, error) {
 	member, err := bot.GetChatMember(ctx, r.bot, api.GetChatMemberConfig{
 		ChatConfigWithUser: api.ChatConfigWithUser{
 			ChatConfig: api.ChatConfig{
@@ -304,10 +308,9 @@ func (r *Reactor) reporterCanRestrictMembers(ctx context.Context, chatID int64, 
 		},
 	})
 	if err != nil {
-		r.getLogEntry().WithError(err).WithField("chatID", chatID).WithField("userID", userID).Warn("failed to get reporter chat member; treating as non-restrict reporter")
-		return false
+		return false, fmt.Errorf("get reporter chat member: %w", err)
 	}
-	return permissions.CanRestrictMembers(&member)
+	return permissions.CanRestrictMembers(&member), nil
 }
 
 func (r *Reactor) sendTemporaryReply(ctx context.Context, msg *api.Message, text string) error {

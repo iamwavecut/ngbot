@@ -261,10 +261,10 @@ func (sc *SpamControl) preprocessMessage(ctx context.Context, msg *api.Message, 
 		return result, nil
 	}
 	available, err := sc.banService.ModerationAvailable(ctx, chat.ID)
-	if err != nil || !available {
-		if err != nil {
-			log.WithError(err).WithField(logFieldChatID, chat.ID).Warn("failed to inspect moderation rights; skipping moderation")
-		}
+	if err != nil {
+		return result, bot.NewRetryableUpdateFailure(bot.UpdateFailureCapability, "capability_unknown", err)
+	}
+	if !available {
 		return result, nil
 	}
 
@@ -344,6 +344,7 @@ func (sc *SpamControl) preprocessMessage(ctx context.Context, msg *api.Message, 
 				}
 			} else {
 				result.Error = err.Error()
+				return result, err
 			}
 		} else {
 			if err := sc.store.SetSpamCasePreVoteRestricted(ctx, spamCase.ID, true); err != nil {
@@ -353,7 +354,8 @@ func (sc *SpamControl) preprocessMessage(ctx context.Context, msg *api.Message, 
 			spamCase.PreVoteRestricted = true
 			result.UserBanned = true
 			if err := bot.DeleteChatMessage(ctx, sc.bot, chat.ID, msg.MessageID); err != nil {
-				log.WithField("error", err.Error()).WithField("chat_title", chat.Title).WithField("chat_username", chat.UserName).Error("failed to delete message")
+				result.Error = err.Error()
+				return result, fmt.Errorf("delete detected spam message: %w", err)
 			} else {
 				result.MessageDeleted = true
 			}
@@ -374,6 +376,7 @@ func (sc *SpamControl) preprocessMessage(ctx context.Context, msg *api.Message, 
 			} else {
 				result.Error = err.Error()
 			}
+			return result, err
 		} else {
 			result.UserBanned = true
 			result.MessageDeleted = true

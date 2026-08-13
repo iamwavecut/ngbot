@@ -71,6 +71,7 @@ type banStore interface {
 	CleanupRetainedRecords(ctx context.Context, now time.Time, limit int) error
 	GetBanlist(ctx context.Context) (map[int64]struct{}, error)
 	AddRestriction(ctx context.Context, restriction *db.UserRestriction) error
+	EnsureRestrictionSnapshot(ctx context.Context, restriction *db.UserRestriction) (*db.UserRestriction, error)
 	RemoveRestriction(ctx context.Context, chatID int64, userID int64) error
 	GetActiveRestriction(ctx context.Context, chatID, userID int64) (*db.UserRestriction, error)
 	GetRestriction(ctx context.Context, chatID, userID int64) (*db.UserRestriction, error)

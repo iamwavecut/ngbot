@@ -30,8 +30,8 @@ func (c *sqliteClient) BeginModerationAction(ctx context.Context, action *db.Mod
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE moderation_action_fences
 		SET status = ?, owner = ?, updated_at = ?
-		WHERE action_key = ? AND status = ?
-	`, db.ModerationActionStarted, owner, now, action.ActionKey, db.ModerationActionPending); err != nil {
+		WHERE action_key = ? AND (status = ? OR (status = ? AND effect_started_at IS NULL))
+	`, db.ModerationActionStarted, owner, now, action.ActionKey, db.ModerationActionPending, db.ModerationActionStarted); err != nil {
 		return nil, fmt.Errorf("claim moderation action: %w", err)
 	}
 	var result db.ModerationActionFence
@@ -42,6 +42,21 @@ func (c *sqliteClient) BeginModerationAction(ctx context.Context, action *db.Mod
 		return nil, fmt.Errorf("commit moderation action: %w", err)
 	}
 	return &result, nil
+}
+
+func (c *sqliteClient) MarkModerationActionEffectStarted(ctx context.Context, actionKey, owner string, now time.Time) (bool, error) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	result, err := c.db.ExecContext(ctx, `
+		UPDATE moderation_action_fences
+		SET effect_started_at = ?, updated_at = ?
+		WHERE action_key = ? AND owner = ? AND status = ? AND effect_started_at IS NULL
+	`, now, now, actionKey, owner, db.ModerationActionStarted)
+	if err != nil {
+		return false, fmt.Errorf("mark moderation effect started: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	return rows == 1, err
 }
 
 func (c *sqliteClient) AdvanceModerationAction(ctx context.Context, actionKey, owner, expectedStatus, nextStatus, lastError string, now time.Time) (bool, error) {

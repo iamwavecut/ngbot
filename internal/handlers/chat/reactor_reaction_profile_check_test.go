@@ -9,11 +9,12 @@ import (
 
 	api "github.com/OvyFlash/telegram-bot-api"
 	"github.com/iamwavecut/ngbot/internal/adapters/llm"
+	botservice "github.com/iamwavecut/ngbot/internal/bot"
 	"github.com/iamwavecut/ngbot/internal/db"
 	moderation "github.com/iamwavecut/ngbot/internal/handlers/moderation"
 )
 
-func TestReactionProfilePolicyFailureFailsOpen(t *testing.T) {
+func TestReactionProfilePolicyFailureReturnsRetryableFailure(t *testing.T) {
 	t.Parallel()
 
 	actorChat := &api.Chat{ID: -100999, Type: testChatTypeChannel, Title: "policy-secret-profile"}
@@ -28,8 +29,45 @@ func TestReactionProfilePolicyFailureFailsOpen(t *testing.T) {
 		spamDetector: &testSpamDetector{err: llm.NewFailure(llm.FailurePolicyBlocked, errors.New("provider-policy-secret"))},
 	}
 	chat := &api.Chat{ID: -100123, Type: testChatTypeSupergroup}
-	if err := reactor.moderateReactionActorChat(t.Context(), chat, actorChat, reactor.getLogEntry()); err != nil {
-		t.Fatalf("reaction profile policy failure did not fail open: %v", err)
+	err := reactor.moderateReactionActorChat(t.Context(), chat, actorChat, reactor.getLogEntry())
+	failure := botservice.ClassifyUpdateFailure(err)
+	if failure.Source != botservice.UpdateFailureLLM || failure.Disposition != botservice.UpdateFailureRetryable {
+		t.Fatalf("classification failure = %#v", failure)
+	}
+}
+
+func TestReactionMalformedClassificationReturnsRetryableFailure(t *testing.T) {
+	t.Parallel()
+
+	actorChat := &api.Chat{ID: -100999, Type: testChatTypeChannel, Title: "candidate"}
+	botAPI := newTestBotAPI(t, func(method string, _ *http.Request) any {
+		if method != testTelegramMethodGetChat {
+			t.Fatalf("unexpected bot method: %s", method)
+		}
+		return map[string]any{"id": actorChat.ID, testJSONType: testChatTypeChannel, testJSONTitle: actorChat.Title}
+	})
+	reactor := &Reactor{
+		bot:          botAPI,
+		spamDetector: &testSpamDetector{err: llm.NewFailure(llm.FailureMalformedOutput, errors.New("empty"))},
+	}
+	chat := &api.Chat{ID: -100123, Type: testChatTypeSupergroup}
+	err := reactor.moderateReactionActorChat(t.Context(), chat, actorChat, reactor.getLogEntry())
+	failure := botservice.ClassifyUpdateFailure(err)
+	if failure.Source != botservice.UpdateFailureLLM || failure.Disposition != botservice.UpdateFailureRetryable {
+		t.Fatalf("classification failure = %#v", failure)
+	}
+}
+
+func TestReactionCapabilityLookupFailureReturnsRetryableFailure(t *testing.T) {
+	t.Parallel()
+
+	reactor := &Reactor{banService: &testBanService{moderationErr: errors.New("telegram unavailable")}}
+	chat := &api.Chat{ID: -100123, Type: testChatTypeSupergroup}
+	reaction := &api.MessageReactionUpdated{Chat: *chat, MessageID: 7, User: &api.User{ID: 200}, NewReaction: []api.ReactionType{{Type: api.ReactionTypeEmoji, Emoji: "!"}}}
+	_, err := reactor.handleMessageReaction(t.Context(), reaction, chat, db.DefaultSettings(chat.ID))
+	failure := botservice.ClassifyUpdateFailure(err)
+	if failure.Source != botservice.UpdateFailureCapability || failure.Disposition != botservice.UpdateFailureRetryable {
+		t.Fatalf("capability failure = %#v", failure)
 	}
 }
 

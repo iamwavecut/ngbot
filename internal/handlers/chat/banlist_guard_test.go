@@ -49,6 +49,15 @@ func (s *testModerationFenceStore) AdvanceModerationAction(_ context.Context, _ 
 	return true, nil
 }
 
+func (s *testModerationFenceStore) MarkModerationActionEffectStarted(_ context.Context, _ string, owner string, now time.Time) (bool, error) {
+	if s.action.Owner != owner || s.action.Status != db.ModerationActionStarted || s.action.EffectStartedAt.Valid {
+		return false, nil
+	}
+	s.action.EffectStartedAt.Valid = true
+	s.action.EffectStartedAt.Time = now
+	return true, nil
+}
+
 func TestBanlistGuardStopsCommandBeforeDownstreamHandlers(t *testing.T) {
 	t.Parallel()
 

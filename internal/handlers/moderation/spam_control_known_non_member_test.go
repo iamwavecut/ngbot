@@ -287,6 +287,7 @@ type testModerationBanService struct {
 	muteErr               error
 	unmuteErr             error
 	moderationUnavailable bool
+	moderationErr         error
 	markedUnavailable     bool
 	checkBan              bool
 }
@@ -376,7 +377,41 @@ func TestRecordVoteUsesTargetChatUsernameAllowlistBeforeAuthorityChecks(t *testi
 }
 
 func (s *testModerationBanService) ModerationAvailable(context.Context, int64) (bool, error) {
-	return !s.moderationUnavailable, nil
+	return !s.moderationUnavailable, s.moderationErr
+}
+
+func TestRecordVoteCapabilityLookupFailureIsRetryableAndDoesNotRecord(t *testing.T) {
+	t.Parallel()
+
+	spamCase := &db.SpamCase{ID: 1, ChatID: -100, UserID: 200, Status: db.SpamCaseStatusPending}
+	store := &testModerationStore{spamCase: spamCase, isNotSpammer: true}
+	control := &SpamControl{store: store, banService: &testModerationBanService{moderationErr: errors.New("telegram unavailable")}}
+
+	_, _, err := control.RecordVote(t.Context(), spamCase.ID, 300, "allowed", false)
+	failure := bot.ClassifyUpdateFailure(err)
+	if failure.Source != bot.UpdateFailureCapability || failure.Disposition != bot.UpdateFailureRetryable {
+		t.Fatalf("capability failure = %#v", failure)
+	}
+	if len(store.votes) != 0 || spamCase.Status != db.SpamCaseStatusPending || spamCase.ResolvedAt != nil {
+		t.Fatalf("authority error mutated durable state: votes=%#v case=%#v", store.votes, spamCase)
+	}
+}
+
+func TestClaimedCaseCapabilityLookupFailureIsRetryableAndKeepsResolution(t *testing.T) {
+	t.Parallel()
+
+	spamCase := &db.SpamCase{ID: 1, ChatID: -100, UserID: 200, Status: db.SpamCaseStatusResolvingSpam}
+	store := &testModerationStore{spamCase: spamCase}
+	control := &SpamControl{store: store, banService: &testModerationBanService{moderationErr: errors.New("telegram unavailable")}}
+
+	err := control.resolveClaimedCase(t.Context(), spamCase)
+	failure := bot.ClassifyUpdateFailure(err)
+	if failure.Source != bot.UpdateFailureCapability || failure.Disposition != bot.UpdateFailureRetryable {
+		t.Fatalf("capability failure = %#v", failure)
+	}
+	if spamCase.Status != db.SpamCaseStatusResolvingSpam || spamCase.ResolvedAt != nil || store.retryCalls != 0 {
+		t.Fatalf("authority error mutated durable state: case=%#v retries=%d", spamCase, store.retryCalls)
+	}
 }
 
 func (s *testModerationBanService) MarkModerationUnavailable(int64) {

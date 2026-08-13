@@ -48,7 +48,19 @@ func (s *testBanStore) AddRestriction(_ context.Context, restriction *db.UserRes
 	return s.addErr
 }
 
-func TestMuteUserRestoresCapturedPermissionsWhenPersistenceFails(t *testing.T) {
+func (s *testBanStore) EnsureRestrictionSnapshot(_ context.Context, restriction *db.UserRestriction) (*db.UserRestriction, error) {
+	if s.addErr != nil {
+		return nil, s.addErr
+	}
+	if s.restriction == nil {
+		copy := *restriction
+		s.restriction = &copy
+	}
+	copy := *s.restriction
+	return &copy, nil
+}
+
+func TestMuteUserPersistsCapturedPermissionsBeforeTelegram(t *testing.T) {
 	t.Parallel()
 
 	var restrictions []api.ChatPermissions
@@ -86,11 +98,8 @@ func TestMuteUserRestoresCapturedPermissionsWhenPersistenceFails(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected persistence failure")
 	}
-	if len(restrictions) != 2 {
-		t.Fatalf("restriction calls = %d, want mute and restore", len(restrictions))
-	}
-	if !restrictions[1].CanSendMessages || !restrictions[1].CanSendPhotos {
-		t.Fatalf("compensating permissions = %#v", restrictions[1])
+	if len(restrictions) != 0 {
+		t.Fatalf("restriction calls = %d, want no Telegram effect before durable snapshot", len(restrictions))
 	}
 }
 
@@ -131,8 +140,8 @@ func TestUnmuteUserRestoresCapturedRestrictivePermissions(t *testing.T) {
 		if got := r.Form.Get(logFieldUserID); got != "200" {
 			t.Fatalf("unexpected user_id: %q", got)
 		}
-		if got := r.Form.Get("until_date"); got != "" && got != strconv.FormatInt(0, 10) {
-			t.Fatalf("unexpected until_date: %q", got)
+		if got := r.Form.Get("until_date"); got != strconv.FormatInt(12345, 10) {
+			t.Fatalf("until_date = %q, want 12345", got)
 		}
 		if err := json.Unmarshal([]byte(r.Form.Get("permissions")), &permissions); err != nil {
 			t.Fatalf("unmarshal permissions: %v", err)
@@ -159,6 +168,7 @@ func TestUnmuteUserRestoresCapturedRestrictivePermissions(t *testing.T) {
 		UserID:               200,
 		ExpiresAt:            time.Now().Add(time.Minute),
 		PriorPermissionsJSON: string(encoded),
+		PriorUntilDate:       12345,
 	}}
 	service := &defaultBanService{bot: botAPI, db: store}
 	if err := service.UnmuteUser(context.Background(), -100, 200); err != nil {
