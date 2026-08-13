@@ -255,43 +255,48 @@ func (d *DurableUpdateDispatcher) execute(ctx context.Context, submitted *api.Up
 		return nil
 	}
 
-	var update api.Update
-	if err := json.Unmarshal(record.Payload, &update); err != nil {
-		failure := ClassifyUpdateFailure(NewTerminalUpdateFailure(UpdateFailurePayload, "malformed_payload", err))
-		return d.finishFailure(ctx, record, &update, failure)
-	}
-	if isStructurallyEmptyUpdate(&update) {
-		failure := ClassifyUpdateFailure(NewTerminalUpdateFailure(UpdateFailurePayload, "malformed_update", errors.New("telegram update has no supported body")))
-		return d.finishFailure(ctx, record, &update, failure)
-	}
-
 	processCtx, cancelProcess := context.WithCancel(ctx)
 	stopHeartbeat := make(chan struct{})
 	heartbeatDone := make(chan error, 1)
 	go d.heartbeatLease(processCtx, cancelProcess, record, stopHeartbeat, heartbeatDone)
-	processErr := d.callProcessor(processCtx, &update)
-	close(stopHeartbeat)
-	heartbeatErr := <-heartbeatDone
-	cancelProcess()
-	if heartbeatErr != nil && processErr == nil {
-		processErr = heartbeatErr
+
+	var update api.Update
+	var processErr error
+	if err := json.Unmarshal(record.Payload, &update); err != nil {
+		processErr = NewTerminalUpdateFailure(UpdateFailurePayload, "malformed_payload", err)
+	} else if isStructurallyEmptyUpdate(&update) {
+		processErr = NewTerminalUpdateFailure(UpdateFailurePayload, "malformed_update", errors.New("telegram update has no supported body"))
+	} else {
+		processErr = d.callProcessor(processCtx, &update)
 	}
+
+	var outcomeErr error
 	if processErr == nil {
-		changed, completeErr := d.retryStoreTransition(ctx, func() (bool, error) {
-			return d.store.CompleteTelegramUpdate(ctx, record.UpdateID, record.LeaseOwner, record.LeaseVersion, "handler", time.Now())
+		changed, completeErr := d.retryStoreTransition(processCtx, func() (bool, error) {
+			return d.store.CompleteTelegramUpdate(processCtx, record.UpdateID, record.LeaseOwner, record.LeaseVersion, "handler", time.Now())
 		})
 		d.removeScheduled(record.UpdateID)
 		if completeErr != nil {
 			d.deferScheduler()
-			return completeErr
+			outcomeErr = completeErr
+		} else if !changed {
+			outcomeErr = fmt.Errorf("telegram update %d completion fence was lost", record.UpdateID)
+		} else {
+			d.notifyScheduler()
 		}
-		if !changed {
-			return fmt.Errorf("telegram update %d completion fence was lost", record.UpdateID)
-		}
-		d.notifyScheduler()
+	} else {
+		outcomeErr = d.finishFailure(processCtx, record, &update, ClassifyUpdateFailure(processErr))
+	}
+	cancelProcess()
+	close(stopHeartbeat)
+	heartbeatErr := <-heartbeatDone
+	if outcomeErr == nil {
 		return nil
 	}
-	return d.finishFailure(ctx, record, &update, ClassifyUpdateFailure(processErr))
+	if heartbeatErr != nil {
+		return errors.Join(outcomeErr, heartbeatErr)
+	}
+	return outcomeErr
 }
 
 func (d *DurableUpdateDispatcher) heartbeatLease(ctx context.Context, cancelProcess context.CancelFunc, record *db.TelegramUpdate, stop <-chan struct{}, done chan<- error) {
