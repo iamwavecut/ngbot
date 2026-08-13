@@ -100,6 +100,11 @@ See [.env.example](.env.example) for a quick reference. `NGBOT_*` variables conf
 | | `NG_TELEGRAM_POLL_TIMEOUT` | Telegram long poll timeout | `60s` | Any valid duration string |
 | | `NG_TELEGRAM_REQUEST_TIMEOUT` | Telegram HTTP request timeout | `75s` | Must be greater than poll timeout |
 | | `NG_TELEGRAM_RECOVERY_WINDOW` | Maximum degraded polling window before restart | `10m` | Must be greater than request timeout |
+| | `NG_TELEGRAM_INBOX_MAX_PENDING_ROWS` | Maximum aggregate pending/retry inbox rows | `100000` | Positive integer |
+| | `NG_TELEGRAM_INBOX_MAX_PENDING_BYTES` | Maximum aggregate pending/retry payload bytes | `536870912` | Positive integer |
+| | `NG_TELEGRAM_INBOX_MAX_DISPATCH_PENDING_ROWS` | Maximum pending/retry rows for one dispatch key | `10000` | Positive integer |
+| | `NG_TELEGRAM_INBOX_MAX_DISPATCH_PENDING_BYTES` | Maximum pending/retry bytes for one dispatch key | `33554432` | Positive integer |
+| | `NG_TELEGRAM_INBOX_MIN_FREE_BYTES` | Minimum database filesystem free space for admission | `268435456` | Positive integer |
 | | `NG_GATEKEEPER_WEBAPP_PUBLIC_URL` | Public HTTPS origin for join-request CAPTCHA Mini App | | Absolute URL, e.g. `https://captcha.example.com` |
 | | `NG_GATEKEEPER_WEBAPP_LISTEN_ADDR` | Native embedded Mini App server listen address | `127.0.0.1:8080` | Compose enforces `0.0.0.0:8080` inside the container |
 | | `NG_GATEKEEPER_WEBAPP_MAX_CONCURRENT` | Maximum in-flight Mini App requests | `32` | Integer greater than zero; `0` is invalid |

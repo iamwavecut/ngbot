@@ -9,7 +9,9 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 
+	"github.com/iamwavecut/ngbot/internal/db"
 	"github.com/iamwavecut/ngbot/internal/infra"
 	"github.com/iamwavecut/ngbot/resources"
 
@@ -20,11 +22,16 @@ import (
 )
 
 const (
-	migrationsRoot         = "migrations"
-	walJournalMode         = "wal"
-	journalSizeLimitBytes  = 64 << 20
-	walAutoCheckpointPages = 1_000
-	incrementalAutoVacuum  = 2
+	migrationsRoot                      = "migrations"
+	walJournalMode                      = "wal"
+	journalSizeLimitBytes               = 64 << 20
+	walAutoCheckpointPages              = 1_000
+	incrementalAutoVacuum               = 2
+	defaultInboxMaxPendingRows          = 100_000
+	defaultInboxMaxPendingBytes         = 512 << 20
+	defaultInboxMaxDispatchPendingRows  = 10_000
+	defaultInboxMaxDispatchPendingBytes = 32 << 20
+	defaultInboxMinFreeBytes            = 256 << 20
 )
 
 var errMigrationRollbackUnsupported = errors.New("application migration rollback is unsupported")
@@ -35,6 +42,8 @@ type sqliteClient struct {
 	banlistImportMutex           sync.Mutex
 	banlistCleanupBatchLocked    func()
 	banlistCleanupBetweenBatches func()
+	telegramUpdateInboxLimits    db.TelegramUpdateInboxLimits
+	databaseFreeBytes            func() (uint64, error)
 }
 
 func NewSQLiteClient(ctx context.Context, dataDir string, dbPath string) (*sqliteClient, error) {
@@ -129,7 +138,18 @@ func NewSQLiteClient(ctx context.Context, dataDir string, dbPath string) (*sqlit
 	}
 
 	closeOnError = false
-	return &sqliteClient{db: dbx}, nil
+	client := &sqliteClient{
+		db:                        dbx,
+		telegramUpdateInboxLimits: normalizedTelegramUpdateInboxLimits(db.TelegramUpdateInboxLimits{}),
+	}
+	client.databaseFreeBytes = func() (uint64, error) {
+		var stats syscall.Statfs_t
+		if err := syscall.Statfs(filepath.Dir(dbFilePath), &stats); err != nil {
+			return 0, fmt.Errorf("read database filesystem capacity: %w", err)
+		}
+		return stats.Bavail * uint64(stats.Bsize), nil
+	}
+	return client, nil
 }
 
 func planApplicationMigrations(db *sql.DB, source migrate.MigrationSource, direction migrate.MigrationDirection) error {

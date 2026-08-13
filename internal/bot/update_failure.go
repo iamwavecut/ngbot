@@ -77,18 +77,14 @@ func ClassifyUpdateFailure(err error) UpdateFailure {
 		}
 	}
 
+	var telegramErrorPointer *api.Error
+	if errors.As(err, &telegramErrorPointer) {
+		return classifyTelegramUpdateFailure(*telegramErrorPointer, err)
+	}
+
 	var telegramError api.Error
 	if errors.As(err, &telegramError) {
-		disposition := UpdateFailureTerminal
-		if telegramError.Code == 429 || telegramError.Code >= 500 {
-			disposition = UpdateFailureRetryable
-		}
-		return UpdateFailure{
-			Source:      UpdateFailureTelegram,
-			Disposition: disposition,
-			Reason:      telegramFailureReason(telegramError),
-			Cause:       err,
-		}
+		return classifyTelegramUpdateFailure(telegramError, err)
 	}
 
 	var sqliteError interface{ Code() int }
@@ -112,6 +108,19 @@ func ClassifyUpdateFailure(err error) UpdateFailure {
 	}
 
 	return UpdateFailure{Source: UpdateFailureRuntime, Disposition: UpdateFailureRetryable, Reason: "unclassified_error", Cause: err}
+}
+
+func classifyTelegramUpdateFailure(telegramError api.Error, cause error) UpdateFailure {
+	disposition := UpdateFailureTerminal
+	if telegramError.Code == 429 || telegramError.Code >= 500 {
+		disposition = UpdateFailureRetryable
+	}
+	return UpdateFailure{
+		Source:      UpdateFailureTelegram,
+		Disposition: disposition,
+		Reason:      telegramFailureReason(telegramError),
+		Cause:       cause,
+	}
 }
 
 func telegramFailureReason(err api.Error) string {

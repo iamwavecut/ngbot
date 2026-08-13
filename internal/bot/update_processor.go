@@ -94,10 +94,9 @@ func (up *UpdateProcessor) Process(ctx context.Context, u *api.Update) error {
 				"update_time":    updateTime,
 				"age":            time.Since(updateTime),
 			}).Debug("Skipping outdated update")
-			if isSecurityRelevantUpdate(u) {
-				return NewTerminalUpdateFailure(UpdateFailurePayload, "stale_security_update", errors.New("moderation-relevant update exceeded freshness window"))
+			if !bypassesFreshnessWindow(u) {
+				return nil
 			}
-			return nil
 		}
 
 		chat, user := updateContext(u)
@@ -122,6 +121,13 @@ func (up *UpdateProcessor) Process(ctx context.Context, u *api.Update) error {
 		}
 		return nil
 	}
+}
+
+func bypassesFreshnessWindow(update *api.Update) bool {
+	return update != nil && (update.ChatJoinRequest != nil ||
+		update.ChatMember != nil ||
+		update.MyChatMember != nil ||
+		update.MessageReaction != nil)
 }
 
 func (up *UpdateProcessor) Degrade(ctx context.Context, update *api.Update, failure UpdateFailure) error {

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	api "github.com/OvyFlash/telegram-bot-api"
+	"github.com/iamwavecut/ngbot/internal/db"
 )
 
 func TestGetUpdatesChansHealthyEmptyResponses(t *testing.T) {
@@ -169,7 +170,7 @@ func TestGetUpdatesChansDoesNotAdvanceOffsetUntilPersistenceSucceeds(t *testing.
 	var persistCalls atomic.Int32
 	options.Persist = func(_ context.Context, _ api.Update) error {
 		if persistCalls.Add(1) == 1 {
-			return stdErrors.New("database busy")
+			return &db.TelegramUpdateInboxCapacityError{Limit: "global_pending_rows"}
 		}
 		return nil
 	}

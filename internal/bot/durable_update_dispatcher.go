@@ -424,7 +424,7 @@ func (d *DurableUpdateDispatcher) finishFailure(ctx context.Context, record *db.
 		"failure_source":    failure.Source,
 		"failure_reason":    reason,
 		"security_relevant": record.SecurityRelevant,
-	}).WithError(failure.Cause).Error("telegram update moved to durable failure ledger")
+	}).Error("telegram update moved to durable failure ledger")
 	d.notifyScheduler()
 	return nil
 }

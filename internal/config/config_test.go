@@ -29,6 +29,28 @@ func TestLoadUsesProviderSpecificCredential(t *testing.T) {
 	}
 }
 
+func TestLoadUsesBoundedTelegramInboxDefaults(t *testing.T) {
+	t.Setenv("NG_TOKEN", "telegram-token")
+	t.Setenv("NG_HANDLERS", "reactor")
+	t.Setenv("NG_LLM_API_TYPE", "gemini")
+	t.Setenv("NG_LLM_GEMINI_API_KEY", "gemini-specific")
+	t.Setenv("NG_DOT_PATH", t.TempDir())
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if cfg.Telegram.InboxMaxPendingRows != 100_000 || cfg.Telegram.InboxMaxPendingBytes != 512<<20 {
+		t.Fatalf("global inbox defaults = rows=%d bytes=%d", cfg.Telegram.InboxMaxPendingRows, cfg.Telegram.InboxMaxPendingBytes)
+	}
+	if cfg.Telegram.InboxMaxDispatchPendingRows != 10_000 || cfg.Telegram.InboxMaxDispatchPendingBytes != 32<<20 {
+		t.Fatalf("dispatch inbox defaults = rows=%d bytes=%d", cfg.Telegram.InboxMaxDispatchPendingRows, cfg.Telegram.InboxMaxDispatchPendingBytes)
+	}
+	if cfg.Telegram.InboxMinFreeBytes != 256<<20 {
+		t.Fatalf("inbox minimum free bytes = %d", cfg.Telegram.InboxMinFreeBytes)
+	}
+}
+
 func TestLoadDefaultsNativeWebAppToLoopback(t *testing.T) {
 	t.Setenv("NG_TOKEN", "telegram-token")
 	t.Setenv("NG_HANDLERS", "admin,gatekeeper")

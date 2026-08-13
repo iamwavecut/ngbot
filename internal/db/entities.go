@@ -2,8 +2,12 @@ package db
 
 import (
 	"database/sql"
+	"errors"
+	"fmt"
 	"time"
 )
+
+var ErrTelegramUpdateInboxCapacity = errors.New("telegram update inbox capacity exceeded")
 
 type (
 	Settings struct {
@@ -190,6 +194,7 @@ type (
 		UpdateID         int          `db:"update_id"`
 		DispatchKey      string       `db:"dispatch_key"`
 		Payload          []byte       `db:"payload"`
+		PayloadBytes     int64        `db:"payload_bytes"`
 		SecurityRelevant bool         `db:"security_relevant"`
 		Status           string       `db:"status"`
 		AttemptCount     int          `db:"attempt_count"`
@@ -198,6 +203,7 @@ type (
 		StartedAt        sql.NullTime `db:"started_at"`
 		CompletedAt      sql.NullTime `db:"completed_at"`
 		LastError        string       `db:"last_error"`
+		ErrorDigest      string       `db:"error_digest"`
 		OutcomeSource    string       `db:"outcome_source"`
 		LeaseOwner       string       `db:"lease_owner"`
 		LeaseVersion     int64        `db:"lease_version"`
@@ -213,8 +219,21 @@ type (
 		FailureSource    string       `db:"failure_source"`
 		FailureReason    string       `db:"failure_reason"`
 		LastError        string       `db:"last_error"`
+		ErrorDigest      string       `db:"error_digest"`
 		CreatedAt        time.Time    `db:"created_at"`
 		ResolvedAt       sql.NullTime `db:"resolved_at"`
+	}
+
+	TelegramUpdateInboxLimits struct {
+		MaxPendingRows          int64
+		MaxPendingBytes         int64
+		MaxDispatchPendingRows  int64
+		MaxDispatchPendingBytes int64
+		MinFreeBytes            int64
+	}
+
+	TelegramUpdateInboxCapacityError struct {
+		Limit string
 	}
 
 	ChatNotSpammerOverride struct {
@@ -226,6 +245,14 @@ type (
 		CreatedAt       time.Time `db:"created_at"`
 	}
 )
+
+func (e *TelegramUpdateInboxCapacityError) Error() string {
+	return fmt.Sprintf("%s: %s", ErrTelegramUpdateInboxCapacity, e.Limit)
+}
+
+func (e *TelegramUpdateInboxCapacityError) Unwrap() error {
+	return ErrTelegramUpdateInboxCapacity
+}
 
 const (
 	defaultChallengeTimeout                = 3 * time.Minute

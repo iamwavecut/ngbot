@@ -402,6 +402,13 @@ func buildRuntime(ctx context.Context, cfg *config.Config, errChan chan<- shutdo
 	if err != nil {
 		return nil, fmt.Errorf("initialize sqlite client: %w", err)
 	}
+	dbClient.SetTelegramUpdateInboxLimits(db.TelegramUpdateInboxLimits{
+		MaxPendingRows:          cfg.Telegram.InboxMaxPendingRows,
+		MaxPendingBytes:         cfg.Telegram.InboxMaxPendingBytes,
+		MaxDispatchPendingRows:  cfg.Telegram.InboxMaxDispatchPendingRows,
+		MaxDispatchPendingBytes: cfg.Telegram.InboxMaxDispatchPendingBytes,
+		MinFreeBytes:            cfg.Telegram.InboxMinFreeBytes,
+	})
 
 	service := bot.NewService(ctx, botAPI, dbClient, cfg.DefaultLanguage, log.WithField("context", "service"))
 	banService := moderationHandlers.NewBanService(botAPI, dbClient)

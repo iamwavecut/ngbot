@@ -21,10 +21,9 @@ func TestUpdateProcessorUsesEditDateForFreshness(t *testing.T) {
 		name     string
 		editDate time.Time
 		wantCall bool
-		wantErr  bool
 	}{
 		{name: "fresh edit of old message", editDate: time.Now(), wantCall: true},
-		{name: "stale edit", editDate: time.Now().Add(-UpdateTimeout - time.Minute), wantErr: true},
+		{name: "stale edit", editDate: time.Now().Add(-UpdateTimeout - time.Minute)},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -48,15 +47,8 @@ func TestUpdateProcessorUsesEditDateForFreshness(t *testing.T) {
 				},
 			}
 
-			err := processor.Process(t.Context(), update)
-			if got := err != nil; got != test.wantErr {
-				t.Fatalf("process edited update error = %v, want error=%t", err, test.wantErr)
-			}
-			if err != nil {
-				failure := ClassifyUpdateFailure(err)
-				if failure.Disposition != UpdateFailureTerminal || failure.Reason != "stale_security_update" {
-					t.Fatalf("stale edit failure = %#v", failure)
-				}
+			if err := processor.Process(t.Context(), update); err != nil {
+				t.Fatalf("process edited update: %v", err)
 			}
 			if got := calls == 1; got != test.wantCall {
 				t.Fatalf("handler called = %t, want %t", got, test.wantCall)
@@ -92,7 +84,7 @@ func TestUpdateProcessorUsesChannelPostEditDateForFreshness(t *testing.T) {
 	}
 }
 
-func TestUpdateProcessorDeadLettersStaleTimestampedSecurityUpdates(t *testing.T) {
+func TestUpdateProcessorRoutesStaleIdentityAndSecurityUpdates(t *testing.T) {
 	t.Parallel()
 
 	stale := time.Now().Add(-UpdateTimeout - time.Minute).Unix()
@@ -117,12 +109,11 @@ func TestUpdateProcessorDeadLettersStaleTimestampedSecurityUpdates(t *testing.T)
 			}))
 			test.update.UpdateID = 302
 			err := processor.Process(t.Context(), test.update)
-			failure := ClassifyUpdateFailure(err)
-			if failure.Disposition != UpdateFailureTerminal || failure.Reason != "stale_security_update" {
-				t.Fatalf("failure = %#v, want stale security terminal", failure)
+			if err != nil {
+				t.Fatalf("process stale security update: %v", err)
 			}
-			if calls != 0 {
-				t.Fatalf("handler calls = %d, want 0", calls)
+			if calls != 1 {
+				t.Fatalf("handler calls = %d, want 1", calls)
 			}
 		})
 	}

@@ -2,19 +2,49 @@ package sqlite
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"errors"
 	"fmt"
+	"runtime"
 	"time"
 
 	"github.com/iamwavecut/ngbot/internal/db"
+	"github.com/jmoiron/sqlx"
 )
 
 const telegramUpdateColumns = `
-	update_id, dispatch_key, payload, security_relevant, status, attempt_count,
-	available_at, received_at, started_at, completed_at, last_error, outcome_source,
+	update_id, dispatch_key, payload, payload_bytes, security_relevant, status, attempt_count,
+	available_at, received_at, started_at, completed_at, last_error, error_digest, outcome_source,
 	lease_owner, lease_version, lease_until
 `
+
+const telegramUpdateCleanupBatchSize = 500
+
+func normalizedTelegramUpdateInboxLimits(limits db.TelegramUpdateInboxLimits) db.TelegramUpdateInboxLimits {
+	if limits.MaxPendingRows <= 0 {
+		limits.MaxPendingRows = defaultInboxMaxPendingRows
+	}
+	if limits.MaxPendingBytes <= 0 {
+		limits.MaxPendingBytes = defaultInboxMaxPendingBytes
+	}
+	if limits.MaxDispatchPendingRows <= 0 {
+		limits.MaxDispatchPendingRows = defaultInboxMaxDispatchPendingRows
+	}
+	if limits.MaxDispatchPendingBytes <= 0 {
+		limits.MaxDispatchPendingBytes = defaultInboxMaxDispatchPendingBytes
+	}
+	if limits.MinFreeBytes <= 0 {
+		limits.MinFreeBytes = defaultInboxMinFreeBytes
+	}
+	return limits
+}
+
+func (c *sqliteClient) SetTelegramUpdateInboxLimits(limits db.TelegramUpdateInboxLimits) {
+	c.mutex.Lock()
+	c.telegramUpdateInboxLimits = normalizedTelegramUpdateInboxLimits(limits)
+	c.mutex.Unlock()
+}
 
 func (c *sqliteClient) EnqueueTelegramUpdate(ctx context.Context, update *db.TelegramUpdate) (bool, error) {
 	if update == nil {
@@ -25,12 +55,34 @@ func (c *sqliteClient) EnqueueTelegramUpdate(ctx context.Context, update *db.Tel
 	}
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
-	result, err := c.db.ExecContext(ctx, `
+	var exists int
+	if err := c.db.GetContext(ctx, &exists, `SELECT COUNT(*) FROM telegram_update_inbox WHERE update_id = ?`, update.UpdateID); err != nil {
+		return false, fmt.Errorf("check telegram update duplicate: %w", err)
+	}
+	if exists != 0 {
+		return false, nil
+	}
+	freeBytes, err := c.databaseFreeBytes()
+	if err != nil {
+		return false, err
+	}
+	if freeBytes < uint64(c.telegramUpdateInboxLimits.MinFreeBytes) {
+		return false, &db.TelegramUpdateInboxCapacityError{Limit: "database_free_bytes"}
+	}
+	tx, err := c.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("begin telegram update admission: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := c.checkTelegramUpdateInboxCapacity(ctx, tx, update.DispatchKey, int64(len(update.Payload))); err != nil {
+		return false, err
+	}
+	result, err := tx.ExecContext(ctx, `
 		INSERT INTO telegram_update_inbox (
-			update_id, dispatch_key, payload, security_relevant, available_at, received_at
-		) VALUES (?, ?, ?, ?, ?, ?)
+			update_id, dispatch_key, payload, payload_bytes, security_relevant, available_at, received_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(update_id) DO NOTHING
-	`, update.UpdateID, update.DispatchKey, update.Payload, update.SecurityRelevant, update.ReceivedAt, update.ReceivedAt)
+	`, update.UpdateID, update.DispatchKey, update.Payload, len(update.Payload), update.SecurityRelevant, update.ReceivedAt, update.ReceivedAt)
 	if err != nil {
 		return false, fmt.Errorf("enqueue telegram update: %w", err)
 	}
@@ -38,7 +90,47 @@ func (c *sqliteClient) EnqueueTelegramUpdate(ctx context.Context, update *db.Tel
 	if err != nil {
 		return false, fmt.Errorf("read telegram update insert result: %w", err)
 	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit telegram update admission: %w", err)
+	}
 	return rows == 1, nil
+}
+
+type telegramUpdateUsage struct {
+	Rows  int64 `db:"rows"`
+	Bytes int64 `db:"bytes"`
+}
+
+func (c *sqliteClient) checkTelegramUpdateInboxCapacity(ctx context.Context, tx *sqlx.Tx, dispatchKey string, payloadBytes int64) error {
+	var global telegramUpdateUsage
+	if err := tx.GetContext(ctx, &global, `
+		SELECT COUNT(*) AS rows, COALESCE(SUM(payload_bytes), 0) AS bytes
+		FROM telegram_update_inbox
+		WHERE status IN (?, ?, ?)
+	`, db.TelegramUpdateStatusPending, db.TelegramUpdateStatusProcessing, db.TelegramUpdateStatusRetry); err != nil {
+		return fmt.Errorf("read global telegram update inbox usage: %w", err)
+	}
+	if global.Rows >= c.telegramUpdateInboxLimits.MaxPendingRows {
+		return &db.TelegramUpdateInboxCapacityError{Limit: "global_pending_rows"}
+	}
+	if global.Bytes+payloadBytes > c.telegramUpdateInboxLimits.MaxPendingBytes {
+		return &db.TelegramUpdateInboxCapacityError{Limit: "global_pending_bytes"}
+	}
+	var dispatch telegramUpdateUsage
+	if err := tx.GetContext(ctx, &dispatch, `
+		SELECT COUNT(*) AS rows, COALESCE(SUM(payload_bytes), 0) AS bytes
+		FROM telegram_update_inbox
+		WHERE dispatch_key = ? AND status IN (?, ?, ?)
+	`, dispatchKey, db.TelegramUpdateStatusPending, db.TelegramUpdateStatusProcessing, db.TelegramUpdateStatusRetry); err != nil {
+		return fmt.Errorf("read dispatch telegram update inbox usage: %w", err)
+	}
+	if dispatch.Rows >= c.telegramUpdateInboxLimits.MaxDispatchPendingRows {
+		return &db.TelegramUpdateInboxCapacityError{Limit: "dispatch_pending_rows"}
+	}
+	if dispatch.Bytes+payloadBytes > c.telegramUpdateInboxLimits.MaxDispatchPendingBytes {
+		return &db.TelegramUpdateInboxCapacityError{Limit: "dispatch_pending_bytes"}
+	}
+	return nil
 }
 
 func (c *sqliteClient) ListRunnableTelegramUpdates(ctx context.Context, now time.Time, limit int) ([]*db.TelegramUpdate, error) {
@@ -171,15 +263,22 @@ func (c *sqliteClient) transitionProcessingTelegramUpdate(ctx context.Context, u
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 	var completedAt any
+	errorDigest := ""
 	if status == db.TelegramUpdateStatusCompleted {
 		completedAt = at
+	} else {
+		source = sanitizeTelegramUpdateFailureSource(source)
+		errorDigest = telegramUpdateFailureDigest(lastError)
 	}
 	result, err := c.db.ExecContext(ctx, `
 		UPDATE telegram_update_inbox
-		SET status = ?, available_at = ?, completed_at = ?, last_error = ?, outcome_source = ?,
+		SET status = ?, available_at = ?, completed_at = ?, payload = CASE WHEN ? THEN x'' ELSE payload END,
+			payload_bytes = CASE WHEN ? THEN 0 ELSE payload_bytes END,
+			last_error = '', error_digest = ?, outcome_source = ?,
 			lease_owner = '', lease_until = NULL
 		WHERE update_id = ? AND status = ? AND lease_owner = ? AND lease_version = ?
-	`, status, at, completedAt, lastError, source, updateID, db.TelegramUpdateStatusProcessing, owner, version)
+	`, status, at, completedAt, status == db.TelegramUpdateStatusCompleted, status == db.TelegramUpdateStatusCompleted,
+		errorDigest, source, updateID, db.TelegramUpdateStatusProcessing, owner, version)
 	if err != nil {
 		return false, fmt.Errorf("transition telegram update to %s: %w", status, err)
 	}
@@ -198,12 +297,16 @@ func (c *sqliteClient) DeadLetterTelegramUpdate(ctx context.Context, updateID in
 		return false, fmt.Errorf("begin telegram update dead letter: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	source = sanitizeTelegramUpdateFailureSource(source)
+	reason = sanitizeTelegramUpdateFailureReason(reason)
+	errorDigest := telegramUpdateFailureDigest(lastError)
 	result, err := tx.ExecContext(ctx, `
 		UPDATE telegram_update_inbox
-		SET status = ?, completed_at = ?, last_error = ?, outcome_source = ?,
+		SET status = ?, completed_at = ?, payload = x'', payload_bytes = 0,
+			last_error = '', error_digest = ?, outcome_source = ?,
 			lease_owner = '', lease_until = NULL
 		WHERE update_id = ? AND status = ? AND lease_owner = ? AND lease_version = ?
-	`, db.TelegramUpdateStatusDeadLetter, now, lastError, source, updateID, db.TelegramUpdateStatusProcessing, owner, version)
+	`, db.TelegramUpdateStatusDeadLetter, now, errorDigest, source, updateID, db.TelegramUpdateStatusProcessing, owner, version)
 	if err != nil {
 		return false, fmt.Errorf("mark telegram update dead letter: %w", err)
 	}
@@ -217,12 +320,12 @@ func (c *sqliteClient) DeadLetterTelegramUpdate(ctx context.Context, updateID in
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO telegram_update_failures (
 			update_id, dispatch_key, security_relevant, attempt_count,
-			failure_source, failure_reason, last_error, created_at
+			failure_source, failure_reason, last_error, error_digest, created_at
 		)
-		SELECT update_id, dispatch_key, security_relevant, attempt_count, ?, ?, ?, ?
+		SELECT update_id, dispatch_key, security_relevant, attempt_count, ?, ?, '', ?, ?
 		FROM telegram_update_inbox
 		WHERE update_id = ?
-	`, source, reason, lastError, now, updateID); err != nil {
+	`, source, reason, errorDigest, now, updateID); err != nil {
 		return false, fmt.Errorf("record telegram update failure: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -241,10 +344,10 @@ func (c *sqliteClient) RecoverStaleTelegramUpdates(ctx context.Context, now time
 	result, err := c.db.ExecContext(ctx, `
 		UPDATE telegram_update_inbox
 		SET status = ?, available_at = ?, started_at = NULL, lease_owner = '', lease_until = NULL,
-			last_error = CASE WHEN last_error = '' THEN 'interrupted before terminal outcome' ELSE last_error END,
+			last_error = '', error_digest = CASE WHEN error_digest = '' THEN ? ELSE error_digest END,
 			outcome_source = 'restart'
 		WHERE status = ? AND lease_until <= ?
-	`, db.TelegramUpdateStatusRetry, now, db.TelegramUpdateStatusProcessing, now)
+	`, db.TelegramUpdateStatusRetry, now, telegramUpdateFailureDigest("interrupted before terminal outcome"), db.TelegramUpdateStatusProcessing, now)
 	if err != nil {
 		return 0, fmt.Errorf("recover telegram updates: %w", err)
 	}
@@ -262,7 +365,7 @@ func (c *sqliteClient) ListTelegramUpdateFailures(ctx context.Context, limit int
 	failures := make([]*db.TelegramUpdateFailure, 0, limit)
 	if err := c.db.SelectContext(ctx, &failures, `
 		SELECT id, update_id, dispatch_key, security_relevant, attempt_count,
-			failure_source, failure_reason, last_error, created_at, resolved_at
+			failure_source, failure_reason, last_error, error_digest, created_at, resolved_at
 		FROM telegram_update_failures
 		WHERE resolved_at IS NULL
 		ORDER BY created_at, update_id
@@ -274,19 +377,65 @@ func (c *sqliteClient) ListTelegramUpdateFailures(ctx context.Context, limit int
 }
 
 func (c *sqliteClient) CleanupTelegramUpdates(ctx context.Context, completedBefore, deadLetterBefore time.Time) (int64, error) {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
-	result, err := c.db.ExecContext(ctx, `
-		DELETE FROM telegram_update_inbox
-		WHERE (status = ? AND completed_at < ?)
-			OR (status = ? AND completed_at < ?)
-	`, db.TelegramUpdateStatusCompleted, completedBefore, db.TelegramUpdateStatusDeadLetter, deadLetterBefore)
-	if err != nil {
-		return 0, fmt.Errorf("cleanup telegram updates: %w", err)
+	var total int64
+	for {
+		if err := ctx.Err(); err != nil {
+			return total, err
+		}
+		c.mutex.Lock()
+		result, err := c.db.ExecContext(ctx, `
+			DELETE FROM telegram_update_inbox
+			WHERE update_id IN (
+				SELECT update_id FROM telegram_update_inbox
+				WHERE (status = ? AND completed_at < ?)
+					OR (status = ? AND completed_at < ?)
+				ORDER BY completed_at, update_id
+				LIMIT ?
+			)
+		`, db.TelegramUpdateStatusCompleted, completedBefore, db.TelegramUpdateStatusDeadLetter, deadLetterBefore, telegramUpdateCleanupBatchSize)
+		if err != nil {
+			c.mutex.Unlock()
+			return total, fmt.Errorf("cleanup telegram updates: %w", err)
+		}
+		rows, err := result.RowsAffected()
+		c.mutex.Unlock()
+		if err != nil {
+			return total, fmt.Errorf("read telegram update cleanup result: %w", err)
+		}
+		total += rows
+		if rows < telegramUpdateCleanupBatchSize {
+			return total, nil
+		}
+		runtime.Gosched()
 	}
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("read telegram update cleanup result: %w", err)
+}
+
+func sanitizeTelegramUpdateFailureSource(source string) string {
+	switch source {
+	case "sqlite", "llm", "telegram", "capability", "payload", "runtime":
+		return source
+	default:
+		return "runtime"
 	}
-	return rows, nil
+}
+
+func sanitizeTelegramUpdateFailureReason(reason string) string {
+	switch reason {
+	case "sqlite_error", "database_busy", "timeout", "malformed_output", "policy_blocked", "provider_error",
+		"permission_denied", "rate_limited", "server_error", "request_rejected", "capability_unknown",
+		"malformed_payload", "malformed_update", "context_interrupted", "unclassified_error", "retry_exhausted",
+		"sender_chat_classification_failed", "moderation_fence_unavailable", "moderation_effect_ambiguous",
+		"persist_ban_effect", "invalid_moderation_action", "complete_moderation_fence",
+		"ambiguous_handler_lease_lost", "ambiguous_handler_panic":
+		return reason
+	default:
+		return "unclassified_error"
+	}
+}
+
+func telegramUpdateFailureDigest(message string) string {
+	if message == "" {
+		return ""
+	}
+	return fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(message)))
 }

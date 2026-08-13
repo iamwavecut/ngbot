@@ -27,9 +27,14 @@ type (
 	}
 
 	Telegram struct {
-		PollTimeout    time.Duration `env:"TELEGRAM_POLL_TIMEOUT,default=60s"`
-		RequestTimeout time.Duration `env:"TELEGRAM_REQUEST_TIMEOUT,default=75s"`
-		RecoveryWindow time.Duration `env:"TELEGRAM_RECOVERY_WINDOW,default=10m"`
+		PollTimeout                  time.Duration `env:"TELEGRAM_POLL_TIMEOUT,default=60s"`
+		RequestTimeout               time.Duration `env:"TELEGRAM_REQUEST_TIMEOUT,default=75s"`
+		RecoveryWindow               time.Duration `env:"TELEGRAM_RECOVERY_WINDOW,default=10m"`
+		InboxMaxPendingRows          int64         `env:"TELEGRAM_INBOX_MAX_PENDING_ROWS,default=100000"`
+		InboxMaxPendingBytes         int64         `env:"TELEGRAM_INBOX_MAX_PENDING_BYTES,default=536870912"`
+		InboxMaxDispatchPendingRows  int64         `env:"TELEGRAM_INBOX_MAX_DISPATCH_PENDING_ROWS,default=10000"`
+		InboxMaxDispatchPendingBytes int64         `env:"TELEGRAM_INBOX_MAX_DISPATCH_PENDING_BYTES,default=33554432"`
+		InboxMinFreeBytes            int64         `env:"TELEGRAM_INBOX_MIN_FREE_BYTES,default=268435456"`
 	}
 
 	GatekeeperWebApp struct {
@@ -106,6 +111,17 @@ func validateConfig(cfg *Config) error {
 	}
 	if cfg.Telegram.RecoveryWindow <= cfg.Telegram.RequestTimeout {
 		return fmt.Errorf("telegram recovery window must be greater than request timeout")
+	}
+	for name, value := range map[string]int64{
+		"maximum pending rows":           cfg.Telegram.InboxMaxPendingRows,
+		"maximum pending bytes":          cfg.Telegram.InboxMaxPendingBytes,
+		"maximum dispatch pending rows":  cfg.Telegram.InboxMaxDispatchPendingRows,
+		"maximum dispatch pending bytes": cfg.Telegram.InboxMaxDispatchPendingBytes,
+		"minimum free bytes":             cfg.Telegram.InboxMinFreeBytes,
+	} {
+		if value < 0 {
+			return fmt.Errorf("telegram inbox %s must not be negative", name)
+		}
 	}
 	if err := validateLLMConfig(cfg.LLM); err != nil {
 		return err
