@@ -406,9 +406,7 @@ func TestDurableUpdateDispatcherRetriesBusyInboxTransitions(t *testing.T) {
 			}
 			t.Cleanup(func() { _ = base.Close() })
 			store := &busyTransitionStore{DurableUpdateStore: base, transition: transition, remaining: 2}
-			processed := make(chan struct{}, 1)
 			dispatcher := NewDurableUpdateDispatcher(store, func(context.Context, *api.Update) error {
-				processed <- struct{}{}
 				if transition == "dead_letter" {
 					return NewTerminalUpdateFailure(UpdateFailurePayload, "poison", errors.New("poison"))
 				}
@@ -416,7 +414,7 @@ func TestDurableUpdateDispatcherRetriesBusyInboxTransitions(t *testing.T) {
 			}, nil, DurableUpdateDispatcherOptions{
 				MaxWorkers: 1, PendingBudget: 1, MaxAttempts: 1,
 				SchedulerBackoff: time.Millisecond, MaxBackoff: time.Millisecond,
-				RecoveryInterval: 5 * time.Millisecond, ProcessingTimeout: 5 * time.Millisecond,
+				RecoveryInterval: 5 * time.Millisecond, ProcessingTimeout: 50 * time.Millisecond,
 			}, nil)
 			if err := dispatcher.Start(t.Context()); err != nil {
 				t.Fatalf("start dispatcher: %v", err)
