@@ -78,6 +78,7 @@ type spamStore interface {
 	GetChatRecentJoiners(ctx context.Context, chatID int64) ([]*db.RecentJoiner, error)
 	ProcessRecentJoiner(ctx context.Context, chatID int64, userID int64, isSpammer bool) error
 	DeleteChatKnownNonMember(ctx context.Context, chatID int64, userID int64) error
+	IsChatNotSpammer(ctx context.Context, chatID int64, userID int64, username string) (bool, error)
 }
 
 func NewSpamControl(s bot.Service, botAPI *api.BotAPI, store spamStore, config config.SpamControl, banService BanService, verbose bool) *SpamControl {
@@ -330,7 +331,11 @@ func (sc *SpamControl) preprocessMessage(ctx context.Context, msg *api.Message, 
 	}
 
 	if voting {
-		if err := sc.banService.MuteUser(ctx, chat.ID, msg.From.ID); err != nil {
+		muteUntil := time.Now().Add(sc.effectiveVotingPolicy(ctx, chat.ID).Timeout)
+		if spamCase.ResolveAt != nil {
+			muteUntil = *spamCase.ResolveAt
+		}
+		if err := sc.banService.MuteUser(ctx, chat.ID, msg.From.ID, muteUntil); err != nil {
 			if isTelegramPrivilegeError(err) {
 				sc.banService.MarkModerationUnavailable(chat.ID)
 				result.Error = errChatAdminRequired

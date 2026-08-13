@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"net/http"
@@ -403,7 +404,7 @@ func (s *testBanService) MarkModerationUnavailable(int64) {
 	s.moderationUnavailable = true
 	s.markedUnavailable = true
 }
-func (s *testBanService) MuteUser(context.Context, int64, int64) error {
+func (s *testBanService) MuteUser(context.Context, int64, int64, time.Time) error {
 	s.muteCalls++
 	return nil
 }
@@ -486,6 +487,131 @@ func TestUntrustedSenderChatSpamIsDeletedAndSenderChatBanned(t *testing.T) {
 	}
 	if !slices.Contains(methods, testTelegramMethodDeleteMessage) || !slices.Contains(methods, "banChatSenderChat") {
 		t.Fatalf("sender chat enforcement methods = %#v", methods)
+	}
+}
+
+func TestSenderChatIsAuthoritativeWithFromOnNewAndEditedMessages(t *testing.T) {
+	t.Parallel()
+
+	methods := make([]string, 0, 4)
+	botAPI := newTestBotAPI(t, func(method string, _ *http.Request) any {
+		methods = append(methods, method)
+		switch method {
+		case "getChat":
+			return map[string]any{"id": -100, testJSONType: testChatTypeSupergroup, "linked_chat_id": -999}
+		case testTelegramMethodDeleteMessage, testTelegramMethodBanChatSenderChat:
+			return true
+		default:
+			t.Fatalf("unexpected method %q", method)
+			return nil
+		}
+	})
+	detector := &testSpamDetector{result: boolPtr(true)}
+	reactor := &Reactor{
+		s:            &testBotService{botAPI: botAPI},
+		bot:          botAPI,
+		store:        &testReactorStore{},
+		spamDetector: detector,
+		banService:   &testBanService{},
+		lastResults:  make(map[messageResultKey]*MessageProcessingResult),
+	}
+	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
+	from := &api.User{ID: 200, FirstName: "Forwarder"}
+	senderChat := &api.Chat{ID: -200, Type: testChatTypeChannel, Title: "Untrusted"}
+	settings := &db.Settings{LLMFirstMessageEnabled: true, CommunityVotingEnabled: true}
+
+	for _, edited := range []bool{false, true} {
+		message := &api.Message{MessageID: 600 + detector.calls, Chat: *chat, From: from, SenderChat: senderChat, Text: "spam"}
+		var err error
+		if edited {
+			err = reactor.handleEditedMessage(t.Context(), message, chat, from, settings)
+		} else {
+			err = reactor.handleMessage(t.Context(), message, chat, from, settings)
+		}
+		if err != nil {
+			t.Fatalf("edited=%t: %v", edited, err)
+		}
+	}
+	banCalls := 0
+	for _, method := range methods {
+		if method == testTelegramMethodBanChatSenderChat {
+			banCalls++
+		}
+	}
+	if detector.calls != 2 || banCalls != 2 {
+		t.Fatalf("calls=%d methods=%#v", detector.calls, methods)
+	}
+}
+
+func TestAnonymousAdminSenderChatWithFromRemainsTrustedOnNewAndEdit(t *testing.T) {
+	t.Parallel()
+
+	botAPI := newTestBotAPI(t, func(method string, _ *http.Request) any {
+		t.Fatalf("trusted anonymous admin reached Telegram method %q", method)
+		return nil
+	})
+	detector := &testSpamDetector{result: boolPtr(true)}
+	reactor := &Reactor{
+		s: &testBotService{botAPI: botAPI}, bot: botAPI, store: &testReactorStore{}, spamDetector: detector,
+		banService: &testBanService{}, lastResults: make(map[messageResultKey]*MessageProcessingResult),
+	}
+	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
+	from := &api.User{ID: 200, FirstName: "Forwarder"}
+	message := &api.Message{MessageID: 620, Chat: *chat, From: from, SenderChat: chat, Text: "admin post"}
+	settings := &db.Settings{LLMFirstMessageEnabled: true}
+	if err := reactor.handleMessage(t.Context(), message, chat, from, settings); err != nil {
+		t.Fatalf("new anonymous admin message: %v", err)
+	}
+	if err := reactor.handleEditedMessage(t.Context(), message, chat, from, settings); err != nil {
+		t.Fatalf("edited anonymous admin message: %v", err)
+	}
+	if detector.calls != 0 {
+		t.Fatalf("trusted anonymous admin classifier calls = %d", detector.calls)
+	}
+}
+
+func TestSafeRoutedCommandIsBoundForPostGraduationEdit(t *testing.T) {
+	t.Parallel()
+
+	botAPI := newTestBotAPI(t, func(method string, _ *http.Request) any {
+		if method != testTelegramMethodGetChatMember {
+			t.Fatalf("unexpected method %q", method)
+		}
+		return testChatMemberResponse(telegramMemberStatus, false, false, false)
+	})
+	now := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
+	store := &testReactorStore{}
+	detector := &testSpamDetector{result: boolPtr(false)}
+	service := &testBotService{botAPI: botAPI}
+	reactor := &Reactor{
+		s: service, bot: botAPI, store: store, spamDetector: detector, banService: &testBanService{},
+		lastResults: make(map[messageResultKey]*MessageProcessingResult), now: func() time.Time { return now },
+		processSpam: func(context.Context, *api.Message, *api.Chat, string) (*moderation.ProcessingResult, error) {
+			return &moderation.ProcessingResult{MessageDeleted: true, UserBanned: true}, nil
+		},
+	}
+	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
+	user := &api.User{ID: 200, FirstName: "User"}
+	settings := &db.Settings{LLMFirstMessageEnabled: true, CommunityVotingEnabled: true}
+	command := &api.Message{MessageID: 610, Chat: *chat, From: user, Text: "/settings safe"}
+
+	if err := reactor.handleMessageChallenge(t.Context(), command, chat, user, settings, false, true); err != nil {
+		t.Fatalf("moderate command: %v", err)
+	}
+	probation, _ := store.MessageProbation(t.Context(), chat.ID, user.ID)
+	if probation == nil || probation.GraduatedAt.Valid {
+		t.Fatalf("routed probation = %#v", probation)
+	}
+	store.probations[messageProbationKey{chatID: chat.ID, userID: user.ID}] = db.MessageProbation{
+		ChatID: chat.ID, UserID: user.ID, StartedAt: now, EligibleAt: now, GraduatedAt: sql.NullTime{Time: now, Valid: true},
+	}
+	detector.result = boolPtr(true)
+	command.Text = "/settings edited spam"
+	if err := reactor.handleEditedMessage(t.Context(), command, chat, user, settings); err != nil {
+		t.Fatalf("moderate command edit: %v", err)
+	}
+	if detector.calls != 2 {
+		t.Fatalf("classifier calls = %d, want 2", detector.calls)
 	}
 }
 
@@ -1259,6 +1385,7 @@ func TestHandleMessageLinkedChannelSenderBypassesSpamPipeline(t *testing.T) {
 	msg := &api.Message{
 		MessageID: 15,
 		Chat:      *chat,
+		From:      &api.User{ID: 200, FirstName: "Forwarder"},
 		SenderChat: &api.Chat{
 			ID:    -200,
 			Type:  testChatTypeChannel,
@@ -1267,16 +1394,18 @@ func TestHandleMessageLinkedChannelSenderBypassesSpamPipeline(t *testing.T) {
 		Text: "рекламный пост связанного канала",
 	}
 
-	proceed, err := r.Handle(context.Background(), &api.Update{Message: msg}, chat, nil)
-	if err != nil {
-		t.Fatalf("Handle returned error: %v", err)
-	}
-	if !proceed {
-		t.Fatal("expected reactor to proceed")
+	for _, update := range []*api.Update{{Message: msg}, {EditedMessage: msg}} {
+		proceed, err := r.Handle(context.Background(), update, chat, msg.From)
+		if err != nil {
+			t.Fatalf("Handle returned error: %v", err)
+		}
+		if !proceed {
+			t.Fatal("expected reactor to proceed")
+		}
 	}
 
-	if getChatCalls != 1 {
-		t.Fatalf("expected one getChat call, got %d", getChatCalls)
+	if getChatCalls != 2 {
+		t.Fatalf("expected two getChat calls, got %d", getChatCalls)
 	}
 	if detector.calls != 0 {
 		t.Fatalf("expected LLM detector not to be called, got %d calls", detector.calls)

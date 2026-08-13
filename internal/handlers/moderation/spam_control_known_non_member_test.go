@@ -58,6 +58,15 @@ type testModerationStore struct {
 	membersErr            error
 	presentationErr       error
 	retryCalls            int
+	isNotSpammer          bool
+	allowlistChatID       int64
+	allowlistUsername     string
+}
+
+func (s *testModerationStore) IsChatNotSpammer(_ context.Context, chatID int64, _ int64, username string) (bool, error) {
+	s.allowlistChatID = chatID
+	s.allowlistUsername = username
+	return s.isNotSpammer, nil
 }
 
 func (s *testModerationStore) CreateSpamCase(_ context.Context, sc *db.SpamCase) (*db.SpamCase, error) {
@@ -310,7 +319,7 @@ func TestRecordVoteRejectsDepartedVoterEvenWhenMembershipCacheSaysMember(t *test
 		banService: &testModerationBanService{},
 	}
 
-	_, _, err := control.RecordVote(t.Context(), spamCase.ID, 300, false)
+	_, _, err := control.RecordVote(t.Context(), spamCase.ID, 300, "", false)
 	if !errors.Is(err, ErrVoterNotEligible) {
 		t.Fatalf("RecordVote error = %v, want ErrVoterNotEligible", err)
 	}
@@ -337,9 +346,32 @@ func TestRecordVoteRejectsFreshlyBanlistedVoter(t *testing.T) {
 		banService: &testModerationBanService{checkBan: true},
 	}
 
-	_, _, err := control.RecordVote(t.Context(), spamCase.ID, 300, false)
+	_, _, err := control.RecordVote(t.Context(), spamCase.ID, 300, "", false)
 	if !errors.Is(err, ErrVoterNotEligible) {
 		t.Fatalf("RecordVote error = %v, want ErrVoterNotEligible", err)
+	}
+}
+
+func TestRecordVoteUsesTargetChatUsernameAllowlistBeforeAuthorityChecks(t *testing.T) {
+	t.Parallel()
+
+	botAPI := newModerationTestBotAPI(t, func(method string, _ *http.Request) any {
+		t.Fatalf("allowlisted voter reached Telegram authority check: %s", method)
+		return nil
+	})
+	spamCase := &db.SpamCase{ID: 1, ChatID: -100, UserID: 200, Status: db.SpamCaseStatusPending}
+	store := &testModerationStore{spamCase: spamCase, isNotSpammer: true}
+	control := &SpamControl{
+		s: &testModerationService{botAPI: botAPI}, bot: botAPI, store: store,
+		banService: &testModerationBanService{moderationUnavailable: true},
+	}
+
+	_, _, err := control.RecordVote(t.Context(), spamCase.ID, 300, "allowed_name", false)
+	if !errors.Is(err, ErrSpamCaseClosed) {
+		t.Fatalf("RecordVote error = %v, want ErrSpamCaseClosed", err)
+	}
+	if store.allowlistChatID != spamCase.ChatID || store.allowlistUsername != "allowed_name" {
+		t.Fatalf("allowlist lookup = chat %d username %q", store.allowlistChatID, store.allowlistUsername)
 	}
 }
 
@@ -352,7 +384,7 @@ func (s *testModerationBanService) MarkModerationUnavailable(int64) {
 	s.markedUnavailable = true
 }
 
-func (s *testModerationBanService) MuteUser(context.Context, int64, int64) error {
+func (s *testModerationBanService) MuteUser(context.Context, int64, int64, time.Time) error {
 	s.muteCalls++
 	return s.muteErr
 }
@@ -394,7 +426,7 @@ func TestRecordVoteDoesNotRewriteTerminalCaseInNoRightsMode(t *testing.T) {
 		banService: &testModerationBanService{moderationUnavailable: true},
 	}
 
-	_, _, err := control.RecordVote(context.Background(), spamCase.ID, 300, false)
+	_, _, err := control.RecordVote(context.Background(), spamCase.ID, 300, "", false)
 	if !errors.Is(err, ErrSpamCaseClosed) {
 		t.Fatalf("RecordVote error = %v, want ErrSpamCaseClosed", err)
 	}
@@ -939,7 +971,7 @@ func TestRecordVoteRejectsLogChannelOutsider(t *testing.T) {
 		banService: &testModerationBanService{},
 	}
 
-	_, _, err := sc.RecordVote(context.Background(), 55, 300, false)
+	_, _, err := sc.RecordVote(context.Background(), 55, 300, "", false)
 	if !errors.Is(err, ErrVoterNotEligible) {
 		t.Fatalf("expected outsider rejection, got %v", err)
 	}

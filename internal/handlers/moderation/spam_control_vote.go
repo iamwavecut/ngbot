@@ -15,7 +15,7 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-func (sc *SpamControl) RecordVote(ctx context.Context, caseID int64, voterID int64, vote bool) (int, int, error) {
+func (sc *SpamControl) RecordVote(ctx context.Context, caseID int64, voterID int64, username string, vote bool) (int, int, error) {
 	spamCase, err := sc.store.GetSpamCase(ctx, caseID)
 	if err != nil {
 		return 0, 0, err
@@ -25,6 +25,10 @@ func (sc *SpamControl) RecordVote(ctx context.Context, caseID int64, voterID int
 	}
 	if spamCase.UserID == voterID {
 		return 0, 0, ErrSuspectCannotVote
+	}
+	isNotSpammer, err := sc.store.IsChatNotSpammer(ctx, spamCase.ChatID, voterID, username)
+	if err != nil {
+		return 0, 0, fmt.Errorf("check voter allowlist: %w", err)
 	}
 	available, err := sc.banService.ModerationAvailable(ctx, spamCase.ChatID)
 	if err != nil || !available {
@@ -46,7 +50,7 @@ func (sc *SpamControl) RecordVote(ctx context.Context, caseID int64, voterID int
 	if !settings.CommunityVotingEnabled {
 		return 0, 0, ErrCommunityVotingDisabled
 	}
-	eligible, err := sc.isEligibleVoter(ctx, spamCase.ChatID, voterID)
+	eligible, err := sc.isEligibleVoter(ctx, spamCase.ChatID, voterID, isNotSpammer)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -80,7 +84,7 @@ func (sc *SpamControl) RecordVote(ctx context.Context, caseID int64, voterID int
 	return notSpamVotes, spamVotes, nil
 }
 
-func (sc *SpamControl) isEligibleVoter(ctx context.Context, chatID, voterID int64) (bool, error) {
+func (sc *SpamControl) isEligibleVoter(ctx context.Context, chatID, voterID int64, skipBanlist bool) (bool, error) {
 	chatMember, err := bot.GetChatMember(ctx, sc.bot, api.GetChatMemberConfig{
 		ChatConfigWithUser: api.ChatConfigWithUser{
 			ChatConfig: api.ChatConfig{ChatID: chatID},
@@ -92,6 +96,9 @@ func (sc *SpamControl) isEligibleVoter(ctx context.Context, chatID, voterID int6
 	}
 	if chatMember.HasLeft() || chatMember.WasKicked() {
 		return false, nil
+	}
+	if skipBanlist {
+		return true, nil
 	}
 	banned, err := sc.banService.CheckBan(ctx, voterID)
 	if err != nil {

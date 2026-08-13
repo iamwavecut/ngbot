@@ -88,7 +88,15 @@ func newTestBotAPIWithErrors(t *testing.T, handler func(method string, r *http.R
 			return
 		}
 
-		result := handler(method, r)
+		handlerMethod := method
+		if method == "sendPhoto" {
+			if err := r.ParseMultipartForm(2 << 20); err != nil {
+				t.Fatalf("parse photo request: %v", err)
+			}
+			r.Form.Set("text", r.Form.Get("caption"))
+			handlerMethod = "sendMessage"
+		}
+		result := handler(handlerMethod, r)
 
 		w.Header().Set("Content-Type", "application/json")
 		if forcedErr, ok := result.(*testBotAPIError); ok {

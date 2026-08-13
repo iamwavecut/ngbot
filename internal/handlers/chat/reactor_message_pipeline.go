@@ -73,11 +73,11 @@ func (r *Reactor) handleMessageChallenge(ctx context.Context, msg *api.Message, 
 		entry.WithField("sender_chat_id", msg.SenderChat.ID).Debug("Skipping trusted sender chat from spam pipeline")
 		return nil
 	}
+	if msg.SenderChat != nil {
+		return r.handleSenderChatContent(ctx, msg, chat, result, entry)
+	}
 
 	if user == nil {
-		if msg.SenderChat != nil {
-			return r.handleSenderChatContent(ctx, msg, chat, result, entry)
-		}
 		result.Stage = StageSpamCheck
 		result.Skipped = true
 		result.SkipReason = messageSkipReasonAnonymousSender
@@ -136,7 +136,7 @@ func (r *Reactor) handleMessageChallenge(ctx context.Context, msg *api.Message, 
 
 	result.Stage = StageBanCheck
 	isBanned := false
-	if r.banService != nil {
+	if r.banService != nil && !banlistWasPrechecked(ctx) {
 		isBanned, err = r.banService.CheckBan(ctx, user.ID)
 	}
 	if err != nil {
@@ -278,7 +278,7 @@ func (r *Reactor) handleMessageChallenge(ctx context.Context, msg *api.Message, 
 			return nil
 		}
 
-		if recheck || routed {
+		if recheck {
 			return nil
 		}
 		inserted, err := r.store.RecordChallengedMessage(ctx, chat.ID, user.ID, msg.MessageID)
@@ -290,7 +290,7 @@ func (r *Reactor) handleMessageChallenge(ctx context.Context, msg *api.Message, 
 			"inserted":             inserted,
 			logFieldProbationPhase: messageProbationPhase(probation, observedAt),
 		}).Debug("message probation checked safe content")
-		if !inserted || probation == nil || observedAt.Before(probation.EligibleAt) {
+		if routed || !inserted || probation == nil || observedAt.Before(probation.EligibleAt) {
 			return nil
 		}
 		remembered, rememberErr := r.rememberAuthorIfPossible(ctx, chat, user, entry)
@@ -454,7 +454,7 @@ func (r *Reactor) HandleExhaustedUpdateFailure(
 	if !available {
 		return nil
 	}
-	if err := r.banService.MuteUser(ctx, chat.ID, user.ID); err != nil {
+	if err := r.banService.MuteUser(ctx, chat.ID, user.ID, time.Time{}); err != nil {
 		return fmt.Errorf("quarantine user after LLM exhaustion: %w", err)
 	}
 	return nil

@@ -206,18 +206,18 @@ func TestConfigureLLMUsesSelectedProviderCredential(t *testing.T) {
 	}
 }
 
-func TestConfigureLLMSkipsUnusedProvider(t *testing.T) {
+func TestConfigureLLMBuildsMandatoryModerationDetectorWithoutReactor(t *testing.T) {
 	t.Parallel()
 
 	got, err := configureLLM(&config.Config{
 		EnabledHandlers: []string{handlerAdmin, handlerGatekeeper},
-		LLM:             config.LLM{Type: "unsupported"},
+		LLM:             config.LLM{Type: config.LLMProviderOpenAI, Model: "moderation", OpenAIAPIKey: "test"},
 	}, log.NewEntry(log.New()))
 	if err != nil {
-		t.Fatalf("unused LLM returned error: %v", err)
+		t.Fatalf("mandatory moderation LLM returned error: %v", err)
 	}
-	if got != nil {
-		t.Fatalf("unused LLM adapter = %T, want nil", got)
+	if got == nil {
+		t.Fatal("mandatory moderation LLM is nil")
 	}
 }
 
@@ -256,11 +256,29 @@ func TestMandatoryModerationRouterPrecedesAdminConsumedCommands(t *testing.T) {
 		[]string{handlerAdmin, handlerGatekeeper, handlerReactor},
 		map[string]bot.Handler{handlerAdmin: admin, handlerGatekeeper: gatekeeper, handlerReactor: reactor},
 		banlist,
-		reactor,
 	)
-	want := []bot.Handler{banlist, reactor, admin, gatekeeper}
+	want := []bot.Handler{banlist, admin, gatekeeper, reactor}
 	if !slices.Equal(got, want) {
 		t.Fatalf("mandatory handler order = %#v, want %#v", got, want)
+	}
+}
+
+func TestMandatoryModerationDoesNotInstallReactorFeaturesWhenDisabled(t *testing.T) {
+	t.Parallel()
+
+	admin := &testUpdateHandler{name: handlerAdmin}
+	gatekeeper := &testUpdateHandler{name: handlerGatekeeper}
+	moderationOnly := &testUpdateHandler{name: "mandatory-moderation"}
+	reactor := &testUpdateHandler{name: handlerReactor}
+
+	got := mandatoryUpdateHandlers(
+		[]string{handlerAdmin, handlerGatekeeper},
+		map[string]bot.Handler{handlerAdmin: admin, handlerGatekeeper: gatekeeper, handlerReactor: reactor},
+		moderationOnly,
+	)
+	want := []bot.Handler{moderationOnly, admin, gatekeeper}
+	if !slices.Equal(got, want) {
+		t.Fatalf("disabled-reactor handlers = %#v, want %#v", got, want)
 	}
 }
 

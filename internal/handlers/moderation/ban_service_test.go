@@ -607,6 +607,10 @@ func (s *recordingBanStore) GetActiveRestriction(context.Context, int64, int64) 
 	return nil, nil
 }
 
+func (s *recordingBanStore) GetRestriction(context.Context, int64, int64) (*db.UserRestriction, error) {
+	return nil, nil
+}
+
 func (s *recordingBanStore) RemoveExpiredRestrictions(context.Context) error {
 	s.cleanupCalls++
 	return s.cleanupErr

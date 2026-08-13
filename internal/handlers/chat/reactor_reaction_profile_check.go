@@ -67,12 +67,14 @@ func (r *Reactor) moderateReactionUser(ctx context.Context, reaction *api.Messag
 		return nil
 	}
 
-	isBanned, err := r.banService.CheckBan(ctx, user.ID)
-	if err != nil {
-		return fmt.Errorf("check reaction user banlist: %w", err)
-	}
-	if isBanned {
-		return r.punishReactionUser(ctx, chat.ID, reaction.MessageID, user.ID, entry)
+	if !banlistWasPrechecked(ctx) {
+		isBanned, err := r.banService.CheckBan(ctx, user.ID)
+		if err != nil {
+			return fmt.Errorf("check reaction user banlist: %w", err)
+		}
+		if isBanned {
+			return r.punishReactionUser(ctx, chat.ID, reaction.MessageID, user.ID, entry)
+		}
 	}
 
 	isMember, err := r.s.IsMember(ctx, chat.ID, user.ID)

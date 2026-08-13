@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"strings"
 	"testing"
 
 	api "github.com/OvyFlash/telegram-bot-api"
@@ -13,12 +14,36 @@ func TestCreateCaptchaButtonsFallsBackWhenVariantsMissing(t *testing.T) {
 		Variants: map[string]map[string]string{},
 	}
 
-	buttons, correct := gk.createCaptchaButtons(42, "success", "ru", 5)
+	buttons, visual := gk.createCaptchaButtons(42, "success", "ru", 5)
 	if len(buttons) == 0 {
 		t.Fatalf("expected non-empty captcha buttons")
 	}
-	if correct[0] == "" || correct[1] == "" {
-		t.Fatalf("expected non-empty correct variant, got %#v", correct)
+	if len(visual.PNG) == 0 || visual.Instruction == "" {
+		t.Fatalf("expected visual challenge, got %#v", visual)
+	}
+}
+
+func TestCaptchaPublicPayloadDoesNotIdentifyOpaqueCorrectChoice(t *testing.T) {
+	t.Parallel()
+
+	gk := &Gatekeeper{Variants: map[string]map[string]string{"en": defaultCaptchaVariants}}
+	buttons, visual := gk.createCaptchaButtons(42, "server-secret", "en", 5)
+	if len(visual.PNG) == 0 || visual.Instruction == "" {
+		t.Fatalf("visual challenge = %#v", visual)
+	}
+	for _, button := range buttons {
+		if strings.Contains(visual.Instruction, button.Text) {
+			t.Fatalf("public visual payload reveals option %q", button.Text)
+		}
+	}
+	correct := 0
+	for _, button := range buttons {
+		if button.CallbackData != nil && strings.HasSuffix(*button.CallbackData, ";server-secret") {
+			correct++
+		}
+	}
+	if correct != 1 {
+		t.Fatalf("opaque server token matches = %d, want 1", correct)
 	}
 }
 
@@ -40,12 +65,12 @@ func TestCreateCaptchaButtonsSupportsSmallVariantSet(t *testing.T) {
 		},
 	}
 
-	buttons, correct := gk.createCaptchaButtons(10, "ok", "ru", 5)
+	buttons, visual := gk.createCaptchaButtons(10, "ok", "ru", 5)
 	if len(buttons) < 1 || len(buttons) > captchaSize {
 		t.Fatalf("unexpected number of buttons: %d", len(buttons))
 	}
-	if correct[0] == "" || correct[1] == "" {
-		t.Fatalf("expected non-empty correct variant, got %#v", correct)
+	if len(visual.PNG) == 0 || visual.Instruction == "" {
+		t.Fatalf("expected visual challenge, got %#v", visual)
 	}
 }
 

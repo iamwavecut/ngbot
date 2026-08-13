@@ -662,11 +662,30 @@ func (s *sqliteClient) GetActiveRestriction(ctx context.Context, chatID, userID 
 	return &restriction, nil
 }
 
+func (s *sqliteClient) GetRestriction(ctx context.Context, chatID, userID int64) (*db.UserRestriction, error) {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+
+	var restriction db.UserRestriction
+	err := s.db.GetContext(ctx, &restriction, `
+		SELECT * FROM user_restrictions
+		WHERE chat_id = ? AND user_id = ?
+		ORDER BY restricted_at DESC LIMIT 1
+	`, chatID, userID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &restriction, nil
+}
+
 func (s *sqliteClient) RemoveExpiredRestrictions(ctx context.Context) error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
-	query := `DELETE FROM user_restrictions WHERE expires_at <= datetime('now')`
+	query := `DELETE FROM user_restrictions WHERE expires_at <= datetime('now') AND prior_permissions_json = ''`
 	_, err := s.db.ExecContext(ctx, query)
 	return err
 }

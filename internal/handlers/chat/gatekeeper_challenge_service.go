@@ -187,8 +187,19 @@ func (g *Gatekeeper) revalidateChallengeIdentity(ctx context.Context, challenge 
 	if g.banChecker == nil {
 		return false, nil
 	}
-	if g.banChecker.IsKnownBanned(challenge.UserID) {
+	knownBanned := g.banChecker.IsKnownBanned(challenge.UserID)
+	available, err := g.banChecker.ModerationAvailable(ctx, challenge.ChatID)
+	if err != nil {
+		if knownBanned {
+			return true, nil
+		}
+		return false, fmt.Errorf("recheck challenge moderation capability: %w", err)
+	}
+	if knownBanned {
 		return true, nil
+	}
+	if !available {
+		return false, nil
 	}
 	banned, err := g.banChecker.CheckBan(ctx, challenge.UserID)
 	if err != nil {

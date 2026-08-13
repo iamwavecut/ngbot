@@ -121,6 +121,7 @@ func TestRemoveExpiredRestrictionsPreservesActiveRows(t *testing.T) {
 	for _, restriction := range []*db.UserRestriction{
 		{ChatID: -100, UserID: 1, RestrictedAt: now.Add(-2 * time.Hour), ExpiresAt: now.Add(-time.Hour)},
 		{ChatID: -100, UserID: 2, RestrictedAt: now, ExpiresAt: now.Add(time.Hour)},
+		{ChatID: -100, UserID: 3, RestrictedAt: now.Add(-2 * time.Hour), ExpiresAt: now.Add(-time.Hour), PriorPermissionsJSON: `{"can_send_messages":false}`},
 	} {
 		if err := client.AddRestriction(ctx, restriction); err != nil {
 			t.Fatalf("add restriction for user %d: %v", restriction.UserID, err)
@@ -142,6 +143,13 @@ func TestRemoveExpiredRestrictionsPreservesActiveRows(t *testing.T) {
 	}
 	if active == nil {
 		t.Fatal("active restriction was deleted")
+	}
+	snapshot, err := client.GetRestriction(ctx, -100, 3)
+	if err != nil {
+		t.Fatalf("get expired permission snapshot: %v", err)
+	}
+	if snapshot == nil || snapshot.PriorPermissionsJSON == "" {
+		t.Fatalf("expired permission snapshot was deleted: %#v", snapshot)
 	}
 }
 

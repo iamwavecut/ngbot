@@ -613,7 +613,7 @@ func (g *Gatekeeper) sendChallengeMessage(
 	if isPublic {
 		commLang = g.s.GetLanguage(ctx, languageChatID, user)
 	}
-	buttons, correctVariant := g.createCaptchaButtons(user.ID, challenge.SuccessUUID, commLang, normalizeCaptchaOptionsCount(settings.GatekeeperCaptchaOptionsCount))
+	buttons, visual := g.createCaptchaButtons(user.ID, challenge.SuccessUUID, commLang, normalizeCaptchaOptionsCount(settings.GatekeeperCaptchaOptionsCount))
 	rows := captchaKeyboardRows(buttons)
 	inlineRows := make([][]api.InlineKeyboardButton, 0, len(rows))
 	for _, row := range rows {
@@ -631,14 +631,14 @@ func (g *Gatekeeper) sendChallengeMessage(
 	if !isPublic {
 		args = append(args, g.chatLinkTitled(target))
 	}
-	args = append(args, correctVariant[1])
+	args = append(args, visual.Instruction)
 	msgText := strings.TrimSpace(fmt.Sprintf(i18n.Get(randomKey, commLang), args...))
 	parseMode := api.ModeMarkdown
 	if isPublic && settings.GatekeeperGreetingEnabled {
 		greetingText := g.renderGreetingText(settings, user, target)
 		if greetingText != "" && g.greetingParseMode(settings) == api.ModeMarkdownV2 {
 			parseMode = api.ModeMarkdownV2
-			msgText = composeGatekeeperMessage(greetingText, g.renderChallengeTextMarkdownV2(randomKey, commLang, user, correctVariant[1]))
+			msgText = composeGatekeeperMessage(greetingText, g.renderChallengeTextMarkdownV2(randomKey, commLang, user, visual.Instruction))
 		} else {
 			msgText = composeGatekeeperMessage(greetingText, msgText)
 		}
@@ -647,11 +647,12 @@ func (g *Gatekeeper) sendChallengeMessage(
 		return 0, nil
 	}
 
-	msg := api.NewMessage(challenge.CommChatID, msgText)
-	msg.ParseMode = parseMode
-	msg.DisableNotification = isPublic
-	msg.ReplyMarkup = &markup
-	sent, err := bot.Send(ctx, g.bot, msg)
+	photo := api.NewPhoto(challenge.CommChatID, api.FileBytes{Name: "captcha.png", Bytes: visual.PNG})
+	photo.Caption = msgText
+	photo.ParseMode = parseMode
+	photo.DisableNotification = isPublic
+	photo.ReplyMarkup = &markup
+	sent, err := bot.Send(ctx, g.bot, photo)
 	if err != nil {
 		return 0, errors.WithMessage(err, "send gatekeeper message")
 	}

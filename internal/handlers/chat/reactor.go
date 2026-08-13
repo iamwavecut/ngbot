@@ -197,7 +197,13 @@ func (r *Reactor) Handle(ctx context.Context, u *api.Update, chat *api.Chat, use
 }
 
 func (r *Reactor) handleEditedMessage(ctx context.Context, msg *api.Message, chat *api.Chat, user *api.User, settings *db.Settings) error {
-	if msg == nil || chat == nil || user == nil {
+	if msg == nil || chat == nil {
+		return nil
+	}
+	if msg.SenderChat != nil {
+		return r.handleMessageChallenge(ctx, msg, chat, user, settings, true, false)
+	}
+	if user == nil {
 		return nil
 	}
 	if settings != nil && !settings.LLMFirstMessageEnabled {
@@ -268,7 +274,7 @@ func (r *Reactor) handleCallbackQuery(ctx context.Context, u *api.Update, chat *
 
 	vote := parts[2] == "0"
 
-	notSpamVotes, spamVotes, err := r.spamControl.RecordVote(ctx, caseID, user.ID, vote)
+	notSpamVotes, spamVotes, err := r.spamControl.RecordVote(ctx, caseID, user.ID, user.UserName, vote)
 	if err != nil {
 		if errors.Is(err, moderation.ErrCommunityVotingDisabled) {
 			language := "en"

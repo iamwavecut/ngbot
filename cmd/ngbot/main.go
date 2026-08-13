@@ -420,13 +420,15 @@ func buildRuntime(ctx context.Context, cfg *config.Config, errChan chan<- shutdo
 	reactorHandler := chatHandlers.NewReactor(service, botAPI, dbClient, dbClient, banService, spamControl, spamDetector, chatHandlers.Config{
 		SpamControl: cfg.SpamControl,
 	})
+	mandatoryModeration := chatHandlers.NewModerationRouter(banlistGuard, reactorHandler)
+	reactorFeatures := chatHandlers.NewReactorFeatures(reactorHandler)
 
 	availableHandlers := map[string]bot.Handler{
 		handlerAdmin:      adminHandler,
 		handlerGatekeeper: gatekeeperHandler,
-		handlerReactor:    reactorHandler,
+		handlerReactor:    reactorFeatures,
 	}
-	updateHandlers := mandatoryUpdateHandlers(cfg.EnabledHandlers, availableHandlers, banlistGuard, reactorHandler)
+	updateHandlers := mandatoryUpdateHandlers(cfg.EnabledHandlers, availableHandlers, mandatoryModeration)
 
 	updateLoop := newUpdateLoopComponent(
 		botAPI,
@@ -482,14 +484,9 @@ func reportWebAppFatalError(errChan chan<- shutdownSignal) func(error) {
 	}
 }
 
-func mandatoryUpdateHandlers(enabled []string, available map[string]bot.Handler, banlistGuard, moderationRouter bot.Handler) []bot.Handler {
-	handlers := []bot.Handler{banlistGuard, moderationRouter}
-	for _, handler := range selectUpdateHandlers(enabled, available) {
-		if handler != moderationRouter {
-			handlers = append(handlers, handler)
-		}
-	}
-	return handlers
+func mandatoryUpdateHandlers(enabled []string, available map[string]bot.Handler, mandatoryModeration bot.Handler) []bot.Handler {
+	handlers := []bot.Handler{mandatoryModeration}
+	return append(handlers, selectUpdateHandlers(enabled, available)...)
 }
 
 func newTelegramBotAPI(token, endpoint string, client *http.Client) (*api.BotAPI, error) {
@@ -535,9 +532,6 @@ func maskConfiguration(cfg *config.Config) *config.Config {
 }
 
 func configureLLM(cfg *config.Config, logger *log.Entry) (adapters.LLM, error) {
-	if !slices.Contains(cfg.EnabledHandlers, handlerReactor) {
-		return nil, nil
-	}
 	apiKey := cfg.LLM.APIKeyForProvider()
 	switch cfg.LLM.Type {
 	case config.LLMProviderOpenAI:

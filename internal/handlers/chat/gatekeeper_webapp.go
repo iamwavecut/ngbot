@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	stderrors "errors"
 	"fmt"
@@ -12,7 +13,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"sort"
 	"strings"
 	"time"
 
@@ -68,21 +68,22 @@ type joinCaptchaPageOption struct {
 }
 
 type joinCaptchaPageData struct {
-	CSPNonce      string
-	Locale        string
-	Token         string
-	Kicker        string
-	Title         string
-	Message       string
-	Hint          string
-	State         string
-	PromptBefore  string
-	PromptAfter   string
-	SecondsLabel  string
-	Waiting       string
-	Options       []joinCaptchaPageOption
-	ChallengeJSON template.JS
-	LabelsJSON    template.JS
+	CSPNonce       string
+	Locale         string
+	Token          string
+	Kicker         string
+	Title          string
+	Message        string
+	Hint           string
+	State          string
+	PromptBefore   string
+	PromptAfter    string
+	ChallengeImage template.URL
+	SecondsLabel   string
+	Waiting        string
+	Options        []joinCaptchaPageOption
+	ChallengeJSON  template.JS
+	LabelsJSON     template.JS
 }
 
 type joinCaptchaAnswerResponse struct {
@@ -205,7 +206,7 @@ var joinCaptchaCopies = map[string]joinCaptchaCopy{
 	"en": {
 		Kicker:                  gatekeeperName,
 		Title:                   "Human check",
-		PromptTemplate:          "Select {target} to continue into the chat.",
+		PromptTemplate:          "Solve the expression shown below and select its result.",
 		SecondsLabel:            "seconds",
 		Waiting:                 "Waiting for your choice.",
 		MakeChoiceNow:           "Make your choice now.",
@@ -245,7 +246,7 @@ var joinCaptchaCopies = map[string]joinCaptchaCopy{
 	"ru": {
 		Kicker:                  "Контроль входа",
 		Title:                   "Проверка",
-		PromptTemplate:          "Выберите {target}, чтобы войти в чат.",
+		PromptTemplate:          "Решите выражение ниже и выберите результат.",
 		SecondsLabel:            "секунд",
 		Waiting:                 "Жду выбор.",
 		MakeChoiceNow:           "Пора выбирать.",
@@ -486,7 +487,8 @@ main[data-state="blocked"] .bar {
 <p class="kicker">{{.Kicker}}</p>
 <h1 data-title>{{.Title}}</h1>
 {{if .Options}}
-<p class="prompt">{{.PromptBefore}}<span class="target" data-prompt></span>{{.PromptAfter}}</p>
+<p class="prompt">{{.PromptBefore}}{{.PromptAfter}}</p>
+<img class="challenge-image" src="{{.ChallengeImage}}" alt="CAPTCHA expression" width="260" height="96">
 <div class="timer"><strong data-countdown>10</strong><span>{{.SecondsLabel}}</span></div>
 <section class="options" aria-label="{{.Title}}">
 {{range .Options}}<button type="button" data-choice="{{.ID}}"></button>{{end}}
@@ -552,7 +554,6 @@ main[data-state="blocked"] .bar {
 			const bytes = new Uint8Array(encoded.d.map((value, index) => value ^ encoded.k[index % encoded.k.length]));
 			return new TextDecoder().decode(bytes);
 		};
-		document.querySelector("[data-prompt]").textContent = decodeText(challenge.prompt);
 		buttons.forEach((button, index) => {
 			const option = challenge.options[index];
 			button.textContent = decodeText(option.text);
@@ -773,7 +774,7 @@ func (g *Gatekeeper) startJoinRequestWebAppChallenge(ctx context.Context, reques
 	now := time.Now()
 	successUUID := uuid.New()
 	language := g.webAppChallengeLanguage(ctx, request.Chat.ID, &request.From)
-	options, correctVariant := g.createWebAppCaptchaOptions(language, settings.GatekeeperCaptchaOptionsCount, successUUID)
+	options, visual := g.createWebAppCaptchaOptions(language, settings.GatekeeperCaptchaOptionsCount, successUUID)
 	optionsJSON, err := encodeWebAppCaptchaOptions(language, options)
 	if err != nil {
 		return fmt.Errorf("marshal captcha options: %w", err)
@@ -792,7 +793,7 @@ func (g *Gatekeeper) startJoinRequestWebAppChallenge(ctx context.Context, reques
 		SuccessUUID:        successUUID,
 		WebAppToken:        webAppToken,
 		JoinRequestQueryID: request.QueryID,
-		CaptchaPrompt:      correctVariant[1],
+		CaptchaPrompt:      visual.dataURL(),
 		CaptchaOptionsJSON: string(optionsJSON),
 		UserLanguage:       strings.TrimSpace(request.From.LanguageCode),
 		CreatedAt:          now,
@@ -857,7 +858,7 @@ func (g *Gatekeeper) handleTestJoinCaptchaCommand(ctx context.Context, msg *api.
 	successUUID := uuid.New()
 	language := g.webAppChallengeLanguage(ctx, chat.ID, user)
 	settings := db.DefaultSettings(chat.ID)
-	options, correctVariant := g.createWebAppCaptchaOptions(language, settings.GatekeeperCaptchaOptionsCount, successUUID)
+	options, visual := g.createWebAppCaptchaOptions(language, settings.GatekeeperCaptchaOptionsCount, successUUID)
 	optionsJSON, err := encodeWebAppCaptchaOptions(language, options)
 	if err != nil {
 		return fmt.Errorf("marshal test captcha options: %w", err)
@@ -872,7 +873,7 @@ func (g *Gatekeeper) handleTestJoinCaptchaCommand(ctx context.Context, msg *api.
 		SuccessUUID:        successUUID,
 		WebAppToken:        webAppToken,
 		JoinRequestQueryID: joinCaptchaTestQueryPrefix + uuid.New(),
-		CaptchaPrompt:      correctVariant[1],
+		CaptchaPrompt:      visual.dataURL(),
 		CaptchaOptionsJSON: string(optionsJSON),
 		UserLanguage:       strings.TrimSpace(user.LanguageCode),
 		CreatedAt:          now,
@@ -892,44 +893,17 @@ func (g *Gatekeeper) handleTestJoinCaptchaCommand(ctx context.Context, msg *api.
 	return err
 }
 
-func (g *Gatekeeper) createWebAppCaptchaOptions(lang string, optionsCount int, successUUID string) ([]webAppCaptchaOption, [2]string) {
-	captchaIndex := g.createCaptchaIndex(lang)
-	if len(captchaIndex) == 0 {
-		captchaIndex = g.createCaptchaIndex("en")
-	}
-	if len(captchaIndex) == 0 {
-		return []webAppCaptchaOption{{ID: successUUID, Symbol: "A"}}, [2]string{"A", captchaFallbackWord}
-	}
-
-	targetSize := min(len(captchaIndex), normalizeCaptchaOptionsCount(optionsCount))
-	captchaRandomSet := make([][2]string, 0, targetSize)
-	usedIDs := make(map[int]struct{}, targetSize)
-	for len(captchaRandomSet) < targetSize {
-		ID := mathrand.Intn(len(captchaIndex))
-		if _, ok := usedIDs[ID]; ok {
-			continue
-		}
-		captchaRandomSet = append(captchaRandomSet, captchaIndex[ID])
-		usedIDs[ID] = struct{}{}
-	}
-	correctVariant := captchaRandomSet[mathrand.Intn(len(captchaRandomSet))]
-	correctVariant[1] = correctVariant[0]
-
-	options := make([]webAppCaptchaOption, 0, len(captchaRandomSet))
-	for _, variant := range captchaRandomSet {
+func (g *Gatekeeper) createWebAppCaptchaOptions(_ string, optionsCount int, successUUID string) ([]webAppCaptchaOption, captchaVisual) {
+	labels, answer, visual := newVisualCaptcha(normalizeCaptchaOptionsCount(optionsCount))
+	options := make([]webAppCaptchaOption, 0, len(labels))
+	for _, label := range labels {
 		optionID := uuid.New()
-		if variant[0] == correctVariant[0] {
+		if label == answer {
 			optionID = successUUID
 		}
-		options = append(options, webAppCaptchaOption{
-			ID:     optionID,
-			Symbol: variant[0],
-		})
+		options = append(options, webAppCaptchaOption{ID: optionID, Symbol: label})
 	}
-	sort.Slice(options, func(i, j int) bool {
-		return options[i].Symbol < options[j].Symbol
-	})
-	return options, correctVariant
+	return options, visual
 }
 
 func (g *Gatekeeper) handleJoinCaptcha(w http.ResponseWriter, r *http.Request) {
@@ -954,7 +928,7 @@ func (g *Gatekeeper) handleJoinCaptcha(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	copy := joinCaptchaCopyForLocale(locale)
-	pageOptions, payload, err := newJoinCaptchaPageChallenge(challenge.CaptchaPrompt, options)
+	pageOptions, payload, err := newJoinCaptchaPageChallenge(copy.PromptTemplate, options)
 	if err != nil {
 		g.renderJoinCaptchaPage(w, http.StatusInternalServerError, joinCaptchaErrorPageData(copy, copy.UnavailableTitle, copy.UnavailableMessage, copy.TryAgainFromTelegram))
 		return
@@ -966,18 +940,31 @@ func (g *Gatekeeper) handleJoinCaptcha(w http.ResponseWriter, r *http.Request) {
 	}
 	before, after := splitJoinCaptchaPrompt(copy.PromptTemplate)
 	g.renderJoinCaptchaPage(w, http.StatusOK, joinCaptchaPageData{
-		Locale:        locale,
-		Token:         challenge.WebAppToken,
-		Kicker:        copy.Kicker,
-		Title:         copy.Title,
-		PromptBefore:  before,
-		PromptAfter:   after,
-		SecondsLabel:  copy.SecondsLabel,
-		Waiting:       copy.Waiting,
-		Options:       pageOptions,
-		ChallengeJSON: payload,
-		LabelsJSON:    labelsJSON,
+		Locale:         locale,
+		Token:          challenge.WebAppToken,
+		Kicker:         copy.Kicker,
+		Title:          copy.Title,
+		PromptBefore:   before,
+		PromptAfter:    after,
+		ChallengeImage: joinCaptchaImageURL(challenge.CaptchaPrompt),
+		SecondsLabel:   copy.SecondsLabel,
+		Waiting:        copy.Waiting,
+		Options:        pageOptions,
+		ChallengeJSON:  payload,
+		LabelsJSON:     labelsJSON,
 	})
+}
+
+func joinCaptchaImageURL(value string) template.URL {
+	const prefix = "data:image/png;base64,"
+	encoded, ok := strings.CutPrefix(value, prefix)
+	if !ok {
+		return ""
+	}
+	if _, err := base64.StdEncoding.DecodeString(encoded); err != nil {
+		return ""
+	}
+	return template.URL(value)
 }
 
 func (g *Gatekeeper) handleJoinCaptchaReady(w http.ResponseWriter, r *http.Request) {

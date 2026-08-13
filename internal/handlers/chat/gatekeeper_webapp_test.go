@@ -387,6 +387,36 @@ func TestJoinCaptchaAnswerApprovesMatchingTokenUserAndChoice(t *testing.T) {
 	}
 }
 
+func TestCaptchaRevalidationDoesNotCallProviderWithoutModerationRights(t *testing.T) {
+	t.Parallel()
+
+	checker := &testGatekeeperBanChecker{moderationUnavailable: true, banned: true}
+	gatekeeper := &Gatekeeper{store: newGatekeeperFlowStore(), banChecker: checker}
+	challenge := newWebAppChallenge(time.Now().Add(time.Minute))
+	banned, err := gatekeeper.revalidateChallengeIdentity(t.Context(), challenge, "candidate")
+	if err != nil || banned {
+		t.Fatalf("revalidate no-rights = banned %t err %v", banned, err)
+	}
+	if checker.checkBanCalls != 0 {
+		t.Fatalf("provider checks = %d, want 0", checker.checkBanCalls)
+	}
+}
+
+func TestCaptchaRevalidationCachedBanIsTerminalWithoutModerationRights(t *testing.T) {
+	t.Parallel()
+
+	challenge := newWebAppChallenge(time.Now().Add(time.Minute))
+	checker := &testGatekeeperBanChecker{moderationUnavailable: true, knownBanned: map[int64]bool{challenge.UserID: true}}
+	gatekeeper := &Gatekeeper{store: newGatekeeperFlowStore(), banChecker: checker}
+	banned, err := gatekeeper.revalidateChallengeIdentity(t.Context(), challenge, "candidate")
+	if err != nil || !banned {
+		t.Fatalf("revalidate cached ban = banned %t err %v", banned, err)
+	}
+	if checker.checkBanCalls != 0 {
+		t.Fatalf("provider checks = %d, want 0", checker.checkBanCalls)
+	}
+}
+
 func TestJoinCaptchaWrongChoiceConsumesChallengeInOneAttempt(t *testing.T) {
 	t.Parallel()
 
@@ -718,7 +748,8 @@ func TestJoinCaptchaWebAppLocalizesAndObfuscatesChallengeText(t *testing.T) {
 		t.Fatalf("encode options: %v", err)
 	}
 	challenge := newWebAppChallenge(time.Now().Add(3 * time.Minute))
-	challenge.CaptchaPrompt = testChallengePromptRU
+	_, _, visual := newVisualCaptcha(3)
+	challenge.CaptchaPrompt = visual.dataURL()
 	challenge.CaptchaOptionsJSON = optionsJSON
 	if _, err := store.CreateChallenge(t.Context(), challenge); err != nil {
 		t.Fatalf("create challenge: %v", err)
@@ -737,12 +768,12 @@ func TestJoinCaptchaWebAppLocalizesAndObfuscatesChallengeText(t *testing.T) {
 		t.Fatalf("unexpected status %d: %s", rr.Code, rr.Body.String())
 	}
 	body := rr.Body.String()
-	for _, want := range []string{"Контроль входа", "Проверка", "Выберите ", "секунд", "Жду выбор", "Проверяю ответ", `<html lang="ru">`, "telegram-web-app.js?63", `role="status"`, "prefers-reduced-motion"} {
+	for _, want := range []string{"Контроль входа", "Проверка", "Решите выражение", "секунд", "Жду выбор", "Проверяю ответ", `<html lang="ru">`, "telegram-web-app.js?63", `role="status"`, "prefers-reduced-motion", "data:image/png;base64,"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("expected localized page to contain %q, got %q", want, body)
 		}
 	}
-	for _, leaked := range []string{testChallengePromptRU, "🐩", "🍎"} {
+	for _, leaked := range []string{"🐩", "🍎"} {
 		if strings.Contains(body, leaked) {
 			t.Fatalf("expected captcha text %q to be obfuscated, got %q", leaked, body)
 		}

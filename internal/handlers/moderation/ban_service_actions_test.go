@@ -82,7 +82,7 @@ func TestMuteUserRestoresCapturedPermissionsWhenPersistenceFails(t *testing.T) {
 	store := &testBanStore{addErr: errors.New("database unavailable")}
 	service := &defaultBanService{bot: botAPI, db: store}
 
-	err := service.MuteUser(t.Context(), -100, 200)
+	err := service.MuteUser(t.Context(), -100, 200, time.Time{})
 	if err == nil {
 		t.Fatal("expected persistence failure")
 	}
@@ -104,6 +104,10 @@ func (s *testBanStore) GetActiveRestriction(context.Context, int64, int64) (*db.
 		return s.restriction, nil
 	}
 	return &db.UserRestriction{ExpiresAt: time.Now().Add(time.Minute)}, nil
+}
+
+func (s *testBanStore) GetRestriction(context.Context, int64, int64) (*db.UserRestriction, error) {
+	return s.restriction, nil
 }
 
 func (s *testBanStore) RemoveExpiredRestrictions(context.Context) error {
@@ -163,6 +167,42 @@ func TestUnmuteUserRestoresCapturedRestrictivePermissions(t *testing.T) {
 
 	if permissions != want {
 		t.Fatalf("restored permissions = %#v, want %#v", permissions, want)
+	}
+}
+
+func TestMuteUserUsesVotingDeadlineAndSnapshotSurvivesExpiry(t *testing.T) {
+	t.Parallel()
+
+	var untilDate int64
+	botAPI := newModerationTestBotAPI(t, func(method string, r *http.Request) any {
+		switch method {
+		case "getChatMember":
+			return map[string]any{"user": map[string]any{"id": 200, "is_bot": false, "first_name": "User"}, "status": "member"}
+		case "getChat":
+			return map[string]any{"id": -100, "type": "supergroup", "permissions": map[string]any{"can_send_messages": true, "can_send_photos": false}}
+		case "restrictChatMember":
+			if err := r.ParseForm(); err != nil {
+				t.Fatal(err)
+			}
+			untilDate, _ = strconv.ParseInt(r.Form.Get("until_date"), 10, 64)
+			return true
+		default:
+			t.Fatalf("unexpected method %s", method)
+			return nil
+		}
+	})
+	store := &testBanStore{}
+	service := &defaultBanService{bot: botAPI, db: store}
+	deadline := time.Now().Add(30 * time.Minute)
+	if err := service.MuteUser(t.Context(), -100, 200, deadline); err != nil {
+		t.Fatalf("mute: %v", err)
+	}
+	if time.Unix(untilDate, 0).Before(deadline.Add(4 * time.Minute)) {
+		t.Fatalf("mute expiry = %v, deadline = %v", time.Unix(untilDate, 0), deadline)
+	}
+	store.restriction.ExpiresAt = time.Now().Add(-time.Minute)
+	if _, err := service.permissionsBeforeRestriction(t.Context(), -100, store.restriction); err != nil {
+		t.Fatalf("restore snapshot after expiry/restart: %v", err)
 	}
 }
 
@@ -258,7 +298,7 @@ func TestMutePrivilegeFailureImmediatelyDisablesModeration(t *testing.T) {
 	})
 	service := NewBanService(botAPI, &testBanStore{})
 
-	err := service.MuteUser(context.Background(), -100, 200)
+	err := service.MuteUser(context.Background(), -100, 200, time.Time{})
 	if !errors.Is(err, ErrNoPrivileges) {
 		t.Fatalf("MuteUser error = %v, want ErrNoPrivileges", err)
 	}

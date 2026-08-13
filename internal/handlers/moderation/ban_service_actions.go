@@ -12,7 +12,9 @@ import (
 	"github.com/iamwavecut/ngbot/internal/db"
 )
 
-func (s *defaultBanService) MuteUser(ctx context.Context, chatID, userID int64) error {
+const restrictionRecoveryMargin = 5 * time.Minute
+
+func (s *defaultBanService) MuteUser(ctx context.Context, chatID, userID int64, until time.Time) error {
 	priorPermissions, err := s.effectiveMemberPermissions(ctx, chatID, userID)
 	if err != nil {
 		return fmt.Errorf("capture permissions before restriction: %w", err)
@@ -21,7 +23,10 @@ func (s *defaultBanService) MuteUser(ctx context.Context, chatID, userID int64) 
 	if err != nil {
 		return fmt.Errorf("encode permissions before restriction: %w", err)
 	}
-	expiresAt := time.Now().Add(10 * time.Minute)
+	expiresAt := until.Add(restrictionRecoveryMargin)
+	if until.IsZero() {
+		expiresAt = time.Now().Add(10 * time.Minute)
+	}
 	config := api.RestrictChatMemberConfig{
 		ChatMemberConfig: api.ChatMemberConfig{
 			ChatConfig: api.ChatConfig{ChatID: chatID},
@@ -61,7 +66,7 @@ func (s *defaultBanService) MuteUser(ctx context.Context, chatID, userID int64) 
 }
 
 func (s *defaultBanService) UnmuteUser(ctx context.Context, chatID, userID int64) error {
-	restriction, err := s.db.GetActiveRestriction(ctx, chatID, userID)
+	restriction, err := s.db.GetRestriction(ctx, chatID, userID)
 	if err != nil {
 		return fmt.Errorf("load restriction permissions: %w", err)
 	}

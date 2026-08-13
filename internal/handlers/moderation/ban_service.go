@@ -53,7 +53,7 @@ type BanService interface {
 	Start(ctx context.Context) error
 	Stop(ctx context.Context) error
 	CheckBan(ctx context.Context, userID int64) (bool, error)
-	MuteUser(ctx context.Context, chatID, userID int64) error
+	MuteUser(ctx context.Context, chatID, userID int64, until time.Time) error
 	UnmuteUser(ctx context.Context, chatID, userID int64) error
 	BanUserWithMessage(ctx context.Context, chatID, userID int64, messageID int) error
 	UnbanUser(ctx context.Context, chatID, userID int64) error
@@ -73,6 +73,7 @@ type banStore interface {
 	AddRestriction(ctx context.Context, restriction *db.UserRestriction) error
 	RemoveRestriction(ctx context.Context, chatID int64, userID int64) error
 	GetActiveRestriction(ctx context.Context, chatID, userID int64) (*db.UserRestriction, error)
+	GetRestriction(ctx context.Context, chatID, userID int64) (*db.UserRestriction, error)
 	RemoveExpiredRestrictions(ctx context.Context) error
 }
 
