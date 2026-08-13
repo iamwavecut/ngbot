@@ -122,13 +122,13 @@ NG_GATEKEEPER_WEBAPP_PUBLIC_URL=https://antifraud.rtfm.rsvp
 NG_GATEKEEPER_WEBAPP_LISTEN_ADDR=:8080
 ```
 
-The Mini App endpoint is intentionally hostile to indexing and embedding:
+The Mini App endpoint is intentionally hostile to indexing and unauthorized embedding:
 
 1. `/robots.txt` disallows all crawlers, including known search, SEO, and LLM training bots.
 2. `/sitemap.xml` is an empty sitemap.
 3. `X-Robots-Tag` denies indexing, following, snippets, archives, image indexing, translation, AI use, and image-AI use.
 4. CSP uses `default-src 'none'` and per-request nonces for the Telegram script and local inline code.
-5. CSP and `X-Frame-Options` deny framing.
+5. CSP allows framing only by the official Telegram Web origin; attacker origins remain blocked.
 6. Browser capability APIs are disabled with `Permissions-Policy`.
 7. Referrers are suppressed with `Referrer-Policy: no-referrer`.
 8. Responses are marked `no-store` and `private`.

@@ -83,6 +83,34 @@ func TestValidateConfig(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name: "gatekeeper web app public url must be origin only",
+			cfg: Config{
+				LLM:         LLM{RequestTimeout: 45 * time.Second},
+				SpamControl: SpamControl{MessageProbationDuration: 3 * time.Hour},
+				Telegram: Telegram{
+					PollTimeout:    60 * time.Second,
+					RequestTimeout: 75 * time.Second,
+					RecoveryWindow: 10 * time.Minute,
+				},
+				GatekeeperWebApp: GatekeeperWebApp{PublicURL: "https://guard.example/prefix?source=x#fragment"},
+			},
+			wantErr: true,
+		},
+		{
+			name: "gatekeeper web app public url rejects user info",
+			cfg: Config{
+				LLM:         LLM{RequestTimeout: 45 * time.Second},
+				SpamControl: SpamControl{MessageProbationDuration: 3 * time.Hour},
+				Telegram: Telegram{
+					PollTimeout:    60 * time.Second,
+					RequestTimeout: 75 * time.Second,
+					RecoveryWindow: 10 * time.Minute,
+				},
+				GatekeeperWebApp: GatekeeperWebApp{PublicURL: "https://user:password@guard.example"},
+			},
+			wantErr: true,
+		},
+		{
 			name: "public http web app url is rejected",
 			cfg: Config{
 				LLM:         LLM{RequestTimeout: 45 * time.Second},

@@ -219,6 +219,26 @@ func (c *sqliteClient) BeginDMFallback(ctx context.Context, challengeID string) 
 	return affected == 1, err
 }
 
+func (c *sqliteClient) BeginExpiredWebAppFallback(ctx context.Context, challengeID string) (bool, error) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	result, err := c.db.ExecContext(ctx, `
+		UPDATE gatekeeper_challenges
+		SET status = ?, next_attempt_at = ?, attempt_count = 0, last_error = ''
+		WHERE challenge_id = ?
+			AND status = ?
+			AND web_app_token <> ''
+			AND join_request_query_id <> ''
+			AND expires_at <= ?
+	`, db.ChallengeStatusWebAppFallbackPending, time.Now(), challengeID, db.ChallengeStatusPending, time.Now())
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	return affected == 1, err
+}
+
 func (c *sqliteClient) AttachChallengeMessage(ctx context.Context, challengeID, expectedStatus string, messageID int) (bool, error) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()

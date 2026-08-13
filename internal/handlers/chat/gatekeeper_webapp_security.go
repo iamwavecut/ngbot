@@ -125,7 +125,7 @@ func joinCaptchaPageCSP(nonce string) string {
 		"base-uri 'none'",
 		"connect-src 'self'",
 		"form-action 'none'",
-		"frame-ancestors 'none'",
+		"frame-ancestors https://web.telegram.org",
 		"img-src 'none'",
 		"manifest-src 'none'",
 		"media-src 'none'",

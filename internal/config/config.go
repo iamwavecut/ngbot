@@ -104,6 +104,9 @@ func validateConfig(cfg *Config) error {
 		if parsed.Scheme != "https" && (parsed.Scheme != "http" || !isLoopbackHost(parsed.Hostname())) {
 			return fmt.Errorf("gatekeeper web app public url must use https unless it points to loopback")
 		}
+		if parsed.User != nil || (parsed.Path != "" && parsed.Path != "/") || parsed.RawQuery != "" || parsed.Fragment != "" {
+			return fmt.Errorf("gatekeeper web app public url must contain only scheme and authority")
+		}
 	}
 	return nil
 }

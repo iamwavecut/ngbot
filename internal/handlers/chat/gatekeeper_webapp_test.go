@@ -4,12 +4,14 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os/exec"
 	"sort"
 	"strconv"
 	"strings"
@@ -20,6 +22,110 @@ import (
 	"github.com/iamwavecut/ngbot/internal/config"
 	"github.com/iamwavecut/ngbot/internal/db"
 )
+
+func TestJoinCaptchaRenderedClientPostsOneAnswerWithoutUncaughtException(t *testing.T) {
+	t.Parallel()
+
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Fatal("node is required for the rendered WebApp client test")
+	}
+
+	store := newGatekeeperFlowStore()
+	challenge := newWebAppChallenge(time.Now().Add(3 * time.Minute))
+	if _, err := store.CreateChallenge(t.Context(), challenge); err != nil {
+		t.Fatalf("create challenge: %v", err)
+	}
+	gatekeeper := &Gatekeeper{store: store, config: &config.Config{}}
+	req := httptest.NewRequest(http.MethodGet, joinCaptchaPath+"?token="+url.QueryEscape(challenge.WebAppToken), nil)
+	rr := httptest.NewRecorder()
+	gatekeeper.joinCaptchaWebAppHandler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("render challenge: status %d: %s", rr.Code, rr.Body.String())
+	}
+
+	body := rr.Body.String()
+	scriptStart := strings.LastIndex(body, "<script nonce=")
+	if scriptStart < 0 {
+		t.Fatal("rendered client script not found")
+	}
+	scriptStart += strings.Index(body[scriptStart:], ">") + 1
+	scriptEnd := strings.Index(body[scriptStart:], "</script>")
+	if scriptEnd < 0 {
+		t.Fatal("rendered client script terminator not found")
+	}
+	clientScript := body[scriptStart : scriptStart+scriptEnd]
+
+	harness := fmt.Sprintf(`
+const vm = require("node:vm");
+const source = Buffer.from(%q, "base64").toString("utf8");
+let click;
+let answerPosts = 0;
+let uncaught = 0;
+const makeClassList = () => ({ add() {}, remove() {} });
+const makeElement = () => ({
+  dataset: {}, disabled: false, textContent: "", classList: makeClassList(),
+  addEventListener(type, handler) { if (type === "click") click = handler; },
+  setAttribute() {}, focus() {}
+});
+const root = makeElement();
+const title = makeElement();
+const status = makeElement();
+const countdown = makeElement();
+const prompt = makeElement();
+const button = makeElement();
+button.dataset.choice = %q;
+const document = {
+  body: { dataset: { token: %q } },
+  querySelector(selector) {
+    return ({ "main": root, "[data-title]": title, "[data-status]": status,
+      "[data-countdown]": countdown, "[data-prompt]": prompt })[selector] || null;
+  },
+  querySelectorAll(selector) { return selector === "[data-choice]" ? [button] : []; }
+};
+const app = { initData: "signed", ready() {}, expand() {}, close() {} };
+const sandbox = {
+  window: { Telegram: { WebApp: app }, clearTimeout() {}, setTimeout(fn) { fn(); },
+    clearInterval() {}, setInterval() { return 1; } },
+  document, URLSearchParams, Uint8Array, TextDecoder,
+  setTimeout(fn) { fn(); },
+  fetch: async (target, options) => {
+    if (target.endsWith("/answer")) {
+      answerPosts++;
+      if (options.redirect !== "error") throw new Error("redirect mode was not error");
+    }
+    return { ok: true, json: async () => ({ ok: true, done: true, state: "passed", message: "done" }) };
+  }
+};
+process.on("unhandledRejection", () => { uncaught++; });
+process.on("uncaughtException", () => { uncaught++; });
+(async () => {
+  vm.runInNewContext(source, sandbox);
+  await new Promise(resolve => setImmediate(resolve));
+  answerPosts = 0;
+  if (!click) throw new Error("choice click handler was not installed");
+  click();
+  await new Promise(resolve => setImmediate(resolve));
+  await new Promise(resolve => setImmediate(resolve));
+  process.stdout.write(JSON.stringify({ answerPosts, uncaught }));
+})().catch(error => { process.stderr.write(error.stack); process.exitCode = 1; });
+`, base64.StdEncoding.EncodeToString([]byte(clientScript)), challenge.SuccessUUID, challenge.WebAppToken)
+
+	output, err := exec.CommandContext(t.Context(), node, "-e", harness).CombinedOutput()
+	if err != nil {
+		t.Fatalf("execute rendered client: %v\n%s", err, output)
+	}
+	var result struct {
+		AnswerPosts int `json:"answerPosts"`
+		Uncaught    int `json:"uncaught"`
+	}
+	if err := json.Unmarshal(output, &result); err != nil {
+		t.Fatalf("decode rendered client result %q: %v", output, err)
+	}
+	if result.AnswerPosts != 1 || result.Uncaught != 0 {
+		t.Fatalf("rendered click result = %+v, want one answer POST and no uncaught exception", result)
+	}
+}
 
 func TestJoinCaptchaAnswerApprovesMatchingTokenUserAndChoice(t *testing.T) {
 	t.Parallel()
@@ -136,6 +242,42 @@ func TestHandleJoinCaptchaAnswerConflictsWhenAlreadyClaimed(t *testing.T) {
 	}
 }
 
+func TestHandleJoinCaptchaAnswerReportsProcessingAfterLostApprovalResponse(t *testing.T) {
+	t.Parallel()
+
+	botAPI := newTestBotAPI(t, func(method string, _ *http.Request) any {
+		t.Fatalf("replayed answer must not repeat Telegram action: %s", method)
+		return nil
+	})
+	store := newGatekeeperFlowStore()
+	challenge := newWebAppChallenge(time.Now().Add(3 * time.Minute))
+	challenge.Status = db.ChallengeStatusApproveQueryPending
+	if _, err := store.CreateChallenge(t.Context(), challenge); err != nil {
+		t.Fatalf("create challenge: %v", err)
+	}
+	gatekeeper := &Gatekeeper{bot: botAPI, store: store, config: &config.Config{}}
+	form := url.Values{
+		testWebAppFormToken:    {challenge.WebAppToken},
+		testWebAppFormChoice:   {challenge.SuccessUUID},
+		testWebAppFormInitData: {signedWebAppInitData(t, botAPI.Token, challenge.JoinRequestQueryID, challenge.UserID)},
+	}
+	req := httptest.NewRequest(http.MethodPost, joinCaptchaAnswerPath, strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	gatekeeper.joinCaptchaWebAppHandler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202: %s", rr.Code, rr.Body.String())
+	}
+	var response map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response["done"] != true || response["state"] != "processing" {
+		t.Fatalf("expected processing replay response, got %#v", response)
+	}
+}
+
 func TestTestJoinCaptchaCommandSendsWebAppButton(t *testing.T) {
 	t.Parallel()
 
@@ -185,6 +327,20 @@ func TestTestJoinCaptchaCommandSendsWebAppButton(t *testing.T) {
 	}
 	if challenge.WebAppToken == "" || challenge.UserID != user.ID || challenge.ChatID != chat.ID {
 		t.Fatalf("unexpected challenge: %#v", challenge)
+	}
+}
+
+func TestJoinCaptchaURLBuildsFromValidatedOrigin(t *testing.T) {
+	t.Parallel()
+
+	gatekeeper := &Gatekeeper{config: &config.Config{GatekeeperWebApp: config.GatekeeperWebApp{PublicURL: "https://guard.example/"}}}
+	got, err := gatekeeper.joinCaptchaURL("a token&next=https://evil.example")
+	if err != nil {
+		t.Fatalf("joinCaptchaURL: %v", err)
+	}
+	want := "https://guard.example/gatekeeper/join-captcha?token=a+token%26next%3Dhttps%3A%2F%2Fevil.example"
+	if got != want {
+		t.Fatalf("joinCaptchaURL = %q, want %q", got, want)
 	}
 }
 
@@ -242,7 +398,7 @@ func TestJoinCaptchaAnswerCompletesTestChallengeWithoutJoinQueryAnswer(t *testin
 	}
 }
 
-func TestJoinCaptchaWebAppSecurityHeadersDenyIndexingEmbeddingAndBrowserCapabilities(t *testing.T) {
+func TestJoinCaptchaWebAppSecurityHeadersAllowOnlyTelegramWebFraming(t *testing.T) {
 	t.Parallel()
 
 	store := newGatekeeperFlowStore()
@@ -265,8 +421,8 @@ func TestJoinCaptchaWebAppSecurityHeadersDenyIndexingEmbeddingAndBrowserCapabili
 	}
 
 	header := rr.Header()
-	if got := header.Get("X-Frame-Options"); got != "DENY" {
-		t.Fatalf("expected frame denial, got %q", got)
+	if got := header.Get("X-Frame-Options"); got != "" {
+		t.Fatalf("X-Frame-Options blocks Telegram Web framing: %q", got)
 	}
 	if got := header.Get("Referrer-Policy"); got != "no-referrer" {
 		t.Fatalf("expected no-referrer, got %q", got)
@@ -274,8 +430,8 @@ func TestJoinCaptchaWebAppSecurityHeadersDenyIndexingEmbeddingAndBrowserCapabili
 	if got := header.Get("X-Content-Type-Options"); got != "nosniff" {
 		t.Fatalf("expected nosniff, got %q", got)
 	}
-	if got := header.Get("Cross-Origin-Resource-Policy"); got != "same-origin" {
-		t.Fatalf("expected same-origin resource policy, got %q", got)
+	if got := header.Get("Cross-Origin-Resource-Policy"); got != "cross-origin" {
+		t.Fatalf("expected Telegram Web-compatible resource policy, got %q", got)
 	}
 	if got := header.Get("X-Robots-Tag"); !strings.Contains(got, "noindex") || !strings.Contains(got, "noai") {
 		t.Fatalf("expected robot and ai indexing denial, got %q", got)
@@ -290,7 +446,7 @@ func TestJoinCaptchaWebAppSecurityHeadersDenyIndexingEmbeddingAndBrowserCapabili
 	csp := header.Get("Content-Security-Policy")
 	for _, want := range []string{
 		"default-src 'none'",
-		"frame-ancestors 'none'",
+		"frame-ancestors https://web.telegram.org",
 		"object-src 'none'",
 		"connect-src 'self'",
 		"https://telegram.org",
@@ -304,7 +460,10 @@ func TestJoinCaptchaWebAppSecurityHeadersDenyIndexingEmbeddingAndBrowserCapabili
 	if strings.Contains(csp, "'unsafe-inline'") {
 		t.Fatalf("CSP must not allow unsafe inline execution: %q", csp)
 	}
-	if body := rr.Body.String(); !strings.Contains(body, `nonce="`) || !strings.Contains(body, `name="robots"`) || !strings.Contains(body, `data-countdown`) || !strings.Contains(body, `data-feedback`) || !strings.Contains(body, `is-bad`) {
+	if strings.Contains(csp, "evil.example") {
+		t.Fatalf("attacker origin must not be allowed to frame the Mini App: %q", csp)
+	}
+	if body := rr.Body.String(); !strings.Contains(body, `nonce="`) || !strings.Contains(body, `name="robots"`) || !strings.Contains(body, `data-countdown`) || !strings.Contains(body, `data-feedback`) || !strings.Contains(body, `is-bad`) || !strings.Contains(body, `class="status"`) {
 		t.Fatalf("expected rendered page to carry nonce, robots meta tags, countdown, and visual feedback")
 	}
 }
@@ -340,7 +499,7 @@ func TestJoinCaptchaWebAppLocalizesAndObfuscatesChallengeText(t *testing.T) {
 		t.Fatalf("unexpected status %d: %s", rr.Code, rr.Body.String())
 	}
 	body := rr.Body.String()
-	for _, want := range []string{"Контроль входа", "Проверка", "Выберите ", "секунд", "Жду выбор", "Проверяю ответ"} {
+	for _, want := range []string{"Контроль входа", "Проверка", "Выберите ", "секунд", "Жду выбор", "Проверяю ответ", `<html lang="ru">`, "telegram-web-app.js?63", `role="status"`, "prefers-reduced-motion"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("expected localized page to contain %q, got %q", want, body)
 		}
@@ -832,7 +991,7 @@ func TestJoinCaptchaAnswerBlocksAfterTooManyWrongChoices(t *testing.T) {
 	}
 }
 
-func TestJoinCaptchaAnswerDeclinesExpiredChallenge(t *testing.T) {
+func TestJoinCaptchaAnswerReportsExpiredChallengeWithoutPunishment(t *testing.T) {
 	t.Parallel()
 
 	recorder := &botRequestRecorder{}
@@ -885,15 +1044,14 @@ func TestJoinCaptchaAnswerDeclinesExpiredChallenge(t *testing.T) {
 	if body["ok"] != false || body["done"] != true {
 		t.Fatalf("expected terminal expired response, got %#v", body)
 	}
-	answers := recorder.byMethod(testTelegramMethodJoinRequestQuery)
-	if len(answers) != 1 {
-		t.Fatalf("expected one query answer, got %d", len(answers))
+	if body["state"] != "expired" {
+		t.Fatalf("expected expired state, got %#v", body)
 	}
-	if answers[0].form.Get("result") != testJoinRequestDecline {
-		t.Fatalf("expected decline result, got %q", answers[0].form.Get("result"))
+	if len(recorder.requests) != 0 {
+		t.Fatalf("expired answer must not punish before DM fallback, got %d Telegram calls", len(recorder.requests))
 	}
-	if len(store.challenges) != 0 {
-		t.Fatalf("expected expired challenge to be deleted, got %d rows", len(store.challenges))
+	if len(store.challenges) != 1 {
+		t.Fatalf("expected expired challenge to remain durable for fallback, got %d rows", len(store.challenges))
 	}
 }
 
@@ -1054,6 +1212,95 @@ func TestHandleJoinCaptchaAnswerRejectsStaleInitData(t *testing.T) {
 	}
 }
 
+func TestHandleJoinCaptchaAnswerRejectsFutureInitData(t *testing.T) {
+	t.Parallel()
+
+	botAPI := newTestBotAPI(t, func(method string, _ *http.Request) any {
+		t.Fatalf("unexpected bot method: %s", method)
+		return nil
+	})
+	store := newGatekeeperFlowStore()
+	challenge := newWebAppChallenge(time.Now().Add(time.Minute))
+	if _, err := store.CreateChallenge(t.Context(), challenge); err != nil {
+		t.Fatalf("create challenge: %v", err)
+	}
+	gatekeeper := &Gatekeeper{
+		bot:        botAPI,
+		s:          &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI, language: "en"}, settings: webAppSettings()},
+		store:      store,
+		config:     &config.Config{},
+		banChecker: &testGatekeeperBanChecker{},
+	}
+	form := url.Values{
+		testWebAppFormToken:    {challenge.WebAppToken},
+		testWebAppFormChoice:   {challenge.SuccessUUID},
+		testWebAppFormInitData: {staleSignedWebAppInitData(t, botAPI.Token, challenge.JoinRequestQueryID, challenge.UserID, time.Now().Add(2*time.Hour))},
+	}
+	req := httptest.NewRequest(http.MethodPost, joinCaptchaAnswerPath, strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	gatekeeper.handleJoinCaptchaAnswer(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("future init data status = %d, want 401: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestJoinCaptchaStatusReportsDurableStatesWithoutRepeatingActions(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		status     string
+		expiresAt  time.Time
+		wantStatus int
+		wantState  string
+		wantOK     bool
+	}{
+		{name: "pending", status: db.ChallengeStatusPending, expiresAt: time.Now().Add(time.Minute), wantStatus: http.StatusOK, wantState: "pending"},
+		{name: "approval in progress", status: db.ChallengeStatusApproveQueryPending, expiresAt: time.Now().Add(time.Minute), wantStatus: http.StatusAccepted, wantState: "processing", wantOK: true},
+		{name: "passed", status: db.ChallengeStatusPassedWaitingMemberJoin, expiresAt: time.Now().Add(time.Minute), wantStatus: http.StatusOK, wantState: "passed", wantOK: true},
+		{name: "rejected", status: db.ChallengeStatusRejectPending, expiresAt: time.Now().Add(time.Minute), wantStatus: http.StatusForbidden, wantState: "rejected"},
+		{name: "expired", status: db.ChallengeStatusPending, expiresAt: time.Now().Add(-time.Minute), wantStatus: http.StatusGone, wantState: "expired"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			botAPI := newTestBotAPI(t, func(method string, _ *http.Request) any {
+				t.Fatalf("unexpected bot method: %s", method)
+				return nil
+			})
+			store := newGatekeeperFlowStore()
+			challenge := newWebAppChallenge(tt.expiresAt)
+			challenge.Status = tt.status
+			if _, err := store.CreateChallenge(t.Context(), challenge); err != nil {
+				t.Fatalf("create challenge: %v", err)
+			}
+			gatekeeper := &Gatekeeper{bot: botAPI, store: store, config: &config.Config{}}
+			form := url.Values{
+				testWebAppFormToken:    {challenge.WebAppToken},
+				testWebAppFormInitData: {signedWebAppInitData(t, botAPI.Token, challenge.JoinRequestQueryID, challenge.UserID)},
+			}
+			req := httptest.NewRequest(http.MethodPost, "/gatekeeper/join-captcha/status", strings.NewReader(form.Encode()))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			rr := httptest.NewRecorder()
+			gatekeeper.joinCaptchaWebAppHandler().ServeHTTP(rr, req)
+
+			if rr.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d: %s", rr.Code, tt.wantStatus, rr.Body.String())
+			}
+			var response map[string]any
+			if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if response["state"] != tt.wantState || response["ok"] != tt.wantOK {
+				t.Fatalf("response = %+v, want state=%q ok=%t", response, tt.wantState, tt.wantOK)
+			}
+		})
+	}
+}
+
 func TestHandleJoinCaptchaAnswerPersistsApprovalRetryWhenApproveFails(t *testing.T) {
 	t.Parallel()
 
@@ -1095,8 +1342,15 @@ func TestHandleJoinCaptchaAnswerPersistsApprovalRetryWhenApproveFails(t *testing
 
 	gatekeeper.handleJoinCaptchaAnswer(rr, req)
 
-	if rr.Code != http.StatusBadGateway {
-		t.Fatalf("expected 502, got %d: %s", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body["done"] != true || body["state"] != "processing" {
+		t.Fatalf("expected durable processing response, got %#v", body)
 	}
 	got := store.onlyChallenge(t)
 	if got.Status != db.ChallengeStatusApproveQueryPending {
@@ -1239,7 +1493,7 @@ func TestHandleJoinCaptchaAnswerAllowsManuallyAllowlistedKnownBannedUser(t *test
 	}
 }
 
-func TestHandleJoinCaptchaMarksOpened(t *testing.T) {
+func TestJoinCaptchaReadinessRequiresSignedBoundInitData(t *testing.T) {
 	t.Parallel()
 
 	store := newGatekeeperFlowStore()
@@ -1249,6 +1503,7 @@ func TestHandleJoinCaptchaMarksOpened(t *testing.T) {
 		t.Fatalf("create challenge: %v", err)
 	}
 	gatekeeper := &Gatekeeper{
+		bot:    newTestBotAPI(t, func(method string, _ *http.Request) any { t.Fatalf("unexpected bot method: %s", method); return nil }),
 		store:  store,
 		config: &config.Config{},
 	}
@@ -1261,9 +1516,44 @@ func TestHandleJoinCaptchaMarksOpened(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("unexpected status %d: %s", rr.Code, rr.Body.String())
 	}
+	if got := store.onlyChallenge(t); got.WebAppOpenedAt.Valid {
+		t.Fatal("unauthenticated GET must not mark WebApp readiness")
+	}
+
+	invalidForm := url.Values{
+		testWebAppFormToken:    {challenge.WebAppToken},
+		testWebAppFormInitData: {"bad=init"},
+	}
+	invalidReq := httptest.NewRequest(http.MethodPost, "/gatekeeper/join-captcha/ready", strings.NewReader(invalidForm.Encode()))
+	invalidReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	invalidRR := httptest.NewRecorder()
+	gatekeeper.joinCaptchaWebAppHandler().ServeHTTP(invalidRR, invalidReq)
+	if invalidRR.Code != http.StatusUnauthorized {
+		t.Fatalf("invalid readiness status = %d, want 401: %s", invalidRR.Code, invalidRR.Body.String())
+	}
+	if got := store.onlyChallenge(t); got.WebAppOpenedAt.Valid {
+		t.Fatal("invalid readiness must not mark WebApp opened")
+	}
+
+	validForm := url.Values{
+		testWebAppFormToken: {challenge.WebAppToken},
+		testWebAppFormInitData: {signedWebAppInitData(
+			t,
+			gatekeeper.bot.Token,
+			challenge.JoinRequestQueryID,
+			challenge.UserID,
+		)},
+	}
+	validReq := httptest.NewRequest(http.MethodPost, "/gatekeeper/join-captcha/ready", strings.NewReader(validForm.Encode()))
+	validReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	validRR := httptest.NewRecorder()
+	gatekeeper.joinCaptchaWebAppHandler().ServeHTTP(validRR, validReq)
+	if validRR.Code != http.StatusOK {
+		t.Fatalf("valid readiness status = %d, want 200: %s", validRR.Code, validRR.Body.String())
+	}
 	got := store.onlyChallenge(t)
 	if !got.WebAppOpenedAt.Valid {
-		t.Fatal("expected WebAppOpenedAt.Valid to be true after page load")
+		t.Fatal("signed readiness must mark WebApp opened")
 	}
 	if !got.ExpiresAt.Equal(expiresAt) {
 		t.Fatalf("expected ExpiresAt to be unchanged, got %v (want %v)", got.ExpiresAt, expiresAt)

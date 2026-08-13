@@ -44,6 +44,18 @@ func TestDMLanguageResolution(t *testing.T) {
 	}
 }
 
+func TestLithuanianAndLatvianChallengeResourcesMatchTheirLocales(t *testing.T) {
+	t.Parallel()
+
+	gatekeeper := NewGatekeeper(nil, nil, newGatekeeperFlowStore(), nil, &config.Config{}, nil)
+	if got := gatekeeper.Variants["lt"]["🐿️"]; got != "voverė" {
+		t.Fatalf("Lithuanian squirrel = %q, want %q", got, "voverė")
+	}
+	if got := gatekeeper.Variants["lv"]["🐿️"]; got != "vāvere" {
+		t.Fatalf("Latvian squirrel = %q, want %q", got, "vāvere")
+	}
+}
+
 func TestStartJoinRequestWebAppChallengeStoresUserLanguage(t *testing.T) {
 	t.Parallel()
 

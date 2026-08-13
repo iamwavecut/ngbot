@@ -102,6 +102,7 @@ type gatekeeperStore interface {
 	RecordWrongAttempt(ctx context.Context, challengeID string, maxAttempts int) (attempts int, status string, updated bool, err error)
 	ClaimForApproval(ctx context.Context, challengeID string) (bool, error)
 	BeginDMFallback(ctx context.Context, challengeID string) (bool, error)
+	BeginExpiredWebAppFallback(ctx context.Context, challengeID string) (bool, error)
 	AttachChallengeMessage(ctx context.Context, challengeID, expectedStatus string, messageID int) (bool, error)
 	AttachJoinMessage(ctx context.Context, challengeID, expectedStatus string, messageID int) (bool, error)
 	PrepareDMFallback(ctx context.Context, challengeID, successUUID, userLanguage string, expiresAt time.Time) (bool, error)

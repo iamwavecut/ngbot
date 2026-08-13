@@ -147,8 +147,8 @@ func (g *Gatekeeper) processExpiredChallenges(ctx context.Context) error {
 			}
 			continue
 		}
-		if challenge.WebAppToken != "" && challenge.JoinRequestQueryID != "" && !challenge.WebAppOpenedAt.Valid {
-			if err := g.attemptWebAppFallback(ctx, challenge, settings); err != nil {
+		if challenge.WebAppToken != "" && challenge.JoinRequestQueryID != "" {
+			if err := g.attemptExpiredWebAppFallback(ctx, challenge, settings); err != nil {
 				entry.WithField(logFieldError, err.Error()).Error("failed to fallback expired web app challenge")
 			}
 			continue
@@ -222,6 +222,18 @@ func isPendingChallengeAction(status string) bool {
 
 func (g *Gatekeeper) attemptWebAppFallback(ctx context.Context, challenge *db.Challenge, settings *db.Settings) error {
 	claimed, err := g.store.BeginDMFallback(ctx, challenge.ChallengeID)
+	if err != nil {
+		return err
+	}
+	if !claimed {
+		return nil
+	}
+	challenge.Status = db.ChallengeStatusWebAppFallbackPending
+	return g.fallbackClaimedWebAppChallenge(ctx, challenge, settings)
+}
+
+func (g *Gatekeeper) attemptExpiredWebAppFallback(ctx context.Context, challenge *db.Challenge, settings *db.Settings) error {
+	claimed, err := g.store.BeginExpiredWebAppFallback(ctx, challenge.ChallengeID)
 	if err != nil {
 		return err
 	}

@@ -71,6 +71,10 @@ func (s *testGatekeeperStore) BeginDMFallback(context.Context, string) (bool, er
 	return false, nil
 }
 
+func (s *testGatekeeperStore) BeginExpiredWebAppFallback(context.Context, string) (bool, error) {
+	return false, nil
+}
+
 func (s *testGatekeeperStore) AttachChallengeMessage(context.Context, string, string, int) (bool, error) {
 	return false, nil
 }

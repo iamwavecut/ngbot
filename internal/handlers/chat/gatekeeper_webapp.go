@@ -26,6 +26,8 @@ import (
 const (
 	joinCaptchaPath                = "/gatekeeper/join-captcha"
 	joinCaptchaAnswerPath          = "/gatekeeper/join-captcha/answer"
+	joinCaptchaReadyPath           = "/gatekeeper/join-captcha/ready"
+	joinCaptchaStatusPath          = "/gatekeeper/join-captcha/status"
 	joinCaptchaRobotsPath          = "/robots.txt"
 	joinCaptchaSitemapPath         = "/sitemap.xml"
 	joinCaptchaCSPNonceBytes       = 16
@@ -33,6 +35,14 @@ const (
 	joinCaptchaMaxRequestBodyBytes = 16 << 10
 	joinCaptchaTestQueryPrefix     = "test:"
 	joinCaptchaInitDataTTL         = time.Hour
+	joinCaptchaInitDataFutureSkew  = 30 * time.Second
+	joinCaptchaStateExpired        = "expired"
+	joinCaptchaStateFallback       = "fallback"
+	joinCaptchaStatePassed         = "passed"
+	joinCaptchaStatePending        = "pending"
+	joinCaptchaStateProcessing     = "processing"
+	joinCaptchaStateRejected       = "rejected"
+	joinCaptchaStateUnavailable    = "unavailable"
 )
 
 type webAppCaptchaOption struct {
@@ -46,12 +56,12 @@ type webAppCaptchaData struct {
 }
 
 type joinCaptchaPageOption struct {
-	ID     string
-	Number int
+	ID string
 }
 
 type joinCaptchaPageData struct {
 	CSPNonce      string
+	Locale        string
 	Token         string
 	Kicker        string
 	Title         string
@@ -62,7 +72,6 @@ type joinCaptchaPageData struct {
 	PromptAfter   string
 	SecondsLabel  string
 	Waiting       string
-	OptionLabel   string
 	Options       []joinCaptchaPageOption
 	ChallengeJSON template.JS
 	LabelsJSON    template.JS
@@ -71,6 +80,7 @@ type joinCaptchaPageData struct {
 type joinCaptchaAnswerResponse struct {
 	OK      bool   `json:"ok"`
 	Done    bool   `json:"done"`
+	State   string `json:"state,omitempty"`
 	Message string `json:"message"`
 }
 
@@ -96,7 +106,6 @@ type joinCaptchaCopy struct {
 	TryAnother              string
 	VerificationFailed      string
 	WrongOption             string
-	ExpiredBlocked          string
 	TooManyBlocked          string
 	MethodNotAllowed        string
 	InvalidRequest          string
@@ -106,7 +115,12 @@ type joinCaptchaCopy struct {
 	OtherRequest            string
 	CouldNotSaveAnswer      string
 	CouldNotSaveResult      string
-	CouldNotApprove         string
+	ProcessingTitle         string
+	ApprovalPending         string
+	AlreadyPassed           string
+	MovedToTelegram         string
+	FatalRecovery           string
+	CouldNotConfirm         string
 	MissingTokenMessage     string
 	MissingChallengeMessage string
 	ExpiredPageMessage      string
@@ -126,6 +140,10 @@ type joinCaptchaClientLabels struct {
 	Blocked            string `json:"blocked"`
 	TryAnother         string `json:"try_another"`
 	VerificationFailed string `json:"verification_failed"`
+	ProcessingTitle    string `json:"processing_title"`
+	FatalRecovery      string `json:"fatal_recovery"`
+	CouldNotConfirm    string `json:"could_not_confirm"`
+	OptionLabel        string `json:"option_label"`
 }
 
 type joinCaptchaObfuscatedText struct {
@@ -191,7 +209,6 @@ var joinCaptchaCopies = map[string]joinCaptchaCopy{
 		TryAnother:              "Try another option.",
 		VerificationFailed:      "Verification failed.",
 		WrongOption:             "Wrong option. Try again.",
-		ExpiredBlocked:          "This check expired. The request was blocked.",
 		TooManyBlocked:          "Too many wrong answers. The request was blocked.",
 		MethodNotAllowed:        "Method not allowed.",
 		InvalidRequest:          "Invalid request.",
@@ -201,7 +218,12 @@ var joinCaptchaCopies = map[string]joinCaptchaCopy{
 		OtherRequest:            "This challenge belongs to another request.",
 		CouldNotSaveAnswer:      "Could not save the answer.",
 		CouldNotSaveResult:      "Could not save the result.",
-		CouldNotApprove:         "Could not approve the request.",
+		ProcessingTitle:         "Processing",
+		ApprovalPending:         "Your answer is saved. Approval is still in progress.",
+		AlreadyPassed:           "Passed. You can return to Telegram.",
+		MovedToTelegram:         "Continue with the CAPTCHA sent to you in Telegram.",
+		FatalRecovery:           "This CAPTCHA could not start. Return to Telegram for a fallback check.",
+		CouldNotConfirm:         "Could not confirm the result. Return to Telegram and try again.",
 		MissingTokenMessage:     "This CAPTCHA link is missing its token.",
 		MissingChallengeMessage: "This CAPTCHA link is missing, already used, or no longer active.",
 		ExpiredPageMessage:      "This CAPTCHA link has expired.",
@@ -227,7 +249,6 @@ var joinCaptchaCopies = map[string]joinCaptchaCopy{
 		TryAnother:              "Попробуйте другой вариант.",
 		VerificationFailed:      "Проверка не прошла.",
 		WrongOption:             "Не тот вариант. Попробуйте ещё раз.",
-		ExpiredBlocked:          "Проверка истекла. Заявка заблокирована.",
 		TooManyBlocked:          "Слишком много неверных ответов. Заявка заблокирована.",
 		MethodNotAllowed:        "Метод не поддерживается.",
 		InvalidRequest:          "Некорректный запрос.",
@@ -237,7 +258,12 @@ var joinCaptchaCopies = map[string]joinCaptchaCopy{
 		OtherRequest:            "Эта проверка относится к другой заявке.",
 		CouldNotSaveAnswer:      "Не удалось сохранить ответ.",
 		CouldNotSaveResult:      "Не удалось сохранить результат.",
-		CouldNotApprove:         "Не удалось одобрить заявку.",
+		ProcessingTitle:         "Обработка",
+		ApprovalPending:         "Ответ сохранён. Одобрение заявки ещё выполняется.",
+		AlreadyPassed:           "Проверка пройдена. Вернитесь в Telegram.",
+		MovedToTelegram:         "Продолжите CAPTCHA, отправленную вам в Telegram.",
+		FatalRecovery:           "Не удалось запустить CAPTCHA. Вернитесь в Telegram для резервной проверки.",
+		CouldNotConfirm:         "Не удалось подтвердить результат. Вернитесь в Telegram и попробуйте снова.",
 		MissingTokenMessage:     "В ссылке на CAPTCHA нет токена.",
 		MissingChallengeMessage: "Эта CAPTCHA не найдена, уже использована или больше не активна.",
 		ExpiredPageMessage:      "Ссылка на CAPTCHA устарела.",
@@ -285,15 +311,15 @@ var joinCaptchaPermissionsPolicy = strings.Join([]string{
 }, ", ")
 
 var joinCaptchaTemplate = template.Must(template.New("join-captcha").Parse(`<!doctype html>
-<html lang="en">
+<html lang="{{.Locale}}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <meta name="robots" content="noindex,nofollow,noarchive,nosnippet,noimageindex,notranslate">
 <meta name="googlebot" content="noindex,nofollow,noarchive,nosnippet,noimageindex">
-<script nonce="{{.CSPNonce}}" src="https://telegram.org/js/telegram-web-app.js?62"></script>
-<title>Human check</title>
+<script nonce="{{.CSPNonce}}" src="https://telegram.org/js/telegram-web-app.js?63"></script>
+<title>{{.Title}}</title>
 <style nonce="{{.CSPNonce}}">
 :root {
 	color-scheme: light dark;
@@ -386,7 +412,7 @@ button.is-bad {
 	color: var(--muted);
 }
 .status[data-tone="good"] { color: var(--accent); }
-.status[data-tone="bad"] { color: #b45309; }
+.status[data-tone="bad"] { color: #9f1239; }
 .timer {
 	display: inline-flex;
 	align-items: baseline;
@@ -436,6 +462,13 @@ main[data-state="blocked"] .bar {
 	main { padding-inline: 32px; }
 	.options { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
+@media (prefers-color-scheme: dark) {
+	.status[data-tone="bad"] { color: #fda4af; }
+}
+@media (prefers-reduced-motion: reduce) {
+	.bar, main[data-feedback="bad"] .options { animation: none; }
+	button { transition: none; }
+}
 </style>
 </head>
 <body data-token="{{.Token}}">
@@ -445,23 +478,19 @@ main[data-state="blocked"] .bar {
 <h1 data-title>{{.Title}}</h1>
 {{if .Options}}
 <p class="prompt">{{.PromptBefore}}<span class="target" data-prompt></span>{{.PromptAfter}}</p>
-<div class="timer" aria-live="polite"><strong data-countdown>10</strong><span>{{.SecondsLabel}}</span></div>
-<section class="options" aria-label="CAPTCHA options">
-{{range .Options}}<button type="button" data-choice="{{.ID}}" aria-label="{{$.OptionLabel}} {{.Number}}"></button>{{end}}
+<div class="timer"><strong data-countdown>10</strong><span>{{.SecondsLabel}}</span></div>
+<section class="options" aria-label="{{.Title}}">
+{{range .Options}}<button type="button" data-choice="{{.ID}}"></button>{{end}}
 </section>
-<div class=logFieldStatus data-status>{{.Waiting}}</div>
+<div class="status" role="status" aria-live="polite" data-status>{{.Waiting}}</div>
 {{else}}
 <p class="prompt">{{.Message}}</p>
-<div class=logFieldStatus data-tone="bad" data-status>{{.Hint}}</div>
+<div class="status" role="alert" data-tone="bad" data-status>{{.Hint}}</div>
 {{end}}
 </main>
 <script nonce="{{.CSPNonce}}">
 (() => {
 	const app = window.Telegram && window.Telegram.WebApp;
-	if (app) {
-		app.ready();
-		app.expand();
-	}
 	const token = document.body.dataset.token;
 	const root = document.querySelector("main");
 	const title = document.querySelector("[data-title]");
@@ -471,22 +500,64 @@ main[data-state="blocked"] .bar {
 	const labels = {{.LabelsJSON}};
 	const challenge = {{.ChallengeJSON}};
 	if (!countdown || buttons.length === 0) {
+		if (app) app.ready();
 		return;
 	}
-	const decodeText = encoded => {
-		const bytes = new Uint8Array(encoded.d.map((value, index) => value ^ encoded.k[index % encoded.k.length]));
-		return new TextDecoder().decode(bytes);
-	};
-	document.querySelector("[data-prompt]").textContent = decodeText(challenge.prompt);
-	buttons.forEach((button, index) => {
-		const option = challenge.options[index];
-		button.textContent = decodeText(option.text);
-	});
+	if (!app || !app.initData || !root || !title || !status) {
+		if (title) title.textContent = labels.blocked_title;
+		if (status) {
+			status.textContent = labels.fatal_recovery;
+			status.dataset.tone = "bad";
+		}
+		return;
+	}
 	const setStatus = (message, tone) => {
 		status.textContent = message;
 		status.dataset.tone = tone || "";
 	};
 	const setDisabled = value => buttons.forEach(button => { button.disabled = value; });
+	const request = async (path, values) => {
+		const body = new URLSearchParams();
+		body.set("token", token);
+		body.set("init_data", app.initData);
+		Object.entries(values || {}).forEach(([key, value]) => body.set(key, value));
+		const response = await fetch(path, {
+			method: "POST",
+			cache: "no-store",
+			credentials: "same-origin",
+			redirect: "error",
+			headers: { "Content-Type": "application/x-www-form-urlencoded" },
+			body
+		});
+		const data = await response.json().catch(() => ({}));
+		return { response, data };
+	};
+	const fatal = message => {
+		setDisabled(true);
+		root.dataset.state = "blocked";
+		title.textContent = labels.blocked_title;
+		setStatus(message || labels.fatal_recovery, "bad");
+	};
+	try {
+		const decodeText = encoded => {
+			const bytes = new Uint8Array(encoded.d.map((value, index) => value ^ encoded.k[index % encoded.k.length]));
+			return new TextDecoder().decode(bytes);
+		};
+		document.querySelector("[data-prompt]").textContent = decodeText(challenge.prompt);
+		buttons.forEach((button, index) => {
+			const option = challenge.options[index];
+			button.textContent = decodeText(option.text);
+			button.setAttribute("aria-label", labels.option_label + " " + (index + 1) + ": " + button.textContent);
+		});
+		app.expand();
+		request("` + joinCaptchaReadyPath + `").then(({ response, data }) => {
+			if (!response.ok) fatal(data.message);
+		}).catch(() => fatal(labels.fatal_recovery));
+		app.ready();
+	} catch (error) {
+		fatal(labels.fatal_recovery);
+		return;
+	}
 	let feedbackTimer;
 	const setFeedback = (tone, button) => {
 		window.clearTimeout(feedbackTimer);
@@ -535,22 +606,11 @@ main[data-state="blocked"] .bar {
 		setDisabled(true);
 		setFeedback("checking", button);
 		setStatus(labels.checking, "");
-		const body = new URLSearchParams();
-		body.set("token", token);
-		body.set("choice", choice);
-		body.set("init_data", app ? app.initData : "");
 		try {
-			const response = await fetch("` + joinCaptchaAnswerPath + `", {
-				method: "POST",
-				cache: "no-store",
-				credentials: "same-origin",
-				redirect: logFieldError,
-				headers: { "Content-Type": "application/x-www-form-urlencoded" },
-				body
-			});
-			const data = await response.json().catch(() => ({}));
+			const { response, data } = await request("` + joinCaptchaAnswerPath + `", { choice });
 			if (data.done) {
-				finish(data.message, Boolean(data.ok), button);
+				finish(data.message, data.state === "processing" || data.state === "passed" || Boolean(data.ok), button);
+				if (data.state === "processing") title.textContent = labels.processing_title;
 				return;
 			}
 			if (!response.ok) {
@@ -560,9 +620,20 @@ main[data-state="blocked"] .bar {
 			setStatus(data.message || labels.try_another, "bad");
 			setDisabled(false);
 		} catch (error) {
-			setFeedback("bad", button);
-			setStatus(error.message || labels.verification_failed, "bad");
-			setDisabled(false);
+			try {
+				const { response, data } = await request("` + joinCaptchaStatusPath + `");
+				if (data.done) {
+					finish(data.message, data.state === "processing" || data.state === "passed" || Boolean(data.ok), button);
+					if (data.state === "processing") title.textContent = labels.processing_title;
+					return;
+				}
+				if (!response.ok) throw new Error();
+				setFeedback("bad", button);
+				setStatus(labels.verification_failed, "bad");
+				setDisabled(false);
+			} catch (statusError) {
+				fatal(labels.could_not_confirm);
+			}
 		}
 	};
 	buttons.forEach(button => button.addEventListener("click", () => submit(button)));
@@ -603,6 +674,8 @@ func (g *Gatekeeper) joinCaptchaWebAppHandler() http.Handler {
 	mux.HandleFunc(joinCaptchaSitemapPath, handleJoinCaptchaSitemap)
 	mux.HandleFunc(joinCaptchaPath, g.handleJoinCaptcha)
 	mux.HandleFunc(joinCaptchaAnswerPath, g.handleJoinCaptchaAnswer)
+	mux.HandleFunc(joinCaptchaReadyPath, g.handleJoinCaptchaReady)
+	mux.HandleFunc(joinCaptchaStatusPath, g.handleJoinCaptchaStatus)
 	return joinCaptchaSecurityMiddleware(mux)
 }
 
@@ -634,7 +707,15 @@ func (g *Gatekeeper) joinCaptchaURL(token string) (string, error) {
 	if publicURL == "" {
 		return "", errors.New("gatekeeper web app public url is empty")
 	}
-	return publicURL + joinCaptchaPath + "?token=" + url.QueryEscape(token), nil
+	base, err := url.Parse(publicURL)
+	if err != nil || base.Scheme == "" || base.Host == "" || base.User != nil || (base.Path != "" && base.Path != "/") || base.RawQuery != "" || base.Fragment != "" {
+		return "", errors.New("gatekeeper web app public url is invalid")
+	}
+	base.Path = joinCaptchaPath
+	base.RawPath = ""
+	base.RawQuery = url.Values{"token": {token}}.Encode()
+	base.Fragment = ""
+	return base.String(), nil
 }
 
 func (g *Gatekeeper) startJoinRequestWebAppChallenge(ctx context.Context, request *api.ChatJoinRequest, settings *db.Settings) error {
@@ -820,11 +901,6 @@ func (g *Gatekeeper) handleJoinCaptcha(w http.ResponseWriter, r *http.Request) {
 		g.renderJoinCaptchaPage(w, http.StatusInternalServerError, joinCaptchaErrorPageData(copy, copy.UnavailableTitle, copy.UnavailableMessage, copy.TryAgainFromTelegram))
 		return
 	}
-	if !challenge.WebAppOpenedAt.Valid {
-		if err := g.store.MarkWebAppChallengeOpened(r.Context(), challenge.WebAppToken, time.Now()); err != nil {
-			g.getLogEntry().WithField(logFieldError, err.Error()).Warn("failed to mark web app challenge opened")
-		}
-	}
 	copy := joinCaptchaCopyForLocale(locale)
 	pageOptions, payload, err := newJoinCaptchaPageChallenge(challenge.CaptchaPrompt, options)
 	if err != nil {
@@ -838,6 +914,7 @@ func (g *Gatekeeper) handleJoinCaptcha(w http.ResponseWriter, r *http.Request) {
 	}
 	before, after := splitJoinCaptchaPrompt(copy.PromptTemplate)
 	g.renderJoinCaptchaPage(w, http.StatusOK, joinCaptchaPageData{
+		Locale:        locale,
 		Token:         challenge.WebAppToken,
 		Kicker:        copy.Kicker,
 		Title:         copy.Title,
@@ -845,11 +922,93 @@ func (g *Gatekeeper) handleJoinCaptcha(w http.ResponseWriter, r *http.Request) {
 		PromptAfter:   after,
 		SecondsLabel:  copy.SecondsLabel,
 		Waiting:       copy.Waiting,
-		OptionLabel:   copy.OptionLabel,
 		Options:       pageOptions,
 		ChallengeJSON: payload,
 		LabelsJSON:    labelsJSON,
 	})
+}
+
+func (g *Gatekeeper) handleJoinCaptchaReady(w http.ResponseWriter, r *http.Request) {
+	challenge, copy, ok := g.authenticatedWebAppChallenge(w, r)
+	if !ok {
+		return
+	}
+	if challenge.Status != db.ChallengeStatusPending {
+		status, response := joinCaptchaStatusResponse(challenge, copy, time.Now())
+		writeJoinCaptchaJSON(w, status, response)
+		return
+	}
+	if time.Now().After(challenge.ExpiresAt) {
+		writeJoinCaptchaJSON(w, http.StatusGone, joinCaptchaAnswerResponse{Done: true, State: joinCaptchaStateExpired, Message: copy.ExpiredPageMessage})
+		return
+	}
+	if err := g.store.MarkWebAppChallengeOpened(r.Context(), challenge.WebAppToken, time.Now()); err != nil {
+		writeJoinCaptchaJSON(w, http.StatusInternalServerError, joinCaptchaAnswerResponse{Message: copy.CouldNotConfirm})
+		return
+	}
+	current, err := g.store.GetChallengeByWebAppToken(r.Context(), challenge.WebAppToken)
+	if err != nil || current == nil {
+		writeJoinCaptchaJSON(w, http.StatusConflict, joinCaptchaAnswerResponse{Done: true, State: joinCaptchaStateUnavailable, Message: copy.ChallengeUnavailable})
+		return
+	}
+	if current.Status != db.ChallengeStatusPending {
+		status, response := joinCaptchaStatusResponse(current, copy, time.Now())
+		writeJoinCaptchaJSON(w, status, response)
+		return
+	}
+	writeJoinCaptchaJSON(w, http.StatusOK, joinCaptchaAnswerResponse{OK: true, State: joinCaptchaStatePending})
+}
+
+func (g *Gatekeeper) handleJoinCaptchaStatus(w http.ResponseWriter, r *http.Request) {
+	challenge, copy, ok := g.authenticatedWebAppChallenge(w, r)
+	if !ok {
+		return
+	}
+	status, response := joinCaptchaStatusResponse(challenge, copy, time.Now())
+	writeJoinCaptchaJSON(w, status, response)
+}
+
+func joinCaptchaStatusResponse(challenge *db.Challenge, copy joinCaptchaCopy, now time.Time) (int, joinCaptchaAnswerResponse) {
+	if !challenge.ExpiresAt.After(now) && challenge.Status == db.ChallengeStatusPending {
+		return http.StatusGone, joinCaptchaAnswerResponse{Done: true, State: joinCaptchaStateExpired, Message: copy.ExpiredPageMessage}
+	}
+	switch challenge.Status {
+	case db.ChallengeStatusPending:
+		return http.StatusOK, joinCaptchaAnswerResponse{State: joinCaptchaStatePending, Message: copy.Waiting}
+	case db.ChallengeStatusApproveQueryPending, db.ChallengeStatusApproveMemberPending, db.ChallengeStatusUnrestrictPending:
+		return http.StatusAccepted, joinCaptchaAnswerResponse{OK: true, Done: true, State: joinCaptchaStateProcessing, Message: copy.ApprovalPending}
+	case db.ChallengeStatusPassedWaitingMemberJoin:
+		return http.StatusOK, joinCaptchaAnswerResponse{OK: true, Done: true, State: joinCaptchaStatePassed, Message: copy.AlreadyPassed}
+	case db.ChallengeStatusRejectPending:
+		return http.StatusForbidden, joinCaptchaAnswerResponse{Done: true, State: joinCaptchaStateRejected, Message: copy.Blocked}
+	case db.ChallengeStatusWebAppFallbackPending:
+		return http.StatusConflict, joinCaptchaAnswerResponse{Done: true, State: joinCaptchaStateFallback, Message: copy.MovedToTelegram}
+	default:
+		return http.StatusNotFound, joinCaptchaAnswerResponse{Done: true, State: joinCaptchaStateUnavailable, Message: copy.ChallengeNotFound}
+	}
+}
+
+func (g *Gatekeeper) authenticatedWebAppChallenge(w http.ResponseWriter, r *http.Request) (*db.Challenge, joinCaptchaCopy, bool) {
+	if r.Method != http.MethodPost {
+		copy := joinCaptchaCopyForRequest(r)
+		writeJoinCaptchaJSON(w, http.StatusMethodNotAllowed, joinCaptchaAnswerResponse{Message: copy.MethodNotAllowed})
+		return nil, copy, false
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, joinCaptchaMaxRequestBodyBytes)
+	if err := r.ParseForm(); err != nil {
+		copy := joinCaptchaCopyForRequest(r)
+		writeJoinCaptchaJSON(w, http.StatusBadRequest, joinCaptchaAnswerResponse{Message: copy.InvalidRequest})
+		return nil, copy, false
+	}
+	challenge, ok := g.webAppChallengeByToken(w, r, false)
+	if !ok {
+		return nil, joinCaptchaCopyForRequest(r), false
+	}
+	copy := joinCaptchaCopyForLocale(joinCaptchaChallengeLocale(challenge))
+	if !g.validateJoinCaptchaInitData(w, r, challenge, copy) {
+		return nil, copy, false
+	}
+	return challenge, copy, true
 }
 
 func (g *Gatekeeper) handleJoinCaptchaAnswer(w http.ResponseWriter, r *http.Request) {
@@ -866,35 +1025,21 @@ func (g *Gatekeeper) handleJoinCaptchaAnswer(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	challenge, ok := g.webAppChallengeFromRequest(w, r, false)
+	challenge, ok := g.webAppChallengeByToken(w, r, false)
 	if !ok {
 		return
 	}
 	copy := joinCaptchaCopyForLocale(joinCaptchaChallengeLocale(challenge))
-	initDataRaw := r.Form.Get("init_data")
-	valid, err := api.ValidateWebAppData(g.bot.Token, initDataRaw)
-	if err != nil || !valid {
-		writeJoinCaptchaJSON(w, http.StatusUnauthorized, joinCaptchaAnswerResponse{Message: copy.TelegramCheckFailed})
+	if !g.validateJoinCaptchaInitData(w, r, challenge, copy) {
 		return
 	}
-	initData, err := parseWebAppInitData(initDataRaw)
-	if err != nil {
-		writeJoinCaptchaJSON(w, http.StatusUnauthorized, joinCaptchaAnswerResponse{Message: copy.TelegramCheckFailed})
-		return
-	}
-	if initData.AuthDate == 0 || time.Since(time.Unix(initData.AuthDate, 0)) > joinCaptchaInitDataTTL {
-		writeJoinCaptchaJSON(w, http.StatusUnauthorized, joinCaptchaAnswerResponse{Message: copy.TelegramCheckFailed})
-		return
-	}
-	if initData.UserID != challenge.UserID || (!isTestWebAppChallenge(challenge) && initData.QueryID != challenge.JoinRequestQueryID) {
-		writeJoinCaptchaJSON(w, http.StatusForbidden, joinCaptchaAnswerResponse{Message: copy.OtherRequest})
+	if challenge.Status != db.ChallengeStatusPending {
+		status, response := joinCaptchaStatusResponse(challenge, copy, time.Now())
+		writeJoinCaptchaJSON(w, status, response)
 		return
 	}
 	if time.Now().After(challenge.ExpiresAt) {
-		if err := g.declineWebAppChallenge(r.Context(), challenge); err != nil {
-			g.getLogEntry().WithField(logFieldError, err.Error()).Error("failed to decline expired web app challenge")
-		}
-		writeJoinCaptchaJSON(w, http.StatusGone, joinCaptchaAnswerResponse{OK: false, Done: true, Message: copy.ExpiredBlocked})
+		writeJoinCaptchaJSON(w, http.StatusGone, joinCaptchaAnswerResponse{Done: true, State: joinCaptchaStateExpired, Message: copy.ExpiredPageMessage})
 		return
 	}
 
@@ -905,7 +1050,7 @@ func (g *Gatekeeper) handleJoinCaptchaAnswer(w http.ResponseWriter, r *http.Requ
 			return
 		}
 		if !updated {
-			writeJoinCaptchaJSON(w, http.StatusConflict, joinCaptchaAnswerResponse{OK: false, Done: true, Message: copy.ExpiredBlocked})
+			writeJoinCaptchaJSON(w, http.StatusConflict, joinCaptchaAnswerResponse{Done: true, State: joinCaptchaStateUnavailable, Message: copy.ChallengeUnavailable})
 			return
 		}
 		challenge.Attempts = attempts
@@ -914,7 +1059,7 @@ func (g *Gatekeeper) handleJoinCaptchaAnswer(w http.ResponseWriter, r *http.Requ
 			if err := g.processChallengeAction(r.Context(), challenge); err != nil {
 				g.getLogEntry().WithField(logFieldError, err.Error()).Error("failed to decline failed web app challenge")
 			}
-			writeJoinCaptchaJSON(w, http.StatusForbidden, joinCaptchaAnswerResponse{OK: false, Done: true, Message: copy.TooManyBlocked})
+			writeJoinCaptchaJSON(w, http.StatusForbidden, joinCaptchaAnswerResponse{Done: true, State: joinCaptchaStateRejected, Message: copy.TooManyBlocked})
 			return
 		}
 		writeJoinCaptchaJSON(w, http.StatusOK, joinCaptchaAnswerResponse{OK: false, Done: false, Message: copy.WrongOption})
@@ -927,7 +1072,7 @@ func (g *Gatekeeper) handleJoinCaptchaAnswer(w http.ResponseWriter, r *http.Requ
 			writeJoinCaptchaJSON(w, http.StatusInternalServerError, joinCaptchaAnswerResponse{Message: copy.CouldNotSaveResult})
 			return
 		}
-		writeJoinCaptchaJSON(w, http.StatusOK, joinCaptchaAnswerResponse{OK: true, Done: true, Message: copy.TestDone})
+		writeJoinCaptchaJSON(w, http.StatusOK, joinCaptchaAnswerResponse{OK: true, Done: true, State: joinCaptchaStatePassed, Message: copy.TestDone})
 		return
 	}
 
@@ -942,7 +1087,7 @@ func (g *Gatekeeper) handleJoinCaptchaAnswer(w http.ResponseWriter, r *http.Requ
 		if err := g.declineWebAppChallenge(r.Context(), challenge); err != nil {
 			g.getLogEntry().WithField(logFieldError, err.Error()).Error("failed to decline banned web app challenge")
 		}
-		writeJoinCaptchaJSON(w, http.StatusForbidden, joinCaptchaAnswerResponse{OK: false, Done: true, Message: copy.Blocked})
+		writeJoinCaptchaJSON(w, http.StatusForbidden, joinCaptchaAnswerResponse{Done: true, State: joinCaptchaStateRejected, Message: copy.Blocked})
 		return
 	}
 
@@ -953,16 +1098,51 @@ func (g *Gatekeeper) handleJoinCaptchaAnswer(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if !claimed {
-		writeJoinCaptchaJSON(w, http.StatusConflict, joinCaptchaAnswerResponse{OK: false, Done: true, Message: copy.ExpiredBlocked})
+		current, loadErr := g.store.GetChallengeByWebAppToken(r.Context(), challenge.WebAppToken)
+		if loadErr != nil || current == nil {
+			writeJoinCaptchaJSON(w, http.StatusConflict, joinCaptchaAnswerResponse{Done: true, State: joinCaptchaStateUnavailable, Message: copy.ChallengeUnavailable})
+			return
+		}
+		status, response := joinCaptchaStatusResponse(current, copy, time.Now())
+		writeJoinCaptchaJSON(w, status, response)
 		return
 	}
 	challenge.Status = db.ChallengeStatusApproveQueryPending
 	if err := g.processChallengeAction(r.Context(), challenge); err != nil {
 		g.getLogEntry().WithField(logFieldError, err.Error()).Error("failed to approve join request query; durable retry scheduled")
-		writeJoinCaptchaJSON(w, http.StatusBadGateway, joinCaptchaAnswerResponse{Message: copy.CouldNotApprove})
+		writeJoinCaptchaJSON(w, http.StatusAccepted, joinCaptchaAnswerResponse{OK: true, Done: true, State: joinCaptchaStateProcessing, Message: copy.ApprovalPending})
 		return
 	}
-	writeJoinCaptchaJSON(w, http.StatusOK, joinCaptchaAnswerResponse{OK: true, Done: true, Message: copy.Done})
+	writeJoinCaptchaJSON(w, http.StatusOK, joinCaptchaAnswerResponse{OK: true, Done: true, State: joinCaptchaStatePassed, Message: copy.Done})
+}
+
+func (g *Gatekeeper) validateJoinCaptchaInitData(w http.ResponseWriter, r *http.Request, challenge *db.Challenge, copy joinCaptchaCopy) bool {
+	if g == nil || g.bot == nil {
+		writeJoinCaptchaJSON(w, http.StatusUnauthorized, joinCaptchaAnswerResponse{Message: copy.TelegramCheckFailed})
+		return false
+	}
+	initDataRaw := r.Form.Get("init_data")
+	valid, err := api.ValidateWebAppData(g.bot.Token, initDataRaw)
+	if err != nil || !valid {
+		writeJoinCaptchaJSON(w, http.StatusUnauthorized, joinCaptchaAnswerResponse{Message: copy.TelegramCheckFailed})
+		return false
+	}
+	initData, err := parseWebAppInitData(initDataRaw)
+	if err != nil {
+		writeJoinCaptchaJSON(w, http.StatusUnauthorized, joinCaptchaAnswerResponse{Message: copy.TelegramCheckFailed})
+		return false
+	}
+	authTime := time.Unix(initData.AuthDate, 0)
+	now := time.Now()
+	if initData.AuthDate == 0 || authTime.After(now.Add(joinCaptchaInitDataFutureSkew)) || now.Sub(authTime) > joinCaptchaInitDataTTL {
+		writeJoinCaptchaJSON(w, http.StatusUnauthorized, joinCaptchaAnswerResponse{Message: copy.TelegramCheckFailed})
+		return false
+	}
+	if initData.UserID != challenge.UserID || (!isTestWebAppChallenge(challenge) && initData.QueryID != challenge.JoinRequestQueryID) {
+		writeJoinCaptchaJSON(w, http.StatusForbidden, joinCaptchaAnswerResponse{Message: copy.OtherRequest})
+		return false
+	}
+	return true
 }
 
 func (g *Gatekeeper) renderJoinCaptchaPage(w http.ResponseWriter, status int, data joinCaptchaPageData) {
@@ -973,6 +1153,9 @@ func (g *Gatekeeper) renderJoinCaptchaPage(w http.ResponseWriter, status int, da
 	}
 
 	data.CSPNonce = nonce
+	if data.Locale == "" {
+		data.Locale = "en"
+	}
 	if data.Kicker == "" || data.Title == "" {
 		copy := joinCaptchaCopies["en"]
 		if data.Kicker == "" {
@@ -994,6 +1177,8 @@ func (g *Gatekeeper) renderJoinCaptchaPage(w http.ResponseWriter, status int, da
 		data.LabelsJSON = labelsJSON
 	}
 	setJoinCaptchaSecurityHeaders(w.Header())
+	w.Header().Del("X-Frame-Options")
+	w.Header().Set("Cross-Origin-Resource-Policy", "cross-origin")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Content-Security-Policy", joinCaptchaPageCSP(nonce))
 	w.WriteHeader(status)
@@ -1003,6 +1188,25 @@ func (g *Gatekeeper) renderJoinCaptchaPage(w http.ResponseWriter, status int, da
 }
 
 func (g *Gatekeeper) webAppChallengeFromRequest(w http.ResponseWriter, r *http.Request, renderPage bool) (*db.Challenge, bool) {
+	challenge, ok := g.webAppChallengeByToken(w, r, renderPage)
+	if !ok {
+		return nil, false
+	}
+	if challenge.Status != db.ChallengeStatusPending {
+		if renderPage {
+			copy := joinCaptchaCopyForLocale(joinCaptchaChallengeLocale(challenge))
+			g.renderJoinCaptchaPage(w, http.StatusNotFound, joinCaptchaErrorPageData(copy, "404", copy.MissingChallengeMessage, copy.OpenFresh))
+			return nil, false
+		}
+		copy := joinCaptchaCopyForLocale(joinCaptchaChallengeLocale(challenge))
+		status, response := joinCaptchaStatusResponse(challenge, copy, time.Now())
+		writeJoinCaptchaJSON(w, status, response)
+		return nil, false
+	}
+	return challenge, true
+}
+
+func (g *Gatekeeper) webAppChallengeByToken(w http.ResponseWriter, r *http.Request, renderPage bool) (*db.Challenge, bool) {
 	token := strings.TrimSpace(r.URL.Query().Get("token"))
 	if token == "" {
 		token = strings.TrimSpace(r.Form.Get("token"))
@@ -1029,7 +1233,7 @@ func (g *Gatekeeper) webAppChallengeFromRequest(w http.ResponseWriter, r *http.R
 		writeJoinCaptchaJSON(w, http.StatusInternalServerError, joinCaptchaAnswerResponse{Message: copy.ChallengeUnavailable})
 		return nil, false
 	}
-	if challenge == nil || challenge.Status != db.ChallengeStatusPending {
+	if challenge == nil {
 		if renderPage {
 			copy := joinCaptchaCopyForRequest(r)
 			g.renderJoinCaptchaPage(w, http.StatusNotFound, joinCaptchaErrorPageData(copy, "404", copy.MissingChallengeMessage, copy.OpenFresh))
@@ -1157,6 +1361,7 @@ func splitJoinCaptchaPrompt(prompt string) (string, string) {
 
 func joinCaptchaErrorPageData(copy joinCaptchaCopy, title, message, hint string) joinCaptchaPageData {
 	return joinCaptchaPageData{
+		Locale:  joinCaptchaLocaleForCopy(copy),
 		Kicker:  copy.Kicker,
 		Title:   title,
 		Message: message,
@@ -1175,7 +1380,20 @@ func joinCaptchaClientLabelsForCopy(copy joinCaptchaCopy) joinCaptchaClientLabel
 		Blocked:            copy.Blocked,
 		TryAnother:         copy.TryAnother,
 		VerificationFailed: copy.VerificationFailed,
+		ProcessingTitle:    copy.ProcessingTitle,
+		FatalRecovery:      copy.FatalRecovery,
+		CouldNotConfirm:    copy.CouldNotConfirm,
+		OptionLabel:        copy.OptionLabel,
 	}
+}
+
+func joinCaptchaLocaleForCopy(copy joinCaptchaCopy) string {
+	for locale, candidate := range joinCaptchaCopies {
+		if candidate.Title == copy.Title && candidate.Kicker == copy.Kicker {
+			return locale
+		}
+	}
+	return "en"
 }
 
 func joinCaptchaLabelsJSON(copy joinCaptchaCopy) (template.JS, error) {
@@ -1201,12 +1419,12 @@ func newJoinCaptchaPageChallenge(prompt string, options []webAppCaptchaOption) (
 	}
 	payload.Prompt = obfuscatedPrompt
 
-	for index, option := range options {
+	for _, option := range options {
 		obfuscatedSymbol, err := obfuscateJoinCaptchaText(option.Symbol)
 		if err != nil {
 			return nil, "", err
 		}
-		pageOptions = append(pageOptions, joinCaptchaPageOption{ID: option.ID, Number: index + 1})
+		pageOptions = append(pageOptions, joinCaptchaPageOption{ID: option.ID})
 		payload.Options = append(payload.Options, joinCaptchaClientPayloadOption{ID: option.ID, Text: obfuscatedSymbol})
 	}
 

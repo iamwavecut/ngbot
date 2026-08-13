@@ -664,8 +664,9 @@ func TestWebAppChallengeClaimAndOpen(t *testing.T) {
 		}
 	})
 
-	t.Run("opened challenge is not claimable and not returned by GetUnopenedWebAppChallenges", func(t *testing.T) {
+	t.Run("opened challenge remains claimable for expiry fallback but is not returned by unopened sweep", func(t *testing.T) {
 		challenge := newWebAppChallenge(2002, 102, -100202, "token-opened", "query-opened")
+		challenge.ExpiresAt = now.Add(-time.Second)
 		if _, err := client.CreateChallenge(ctx, challenge); err != nil {
 			t.Fatalf("create challenge: %v", err)
 		}
@@ -677,10 +678,18 @@ func TestWebAppChallengeClaimAndOpen(t *testing.T) {
 
 		claimed, err := client.BeginDMFallback(ctx, challenge.ChallengeID)
 		if err != nil {
-			t.Fatalf("claim after open: %v", err)
+			t.Fatalf("unopened claim after open: %v", err)
 		}
 		if claimed {
-			t.Fatal("expected claim to return false for already-opened challenge")
+			t.Fatal("signed readiness must defeat the unopened fallback claim")
+		}
+
+		claimed, err = client.BeginExpiredWebAppFallback(ctx, challenge.ChallengeID)
+		if err != nil {
+			t.Fatalf("expiry fallback claim after open: %v", err)
+		}
+		if !claimed {
+			t.Fatal("expected expiry fallback claim to remain available for an opened challenge")
 		}
 
 		unopened, err := client.GetUnopenedWebAppChallenges(ctx, now)

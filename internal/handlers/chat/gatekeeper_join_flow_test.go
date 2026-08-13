@@ -113,6 +113,14 @@ func (s *gatekeeperFlowStore) BeginDMFallback(_ context.Context, challengeID str
 	return s.transition(challengeID, db.ChallengeStatusPending, db.ChallengeStatusWebAppFallbackPending, time.Time{}), nil
 }
 
+func (s *gatekeeperFlowStore) BeginExpiredWebAppFallback(_ context.Context, challengeID string) (bool, error) {
+	_, challenge := s.challengeByID(challengeID)
+	if challenge == nil || challenge.WebAppToken == "" || challenge.JoinRequestQueryID == "" || challenge.ExpiresAt.After(time.Now()) {
+		return false, nil
+	}
+	return s.transition(challengeID, db.ChallengeStatusPending, db.ChallengeStatusWebAppFallbackPending, time.Time{}), nil
+}
+
 func (s *gatekeeperFlowStore) AttachChallengeMessage(_ context.Context, challengeID, expectedStatus string, messageID int) (bool, error) {
 	key, challenge := s.challengeByID(challengeID)
 	if challenge == nil || challenge.Status != expectedStatus {
@@ -1787,98 +1795,58 @@ func TestProcessExpiredJoinRequestWebAppChallengeFallsBackToDM(t *testing.T) {
 	}
 }
 
-func TestProcessExpiredOpenedJoinRequestChallengeUsesMembershipSafeRejection(t *testing.T) {
+func TestProcessExpiredOpenedJoinRequestChallengeFallsBackToDM(t *testing.T) {
 	t.Parallel()
 
-	for _, tc := range []struct {
-		name         string
-		memberStatus string
-		wantBan      int
-		wantDecline  int
-	}{
-		{name: "current member is cleaned up without penalty", memberStatus: telegramMemberStatus},
-		{name: "non-member is rejected", memberStatus: testMemberStatusLeft, wantBan: 1, wantDecline: 1},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
+	recorder := &botRequestRecorder{}
+	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
+		recorder.record(t, method, r)
+		switch method {
+		case testTelegramMethodGetChat:
+			if r.Form.Get("chat_id") == "9001" {
+				return map[string]any{"id": 9001, testJSONType: telegramChatTypePrivate, testJSONFirstName: testFirstNameNeo}
+			}
+			return map[string]any{"id": -100123, testJSONType: testChatTypeSupergroup, testJSONTitle: testGroupTitle}
+		case testTelegramMethodSendMessage:
+			return recorder.nextSendMessageResult()
+		default:
+			t.Fatalf("unexpected bot method: %s", method)
+			return nil
+		}
+	})
+	store := newGatekeeperFlowStore()
+	expiredChallenge := &db.Challenge{
+		CommChatID:         9001,
+		UserID:             42,
+		ChatID:             -100123,
+		Status:             db.ChallengeStatusPending,
+		SuccessUUID:        testExpiredChallengeID,
+		WebAppToken:        testToken,
+		JoinRequestQueryID: testJoinQueryID,
+		CreatedAt:          time.Now().Add(-10 * time.Minute),
+		ExpiresAt:          time.Now().Add(-time.Minute),
+		WebAppOpenedAt:     sql.NullTime{Time: time.Now().Add(-5 * time.Minute), Valid: true},
+	}
+	if _, err := store.CreateChallenge(context.Background(), expiredChallenge); err != nil {
+		t.Fatalf("create expired challenge: %v", err)
+	}
+	gatekeeper := &Gatekeeper{
+		bot: botAPI,
+		s: &gatekeeperTestService{
+			testBotService: testBotService{botAPI: botAPI, language: "en"},
+			settings:       &db.Settings{GatekeeperEnabled: true, GatekeeperCaptchaEnabled: true},
+		},
+		store: store, config: &config.Config{}, banChecker: &testGatekeeperBanChecker{},
+	}
 
-			recorder := &botRequestRecorder{}
-			botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
-				recorder.record(t, method, r)
-				switch method {
-				case testTelegramMethodGetChat:
-					return map[string]any{
-						"id":          -100123,
-						testJSONType:  testChatTypeSupergroup,
-						testJSONTitle: testGroupTitle,
-					}
-				case testTelegramMethodGetChatMember:
-					return map[string]any{
-						"status": tc.memberStatus,
-						"user": map[string]any{
-							"id":              42,
-							testJSONIsBot:     false,
-							testJSONFirstName: testFirstNameNeo,
-						},
-					}
-				case testTelegramMethodDeleteMessage, testTelegramMethodBanChatMember, testTelegramMethodJoinRequestQuery:
-					return true
-				default:
-					t.Fatalf("unexpected bot method: %s", method)
-					return nil
-				}
-			})
-
-			store := newGatekeeperFlowStore()
-			expiredChallenge := &db.Challenge{
-				CommChatID:         9001,
-				UserID:             42,
-				ChatID:             -100123,
-				Status:             db.ChallengeStatusPending,
-				SuccessUUID:        testExpiredChallengeID,
-				WebAppToken:        testToken,
-				JoinRequestQueryID: testJoinQueryID,
-				ChallengeMessageID: 501,
-				CreatedAt:          time.Now().Add(-10 * time.Minute),
-				ExpiresAt:          time.Now().Add(-time.Minute),
-				WebAppOpenedAt:     sql.NullTime{Time: time.Now().Add(-5 * time.Minute), Valid: true},
-			}
-			if _, err := store.CreateChallenge(context.Background(), expiredChallenge); err != nil {
-				t.Fatalf("create expired challenge: %v", err)
-			}
-
-			gatekeeper := &Gatekeeper{
-				bot: botAPI,
-				s: &gatekeeperTestService{
-					testBotService: testBotService{botAPI: botAPI, language: "en"},
-					settings: &db.Settings{
-						GatekeeperEnabled:        true,
-						GatekeeperCaptchaEnabled: true,
-						RejectTimeout:            time.Minute.Nanoseconds(),
-					},
-				},
-				store:      store,
-				config:     &config.Config{},
-				banChecker: &testGatekeeperBanChecker{},
-			}
-
-			if err := gatekeeper.processExpiredChallenges(context.Background()); err != nil {
-				t.Fatalf("processExpiredChallenges returned error: %v", err)
-			}
-
-			if got := len(recorder.byMethod(testTelegramMethodSendMessage)); got != 0 {
-				t.Fatalf("opened WebApp challenge unexpectedly fell back to DM: %d sends", got)
-			}
-			if got := len(recorder.byMethod(testTelegramMethodBanChatMember)); got != tc.wantBan {
-				t.Fatalf("ban calls = %d, want %d", got, tc.wantBan)
-			}
-			if got := len(recorder.byMethod(testTelegramMethodJoinRequestQuery)); got != tc.wantDecline {
-				t.Fatalf("decline calls = %d, want %d", got, tc.wantDecline)
-			}
-			if len(store.challenges) != 0 {
-				t.Fatalf("expected challenge row cleanup, got %d", len(store.challenges))
-			}
-		})
+	if err := gatekeeper.processExpiredChallenges(context.Background()); err != nil {
+		t.Fatalf("processExpiredChallenges returned error: %v", err)
+	}
+	if got := len(recorder.byMethod(testTelegramMethodSendMessage)); got != 1 {
+		t.Fatalf("DM fallback sends = %d, want 1", got)
+	}
+	if got := store.onlyChallenge(t); got.WebAppToken != "" || got.Status != db.ChallengeStatusPending {
+		t.Fatalf("unexpected DM fallback state: %#v", got)
 	}
 }
 
@@ -1907,11 +1875,11 @@ func TestProcessExpiredJoinRequestRetainsDurableRejectWhenMembershipCheckFails(t
 		ChatID:             -100123,
 		Status:             db.ChallengeStatusPending,
 		SuccessUUID:        testExpiredChallengeID,
-		WebAppToken:        testToken,
+		WebAppToken:        "",
 		JoinRequestQueryID: testJoinQueryID,
 		CreatedAt:          time.Now().Add(-10 * time.Minute),
 		ExpiresAt:          time.Now().Add(-time.Minute),
-		WebAppOpenedAt:     sql.NullTime{Time: time.Now().Add(-5 * time.Minute), Valid: true},
+		WebAppOpenedAt:     sql.NullTime{},
 	}
 	if _, err := store.CreateChallenge(context.Background(), expiredChallenge); err != nil {
 		t.Fatalf("create expired challenge: %v", err)
