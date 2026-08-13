@@ -22,6 +22,7 @@ type service struct {
 	memberCache     map[int64]map[int64]time.Time
 	settingsCache   map[int64]*db.Settings
 	cacheMutex      sync.RWMutex
+	memberRevision  uint64
 	cacheExpiration time.Duration
 	defaultLanguage string
 	log             *logrus.Entry
@@ -41,6 +42,7 @@ type serviceStore interface {
 	GetSettings(ctx context.Context, chatID int64) (*db.Settings, error)
 	GetAllSettings(ctx context.Context) (map[int64]*db.Settings, error)
 	SetSettings(ctx context.Context, settings *db.Settings) error
+	CommitSettings(ctx context.Context, settings *db.Settings) (*db.Settings, error)
 }
 
 func NewService(ctx context.Context, bot *api.BotAPI, dbClient serviceStore, defaultLanguage string, log *logrus.Entry) *service {
@@ -193,6 +195,7 @@ func (s *service) InsertMember(ctx context.Context, chatID, userID int64) error 
 
 		s.cacheMutex.Lock()
 		defer s.cacheMutex.Unlock()
+		s.memberRevision++
 
 		if _, ok := s.memberCache[chatID]; !ok {
 			s.memberCache[chatID] = make(map[int64]time.Time)
@@ -214,6 +217,7 @@ func (s *service) DeleteMember(ctx context.Context, chatID, userID int64) error 
 
 		s.cacheMutex.Lock()
 		defer s.cacheMutex.Unlock()
+		s.memberRevision++
 		if members, ok := s.memberCache[chatID]; ok {
 			delete(members, userID)
 		}
@@ -262,15 +266,16 @@ func (s *service) SetSettings(ctx context.Context, settings *db.Settings) error 
 	if settings == nil {
 		return errors.New("settings are nil")
 	}
-	snapshot := cloneSettings(settings)
-	err := s.dbClient.SetSettings(ctx, snapshot)
+	committed, err := s.dbClient.CommitSettings(ctx, cloneSettings(settings))
 	if err != nil {
 		return err
 	}
 
 	s.cacheMutex.Lock()
 	defer s.cacheMutex.Unlock()
-	s.settingsCache[snapshot.ID] = cloneSettings(snapshot)
+	if cached, ok := s.settingsCache[committed.ID]; !ok || cached.Revision < committed.Revision {
+		s.settingsCache[committed.ID] = cloneSettings(committed)
+	}
 
 	return nil
 }
@@ -279,11 +284,18 @@ func (s *service) warmupCache(ctx context.Context) error {
 	g, ctx := errgroup.WithContext(ctx)
 
 	g.Go(func() error {
+		s.cacheMutex.RLock()
+		loadedAtRevision := s.memberRevision
+		s.cacheMutex.RUnlock()
 		members, err := s.dbClient.GetAllMembers(ctx)
 		if err != nil {
 			return fmt.Errorf("failed to warmup member cache: %w", err)
 		}
 		s.cacheMutex.Lock()
+		defer s.cacheMutex.Unlock()
+		if s.memberRevision != loadedAtRevision {
+			return nil
+		}
 		expTime := time.Now().Add(s.cacheExpiration)
 		for chatID, userIDs := range members {
 			if _, ok := s.memberCache[chatID]; !ok {
@@ -293,7 +305,6 @@ func (s *service) warmupCache(ctx context.Context) error {
 				s.memberCache[chatID][userID] = expTime
 			}
 		}
-		s.cacheMutex.Unlock()
 		return nil
 	})
 

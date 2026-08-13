@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -15,6 +16,133 @@ import (
 	"github.com/jmoiron/sqlx"
 	migrate "github.com/rubenv/sql-migrate"
 )
+
+type failingForeignKeyRows struct {
+	err    error
+	closed bool
+}
+
+func (*failingForeignKeyRows) Next() bool { return false }
+
+func (r *failingForeignKeyRows) Err() error { return r.err }
+
+func (r *failingForeignKeyRows) Close() error {
+	r.closed = true
+	return nil
+}
+
+func TestForeignKeyValidationReturnsIterationError(t *testing.T) {
+	t.Parallel()
+
+	want := errors.New("foreign key cursor failed")
+	rows := &failingForeignKeyRows{err: want}
+	err := validateForeignKeyRows(rows, "foreign key check after maintenance")
+	if !errors.Is(err, want) {
+		t.Fatalf("foreign key validation error = %v, want %v", err, want)
+	}
+	if !rows.closed {
+		t.Fatal("foreign key validation did not close rows after iteration failure")
+	}
+}
+
+func TestApplicationMigrationPlannerRejectsDownWithoutChangingData(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	client, err := NewSQLiteClient(ctx, t.TempDir(), "test.db")
+	if err != nil {
+		t.Fatalf("new sqlite client: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	if err := client.SetSettings(ctx, db.DefaultSettings(-100)); err != nil {
+		t.Fatalf("seed settings: %v", err)
+	}
+
+	source := &migrate.EmbedFileSystemMigrationSource{FileSystem: resources.FS, Root: migrationsRoot}
+	err = planApplicationMigrations(client.db.DB, source, migrate.Down)
+	if !errors.Is(err, errMigrationRollbackUnsupported) {
+		t.Fatalf("down migration plan error = %v, want unsupported rollback", err)
+	}
+	stored, err := client.GetSettings(ctx, -100)
+	if err != nil {
+		t.Fatalf("read settings after rejected rollback: %v", err)
+	}
+	if stored.ID != -100 {
+		t.Fatalf("rejected rollback changed settings: %+v", stored)
+	}
+}
+
+func TestSQLiteIntegrityMigrationUpDownPreservesDomainRows(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	dbPath := filepath.Join(t.TempDir(), "sqlite-integrity.db")
+	sqlDB, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	if _, err := sqlDB.ExecContext(ctx, `PRAGMA foreign_keys = ON`); err != nil {
+		t.Fatalf("enable foreign keys: %v", err)
+	}
+
+	source := &migrate.EmbedFileSystemMigrationSource{FileSystem: resources.FS, Root: migrationsRoot}
+	const migration = "20260813010000-repair-sqlite-integrity.sql"
+	if _, err := migrate.ExecMax(sqlDB, "sqlite3", source, migrate.Up, migrationsBefore(t, migration)); err != nil {
+		t.Fatalf("execute migrations before SQLite integrity migration: %v", err)
+	}
+	if _, err := sqlDB.ExecContext(ctx, `
+		INSERT INTO chats (id) VALUES (-100);
+		INSERT INTO chat_challenged_messages (chat_id, message_id, user_id, challenged_at)
+		VALUES (-100, 1, 11, CURRENT_TIMESTAMP);
+		INSERT INTO recent_joiners (
+			join_message_id, chat_id, user_id, username, joined_at, processed, is_spammer
+		) VALUES (2, -100, 12, 'fixture', CURRENT_TIMESTAMP, 1, 0);
+		INSERT INTO spam_cases (
+			id, chat_id, user_id, message_id, message_text, created_at,
+			pre_vote_restricted, status, resolved_at
+		) VALUES (3, -100, 13, 3, 'fixture', CURRENT_TIMESTAMP, 1, 'spam', CURRENT_TIMESTAMP)
+	`); err != nil {
+		t.Fatalf("seed pre-migration rows: %v", err)
+	}
+	if _, err := migrate.ExecMax(sqlDB, "sqlite3", source, migrate.Up, 1); err != nil {
+		t.Fatalf("execute SQLite integrity migration: %v", err)
+	}
+	if _, err := sqlDB.ExecContext(ctx, `UPDATE chats SET settings_revision = 7 WHERE id = -100`); err != nil {
+		t.Fatalf("exercise settings revision: %v", err)
+	}
+	if _, err := migrate.ExecMax(sqlDB, "sqlite3", source, migrate.Down, 1); err != nil {
+		t.Fatalf("roll back SQLite integrity migration: %v", err)
+	}
+
+	for _, check := range []struct {
+		table string
+		want  int
+	}{
+		{table: "chats", want: 1},
+		{table: "chat_challenged_messages", want: 1},
+		{table: "recent_joiners", want: 1},
+		{table: "spam_cases", want: 1},
+	} {
+		var count int
+		if err := sqlDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+check.table).Scan(&count); err != nil {
+			t.Fatalf("count preserved %s rows: %v", check.table, err)
+		}
+		if count != check.want {
+			t.Fatalf("preserved %s rows = %d, want %d", check.table, count, check.want)
+		}
+	}
+	if _, err := sqlDB.ExecContext(ctx, `SELECT settings_revision FROM chats`); err == nil {
+		t.Fatal("rollback retained settings_revision column")
+	}
+	rows, err := sqlDB.QueryContext(ctx, `PRAGMA foreign_key_check`)
+	if err != nil {
+		t.Fatalf("foreign key check after rollback: %v", err)
+	}
+	if err := validateForeignKeyRows(rows, "foreign key check after rollback"); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestSQLiteEnforcesForeignKeysAndCascades(t *testing.T) {
 	t.Parallel()

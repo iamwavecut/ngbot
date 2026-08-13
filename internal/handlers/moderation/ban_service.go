@@ -36,9 +36,10 @@ const (
 	onlineBanQueueCapacity = 1_024
 	moderationStatusTTL    = 5 * time.Minute
 
-	banlistFeedDaily  = "daily"
-	banlistFeedHourly = "hourly"
-	banlistFeedOnline = "online"
+	banlistFeedDaily                = "daily"
+	banlistFeedHourly               = "hourly"
+	banlistFeedOnline               = "online"
+	retainedRecordsCleanupBatchSize = 500
 
 	kvKeyLastDailyFetch  = "last_daily_fetch"
 	kvKeyLastHourlyFetch = "last_hourly_fetch"
@@ -67,6 +68,7 @@ type banStore interface {
 	SetKV(ctx context.Context, key string, value string) error
 	ApplyBanlistSource(ctx context.Context, provider, feedType, generation string, userIDs []int64, seenAt time.Time, expiresAt *time.Time, replace bool) (added, removed []int64, err error)
 	CleanupBanlistSources(ctx context.Context) error
+	CleanupRetainedRecords(ctx context.Context, now time.Time, limit int) error
 	GetBanlist(ctx context.Context) (map[int64]struct{}, error)
 	AddRestriction(ctx context.Context, restriction *db.UserRestriction) error
 	RemoveRestriction(ctx context.Context, chatID int64, userID int64) error
@@ -199,6 +201,9 @@ func (s *defaultBanService) Start(ctx context.Context) error {
 	}
 	if err := s.cleanupExpiredRestrictions(ctx); err != nil {
 		return err
+	}
+	if err := s.db.CleanupRetainedRecords(ctx, time.Now().UTC(), retainedRecordsCleanupBatchSize); err != nil {
+		return fmt.Errorf("clean retained records: %w", err)
 	}
 
 	runCtx, cancel := context.WithCancel(ctx)

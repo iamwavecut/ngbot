@@ -8,6 +8,7 @@ import (
 type (
 	Settings struct {
 		ID                                      int64  `db:"id"`
+		Revision                                int64  `db:"settings_revision"`
 		Language                                string `db:"language"`
 		Enabled                                 bool   `db:"enabled"`
 		GatekeeperEnabled                       bool   `db:"gatekeeper_enabled"`

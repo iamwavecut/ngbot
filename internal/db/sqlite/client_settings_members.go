@@ -39,7 +39,7 @@ func (c *sqliteClient) GetSettings(ctx context.Context, chatID int64) (*db.Setti
 	defer c.mutex.RUnlock()
 
 	res := &db.Settings{}
-	query := "SELECT id, language, enabled, gatekeeper_enabled, gatekeeper_captcha_enabled, gatekeeper_greeting_enabled, gatekeeper_captcha_options_count, gatekeeper_greeting_text, llm_first_message_enabled, reaction_profile_check_enabled, community_voting_enabled, community_voting_timeout_override_ns, community_voting_min_voters_override, community_voting_max_voters_override, community_voting_min_voters_percent_override, challenge_timeout, reject_timeout FROM chats WHERE id = ?"
+	query := "SELECT id, settings_revision, language, enabled, gatekeeper_enabled, gatekeeper_captcha_enabled, gatekeeper_greeting_enabled, gatekeeper_captcha_options_count, gatekeeper_greeting_text, llm_first_message_enabled, reaction_profile_check_enabled, community_voting_enabled, community_voting_timeout_override_ns, community_voting_min_voters_override, community_voting_max_voters_override, community_voting_min_voters_percent_override, challenge_timeout, reject_timeout FROM chats WHERE id = ?"
 	err := c.db.QueryRowxContext(ctx, query, chatID).StructScan(res)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -59,7 +59,7 @@ func (c *sqliteClient) GetAllSettings(ctx context.Context) (map[int64]*db.Settin
 	c.mutex.RLock()
 	defer c.mutex.RUnlock()
 
-	query := "SELECT id, language, enabled, gatekeeper_enabled, gatekeeper_captcha_enabled, gatekeeper_greeting_enabled, gatekeeper_captcha_options_count, gatekeeper_greeting_text, llm_first_message_enabled, reaction_profile_check_enabled, community_voting_enabled, community_voting_timeout_override_ns, community_voting_min_voters_override, community_voting_max_voters_override, community_voting_min_voters_percent_override, challenge_timeout, reject_timeout FROM chats"
+	query := "SELECT id, settings_revision, language, enabled, gatekeeper_enabled, gatekeeper_captcha_enabled, gatekeeper_greeting_enabled, gatekeeper_captcha_options_count, gatekeeper_greeting_text, llm_first_message_enabled, reaction_profile_check_enabled, community_voting_enabled, community_voting_timeout_override_ns, community_voting_min_voters_override, community_voting_max_voters_override, community_voting_min_voters_percent_override, challenge_timeout, reject_timeout FROM chats"
 	rows, err := c.db.QueryxContext(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query all settings: %w", err)
@@ -83,6 +83,14 @@ func (c *sqliteClient) GetAllSettings(ctx context.Context) (map[int64]*db.Settin
 }
 
 func (c *sqliteClient) SetSettings(ctx context.Context, settings *db.Settings) error {
+	_, err := c.CommitSettings(ctx, settings)
+	return err
+}
+
+func (c *sqliteClient) CommitSettings(ctx context.Context, settings *db.Settings) (*db.Settings, error) {
+	if settings == nil {
+		return nil, errors.New("settings are nil")
+	}
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
@@ -95,9 +103,10 @@ func (c *sqliteClient) SetSettings(ctx context.Context, settings *db.Settings) e
 	normalized.CommunityVotingMinVotersPercentOverride = normalizeVotingOverrideInt(normalized.CommunityVotingMinVotersPercentOverride)
 
 	query := `
-		INSERT INTO chats (id, language, enabled, gatekeeper_enabled, gatekeeper_captcha_enabled, gatekeeper_greeting_enabled, gatekeeper_captcha_options_count, gatekeeper_greeting_text, llm_first_message_enabled, reaction_profile_check_enabled, community_voting_enabled, community_voting_timeout_override_ns, community_voting_min_voters_override, community_voting_max_voters_override, community_voting_min_voters_percent_override, challenge_timeout, reject_timeout)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO chats (id, settings_revision, language, enabled, gatekeeper_enabled, gatekeeper_captcha_enabled, gatekeeper_greeting_enabled, gatekeeper_captcha_options_count, gatekeeper_greeting_text, llm_first_message_enabled, reaction_profile_check_enabled, community_voting_enabled, community_voting_timeout_override_ns, community_voting_min_voters_override, community_voting_max_voters_override, community_voting_min_voters_percent_override, challenge_timeout, reject_timeout)
+		VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
+		settings_revision = chats.settings_revision + 1,
 		language = excluded.language,
 		enabled = excluded.enabled,
 		gatekeeper_enabled = excluded.gatekeeper_enabled,
@@ -114,8 +123,16 @@ func (c *sqliteClient) SetSettings(ctx context.Context, settings *db.Settings) e
 		community_voting_min_voters_percent_override = excluded.community_voting_min_voters_percent_override,
 		challenge_timeout = excluded.challenge_timeout,
 		reject_timeout = excluded.reject_timeout
+		RETURNING id, settings_revision, language, enabled, gatekeeper_enabled,
+			gatekeeper_captcha_enabled, gatekeeper_greeting_enabled,
+			gatekeeper_captcha_options_count, gatekeeper_greeting_text,
+			llm_first_message_enabled, reaction_profile_check_enabled,
+			community_voting_enabled, community_voting_timeout_override_ns,
+			community_voting_min_voters_override, community_voting_max_voters_override,
+			community_voting_min_voters_percent_override, challenge_timeout, reject_timeout
 	`
-	_, err := c.db.ExecContext(
+	committed := &db.Settings{}
+	err := c.db.QueryRowxContext(
 		ctx, query,
 		normalized.ID,
 		normalized.Language,
@@ -134,11 +151,11 @@ func (c *sqliteClient) SetSettings(ctx context.Context, settings *db.Settings) e
 		normalized.CommunityVotingMinVotersPercentOverride,
 		normalized.ChallengeTimeout,
 		normalized.RejectTimeout,
-	)
+	).StructScan(committed)
 	if err != nil {
-		return fmt.Errorf("failed to set settings: %w", err)
+		return nil, fmt.Errorf("failed to set settings: %w", err)
 	}
-	return nil
+	return committed, nil
 }
 
 func (c *sqliteClient) InsertMember(ctx context.Context, chatID, userID int64) error {

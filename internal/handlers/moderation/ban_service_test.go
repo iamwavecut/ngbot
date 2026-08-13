@@ -408,6 +408,8 @@ type recordingBanStore struct {
 	getBanlistCalls     int
 	cleanupCalls        int
 	cleanupErr          error
+	retentionCalls      int
+	retentionLimit      int
 	banlistCleanupCalls int
 	banlistCleanupErr   error
 }
@@ -587,6 +589,12 @@ func (s *recordingBanStore) CleanupBanlistSources(context.Context) error {
 	return s.banlistCleanupErr
 }
 
+func (s *recordingBanStore) CleanupRetainedRecords(_ context.Context, _ time.Time, limit int) error {
+	s.retentionCalls++
+	s.retentionLimit = limit
+	return nil
+}
+
 func (s *recordingBanStore) AddRestriction(context.Context, *db.UserRestriction) error {
 	return nil
 }
@@ -626,6 +634,9 @@ func TestBanServiceStartCleansExpiredRestrictions(t *testing.T) {
 	t.Cleanup(func() { _ = service.Stop(context.Background()) })
 	if store.cleanupCalls != 1 {
 		t.Fatalf("startup cleanup calls = %d, want 1", store.cleanupCalls)
+	}
+	if store.retentionCalls != 1 || store.retentionLimit != retainedRecordsCleanupBatchSize {
+		t.Fatalf("startup retention cleanup = %d calls with limit %d", store.retentionCalls, store.retentionLimit)
 	}
 }
 

@@ -250,18 +250,31 @@ func TestBanlistCleanupYieldsToQueuedOrdinaryWriter(t *testing.T) {
 		t.Fatalf("retire large generation: %v", err)
 	}
 
-	client.mutex.Lock()
+	firstBatchLocked := make(chan struct{})
+	releaseFirstBatch := make(chan struct{})
+	betweenBatches := make(chan struct{})
+	resumeCleanup := make(chan struct{})
+	client.banlistCleanupBatchLocked = func() {
+		close(firstBatchLocked)
+		<-releaseFirstBatch
+		client.banlistCleanupBatchLocked = nil
+	}
+	client.banlistCleanupBetweenBatches = func() {
+		close(betweenBatches)
+		<-resumeCleanup
+		client.banlistCleanupBetweenBatches = nil
+	}
 	cleanupDone := make(chan error, 1)
 	go func() {
 		cleanupDone <- client.CleanupBanlistSources(ctx)
 	}()
-	time.Sleep(20 * time.Millisecond)
+	<-firstBatchLocked
 	writeDone := make(chan error, 1)
 	go func() {
 		writeDone <- client.SetKV(ctx, "cleanup-interleaved-write", "completed")
 	}()
-	time.Sleep(20 * time.Millisecond)
-	client.mutex.Unlock()
+	close(releaseFirstBatch)
+	<-betweenBatches
 
 	select {
 	case err := <-writeDone:
@@ -276,6 +289,7 @@ func TestBanlistCleanupYieldsToQueuedOrdinaryWriter(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("ordinary write did not run between banlist cleanup batches")
 	}
+	close(resumeCleanup)
 	if err := <-cleanupDone; err != nil {
 		t.Fatalf("complete banlist cleanup: %v", err)
 	}

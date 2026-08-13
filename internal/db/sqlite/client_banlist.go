@@ -319,6 +319,9 @@ func (s *sqliteClient) CleanupBanlistSources(ctx context.Context) error {
 		if !more {
 			break
 		}
+		if s.banlistCleanupBetweenBatches != nil {
+			s.banlistCleanupBetweenBatches()
+		}
 	}
 	return s.reclaimBanlistStorage(ctx)
 }
@@ -369,6 +372,9 @@ func (s *sqliteClient) cleanupBanlistGenerationBatch(ctx context.Context) (bool,
 		if _, err := tx.ExecContext(ctx, `DELETE FROM banlist_generations WHERE id = ? AND active = 0`, generationID); err != nil {
 			return false, fmt.Errorf("delete inactive banlist generation %d: %w", generationID, err)
 		}
+	}
+	if s.banlistCleanupBatchLocked != nil {
+		s.banlistCleanupBatchLocked()
 	}
 	if err := tx.Commit(); err != nil {
 		return false, fmt.Errorf("commit banlist generation cleanup: %w", err)

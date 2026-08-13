@@ -2,13 +2,49 @@ package bot
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	api "github.com/OvyFlash/telegram-bot-api"
 	"github.com/iamwavecut/ngbot/internal/db"
 	"github.com/iamwavecut/ngbot/internal/db/sqlite"
 	log "github.com/sirupsen/logrus"
 )
+
+type settingsCommitBarrierStore struct {
+	serviceStore
+	firstCommitDone chan struct{}
+	releaseFirst    chan struct{}
+	calls           atomic.Int32
+}
+
+func (s *settingsCommitBarrierStore) SetSettings(ctx context.Context, settings *db.Settings) error {
+	_, err := s.CommitSettings(ctx, settings)
+	return err
+}
+
+func (s *settingsCommitBarrierStore) CommitSettings(ctx context.Context, settings *db.Settings) (*db.Settings, error) {
+	committed, err := s.serviceStore.CommitSettings(ctx, settings)
+	if s.calls.Add(1) == 1 {
+		close(s.firstCommitDone)
+		<-s.releaseFirst
+	}
+	return committed, err
+}
+
+type memberWarmupBarrierStore struct {
+	serviceStore
+	snapshotLoaded  chan struct{}
+	releaseSnapshot chan struct{}
+}
+
+func (s *memberWarmupBarrierStore) GetAllMembers(ctx context.Context) (map[int64][]int64, error) {
+	members, err := s.serviceStore.GetAllMembers(ctx)
+	close(s.snapshotLoaded)
+	<-s.releaseSnapshot
+	return members, err
+}
 
 func TestWarmupCacheUsesStoredMemberIDs(t *testing.T) {
 	t.Parallel()
@@ -130,5 +166,147 @@ func TestWarmupDoesNotOverwriteNewerSettings(t *testing.T) {
 	}
 	if got := service.settingsCache[chatID].Language; got != newer.Language {
 		t.Fatalf("warmup overwrote newer cache: got %q want %q", got, newer.Language)
+	}
+}
+
+func TestSettingsCachePublishesNormalizedCommittedSnapshot(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	dbClient, err := sqlite.NewSQLiteClient(ctx, t.TempDir(), "test.db")
+	if err != nil {
+		t.Fatalf("new sqlite client: %v", err)
+	}
+	t.Cleanup(func() { _ = dbClient.Close() })
+
+	const chatID = int64(-1001234)
+	service := NewService(ctx, &api.BotAPI{}, dbClient, "en", log.NewEntry(log.New()))
+	settings := db.DefaultSettings(chatID)
+	settings.Enabled = true
+	settings.GatekeeperEnabled = false
+	settings.GatekeeperCaptchaOptionsCount = 7
+	settings.CommunityVotingMinVotersOverride = -9
+	if err := service.SetSettings(ctx, settings); err != nil {
+		t.Fatalf("set settings: %v", err)
+	}
+
+	cached, err := service.GetSettings(ctx, chatID)
+	if err != nil {
+		t.Fatalf("get cached settings: %v", err)
+	}
+	stored, err := dbClient.GetSettings(ctx, chatID)
+	if err != nil {
+		t.Fatalf("get stored settings: %v", err)
+	}
+	if *cached != *stored {
+		t.Fatalf("cache and SQLite diverged: cached=%+v stored=%+v", cached, stored)
+	}
+	if cached.Enabled || cached.GatekeeperCaptchaOptionsCount != 5 || cached.CommunityVotingMinVotersOverride != db.SettingsOverrideInherit {
+		t.Fatalf("cache did not publish normalized settings: %+v", cached)
+	}
+}
+
+func TestConcurrentSettingsWritesPublishLatestCommit(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	dbClient, err := sqlite.NewSQLiteClient(ctx, t.TempDir(), "test.db")
+	if err != nil {
+		t.Fatalf("new sqlite client: %v", err)
+	}
+	t.Cleanup(func() { _ = dbClient.Close() })
+
+	store := &settingsCommitBarrierStore{
+		serviceStore:    dbClient,
+		firstCommitDone: make(chan struct{}),
+		releaseFirst:    make(chan struct{}),
+	}
+	service := NewService(ctx, &api.BotAPI{}, store, "en", log.NewEntry(log.New()))
+	const chatID = int64(-1002345)
+	first := db.DefaultSettings(chatID)
+	first.Language = "en"
+	second := db.DefaultSettings(chatID)
+	second.Language = "ru"
+
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- service.SetSettings(ctx, first) }()
+	<-store.firstCommitDone
+	secondDone := make(chan error, 1)
+	go func() { secondDone <- service.SetSettings(ctx, second) }()
+	select {
+	case err := <-secondDone:
+		if err != nil {
+			t.Fatalf("second settings write: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("second settings write did not commit while first publication was delayed")
+	}
+	close(store.releaseFirst)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first settings write: %v", err)
+	}
+
+	cached, err := service.GetSettings(ctx, chatID)
+	if err != nil {
+		t.Fatalf("get cached settings: %v", err)
+	}
+	stored, err := dbClient.GetSettings(ctx, chatID)
+	if err != nil {
+		t.Fatalf("get stored settings: %v", err)
+	}
+	if cached.Language != stored.Language {
+		t.Fatalf("cache published stale commit: cached=%q stored=%q", cached.Language, stored.Language)
+	}
+}
+
+func TestMemberWarmupDoesNotResurrectConcurrentDeletion(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	dbClient, err := sqlite.NewSQLiteClient(ctx, t.TempDir(), "test.db")
+	if err != nil {
+		t.Fatalf("new sqlite client: %v", err)
+	}
+	t.Cleanup(func() { _ = dbClient.Close() })
+
+	const (
+		chatID = int64(-1003456)
+		userID = int64(4321)
+	)
+	if err := dbClient.SetSettings(ctx, db.DefaultSettings(chatID)); err != nil {
+		t.Fatalf("set settings: %v", err)
+	}
+	if err := dbClient.InsertMember(ctx, chatID, userID); err != nil {
+		t.Fatalf("insert member: %v", err)
+	}
+	store := &memberWarmupBarrierStore{
+		serviceStore:    dbClient,
+		snapshotLoaded:  make(chan struct{}),
+		releaseSnapshot: make(chan struct{}),
+	}
+	service := NewService(ctx, &api.BotAPI{}, store, "en", log.NewEntry(log.New()))
+	warmupDone := make(chan error, 1)
+	go func() { warmupDone <- service.warmupCache(ctx) }()
+	<-store.snapshotLoaded
+	if err := service.DeleteMember(ctx, chatID, userID); err != nil {
+		t.Fatalf("delete member while warmup is paused: %v", err)
+	}
+	close(store.releaseSnapshot)
+	if err := <-warmupDone; err != nil {
+		t.Fatalf("complete warmup: %v", err)
+	}
+
+	service.cacheMutex.RLock()
+	_, resurrected := service.memberCache[chatID][userID]
+	service.cacheMutex.RUnlock()
+	if resurrected {
+		t.Fatal("stale warmup snapshot resurrected a deleted member")
+	}
+	stored, err := dbClient.IsMember(ctx, chatID, userID)
+	if err != nil {
+		t.Fatalf("check stored member: %v", err)
+	}
+	if stored {
+		t.Fatal("deleted member survived in SQLite")
 	}
 }

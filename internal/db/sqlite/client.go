@@ -2,6 +2,8 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -25,10 +27,14 @@ const (
 	incrementalAutoVacuum  = 2
 )
 
+var errMigrationRollbackUnsupported = errors.New("application migration rollback is unsupported")
+
 type sqliteClient struct {
-	db                 *sqlx.DB
-	mutex              sync.RWMutex
-	banlistImportMutex sync.Mutex
+	db                           *sqlx.DB
+	mutex                        sync.RWMutex
+	banlistImportMutex           sync.Mutex
+	banlistCleanupBatchLocked    func()
+	banlistCleanupBetweenBatches func()
 }
 
 func NewSQLiteClient(ctx context.Context, dataDir string, dbPath string) (*sqliteClient, error) {
@@ -93,7 +99,7 @@ func NewSQLiteClient(ctx context.Context, dataDir string, dbPath string) (*sqlit
 		Root:       migrationsRoot,
 	}
 
-	if _, _, err := migrate.PlanMigration(dbx.DB, "sqlite3", migrationsSource, migrate.Up, 0); err != nil {
+	if err := planApplicationMigrations(dbx.DB, migrationsSource, migrate.Up); err != nil {
 		return nil, fmt.Errorf("plan migrations: %w", err)
 	}
 
@@ -106,12 +112,8 @@ func NewSQLiteClient(ctx context.Context, dataDir string, dbPath string) (*sqlit
 	if err != nil {
 		return nil, fmt.Errorf("check foreign keys: %w", err)
 	}
-	hasViolation := rows.Next()
-	if closeErr := rows.Close(); closeErr != nil {
-		return nil, fmt.Errorf("close foreign key check: %w", closeErr)
-	}
-	if hasViolation {
-		return nil, fmt.Errorf("foreign key check reported violations")
+	if err := validateForeignKeyRows(rows, "foreign key check"); err != nil {
+		return nil, err
 	}
 	var autoVacuum int
 	if err := dbx.GetContext(ctx, &autoVacuum, "PRAGMA auto_vacuum"); err != nil {
@@ -120,7 +122,6 @@ func NewSQLiteClient(ctx context.Context, dataDir string, dbPath string) (*sqlit
 	if autoVacuum != incrementalAutoVacuum {
 		log.WithField("auto_vacuum", autoVacuum).Warn("incremental auto-vacuum is unavailable; run --database-maintenance during downtime")
 	}
-
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -129,6 +130,14 @@ func NewSQLiteClient(ctx context.Context, dataDir string, dbPath string) (*sqlit
 
 	closeOnError = false
 	return &sqliteClient{db: dbx}, nil
+}
+
+func planApplicationMigrations(db *sql.DB, source migrate.MigrationSource, direction migrate.MigrationDirection) error {
+	if direction != migrate.Up {
+		return errMigrationRollbackUnsupported
+	}
+	_, _, err := migrate.PlanMigration(db, "sqlite3", source, direction, 0)
+	return err
 }
 
 func (c *sqliteClient) Close() error {
@@ -219,12 +228,27 @@ func validateSQLiteMaintenanceResult(ctx context.Context, dbx *sqlx.DB) error {
 	if err != nil {
 		return fmt.Errorf("foreign key check after maintenance: %w", err)
 	}
+	return validateForeignKeyRows(rows, "foreign key check after maintenance")
+}
+
+type foreignKeyRows interface {
+	Next() bool
+	Err() error
+	Close() error
+}
+
+func validateForeignKeyRows(rows foreignKeyRows, operation string) error {
 	hasViolation := rows.Next()
-	if closeErr := rows.Close(); closeErr != nil {
-		return fmt.Errorf("close foreign key check after maintenance: %w", closeErr)
+	iterationErr := rows.Err()
+	closeErr := rows.Close()
+	if iterationErr != nil {
+		return fmt.Errorf("%s iteration: %w", operation, iterationErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close %s: %w", operation, closeErr)
 	}
 	if hasViolation {
-		return fmt.Errorf("foreign key check reported violations after maintenance")
+		return fmt.Errorf("%s reported violations", operation)
 	}
 	return nil
 }

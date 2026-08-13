@@ -33,6 +33,10 @@ func (s *testBanStore) CleanupBanlistSources(context.Context) error {
 	return nil
 }
 
+func (s *testBanStore) CleanupRetainedRecords(context.Context, time.Time, int) error {
+	return nil
+}
+
 func (s *testBanStore) GetBanlist(context.Context) (map[int64]struct{}, error) {
 	return nil, nil
 }
