@@ -122,10 +122,19 @@ func TestRemoveExpiredRestrictionsPreservesActiveRows(t *testing.T) {
 		{ChatID: -100, UserID: 1, RestrictedAt: now.Add(-2 * time.Hour), ExpiresAt: now.Add(-time.Hour)},
 		{ChatID: -100, UserID: 2, RestrictedAt: now, ExpiresAt: now.Add(time.Hour)},
 		{ChatID: -100, UserID: 3, RestrictedAt: now.Add(-2 * time.Hour), ExpiresAt: now.Add(-time.Hour), PriorPermissionsJSON: `{"can_send_messages":false}`},
+		{ChatID: -100, UserID: 4, RestrictedAt: now.Add(-32 * 24 * time.Hour), ExpiresAt: now.Add(-31 * 24 * time.Hour), PriorPermissionsJSON: `{"can_send_messages":true}`},
+		{ChatID: -100, UserID: 5, RestrictedAt: now.Add(-32 * 24 * time.Hour), ExpiresAt: now.Add(-31 * 24 * time.Hour), PriorPermissionsJSON: `{"can_send_messages":false}`},
 	} {
 		if err := client.AddRestriction(ctx, restriction); err != nil {
 			t.Fatalf("add restriction for user %d: %v", restriction.UserID, err)
 		}
+	}
+	resolveAt := now.Add(time.Hour)
+	if _, err := client.CreateSpamCase(ctx, &db.SpamCase{
+		ChatID: -100, UserID: 5, MessageID: 50, CreatedAt: now,
+		Status: db.SpamCaseStatusPending, PreVoteRestricted: true, ResolveAt: &resolveAt,
+	}); err != nil {
+		t.Fatalf("create active spam case: %v", err)
 	}
 	if err := client.RemoveExpiredRestrictions(ctx); err != nil {
 		t.Fatalf("remove expired restrictions: %v", err)
@@ -150,6 +159,20 @@ func TestRemoveExpiredRestrictionsPreservesActiveRows(t *testing.T) {
 	}
 	if snapshot == nil || snapshot.PriorPermissionsJSON == "" {
 		t.Fatalf("expired permission snapshot was deleted: %#v", snapshot)
+	}
+	orphan, err := client.GetRestriction(ctx, -100, 4)
+	if err != nil {
+		t.Fatalf("get orphaned permission snapshot: %v", err)
+	}
+	if orphan != nil {
+		t.Fatalf("orphaned permission snapshot exceeded retention: %#v", orphan)
+	}
+	activeSnapshot, err := client.GetRestriction(ctx, -100, 5)
+	if err != nil {
+		t.Fatalf("get active-case permission snapshot: %v", err)
+	}
+	if activeSnapshot == nil {
+		t.Fatal("active-case permission snapshot was deleted")
 	}
 }
 

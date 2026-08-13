@@ -705,8 +705,25 @@ func (s *sqliteClient) RemoveExpiredRestrictions(ctx context.Context) error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
-	query := `DELETE FROM user_restrictions WHERE expires_at <= datetime('now') AND prior_permissions_json = ''`
-	_, err := s.db.ExecContext(ctx, query)
+	query := `
+		DELETE FROM user_restrictions
+		WHERE expires_at <= datetime('now')
+			AND (
+				prior_permissions_json = ''
+				OR (
+					expires_at <= datetime('now', '-30 days')
+					AND NOT EXISTS (
+						SELECT 1
+						FROM spam_cases
+						WHERE spam_cases.chat_id = user_restrictions.chat_id
+							AND spam_cases.user_id = user_restrictions.user_id
+							AND spam_cases.pre_vote_restricted = TRUE
+							AND spam_cases.status NOT IN (?, ?, ?)
+					)
+				)
+			)
+	`
+	_, err := s.db.ExecContext(ctx, query, db.SpamCaseStatusSpam, db.SpamCaseStatusFalsePositive, db.SpamCaseStatusNotEnforced)
 	return err
 }
 
