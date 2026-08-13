@@ -3,6 +3,7 @@
 ## Commit
 
 - Implementation commit: `8eb9d475a95ebfaa489fdd2d4323f1715b64579d`
+- Review-fix implementation commit: `d42729ffddb561fcfb2de481246921dc8eb40861`
 - Base commit: `66bc10254740218d820f79c1ca5ca71451535661`
 
 ## Scope delivered
@@ -18,6 +19,16 @@
 - Compensated Telegram mutes when durable permission or vote-state persistence fails, and only marks `pre_vote_restricted` after a successful mute.
 - Added migration `20260813190000-add-moderation-permission-snapshots.sql`.
 
+## Review fix round 1
+
+- Replaced enumerable word-choice CAPTCHA prompts with a per-challenge PNG arithmetic expression, independent localized instructions, randomized numeric choices, and opaque server-side success mapping. Direct CAPTCHA uses `sendPhoto`; WebApp embeds a validated PNG data URL. Wrong answers remain terminal and rotate on the next challenge.
+- Split mandatory moderation from optional Reactor features. The mandatory router always runs banlist/capability and message/edit content policy; the optional feature wrapper contains only callbacks, reactions, commands, and mentions. Disabling Reactor therefore installs no feature processing and never leaves a nil detector in mandatory content moderation.
+- Made `SenderChat` authoritative whenever present, including edits with a non-nil `From`, while retaining explicit linked-channel and anonymous-admin trust.
+- Bound safe routed commands and mentions before returning, while preventing them from graduating probation, so post-graduation edits remain protected.
+- Added target-chat, username-aware voter allowlist ordering and retained fresh membership/departure checks. The optional reaction feature path consumes the mandatory banlist decision instead of repeating the online provider lookup.
+- Derived voting mute duration from the durable case deadline plus a recovery margin. Expired permission snapshots survive cleanup and are removed only after a successful restore.
+- Reused the allowlist/capability/cached/provider revalidation order on CAPTCHA completion. Cached denies remain terminal without rights; online providers are called only after moderation rights are known available.
+
 ## RED evidence
 
 1. Focused moderation/router tests initially failed to compile because `PriorPermissionsJSON` did not exist; after exposing that seam, command spam still reached routing and untrusted `SenderChat` produced zero classifier calls.
@@ -27,6 +38,7 @@
 5. `TestBanlistGuardChecksProviderBeforeJoinRequestFeatureRouting` showed a provider-banned join request proceeding to feature routing.
 6. `TestMuteUserRestoresCapturedPermissionsWhenPersistenceFails` observed one restriction request instead of mute plus compensating restore.
 7. `TestBanlistGuardModeratesMemberUpdateSubjectInsteadOfAdministratorActor` banned the administrator actor (`user_id=200`) instead of the member-update subject (`user_id=300`).
+8. Round 1 RED tests exposed the public prompt/option relation, full Reactor installation when disabled, non-nil-`From` `SenderChat` bypass, missing routed-message binding, vote allowlist ordering, fixed mute duration, expired snapshot deletion, and provider calls in no-rights CAPTCHA completion.
 
 ## GREEN evidence
 
@@ -36,6 +48,11 @@
 - `go vet ./...`: PASS.
 - `go tool golangci-lint run --enable=unused --enable=unparam --enable=ineffassign --enable=goconst ./...`: PASS, zero issues.
 - `git diff --check`: PASS.
+- Round 1 focused packages (`cmd/ngbot`, `internal/handlers/chat`, `internal/handlers/moderation`, `internal/db/sqlite`): PASS.
+- Round 1 `go test ./...`: PASS.
+- Round 1 `go vet ./...`: PASS.
+- Round 1 strict golangci-lint command: PASS, zero issues.
+- Round 1 focused package race run: `cmd/ngbot`, `moderation`, and `sqlite` PASS; the combined `chat` run hit the two pre-existing Task 3 deadline-sensitive tests named below, and both PASS together when rerun under `-race`.
 
 ## Decisions and invariants
 
@@ -48,6 +65,9 @@
 - CAPTCHA success is not authoritative until the current username-aware allowlist and banlist checks complete.
 - Permission recovery uses either the captured member snapshot or current effective chat defaults, including restrictive defaults.
 - Vote presentation is persisted before a mute; the durable mute marker is persisted only after the mute, with immediate unmute compensation on persistence failure.
+- Public CAPTCHA metadata contains no prompt-to-answer equality relation; only the durable challenge associates the opaque option token with success.
+- Mandatory content moderation and optional Reactor feature routing are separate handlers; optional features cannot re-run content or online banlist checks.
+- Permission snapshots remain durable past Telegram mute expiry until an explicit successful restore deletes them.
 
 ## Verification note
 
