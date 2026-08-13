@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/iamwavecut/ngbot/internal/db"
-	"github.com/jmoiron/sqlx"
 )
 
 const telegramUpdateColumns = `
@@ -69,15 +68,10 @@ func (c *sqliteClient) EnqueueTelegramUpdate(ctx context.Context, update *db.Tel
 	if freeBytes < uint64(c.telegramUpdateInboxLimits.MinFreeBytes) {
 		return false, &db.TelegramUpdateInboxCapacityError{Limit: "database_free_bytes"}
 	}
-	tx, err := c.db.BeginTxx(ctx, nil)
-	if err != nil {
-		return false, fmt.Errorf("begin telegram update admission: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-	if err := c.checkTelegramUpdateInboxCapacity(ctx, tx, update.DispatchKey, int64(len(update.Payload))); err != nil {
+	if err := c.checkTelegramUpdateInboxCapacity(ctx, update.DispatchKey, int64(len(update.Payload))); err != nil {
 		return false, err
 	}
-	result, err := tx.ExecContext(ctx, `
+	result, err := c.db.ExecContext(ctx, `
 		INSERT INTO telegram_update_inbox (
 			update_id, dispatch_key, payload, payload_bytes, security_relevant, available_at, received_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -90,9 +84,6 @@ func (c *sqliteClient) EnqueueTelegramUpdate(ctx context.Context, update *db.Tel
 	if err != nil {
 		return false, fmt.Errorf("read telegram update insert result: %w", err)
 	}
-	if err := tx.Commit(); err != nil {
-		return false, fmt.Errorf("commit telegram update admission: %w", err)
-	}
 	return rows == 1, nil
 }
 
@@ -101,9 +92,9 @@ type telegramUpdateUsage struct {
 	Bytes int64 `db:"bytes"`
 }
 
-func (c *sqliteClient) checkTelegramUpdateInboxCapacity(ctx context.Context, tx *sqlx.Tx, dispatchKey string, payloadBytes int64) error {
+func (c *sqliteClient) checkTelegramUpdateInboxCapacity(ctx context.Context, dispatchKey string, payloadBytes int64) error {
 	var global telegramUpdateUsage
-	if err := tx.GetContext(ctx, &global, `
+	if err := c.db.GetContext(ctx, &global, `
 		SELECT COUNT(*) AS rows, COALESCE(SUM(payload_bytes), 0) AS bytes
 		FROM telegram_update_inbox
 		WHERE status IN (?, ?, ?)
@@ -117,7 +108,7 @@ func (c *sqliteClient) checkTelegramUpdateInboxCapacity(ctx context.Context, tx 
 		return &db.TelegramUpdateInboxCapacityError{Limit: "global_pending_bytes"}
 	}
 	var dispatch telegramUpdateUsage
-	if err := tx.GetContext(ctx, &dispatch, `
+	if err := c.db.GetContext(ctx, &dispatch, `
 		SELECT COUNT(*) AS rows, COALESCE(SUM(payload_bytes), 0) AS bytes
 		FROM telegram_update_inbox
 		WHERE dispatch_key = ? AND status IN (?, ?, ?)

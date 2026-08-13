@@ -375,8 +375,8 @@ func (sc *SpamControl) preprocessMessage(ctx context.Context, msg *api.Message, 
 				result.Error = errChatAdminRequired
 			} else {
 				result.Error = err.Error()
+				return result, err
 			}
-			return result, err
 		} else {
 			result.UserBanned = true
 			result.MessageDeleted = true

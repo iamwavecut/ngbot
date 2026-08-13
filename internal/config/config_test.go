@@ -54,6 +54,8 @@ func TestLoadUsesBoundedTelegramInboxDefaults(t *testing.T) {
 func TestLoadDefaultsNativeWebAppToLoopback(t *testing.T) {
 	t.Setenv("NG_TOKEN", "telegram-token")
 	t.Setenv("NG_HANDLERS", "admin,gatekeeper")
+	t.Setenv("NG_LLM_API_TYPE", LLMProviderGemini)
+	t.Setenv("NG_LLM_GEMINI_API_KEY", "gemini-key")
 	t.Setenv("NG_DOT_PATH", t.TempDir())
 	t.Setenv("NG_TELEGRAM_POLL_TIMEOUT", "60s")
 	t.Setenv("NG_TELEGRAM_REQUEST_TIMEOUT", "75s")
@@ -291,6 +293,10 @@ func TestValidateConfig(t *testing.T) {
 			t.Parallel()
 			tt.cfg.GatekeeperWebApp.MaxConcurrent = 32
 			tt.cfg.GatekeeperWebApp.RequestsPerMinute = 120
+			if tt.cfg.LLM.Type == "" {
+				tt.cfg.LLM.Type = LLMProviderGemini
+				tt.cfg.LLM.GeminiAPIKey = "gemini-key"
+			}
 
 			err := validateConfig(&tt.cfg)
 			if tt.wantErr && err == nil {
@@ -413,7 +419,12 @@ func TestValidateConfigRequiresLLMForMandatoryModeration(t *testing.T) {
 func validConfigForLLM() Config {
 	return Config{
 		EnabledHandlers: []string{"reactor"},
-		SpamControl:     SpamControl{MessageProbationDuration: 3 * time.Hour},
+		LLM: LLM{
+			Type:           LLMProviderGemini,
+			GeminiAPIKey:   "gemini-key",
+			RequestTimeout: 45 * time.Second,
+		},
+		SpamControl: SpamControl{MessageProbationDuration: 3 * time.Hour},
 		GatekeeperWebApp: GatekeeperWebApp{
 			MaxConcurrent:     32,
 			RequestsPerMinute: 120,
