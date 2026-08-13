@@ -142,13 +142,13 @@ func (g *Gatekeeper) processExpiredChallenges(ctx context.Context) error {
 			continue
 		}
 		if challenge.Status == db.ChallengeStatusWebAppFallbackPending {
-			if err := g.fallbackClaimedWebAppChallenge(ctx, challenge, settings); err != nil {
+			if err := g.processChallengeAction(ctx, challenge); err != nil {
 				entry.WithField(logFieldError, err.Error()).Error("failed to recover stuck web app fallback challenge")
 			}
 			continue
 		}
 		if challenge.WebAppToken != "" && challenge.JoinRequestQueryID != "" {
-			if err := g.attemptExpiredWebAppFallback(ctx, challenge, settings); err != nil {
+			if err := g.attemptExpiredWebAppFallback(ctx, challenge); err != nil {
 				entry.WithField(logFieldError, err.Error()).Error("failed to fallback expired web app challenge")
 			}
 			continue
@@ -209,7 +209,8 @@ func (g *Gatekeeper) processDueChallengeActions(ctx context.Context) error {
 
 func isPendingChallengeAction(status string) bool {
 	switch status {
-	case db.ChallengeStatusWebAppFallbackPending,
+	case db.ChallengeStatusRestrictPending,
+		db.ChallengeStatusWebAppFallbackPending,
 		db.ChallengeStatusApproveQueryPending,
 		db.ChallengeStatusApproveMemberPending,
 		db.ChallengeStatusUnrestrictPending,
@@ -220,7 +221,7 @@ func isPendingChallengeAction(status string) bool {
 	}
 }
 
-func (g *Gatekeeper) attemptWebAppFallback(ctx context.Context, challenge *db.Challenge, settings *db.Settings) error {
+func (g *Gatekeeper) attemptWebAppFallback(ctx context.Context, challenge *db.Challenge) error {
 	claimed, err := g.store.BeginDMFallback(ctx, challenge.ChallengeID)
 	if err != nil {
 		return err
@@ -229,10 +230,10 @@ func (g *Gatekeeper) attemptWebAppFallback(ctx context.Context, challenge *db.Ch
 		return nil
 	}
 	challenge.Status = db.ChallengeStatusWebAppFallbackPending
-	return g.fallbackClaimedWebAppChallenge(ctx, challenge, settings)
+	return g.processChallengeAction(ctx, challenge)
 }
 
-func (g *Gatekeeper) attemptExpiredWebAppFallback(ctx context.Context, challenge *db.Challenge, settings *db.Settings) error {
+func (g *Gatekeeper) attemptExpiredWebAppFallback(ctx context.Context, challenge *db.Challenge) error {
 	claimed, err := g.store.BeginExpiredWebAppFallback(ctx, challenge.ChallengeID)
 	if err != nil {
 		return err
@@ -241,17 +242,17 @@ func (g *Gatekeeper) attemptExpiredWebAppFallback(ctx context.Context, challenge
 		return nil
 	}
 	challenge.Status = db.ChallengeStatusWebAppFallbackPending
-	return g.fallbackClaimedWebAppChallenge(ctx, challenge, settings)
+	return g.processChallengeAction(ctx, challenge)
 }
 
-func (g *Gatekeeper) fallbackClaimedWebAppChallenge(ctx context.Context, challenge *db.Challenge, settings *db.Settings) error {
+func (g *Gatekeeper) fallbackClaimedWebAppChallenge(ctx context.Context, challenge *db.Challenge, owner string, settings *db.Settings) error {
 	privateChat, err := bot.GetChat(ctx, g.bot, api.ChatInfoConfig{ChatConfig: api.ChatConfig{ChatID: challenge.CommChatID}})
 	if err != nil {
-		return errors.Join(fmt.Errorf("get private chat for fallback: %w", err), g.declineWebAppChallenge(ctx, challenge))
+		return fmt.Errorf("get private chat for fallback: %w", err)
 	}
 	targetChat, err := bot.GetChat(ctx, g.bot, api.ChatInfoConfig{ChatConfig: api.ChatConfig{ChatID: challenge.ChatID}})
 	if err != nil {
-		return errors.Join(fmt.Errorf("get target chat for fallback: %w", err), g.declineWebAppChallenge(ctx, challenge))
+		return fmt.Errorf("get target chat for fallback: %w", err)
 	}
 	user := &api.User{
 		ID:           challenge.UserID,
@@ -295,9 +296,10 @@ func (g *Gatekeeper) fallbackClaimedWebAppChallenge(ctx context.Context, challen
 		}
 		challenge.ChallengeMessageID = messageID
 	}
-	completed, err := g.store.CompleteExternalAction(
+	completed, err := g.store.CompleteLeasedChallengeAction(
 		ctx,
 		challenge.ChallengeID,
+		owner,
 		db.ChallengeStatusWebAppFallbackPending,
 		db.ChallengeStatusPending,
 		time.Time{},
@@ -338,7 +340,7 @@ func (g *Gatekeeper) processUnopenedWebAppChallenges(ctx context.Context) error 
 			}
 			continue
 		}
-		if err := g.attemptWebAppFallback(ctx, challenge, settings); err != nil {
+		if err := g.attemptWebAppFallback(ctx, challenge); err != nil {
 			entry.WithField(logFieldError, err.Error()).Error("failed to fall back unopened web app challenge")
 		}
 	}

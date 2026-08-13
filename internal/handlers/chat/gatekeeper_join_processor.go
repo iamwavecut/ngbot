@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"database/sql"
 	stderrors "errors"
 	"fmt"
 	"strings"
@@ -309,6 +310,25 @@ func (g *Gatekeeper) handleChatJoinRequest(ctx context.Context, u *api.Update, s
 		entry.Debug("settings are nil")
 		return nil
 	}
+	webAppQueued := false
+	if settings.GatekeeperEnabled && settings.GatekeeperCaptchaEnabled &&
+		u.ChatJoinRequest.QueryID != "" && g.joinCaptchaPublicURL() != "" {
+		if err := g.startJoinRequestWebAppChallenge(ctx, u.ChatJoinRequest, settings); err != nil {
+			return err
+		}
+		u.ChatJoinRequest.QueryID = ""
+		webAppQueued = true
+	}
+	if settings.GatekeeperEnabled && u.ChatJoinRequest.QueryID != "" {
+		if err := bot.AnswerJoinRequestQuery(ctx, g.bot, u.ChatJoinRequest.QueryID, bot.JoinRequestQueryResultQueue); err != nil {
+			entry.WithField(logFieldError, err.Error()).Error("failed to queue join request query before moderation")
+			if moderation.IsTelegramPrivilegeError(err) {
+				g.banChecker.MarkModerationUnavailable(u.ChatJoinRequest.Chat.ID)
+			}
+		} else {
+			u.ChatJoinRequest.QueryID = ""
+		}
+	}
 	isNotSpammer, err := g.store.IsChatNotSpammer(
 		ctx,
 		u.ChatJoinRequest.Chat.ID,
@@ -335,30 +355,17 @@ func (g *Gatekeeper) handleChatJoinRequest(ctx context.Context, u *api.Update, s
 			return nil
 		}
 	}
+	if webAppQueued {
+		return nil
+	}
 	if !settings.GatekeeperEnabled {
 		return nil
 	}
 	if !settings.GatekeeperCaptchaEnabled && !settings.GatekeeperGreetingEnabled {
-		if u.ChatJoinRequest.QueryID != "" {
-			if err := bot.AnswerJoinRequestQuery(ctx, g.bot, u.ChatJoinRequest.QueryID, bot.JoinRequestQueryResultQueue); err != nil {
-				entry.WithField(logFieldError, err.Error()).Error("failed to queue join request query with disabled gatekeeper subfeatures")
-				if moderation.IsTelegramPrivilegeError(err) {
-					g.banChecker.MarkModerationUnavailable(u.ChatJoinRequest.Chat.ID)
-				}
-			}
-		}
 		entry.Debug("both gatekeeper subfeatures are disabled")
 		return nil
 	}
 	if !settings.GatekeeperCaptchaEnabled {
-		if u.ChatJoinRequest.QueryID != "" {
-			if err := bot.AnswerJoinRequestQuery(ctx, g.bot, u.ChatJoinRequest.QueryID, bot.JoinRequestQueryResultQueue); err != nil {
-				entry.WithField(logFieldError, err.Error()).Error("failed to queue join request query with disabled captcha")
-				if moderation.IsTelegramPrivilegeError(err) {
-					g.banChecker.MarkModerationUnavailable(u.ChatJoinRequest.Chat.ID)
-				}
-			}
-		}
 		entry.Debug("captcha is disabled for join requests, leaving request for manual review")
 		return nil
 	}
@@ -367,18 +374,6 @@ func (g *Gatekeeper) handleChatJoinRequest(ctx context.Context, u *api.Update, s
 	case <-ctx.Done():
 		return ctx.Err()
 	default:
-	}
-
-	if u.ChatJoinRequest.QueryID != "" && g.joinCaptchaPublicURL() != "" {
-		return g.startJoinRequestWebAppChallenge(ctx, u.ChatJoinRequest, settings)
-	}
-	if u.ChatJoinRequest.QueryID != "" {
-		if err := bot.AnswerJoinRequestQuery(ctx, g.bot, u.ChatJoinRequest.QueryID, bot.JoinRequestQueryResultQueue); err != nil {
-			entry.WithField(logFieldError, err.Error()).Error("failed to queue join request query before DM fallback")
-			if moderation.IsTelegramPrivilegeError(err) {
-				g.banChecker.MarkModerationUnavailable(u.ChatJoinRequest.Chat.ID)
-			}
-		}
 	}
 
 	if _, err := bot.GetChat(ctx, g.bot, api.ChatInfoConfig{
@@ -417,45 +412,7 @@ func (g *Gatekeeper) startChallenge(ctx context.Context, u *api.Update, user *ap
 	b := g.bot
 	challengeTimeout := settings.GetChallengeTimeout()
 	isPublic := recipientChatID == target.ID
-	restricted := false
-
-	if isPublic && g.moderationAvailable(ctx, target.ID) {
-		if _, err := b.RequestWithContext(ctx, api.RestrictChatMemberConfig{
-			ChatMemberConfig: api.ChatMemberConfig{
-				ChatConfig: api.ChatConfig{
-					ChatID: target.ID,
-				},
-				UserID: user.ID,
-			},
-			UntilDate: time.Now().Add(challengeTimeout).Unix(),
-			Permissions: &api.ChatPermissions{
-				CanSendMessages:       false,
-				CanSendAudios:         false,
-				CanSendDocuments:      false,
-				CanSendPhotos:         false,
-				CanSendVideos:         false,
-				CanSendVideoNotes:     false,
-				CanSendVoiceNotes:     false,
-				CanSendPolls:          false,
-				CanSendOtherMessages:  false,
-				CanAddWebPagePreviews: false,
-				CanChangeInfo:         false,
-				CanInviteUsers:        false,
-				CanPinMessages:        false,
-				CanManageTopics:       false,
-			},
-		}); err != nil {
-			if moderation.IsTelegramPrivilegeError(err) {
-				g.banChecker.MarkModerationUnavailable(target.ID)
-				entry.WithField(logFieldError, err.Error()).Warn("restriction unavailable; starting informational captcha")
-			} else {
-				entry.WithField(logFieldError, err.Error()).Error("failed to restrict user")
-				return errors.WithMessage(err, "restrict user before challenge")
-			}
-		} else {
-			restricted = true
-		}
-	}
+	moderationAvailable := isPublic && g.moderationAvailable(ctx, target.ID)
 
 	now := time.Now()
 	challenge := &db.Challenge{
@@ -465,7 +422,7 @@ func (g *Gatekeeper) startChallenge(ctx context.Context, u *api.Update, user *ap
 		Status:         db.ChallengeStatusPending,
 		SuccessUUID:    uuid.New(),
 		UserLanguage:   strings.TrimSpace(user.LanguageCode),
-		UserRestricted: restricted,
+		UserRestricted: false,
 		CreatedAt:      now,
 		ExpiresAt:      now.Add(challengeTimeout),
 	}
@@ -475,12 +432,16 @@ func (g *Gatekeeper) startChallenge(ctx context.Context, u *api.Update, user *ap
 	if u != nil && u.ChatJoinRequest != nil {
 		challenge.JoinRequestQueryID = u.ChatJoinRequest.QueryID
 	}
+	if moderationAvailable {
+		challenge.Status = db.ChallengeStatusRestrictPending
+		challenge.NextAttemptAt = sql.NullTime{Time: now, Valid: true}
+	}
 	if _, err := g.store.CreateChallenge(ctx, challenge); err != nil {
 		entry.WithField(logFieldError, err.Error()).Error("failed to create challenge")
-		if restricted {
-			return stderrors.Join(err, bot.UnrestrictChatting(ctx, b, user.ID, target.ID))
-		}
 		return err
+	}
+	if moderationAvailable {
+		return g.processChallengeAction(ctx, challenge)
 	}
 	if err := handlersbase.IncrementDailyStat(ctx, g.stats, target.ID, handlersbase.StatChallengeStarted); err != nil {
 		entry.WithField(logFieldError, err.Error()).Warn("failed to increment started challenge stat")
@@ -489,10 +450,10 @@ func (g *Gatekeeper) startChallenge(ctx context.Context, u *api.Update, user *ap
 	sentMessageID, err := g.sendChallengeMessage(ctx, challenge, user, target, languageChatID, settings)
 	if err != nil {
 		entry.WithField(logFieldError, err.Error()).Error("failed to send gatekeeper challenge")
-		return stderrors.Join(err, g.compensateChallengeActivation(ctx, challenge, restricted))
+		return stderrors.Join(err, g.compensateChallengeActivation(ctx, challenge, false))
 	}
 	if sentMessageID == 0 {
-		return g.compensateChallengeActivation(ctx, challenge, restricted)
+		return g.compensateChallengeActivation(ctx, challenge, false)
 	}
 
 	attached, err := g.store.AttachChallengeMessage(ctx, challenge.ChallengeID, db.ChallengeStatusPending, sentMessageID)
@@ -502,7 +463,7 @@ func (g *Gatekeeper) startChallenge(ctx context.Context, u *api.Update, user *ap
 		}
 		entry.WithField(logFieldError, err.Error()).Error("failed to attach challenge message")
 		_ = bot.DeleteChatMessage(ctx, b, recipientChatID, sentMessageID)
-		return stderrors.Join(err, g.compensateChallengeActivation(ctx, challenge, restricted))
+		return stderrors.Join(err, g.compensateChallengeActivation(ctx, challenge, false))
 	}
 	challenge.ChallengeMessageID = sentMessageID
 

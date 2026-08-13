@@ -96,6 +96,7 @@ func (s *gatekeeperFlowStore) RecordWrongAttempt(_ context.Context, challengeID 
 	clone.Attempts++
 	if clone.Attempts >= maxAttempts {
 		clone.Status = db.ChallengeStatusRejectPending
+		clone.NextAttemptAt = sql.NullTime{Time: time.Now(), Valid: true}
 	}
 	s.challenges[key] = &clone
 	return clone.Attempts, clone.Status, true, nil
@@ -163,6 +164,111 @@ func (s *gatekeeperFlowStore) CompleteExternalAction(_ context.Context, challeng
 	return s.transition(challengeID, expectedStatus, nextStatus, expiresAt), nil
 }
 
+func (s *gatekeeperFlowStore) ClaimChallengeAction(_ context.Context, challengeID, owner string, now, leaseUntil time.Time) (*db.Challenge, bool, error) {
+	key, challenge := s.challengeByID(challengeID)
+	if challenge == nil || !isPendingChallengeAction(challenge.Status) || !challenge.NextAttemptAt.Valid || challenge.NextAttemptAt.Time.After(now) {
+		return nil, false, nil
+	}
+	if challenge.ActionOwner != "" && challenge.ActionLeaseUntil.Valid && challenge.ActionLeaseUntil.Time.After(now) {
+		return nil, false, nil
+	}
+	clone := *challenge
+	clone.ActionOwner = owner
+	clone.ActionLeaseUntil = sql.NullTime{Time: leaseUntil, Valid: true}
+	s.challenges[key] = &clone
+	return cloneChallenge(&clone), true, nil
+}
+
+func (s *gatekeeperFlowStore) CompleteLeasedChallengeAction(_ context.Context, challengeID, owner, expectedStatus, nextStatus string, expiresAt time.Time) (bool, error) {
+	key, challenge := s.challengeByID(challengeID)
+	if challenge == nil || challenge.Status != expectedStatus || challenge.ActionOwner != owner {
+		return false, nil
+	}
+	clone := *challenge
+	clone.ActionOwner = ""
+	clone.ActionLeaseUntil = sql.NullTime{}
+	s.challenges[key] = &clone
+	return s.transition(challengeID, expectedStatus, nextStatus, expiresAt), nil
+}
+
+func (s *gatekeeperFlowStore) ScheduleLeasedChallengeRetry(_ context.Context, challengeID, owner, expectedStatus string, nextAttemptAt time.Time, lastError string) (bool, error) {
+	key, challenge := s.challengeByID(challengeID)
+	if challenge == nil || challenge.Status != expectedStatus || challenge.ActionOwner != owner {
+		return false, nil
+	}
+	clone := *challenge
+	clone.NextAttemptAt = sql.NullTime{Time: nextAttemptAt, Valid: true}
+	clone.AttemptCount++
+	clone.LastError = lastError
+	clone.ActionOwner = ""
+	clone.ActionLeaseUntil = sql.NullTime{}
+	s.challenges[key] = &clone
+	return true, nil
+}
+
+func (s *gatekeeperFlowStore) ReconcileLeasedChallenge(_ context.Context, challengeID, owner, expectedStatus, _ string) (bool, error) {
+	key, challenge := s.challengeByID(challengeID)
+	if challenge == nil || challenge.Status != expectedStatus || challenge.ActionOwner != owner {
+		return false, nil
+	}
+	delete(s.challenges, key)
+	return true, nil
+}
+
+func (s *gatekeeperFlowStore) CompleteLeasedChallengeActivation(_ context.Context, challengeID, owner string, restricted bool, messageID int) (bool, error) {
+	key, challenge := s.challengeByID(challengeID)
+	if challenge == nil || challenge.Status != db.ChallengeStatusRestrictPending || challenge.ActionOwner != owner {
+		return false, nil
+	}
+	clone := *challenge
+	clone.Status = db.ChallengeStatusPending
+	clone.UserRestricted = restricted
+	clone.ChallengeMessageID = messageID
+	clone.NextAttemptAt = sql.NullTime{}
+	clone.ActionOwner = ""
+	clone.ActionLeaseUntil = sql.NullTime{}
+	s.challenges[key] = &clone
+	return true, nil
+}
+
+func (s *gatekeeperFlowStore) MarkLeasedChallengeRestricted(_ context.Context, challengeID, owner string) (bool, error) {
+	key, challenge := s.challengeByID(challengeID)
+	if challenge == nil || challenge.Status != db.ChallengeStatusRestrictPending || challenge.ActionOwner != owner {
+		return false, nil
+	}
+	clone := *challenge
+	clone.UserRestricted = true
+	s.challenges[key] = &clone
+	return true, nil
+}
+
+func (s *gatekeeperFlowStore) CompleteLeasedChallengeWithoutPrivileges(_ context.Context, challengeID, owner, expectedStatus string, noticeMessageID int, expiresAt time.Time, lastError string) (bool, error) {
+	key, challenge := s.challengeByID(challengeID)
+	if challenge == nil || challenge.Status != expectedStatus || challenge.ActionOwner != owner {
+		return false, nil
+	}
+	clone := *challenge
+	clone.Status = db.ChallengeStatusNoPrivilegesNotice
+	clone.NoticeMessageID = noticeMessageID
+	clone.ExpiresAt = expiresAt
+	clone.NextAttemptAt = sql.NullTime{}
+	clone.AttemptCount = 0
+	clone.LastError = lastError
+	clone.ActionOwner = ""
+	clone.ActionLeaseUntil = sql.NullTime{}
+	s.challenges[key] = &clone
+	return true, nil
+}
+
+func (s *gatekeeperFlowStore) DeleteLeasedChallengeAction(_ context.Context, challengeID, owner, expectedStatus string) (bool, error) {
+	key, challenge := s.challengeByID(challengeID)
+	if challenge == nil || challenge.Status != expectedStatus || challenge.ActionOwner != owner {
+		return false, nil
+	}
+	delete(s.challenges, key)
+	return true, nil
+}
+
 func (s *gatekeeperFlowStore) CompleteChallengeWithoutPrivileges(_ context.Context, challengeID, expectedStatus string, noticeMessageID int, expiresAt time.Time, lastError string) (bool, error) {
 	key, challenge := s.challengeByID(challengeID)
 	if challenge == nil || challenge.Status != expectedStatus {
@@ -204,7 +310,8 @@ func (s *gatekeeperFlowStore) DeleteChallengeInstance(_ context.Context, challen
 func (s *gatekeeperFlowStore) GetDueChallenges(_ context.Context, now time.Time) ([]*db.Challenge, error) {
 	due := make([]*db.Challenge, 0)
 	for _, challenge := range s.challenges {
-		if isPendingChallengeAction(challenge.Status) && challenge.NextAttemptAt.Valid && !challenge.NextAttemptAt.Time.After(now) {
+		if isPendingChallengeAction(challenge.Status) && challenge.NextAttemptAt.Valid && !challenge.NextAttemptAt.Time.After(now) &&
+			(challenge.ActionOwner == "" || !challenge.ActionLeaseUntil.Valid || !challenge.ActionLeaseUntil.Time.After(now)) {
 			due = append(due, cloneChallenge(challenge))
 		}
 	}
@@ -570,7 +677,7 @@ func TestBannedChatJoinRequestQueryDeclinesAndBansBeforeCaptcha(t *testing.T) {
 		recorder.record(t, method, r)
 
 		switch method {
-		case testTelegramMethodJoinRequestQuery, testTelegramMethodBanChatMember:
+		case testTelegramMethodJoinRequestQuery, testTelegramMethodDeclineJoinRequest, testTelegramMethodBanChatMember:
 			return true
 		default:
 			t.Fatalf("unexpected bot method before captcha: %s", method)
@@ -614,11 +721,11 @@ func TestBannedChatJoinRequestQueryDeclinesAndBansBeforeCaptcha(t *testing.T) {
 	if queryAnswers[0].form.Get("chat_join_request_query_id") != testJoinQueryID {
 		t.Fatalf("unexpected query id: %q", queryAnswers[0].form.Get("chat_join_request_query_id"))
 	}
-	if queryAnswers[0].form.Get("result") != testJoinRequestDecline {
-		t.Fatalf("expected decline result, got %q", queryAnswers[0].form.Get("result"))
+	if queryAnswers[0].form.Get("result") != "queue" {
+		t.Fatalf("expected fast queue result, got %q", queryAnswers[0].form.Get("result"))
 	}
-	if len(recorder.byMethod(testTelegramMethodDeclineJoinRequest)) != 0 {
-		t.Fatalf("expected no legacy join request decline, got %d", len(recorder.byMethod(testTelegramMethodDeclineJoinRequest)))
+	if len(recorder.byMethod(testTelegramMethodDeclineJoinRequest)) != 1 {
+		t.Fatalf("expected queued request to be declined by chat/user, got %d", len(recorder.byMethod(testTelegramMethodDeclineJoinRequest)))
 	}
 	if len(banChecker.bans) != 1 {
 		t.Fatalf("expected one ban, got %d", len(banChecker.bans))
@@ -801,7 +908,7 @@ func TestBannedChatMemberSkipsCaptchaAndDeletesKnownJoinArtifacts(t *testing.T) 
 	}
 }
 
-func TestFailedChallengeActivationRetainsDurableUnrestrictRetry(t *testing.T) {
+func TestFailedChallengeActivationRetainsDurableActivationRetry(t *testing.T) {
 	t.Parallel()
 
 	restrictCalls := 0
@@ -836,11 +943,11 @@ func TestFailedChallengeActivationRetainsDurableUnrestrictRetry(t *testing.T) {
 		t.Fatal("expected challenge activation failure")
 	}
 	challenge := store.onlyChallenge(t)
-	if challenge.Status != db.ChallengeStatusUnrestrictPending || challenge.AttemptCount != 1 || !challenge.NextAttemptAt.Valid || challenge.LastError == "" {
-		t.Fatalf("expected durable unrestrict retry after partial activation, got %#v", challenge)
+	if challenge.Status != db.ChallengeStatusRestrictPending || challenge.AttemptCount != 1 || !challenge.NextAttemptAt.Valid || challenge.LastError == "" {
+		t.Fatalf("expected durable activation retry after partial activation, got %#v", challenge)
 	}
-	if restrictCalls != 2 {
-		t.Fatalf("expected initial restriction and compensation attempt, got %d calls", restrictCalls)
+	if restrictCalls != 1 {
+		t.Fatalf("expected one leased restriction attempt, got %d calls", restrictCalls)
 	}
 }
 
@@ -1747,6 +1854,7 @@ func TestProcessExpiredJoinRequestWebAppChallengeFallsBackToDM(t *testing.T) {
 		JoinRequestQueryID: testJoinQueryID,
 		CreatedAt:          time.Now().Add(-10 * time.Minute),
 		ExpiresAt:          time.Now().Add(-time.Minute),
+		NextAttemptAt:      sql.NullTime{Time: time.Now(), Valid: true},
 	}
 	if _, err := store.CreateChallenge(context.Background(), expiredChallenge); err != nil {
 		t.Fatalf("create expired challenge: %v", err)
@@ -2315,7 +2423,7 @@ func TestProcessExpiredPassedWebAppChallengeCleansUpWithoutPenalty(t *testing.T)
 	}
 }
 
-func TestFallbackClaimedWebAppChallengeDeclinesWhenTargetChatUnavailable(t *testing.T) {
+func TestFallbackClaimedWebAppChallengeRetriesWhenTargetChatUnavailable(t *testing.T) {
 	t.Parallel()
 
 	recorder := &botRequestRecorder{}
@@ -2363,6 +2471,7 @@ func TestFallbackClaimedWebAppChallengeDeclinesWhenTargetChatUnavailable(t *test
 		CaptchaOptionsJSON: testCaptchaOptionsJSON,
 		CreatedAt:          time.Now().Add(-10 * time.Minute),
 		ExpiresAt:          time.Now().Add(-time.Minute),
+		NextAttemptAt:      sql.NullTime{Time: time.Now(), Valid: true},
 	}
 	if _, err := store.CreateChallenge(context.Background(), claimed); err != nil {
 		t.Fatalf("create claimed challenge: %v", err)
@@ -2376,19 +2485,17 @@ func TestFallbackClaimedWebAppChallengeDeclinesWhenTargetChatUnavailable(t *test
 		banChecker: &testGatekeeperBanChecker{},
 	}
 
-	err := gatekeeper.fallbackClaimedWebAppChallenge(context.Background(), claimed, webAppSettings())
+	err := gatekeeper.processChallengeAction(context.Background(), claimed)
 	if err == nil {
 		t.Fatal("expected fallback to return error when target chat is unavailable")
 	}
-	if len(store.challenges) != 0 {
-		t.Fatalf("expected declined challenge to be deleted, got %d rows", len(store.challenges))
+	retained := store.onlyChallenge(t)
+	if retained.Status != db.ChallengeStatusWebAppFallbackPending || !retained.NextAttemptAt.Valid || retained.AttemptCount != 1 {
+		t.Fatalf("expected durable fallback retry, got %#v", retained)
 	}
 	declines := recorder.byMethod(testTelegramMethodJoinRequestQuery)
-	if len(declines) != 1 {
-		t.Fatalf("expected one join request query answer, got %d", len(declines))
-	}
-	if declines[0].form.Get("result") != testJoinRequestDecline {
-		t.Fatalf("expected decline result, got %q", declines[0].form.Get("result"))
+	if len(declines) != 0 {
+		t.Fatalf("transient target lookup declined join request: %#v", declines)
 	}
 }
 
@@ -2441,6 +2548,7 @@ func TestDMFallbackForbiddenDeclinesWithoutDurableRetry(t *testing.T) {
 		CaptchaOptionsJSON: testCaptchaOptionsJSON,
 		CreatedAt:          time.Now().Add(-10 * time.Minute),
 		ExpiresAt:          time.Now().Add(-time.Minute),
+		NextAttemptAt:      sql.NullTime{Time: time.Now(), Valid: true},
 	}
 	if _, err := store.CreateChallenge(context.Background(), challenge); err != nil {
 		t.Fatalf("create fallback challenge: %v", err)

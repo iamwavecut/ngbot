@@ -104,7 +104,7 @@ func enforceBanlistedMessage(
 	}
 	outcome.userBanned = true
 
-	if err := bot.DeleteChatMessage(ctx, botAPI, chat.ID, msg.MessageID); err != nil && !isTelegramActionAlreadyApplied(err) {
+	if err := bot.DeleteChatMessage(ctx, botAPI, chat.ID, msg.MessageID); err != nil && !isTelegramMessageAlreadyDeleted(err) {
 		outcome.err = fmt.Errorf("delete message: %w", err)
 		return outcome
 	}

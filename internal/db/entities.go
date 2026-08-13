@@ -93,6 +93,23 @@ type (
 		NextAttemptAt      sql.NullTime `db:"next_attempt_at"`
 		AttemptCount       int          `db:"attempt_count"`
 		LastError          string       `db:"last_error"`
+		ActionOwner        string       `db:"action_owner"`
+		ActionLeaseUntil   sql.NullTime `db:"action_lease_until"`
+	}
+
+	ChallengeReconciliation struct {
+		ID                  int64     `db:"id"`
+		ChallengeID         string    `db:"challenge_id"`
+		CommChatID          int64     `db:"comm_chat_id"`
+		UserID              int64     `db:"user_id"`
+		ChatID              int64     `db:"chat_id"`
+		ActionStatus        string    `db:"action_status"`
+		JoinRequestQueryID  string    `db:"join_request_query_id"`
+		UserRestricted      bool      `db:"user_restricted"`
+		AttemptCount        int       `db:"attempt_count"`
+		LastError           string    `db:"last_error"`
+		ChallengeCreatedAt  time.Time `db:"challenge_created_at"`
+		ReconciliationDueAt time.Time `db:"reconciliation_due_at"`
 	}
 
 	ChatManager struct {
@@ -170,6 +187,7 @@ const (
 	ChallengeStatusPending                 = "pending"
 	ChallengeStatusPassedWaitingMemberJoin = "passed_waiting_member_join"
 	ChallengeStatusWebAppFallbackPending   = "web_app_fallback_pending"
+	ChallengeStatusRestrictPending         = "restrict_pending"
 	ChallengeStatusApproveQueryPending     = "approve_query_pending"
 	ChallengeStatusApproveMemberPending    = "approve_member_pending"
 	ChallengeStatusUnrestrictPending       = "unrestrict_pending"

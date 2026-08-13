@@ -17,19 +17,40 @@ type testGatekeeperStore struct {
 	isNotSpammer bool
 }
 
-func TestTelegramActionAlreadyAppliedRecognizesRecoveredJoinQuery(t *testing.T) {
+func TestTelegramActionAlreadyAppliedDoesNotTreatUncertainJoinQueryAsSuccess(t *testing.T) {
 	t.Parallel()
 
 	for _, message := range []string{
 		"Bad Request: query is too old and response timeout expired or query ID is invalid",
 		"Bad Request: QUERY_ID_INVALID",
 	} {
-		if !isTelegramActionAlreadyApplied(errors.New(message)) {
-			t.Fatalf("expected recovered join query error to be idempotent: %q", message)
+		if isTelegramJoinQueryAlreadyApplied(errors.New(message)) {
+			t.Fatalf("uncertain join query was recorded as successful: %q", message)
 		}
 	}
-	if isTelegramActionAlreadyApplied(errors.New("Bad Request: chat admin required")) {
+	if isTelegramJoinQueryAlreadyApplied(errors.New("Bad Request: chat admin required")) {
 		t.Fatal("unexpected transient or permission error classified as already applied")
+	}
+}
+
+func TestTelegramTerminalErrorsAreClassifiedPerAction(t *testing.T) {
+	t.Parallel()
+
+	messageMissing := errors.New("Bad Request: message to delete not found")
+	userMissing := errors.New("Bad Request: user not participant")
+	alreadyMember := errors.New("Bad Request: USER_ALREADY_PARTICIPANT")
+
+	if !isTelegramMessageAlreadyDeleted(messageMissing) {
+		t.Fatal("missing message must be an idempotent delete success")
+	}
+	if isTelegramRestrictionAlreadyApplied(userMissing) {
+		t.Fatal("missing user does not prove a restriction was applied")
+	}
+	if !isTelegramRemovalAlreadyApplied(userMissing) {
+		t.Fatal("missing user must be an idempotent removal success")
+	}
+	if !isTelegramJoinApprovalAlreadyApplied(alreadyMember) {
+		t.Fatal("existing member must be an idempotent member approval success")
 	}
 }
 
@@ -88,6 +109,38 @@ func (s *testGatekeeperStore) PrepareDMFallback(context.Context, string, string,
 }
 
 func (s *testGatekeeperStore) CompleteExternalAction(context.Context, string, string, string, time.Time) (bool, error) {
+	return false, nil
+}
+
+func (s *testGatekeeperStore) ClaimChallengeAction(context.Context, string, string, time.Time, time.Time) (*db.Challenge, bool, error) {
+	return nil, false, nil
+}
+
+func (s *testGatekeeperStore) CompleteLeasedChallengeAction(context.Context, string, string, string, string, time.Time) (bool, error) {
+	return false, nil
+}
+
+func (s *testGatekeeperStore) ScheduleLeasedChallengeRetry(context.Context, string, string, string, time.Time, string) (bool, error) {
+	return false, nil
+}
+
+func (s *testGatekeeperStore) ReconcileLeasedChallenge(context.Context, string, string, string, string) (bool, error) {
+	return false, nil
+}
+
+func (s *testGatekeeperStore) CompleteLeasedChallengeActivation(context.Context, string, string, bool, int) (bool, error) {
+	return false, nil
+}
+
+func (s *testGatekeeperStore) MarkLeasedChallengeRestricted(context.Context, string, string) (bool, error) {
+	return false, nil
+}
+
+func (s *testGatekeeperStore) CompleteLeasedChallengeWithoutPrivileges(context.Context, string, string, string, int, time.Time, string) (bool, error) {
+	return false, nil
+}
+
+func (s *testGatekeeperStore) DeleteLeasedChallengeAction(context.Context, string, string, string) (bool, error) {
 	return false, nil
 }
 

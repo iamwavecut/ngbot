@@ -1142,6 +1142,74 @@ func TestPermanentDMFallbackRecoveryMigrationIsScopedAndReversible(t *testing.T)
 	}
 }
 
+func TestGatekeeperActionLeaseMigrationUpgradesAndRollsBack(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	dbPath := filepath.Join(t.TempDir(), "gatekeeper-action-lease.db")
+	sqlDB, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
+
+	source := &migrate.EmbedFileSystemMigrationSource{FileSystem: resources.FS, Root: migrationsRoot}
+	const migration = "20260813000000-add-gatekeeper-action-leases.sql"
+	if _, err := migrate.ExecMax(sqlDB, "sqlite3", source, migrate.Up, migrationsBefore(t, migration)); err != nil {
+		t.Fatalf("execute migrations before action leases: %v", err)
+	}
+	if _, err := sqlDB.ExecContext(ctx, `
+		INSERT INTO gatekeeper_challenges (
+			comm_chat_id, user_id, chat_id, success_uuid, created_at, expires_at,
+			challenge_id, status, next_attempt_at, attempt_count, last_error
+		) VALUES (10, 20, -100, 'success', CURRENT_TIMESTAMP, datetime('now', '+10 minutes'),
+			'lease-upgrade', 'reject_pending', CURRENT_TIMESTAMP, 3, 'temporary')
+	`); err != nil {
+		t.Fatalf("insert legacy challenge: %v", err)
+	}
+	if _, err := migrate.ExecMax(sqlDB, "sqlite3", source, migrate.Up, 1); err != nil {
+		t.Fatalf("execute action lease migration: %v", err)
+	}
+	var (
+		owner      string
+		leaseUntil sql.NullTime
+	)
+	if err := sqlDB.QueryRowContext(ctx, `
+		SELECT action_owner, action_lease_until
+		FROM gatekeeper_challenges
+		WHERE challenge_id = 'lease-upgrade'
+	`).Scan(&owner, &leaseUntil); err != nil {
+		t.Fatalf("read upgraded challenge: %v", err)
+	}
+	if owner != "" || leaseUntil.Valid {
+		t.Fatalf("legacy challenge acquired a synthetic lease: owner=%q lease=%v", owner, leaseUntil.Valid)
+	}
+	if _, err := sqlDB.ExecContext(ctx, `
+		INSERT INTO gatekeeper_challenge_reconciliations (
+			challenge_id, comm_chat_id, user_id, chat_id, action_status,
+			attempt_count, last_error, challenge_created_at
+		) VALUES ('lease-upgrade', 10, 20, -100, 'reject_pending', 4, 'exhausted', CURRENT_TIMESTAMP)
+	`); err != nil {
+		t.Fatalf("insert reconciliation: %v", err)
+	}
+	if _, err := migrate.ExecMax(sqlDB, "sqlite3", source, migrate.Down, 1); err != nil {
+		t.Fatalf("roll back action lease migration: %v", err)
+	}
+	var count int
+	if err := sqlDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM gatekeeper_challenges WHERE challenge_id = 'lease-upgrade'`).Scan(&count); err != nil {
+		t.Fatalf("read challenge after rollback: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("rollback lost active challenge: count=%d", count)
+	}
+	if _, err := sqlDB.ExecContext(ctx, `SELECT action_owner FROM gatekeeper_challenges LIMIT 1`); err == nil {
+		t.Fatal("rollback retained action_owner column")
+	}
+	if _, err := sqlDB.ExecContext(ctx, `SELECT 1 FROM gatekeeper_challenge_reconciliations LIMIT 1`); err == nil {
+		t.Fatal("rollback retained reconciliation table")
+	}
+}
+
 func migrationsBefore(t *testing.T, target string) int {
 	t.Helper()
 

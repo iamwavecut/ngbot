@@ -15,6 +15,7 @@ import (
 	moderation "github.com/iamwavecut/ngbot/internal/handlers/moderation"
 	"github.com/iamwavecut/ngbot/internal/i18n"
 	"github.com/iamwavecut/tool"
+	"github.com/pborman/uuid"
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 )
@@ -25,6 +26,7 @@ const (
 	approvedJoinRequestChallengeTTL = 5 * time.Minute
 	webAppOpenDeadline              = 11 * time.Second
 	noPrivilegesNoticeRetention     = 30 * time.Minute
+	challengeActionLeaseDuration    = 2 * time.Minute
 )
 
 func (g *Gatekeeper) handleChallenge(ctx context.Context, u *api.Update, chat *api.Chat, user *api.User) (err error) {
@@ -242,6 +244,18 @@ func (g *Gatekeeper) processChallengeActionWithStats(ctx context.Context, challe
 	if challenge == nil {
 		return nil
 	}
+	owner := uuid.New()
+	leased, claimed, err := g.store.ClaimChallengeAction(
+		ctx,
+		challenge.ChallengeID,
+		owner,
+		time.Now(),
+		time.Now().Add(challengeActionLeaseDuration),
+	)
+	if err != nil || !claimed {
+		return err
+	}
+	challenge = leased
 	entry := g.getLogEntry().WithFields(log.Fields{
 		logFieldMethod: "processChallengeAction",
 		"challenge_id": challenge.ChallengeID,
@@ -249,7 +263,8 @@ func (g *Gatekeeper) processChallengeActionWithStats(ctx context.Context, challe
 	})
 	moderationAvailable := true
 	switch challenge.Status {
-	case db.ChallengeStatusApproveQueryPending,
+	case db.ChallengeStatusRestrictPending,
+		db.ChallengeStatusApproveQueryPending,
 		db.ChallengeStatusApproveMemberPending,
 		db.ChallengeStatusUnrestrictPending,
 		db.ChallengeStatusRejectPending:
@@ -263,29 +278,97 @@ func (g *Gatekeeper) processChallengeActionWithStats(ctx context.Context, challe
 				moderationAvailable = available
 			}
 		}
-		if !moderationAvailable {
+		if !moderationAvailable && challenge.Status != db.ChallengeStatusRestrictPending {
 			passed := challenge.Status != db.ChallengeStatusRejectPending
-			return g.finishChallengeWithoutPrivileges(ctx, challenge, passed, "moderation unavailable", recordStats)
+			finishErr := g.finishChallengeWithoutPrivileges(ctx, challenge, owner, passed, "moderation unavailable", recordStats)
+			if finishErr == nil {
+				return nil
+			}
+			return g.retryOrReconcileChallengeAction(ctx, challenge, owner, finishErr, entry)
 		}
 	}
 
 	var actionErr error
 	switch challenge.Status {
+	case db.ChallengeStatusRestrictPending:
+		restricted := challenge.UserRestricted
+		if moderationAvailable && !restricted {
+			_, actionErr = g.bot.RequestWithContext(ctx, api.RestrictChatMemberConfig{
+				ChatMemberConfig: api.ChatMemberConfig{
+					ChatConfig: api.ChatConfig{ChatID: challenge.ChatID},
+					UserID:     challenge.UserID,
+				},
+				UntilDate: challenge.ExpiresAt.Unix(),
+				Permissions: &api.ChatPermissions{
+					CanSendMessages:       false,
+					CanSendAudios:         false,
+					CanSendDocuments:      false,
+					CanSendPhotos:         false,
+					CanSendVideos:         false,
+					CanSendVideoNotes:     false,
+					CanSendVoiceNotes:     false,
+					CanSendPolls:          false,
+					CanSendOtherMessages:  false,
+					CanAddWebPagePreviews: false,
+					CanChangeInfo:         false,
+					CanInviteUsers:        false,
+					CanPinMessages:        false,
+					CanManageTopics:       false,
+				},
+			})
+			if actionErr == nil || isTelegramRestrictionAlreadyApplied(actionErr) {
+				restricted = true
+				actionErr = nil
+				persisted, persistErr := g.store.MarkLeasedChallengeRestricted(ctx, challenge.ChallengeID, owner)
+				if persistErr != nil || !persisted {
+					return persistErr
+				}
+				challenge.UserRestricted = true
+			} else if moderation.IsTelegramPrivilegeError(actionErr) {
+				g.banChecker.MarkModerationUnavailable(challenge.ChatID)
+				actionErr = nil
+			}
+		}
+		if actionErr == nil {
+			settings, settingsErr := g.fetchAndValidateSettings(ctx, challenge.ChatID)
+			if settingsErr != nil {
+				actionErr = settingsErr
+			} else {
+				user := &api.User{ID: challenge.UserID, FirstName: "friend", LanguageCode: challenge.UserLanguage}
+				target := &api.Chat{ID: challenge.ChatID}
+				messageID, sendErr := g.sendChallengeMessage(ctx, challenge, user, target, challenge.ChatID, settings)
+				if sendErr != nil {
+					actionErr = sendErr
+				} else if messageID == 0 {
+					actionErr = errors.New("public challenge text is empty")
+				} else {
+					completed, completeErr := g.store.CompleteLeasedChallengeActivation(ctx, challenge.ChallengeID, owner, restricted, messageID)
+					if completeErr != nil || !completed {
+						_ = bot.DeleteChatMessage(ctx, g.bot, challenge.CommChatID, messageID)
+						return completeErr
+					}
+					if recordStats {
+						g.incrementChallengeStat(ctx, challenge.ChatID, handlersbase.StatChallengeStarted)
+					}
+					return nil
+				}
+			}
+		}
 	case db.ChallengeStatusWebAppFallbackPending:
 		settings, err := g.fetchAndValidateSettings(ctx, challenge.ChatID)
 		if err != nil {
 			actionErr = err
 		} else {
-			actionErr = g.fallbackClaimedWebAppChallenge(ctx, challenge, settings)
+			actionErr = g.fallbackClaimedWebAppChallenge(ctx, challenge, owner, settings)
 		}
 		if actionErr == nil {
 			return nil
 		}
 	case db.ChallengeStatusApproveQueryPending:
 		actionErr = bot.AnswerJoinRequestQuery(ctx, g.bot, challenge.JoinRequestQueryID, bot.JoinRequestQueryResultApprove)
-		if actionErr == nil || isTelegramActionAlreadyApplied(actionErr) {
+		if isTelegramJoinQueryAlreadyApplied(actionErr) {
 			g.deleteChallengePrompt(ctx, challenge)
-			changed, err := g.store.CompleteExternalAction(ctx, challenge.ChallengeID, challenge.Status, db.ChallengeStatusPassedWaitingMemberJoin, time.Now().Add(approvedJoinRequestChallengeTTL))
+			changed, err := g.store.CompleteLeasedChallengeAction(ctx, challenge.ChallengeID, owner, challenge.Status, db.ChallengeStatusPassedWaitingMemberJoin, time.Now().Add(approvedJoinRequestChallengeTTL))
 			if err != nil {
 				return err
 			}
@@ -296,9 +379,9 @@ func (g *Gatekeeper) processChallengeActionWithStats(ctx context.Context, challe
 		}
 	case db.ChallengeStatusApproveMemberPending:
 		actionErr = bot.ApproveJoinRequest(ctx, g.bot, challenge.UserID, challenge.ChatID)
-		if actionErr == nil || isTelegramActionAlreadyApplied(actionErr) {
+		if actionErr == nil || isTelegramJoinApprovalAlreadyApplied(actionErr) {
 			g.deleteChallengePrompt(ctx, challenge)
-			changed, err := g.store.CompleteExternalAction(ctx, challenge.ChallengeID, challenge.Status, db.ChallengeStatusPassedWaitingMemberJoin, time.Now().Add(approvedJoinRequestChallengeTTL))
+			changed, err := g.store.CompleteLeasedChallengeAction(ctx, challenge.ChallengeID, owner, challenge.Status, db.ChallengeStatusPassedWaitingMemberJoin, time.Now().Add(approvedJoinRequestChallengeTTL))
 			if err != nil {
 				return err
 			}
@@ -312,9 +395,9 @@ func (g *Gatekeeper) processChallengeActionWithStats(ctx context.Context, challe
 			return g.finishPassedChallengeWithoutEnforcement(ctx, challenge, recordStats)
 		}
 		actionErr = bot.UnrestrictChatting(ctx, g.bot, challenge.UserID, challenge.ChatID)
-		if actionErr == nil || isTelegramActionAlreadyApplied(actionErr) {
+		if actionErr == nil || isTelegramRemovalAlreadyApplied(actionErr) {
 			g.deleteChallengePrompt(ctx, challenge)
-			deleted, err := g.store.DeleteChallengeInstance(ctx, challenge.ChallengeID, challenge.Status)
+			deleted, err := g.store.DeleteLeasedChallengeAction(ctx, challenge.ChallengeID, owner, challenge.Status)
 			if err != nil {
 				return err
 			}
@@ -325,7 +408,11 @@ func (g *Gatekeeper) processChallengeActionWithStats(ctx context.Context, challe
 		}
 	case db.ChallengeStatusRejectPending:
 		if challenge.CommChatID == challenge.ChatID && (!challenge.UserRestricted || !moderationAvailable) {
-			return g.finishChallengeWithoutPrivileges(ctx, challenge, false, "moderation unavailable", recordStats)
+			finishErr := g.finishChallengeWithoutPrivileges(ctx, challenge, owner, false, "moderation unavailable", recordStats)
+			if finishErr == nil {
+				return nil
+			}
+			return g.retryOrReconcileChallengeAction(ctx, challenge, owner, finishErr, entry)
 		}
 		if challenge.CommChatID != challenge.ChatID && moderationAvailable {
 			currentMember, err := g.isCurrentJoinRequestMember(ctx, challenge)
@@ -334,7 +421,9 @@ func (g *Gatekeeper) processChallengeActionWithStats(ctx context.Context, challe
 				break
 			}
 			if currentMember {
-				return g.cleanupChallengeWithoutPenalty(ctx, challenge)
+				g.deleteChallengePrompt(ctx, challenge)
+				_, deleteErr := g.store.DeleteLeasedChallengeAction(ctx, challenge.ChallengeID, owner, challenge.Status)
+				return deleteErr
 			}
 		}
 		var banErr error
@@ -345,7 +434,7 @@ func (g *Gatekeeper) processChallengeActionWithStats(ctx context.Context, challe
 				break
 			}
 			banErr = bot.BanUserFromChat(ctx, g.bot, challenge.UserID, challenge.ChatID, time.Now().Add(settings.GetRejectTimeout()).Unix())
-			if isTelegramActionAlreadyApplied(banErr) {
+			if isTelegramRemovalAlreadyApplied(banErr) {
 				banErr = nil
 			}
 		}
@@ -355,13 +444,15 @@ func (g *Gatekeeper) processChallengeActionWithStats(ctx context.Context, challe
 		} else if challenge.CommChatID != challenge.ChatID {
 			declineErr = bot.DeclineJoinRequest(ctx, g.bot, challenge.UserID, challenge.ChatID)
 		}
-		if isTelegramActionAlreadyApplied(declineErr) {
+		if challenge.JoinRequestQueryID != "" && isTelegramJoinQueryAlreadyApplied(declineErr) {
+			declineErr = nil
+		} else if challenge.JoinRequestQueryID == "" && isTelegramJoinDeclineAlreadyApplied(declineErr) {
 			declineErr = nil
 		}
 		actionErr = stderrors.Join(banErr, declineErr)
 		if actionErr == nil {
 			g.deleteChallengeMessages(ctx, challenge)
-			deleted, err := g.store.DeleteChallengeInstance(ctx, challenge.ChallengeID, challenge.Status)
+			deleted, err := g.store.DeleteLeasedChallengeAction(ctx, challenge.ChallengeID, owner, challenge.Status)
 			if err != nil {
 				return err
 			}
@@ -379,29 +470,53 @@ func (g *Gatekeeper) processChallengeActionWithStats(ctx context.Context, challe
 	}
 	if challenge.Status == db.ChallengeStatusWebAppFallbackPending && isTelegramConversationUnavailable(actionErr) {
 		entry.WithField(logFieldError, actionErr.Error()).Info("DM fallback is permanently unavailable; declining join request")
-		return g.declineWebAppChallenge(ctx, challenge)
+		changed, err := g.store.CompleteLeasedChallengeAction(ctx, challenge.ChallengeID, owner, challenge.Status, db.ChallengeStatusRejectPending, time.Time{})
+		if err != nil || !changed {
+			return err
+		}
+		challenge.Status = db.ChallengeStatusRejectPending
+		return g.processChallengeAction(ctx, challenge)
 	}
 	if moderation.IsTelegramPrivilegeError(actionErr) {
-		g.banChecker.MarkModerationUnavailable(challenge.ChatID)
+		if g.banChecker != nil {
+			g.banChecker.MarkModerationUnavailable(challenge.ChatID)
+		}
 		passed := challenge.Status == db.ChallengeStatusApproveQueryPending ||
 			challenge.Status == db.ChallengeStatusApproveMemberPending ||
 			challenge.Status == db.ChallengeStatusUnrestrictPending
-		return g.finishChallengeWithoutPrivileges(ctx, challenge, passed, actionErr.Error(), recordStats)
+		finishErr := g.finishChallengeWithoutPrivileges(ctx, challenge, owner, passed, actionErr.Error(), recordStats)
+		if finishErr == nil {
+			return nil
+		}
+		return g.retryOrReconcileChallengeAction(ctx, challenge, owner, finishErr, entry)
 	}
-	nextAttemptAt := time.Time{}
-	if challenge.AttemptCount+1 < maxChallengeActionAttempts {
-		nextAttemptAt = time.Now().Add(challengeRetryDelay(challenge.AttemptCount))
+	return g.retryOrReconcileChallengeAction(ctx, challenge, owner, actionErr, entry)
+}
+
+func (g *Gatekeeper) retryOrReconcileChallengeAction(
+	ctx context.Context,
+	challenge *db.Challenge,
+	owner string,
+	actionErr error,
+	entry *log.Entry,
+) error {
+	if challenge.AttemptCount+1 >= maxChallengeActionAttempts {
+		reconciled, reconcileErr := g.store.ReconcileLeasedChallenge(ctx, challenge.ChallengeID, owner, challenge.Status, actionErr.Error())
+		if reconcileErr != nil {
+			return stderrors.Join(actionErr, reconcileErr)
+		}
+		if reconciled {
+			entry.WithFields(log.Fields{logFieldError: actionErr.Error(), "attempt": challenge.AttemptCount + 1}).Error("gatekeeper action moved to operator reconciliation")
+		}
+		return actionErr
 	}
-	scheduled, scheduleErr := g.store.ScheduleChallengeRetry(ctx, challenge.ChallengeID, challenge.Status, nextAttemptAt, actionErr.Error())
+	nextAttemptAt := time.Now().Add(challengeRetryDelay(challenge.AttemptCount))
+	scheduled, scheduleErr := g.store.ScheduleLeasedChallengeRetry(ctx, challenge.ChallengeID, owner, challenge.Status, nextAttemptAt, actionErr.Error())
 	if scheduleErr != nil {
 		return stderrors.Join(actionErr, scheduleErr)
 	}
 	if scheduled {
 		fields := log.Fields{logFieldError: actionErr.Error(), "attempt": challenge.AttemptCount + 1}
-		if nextAttemptAt.IsZero() {
-			entry.WithFields(fields).Error("gatekeeper action retries exhausted; durable state retained")
-			return actionErr
-		}
 		entry.WithFields(fields).WithField("retry_in", time.Until(nextAttemptAt)).Warn("gatekeeper action failed; retry scheduled")
 	}
 	return actionErr
@@ -419,12 +534,24 @@ func (g *Gatekeeper) finishPassedChallengeWithoutEnforcement(ctx context.Context
 	return nil
 }
 
-func (g *Gatekeeper) finishChallengeWithoutPrivileges(ctx context.Context, challenge *db.Challenge, passed bool, lastError string, recordStats bool) error {
+func (g *Gatekeeper) finishLeasedPassedChallengeWithoutEnforcement(ctx context.Context, challenge *db.Challenge, owner string, recordStats bool) error {
+	g.deleteChallengePrompt(ctx, challenge)
+	deleted, err := g.store.DeleteLeasedChallengeAction(ctx, challenge.ChallengeID, owner, challenge.Status)
+	if err != nil {
+		return err
+	}
+	if deleted && recordStats {
+		g.incrementChallengeStat(ctx, challenge.ChatID, handlersbase.StatChallengePassed)
+	}
+	return nil
+}
+
+func (g *Gatekeeper) finishChallengeWithoutPrivileges(ctx context.Context, challenge *db.Challenge, owner string, passed bool, lastError string, recordStats bool) error {
 	if challenge == nil {
 		return nil
 	}
 	if passed && challenge.CommChatID == challenge.ChatID {
-		return g.finishPassedChallengeWithoutEnforcement(ctx, challenge, recordStats)
+		return g.finishLeasedPassedChallengeWithoutEnforcement(ctx, challenge, owner, recordStats)
 	}
 
 	language := g.s.GetLanguage(ctx, challenge.ChatID, nil)
@@ -442,15 +569,14 @@ func (g *Gatekeeper) finishChallengeWithoutPrivileges(ctx context.Context, chall
 			"challenge_id": challenge.ChallengeID,
 			logFieldError:  err.Error(),
 		}).Error("failed to send no-rights challenge notice")
-		g.deleteChallengePrompt(ctx, challenge)
-		_, deleteErr := g.store.DeleteChallengeInstance(ctx, challenge.ChallengeID, challenge.Status)
-		return deleteErr
+		return err
 	}
 
 	expiresAt := time.Now().Add(noPrivilegesNoticeRetention)
-	completed, err := g.store.CompleteChallengeWithoutPrivileges(
+	completed, err := g.store.CompleteLeasedChallengeWithoutPrivileges(
 		ctx,
 		challenge.ChallengeID,
+		owner,
 		challenge.Status,
 		sent.MessageID,
 		expiresAt,
@@ -480,7 +606,7 @@ func (g *Gatekeeper) cleanupNoPrivilegesNotice(ctx context.Context, challenge *d
 	}
 	g.deleteChallengePrompt(ctx, challenge)
 	if challenge.NoticeMessageID != 0 {
-		if err := bot.DeleteChatMessage(ctx, g.bot, challenge.ChatID, challenge.NoticeMessageID); err != nil && !isTelegramActionAlreadyApplied(err) {
+		if err := bot.DeleteChatMessage(ctx, g.bot, challenge.ChatID, challenge.NoticeMessageID); err != nil && !isTelegramMessageAlreadyDeleted(err) {
 			return err
 		}
 	}
@@ -492,7 +618,7 @@ func (g *Gatekeeper) deleteChallengeMessages(ctx context.Context, challenge *db.
 	g.deleteChallengePrompt(ctx, challenge)
 	entry := g.getLogEntry().WithField("challenge_id", challenge.ChallengeID)
 	if challenge.JoinMessageID != 0 {
-		if err := bot.DeleteChatMessage(ctx, g.bot, challenge.ChatID, challenge.JoinMessageID); err != nil && !isTelegramActionAlreadyApplied(err) {
+		if err := bot.DeleteChatMessage(ctx, g.bot, challenge.ChatID, challenge.JoinMessageID); err != nil && !isTelegramMessageAlreadyDeleted(err) {
 			entry.WithField(logFieldError, err.Error()).Warn("failed to delete join message")
 		}
 	}
@@ -501,7 +627,7 @@ func (g *Gatekeeper) deleteChallengeMessages(ctx context.Context, challenge *db.
 func (g *Gatekeeper) deleteChallengePrompt(ctx context.Context, challenge *db.Challenge) {
 	entry := g.getLogEntry().WithField("challenge_id", challenge.ChallengeID)
 	if challenge.ChallengeMessageID != 0 {
-		if err := bot.DeleteChatMessage(ctx, g.bot, challenge.CommChatID, challenge.ChallengeMessageID); err != nil && !isTelegramActionAlreadyApplied(err) {
+		if err := bot.DeleteChatMessage(ctx, g.bot, challenge.CommChatID, challenge.ChallengeMessageID); err != nil && !isTelegramMessageAlreadyDeleted(err) {
 			entry.WithField(logFieldError, err.Error()).Warn("failed to delete challenge message")
 		}
 	}
@@ -517,24 +643,51 @@ func challengeRetryDelay(attempt int) time.Duration {
 	return min(5*time.Second*time.Duration(1<<min(attempt, 8)), 15*time.Minute)
 }
 
-func isTelegramActionAlreadyApplied(err error) bool {
+func isTelegramMessageAlreadyDeleted(err error) bool {
+	return telegramErrorContains(err, "MESSAGE TO DELETE NOT FOUND", "MESSAGE_ID_INVALID")
+}
+
+func isTelegramRestrictionAlreadyApplied(err error) bool {
+	return err == nil
+}
+
+func isTelegramJoinQueryAlreadyApplied(err error) bool {
+	return err == nil
+}
+
+func isTelegramJoinApprovalAlreadyApplied(err error) bool {
+	return telegramErrorContains(err, "USER_ALREADY_PARTICIPANT")
+}
+
+func isTelegramRemovalAlreadyApplied(err error) bool {
+	return telegramErrorContains(
+		err,
+		"USER_NOT_PARTICIPANT",
+		"USER NOT PARTICIPANT",
+		"PARTICIPANT_ID_INVALID",
+		"MEMBER NOT FOUND",
+		"USER IS DEACTIVATED",
+	)
+}
+
+func isTelegramJoinDeclineAlreadyApplied(err error) bool {
+	return telegramErrorContains(
+		err,
+		"HIDE_REQUESTER_MISSING",
+		"USER_NOT_PARTICIPANT",
+		"USER NOT PARTICIPANT",
+		"PARTICIPANT_ID_INVALID",
+		"MEMBER NOT FOUND",
+		"USER IS DEACTIVATED",
+	)
+}
+
+func telegramErrorContains(err error, markers ...string) bool {
 	if err == nil {
 		return true
 	}
 	message := strings.ToUpper(err.Error())
-	for _, marker := range []string{
-		"USER_ALREADY_PARTICIPANT",
-		"HIDE_REQUESTER_MISSING",
-		"QUERY IS TOO OLD",
-		"QUERY ID IS INVALID",
-		"QUERY_ID_INVALID",
-		"MESSAGE TO DELETE NOT FOUND",
-		"MESSAGE_ID_INVALID",
-		"USER_NOT_PARTICIPANT",
-		"PARTICIPANT_ID_INVALID",
-		"MEMBER NOT FOUND",
-		"USER IS DEACTIVATED",
-	} {
+	for _, marker := range markers {
 		if strings.Contains(message, marker) {
 			return true
 		}
@@ -569,7 +722,7 @@ func (g *Gatekeeper) isCurrentJoinRequestMember(ctx context.Context, challenge *
 		},
 	})
 	if err != nil {
-		if isTelegramActionAlreadyApplied(err) {
+		if isTelegramRemovalAlreadyApplied(err) {
 			return false, nil
 		}
 		return false, fmt.Errorf("check join-request membership before rejection: %w", err)

@@ -3,6 +3,8 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -33,6 +35,9 @@ func TestChallengeGenerationRejectsStaleOperations(t *testing.T) {
 	if _, err := client.CreateChallenge(ctx, first); err != nil {
 		t.Fatalf("create first challenge: %v", err)
 	}
+	if changed, err := client.CompleteExternalAction(ctx, first.ChallengeID, db.ChallengeStatusPending, db.ChallengeStatusRejectPending, time.Time{}); err != nil || !changed {
+		t.Fatalf("queue first challenge action: changed=%t err=%v", changed, err)
+	}
 	second := &db.Challenge{
 		CommChatID:  first.CommChatID,
 		UserID:      first.UserID,
@@ -42,11 +47,8 @@ func TestChallengeGenerationRejectsStaleOperations(t *testing.T) {
 		CreatedAt:   now.Add(time.Second),
 		ExpiresAt:   now.Add(2 * time.Minute),
 	}
-	if _, err := client.CreateChallenge(ctx, second); err != nil {
-		t.Fatalf("create replacement challenge: %v", err)
-	}
-	if first.ChallengeID == second.ChallengeID {
-		t.Fatalf("expected a new generation token, got %q", first.ChallengeID)
+	if _, err := client.CreateChallenge(ctx, second); !errors.Is(err, ErrChallengeActionInProgress) {
+		t.Fatalf("replace in-flight challenge error = %v, want ErrChallengeActionInProgress", err)
 	}
 
 	if deleted, err := client.DeleteChallengeInstance(ctx, first.ChallengeID, db.ChallengeStatusPending); err != nil || deleted {
@@ -56,12 +58,84 @@ func TestChallengeGenerationRejectsStaleOperations(t *testing.T) {
 		t.Fatalf("stale answer affected replacement: updated=%t err=%v", updated, err)
 	}
 
-	loaded, err := client.GetChallengeByChatUser(ctx, second.ChatID, second.UserID)
+	loaded, err := client.GetChallengeByChatUser(ctx, first.ChatID, first.UserID)
 	if err != nil {
 		t.Fatalf("load replacement: %v", err)
 	}
-	if loaded == nil || loaded.ChallengeID != second.ChallengeID || loaded.SuccessUUID != second.SuccessUUID || loaded.Attempts != 0 {
-		t.Fatalf("replacement challenge was changed: %#v", loaded)
+	if loaded == nil || loaded.ChallengeID != first.ChallengeID || loaded.SuccessUUID != first.SuccessUUID || loaded.Status != db.ChallengeStatusRejectPending {
+		t.Fatalf("in-flight challenge was replaced: %#v", loaded)
+	}
+}
+
+func TestChallengeActionLeaseHasOneOwnerAndRecoversAfterExpiry(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	dataDir := t.TempDir()
+	client, err := NewSQLiteClient(ctx, dataDir, "test.db")
+	if err != nil {
+		t.Fatalf("new sqlite client: %v", err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	challenge := &db.Challenge{
+		CommChatID:    1,
+		UserID:        2,
+		ChatID:        3,
+		Status:        db.ChallengeStatusRejectPending,
+		CreatedAt:     now,
+		ExpiresAt:     now.Add(time.Minute),
+		NextAttemptAt: sql.NullTime{Time: now, Valid: true},
+	}
+	if _, err := client.CreateChallenge(ctx, challenge); err != nil {
+		t.Fatalf("create challenge: %v", err)
+	}
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	claims := make(chan string, 2)
+	for _, owner := range []string{"direct", "scheduler"} {
+		wg.Go(func() {
+			<-start
+			_, claimed, claimErr := client.ClaimChallengeAction(ctx, challenge.ChallengeID, owner, now, now.Add(time.Minute))
+			if claimErr != nil {
+				claims <- "error:" + claimErr.Error()
+				return
+			}
+			if claimed {
+				claims <- owner
+			}
+		})
+	}
+	close(start)
+	wg.Wait()
+	close(claims)
+	var winner string
+	for claim := range claims {
+		if strings.HasPrefix(claim, "error:") {
+			t.Fatal(claim)
+		}
+		if winner != "" {
+			t.Fatalf("multiple action owners: %q and %q", winner, claim)
+		}
+		winner = claim
+	}
+	if winner == "" {
+		t.Fatal("expected one action owner")
+	}
+	if err := client.Close(); err != nil {
+		t.Fatalf("close first client: %v", err)
+	}
+
+	reopened, err := NewSQLiteClient(ctx, dataDir, "test.db")
+	if err != nil {
+		t.Fatalf("reopen sqlite client: %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	if _, claimed, err := reopened.ClaimChallengeAction(ctx, challenge.ChallengeID, "restart", now.Add(30*time.Second), now.Add(2*time.Minute)); err != nil || claimed {
+		t.Fatalf("unexpired lease was stolen: claimed=%t err=%v", claimed, err)
+	}
+	if leased, claimed, err := reopened.ClaimChallengeAction(ctx, challenge.ChallengeID, "restart", now.Add(2*time.Minute), now.Add(3*time.Minute)); err != nil || !claimed || leased.ActionOwner != "restart" {
+		t.Fatalf("expired lease was not recovered: challenge=%#v claimed=%t err=%v", leased, claimed, err)
 	}
 }
 
@@ -180,7 +254,7 @@ func TestDueChallengeRetrySurvivesReopen(t *testing.T) {
 	}
 }
 
-func TestChallengeRetryExhaustionRetainsRowAndStopsPolling(t *testing.T) {
+func TestChallengeRetryExhaustionMovesToReconciliationAndAllowsRejoin(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -210,8 +284,12 @@ func TestChallengeRetryExhaustionRetainsRowAndStopsPolling(t *testing.T) {
 	if err != nil || len(due) != 1 {
 		t.Fatalf("durable action was not recoverable after claim: due=%#v err=%v", due, err)
 	}
-	if scheduled, err := client.ScheduleChallengeRetry(ctx, challenge.ChallengeID, db.ChallengeStatusRejectPending, time.Time{}, "retries exhausted"); err != nil || !scheduled {
-		t.Fatalf("persist retry exhaustion: scheduled=%t err=%v", scheduled, err)
+	leased, claimed, err := client.ClaimChallengeAction(ctx, challenge.ChallengeID, "worker", time.Now(), time.Now().Add(time.Minute))
+	if err != nil || !claimed || leased == nil {
+		t.Fatalf("claim exhausted action: challenge=%#v claimed=%t err=%v", leased, claimed, err)
+	}
+	if reconciled, err := client.ReconcileLeasedChallenge(ctx, challenge.ChallengeID, "worker", db.ChallengeStatusRejectPending, "retries exhausted"); err != nil || !reconciled {
+		t.Fatalf("persist reconciliation: reconciled=%t err=%v", reconciled, err)
 	}
 	due, err = client.GetDueChallenges(ctx, time.Now().Add(24*time.Hour))
 	if err != nil {
@@ -224,8 +302,26 @@ func TestChallengeRetryExhaustionRetainsRowAndStopsPolling(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get retained challenge: %v", err)
 	}
-	if retained == nil || retained.Status != db.ChallengeStatusRejectPending || retained.AttemptCount != 1 || retained.NextAttemptAt.Valid || retained.LastError == "" {
-		t.Fatalf("exhausted challenge metadata was not retained: %#v", retained)
+	if retained != nil {
+		t.Fatalf("reconciliation row still suppresses rejoin: %#v", retained)
+	}
+	reconciliations, err := client.GetChallengeReconciliations(ctx)
+	if err != nil || len(reconciliations) != 1 {
+		t.Fatalf("operator reconciliation record missing: records=%#v err=%v", reconciliations, err)
+	}
+	if reconciliations[0].ChallengeID != challenge.ChallengeID || reconciliations[0].ActionStatus != db.ChallengeStatusRejectPending || reconciliations[0].LastError != "retries exhausted" {
+		t.Fatalf("unexpected reconciliation record: %#v", reconciliations[0])
+	}
+	replacement := &db.Challenge{
+		CommChatID: challenge.CommChatID,
+		UserID:     challenge.UserID,
+		ChatID:     challenge.ChatID,
+		Status:     db.ChallengeStatusPending,
+		CreatedAt:  now.Add(time.Hour),
+		ExpiresAt:  now.Add(2 * time.Hour),
+	}
+	if _, err := client.CreateChallenge(ctx, replacement); err != nil {
+		t.Fatalf("create replacement after reconciliation: %v", err)
 	}
 }
 
