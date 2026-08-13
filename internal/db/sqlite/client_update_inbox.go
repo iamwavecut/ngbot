@@ -147,7 +147,8 @@ func (c *sqliteClient) RenewTelegramUpdateLease(ctx context.Context, updateID in
 		UPDATE telegram_update_inbox
 		SET lease_until = ?, started_at = ?
 		WHERE update_id = ? AND status = ? AND lease_owner = ? AND lease_version = ?
-	`, leaseUntil, now, updateID, db.TelegramUpdateStatusProcessing, owner, version)
+			AND lease_until > ?
+	`, leaseUntil, now, updateID, db.TelegramUpdateStatusProcessing, owner, version, now)
 	if err != nil {
 		return false, fmt.Errorf("renew telegram update lease: %w", err)
 	}

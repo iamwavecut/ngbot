@@ -542,6 +542,87 @@ func TestDurableUpdateDispatcherRecoversExpiredCrashLeaseAfterRestart(t *testing
 	}
 }
 
+func TestDurableUpdateDispatcherBusyHeartbeatCannotRenewPastExpiryOrOverlapRecovery(t *testing.T) {
+	t.Parallel()
+
+	base, err := sqlite.NewSQLiteClient(t.Context(), t.TempDir(), "test.db")
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	t.Cleanup(func() { _ = base.Close() })
+	store := &busyHeartbeatStore{DurableUpdateStore: base}
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	secondStarted := make(chan struct{})
+	var calls atomic.Int32
+	var active atomic.Int32
+	var maxActive atomic.Int32
+	dispatcher := NewDurableUpdateDispatcher(store, func(context.Context, *api.Update) error {
+		current := active.Add(1)
+		defer active.Add(-1)
+		for {
+			observed := maxActive.Load()
+			if current <= observed || maxActive.CompareAndSwap(observed, current) {
+				break
+			}
+		}
+		if calls.Add(1) == 1 {
+			close(firstStarted)
+			<-releaseFirst
+			return nil
+		}
+		close(secondStarted)
+		return nil
+	}, nil, DurableUpdateDispatcherOptions{
+		MaxWorkers: 2, PendingBudget: 2, MaxAttempts: 2,
+		ProcessingTimeout: 30 * time.Millisecond, RecoveryInterval: 2 * time.Millisecond,
+		SchedulerBackoff: 3 * time.Millisecond, MaxBackoff: 3 * time.Millisecond,
+	}, nil)
+	if err := dispatcher.Start(t.Context()); err != nil {
+		t.Fatalf("start dispatcher: %v", err)
+	}
+	t.Cleanup(func() { _ = dispatcher.Stop(context.Background()) })
+	update := messageUpdate(222, -222, 1)
+	if err := dispatcher.Persist(t.Context(), update); err != nil {
+		t.Fatalf("persist update: %v", err)
+	}
+	select {
+	case <-firstStarted:
+	case <-time.After(time.Second):
+		t.Fatal("first handler did not start")
+	}
+	time.Sleep(70 * time.Millisecond)
+	renewCalls := store.renewCalls.Load()
+	time.Sleep(20 * time.Millisecond)
+	if store.renewCalls.Load() != renewCalls {
+		t.Fatalf("heartbeat kept retrying after lease expiry: before=%d after=%d", renewCalls, store.renewCalls.Load())
+	}
+	select {
+	case <-secondStarted:
+		t.Fatal("recovery overlapped the still-running stale owner")
+	default:
+	}
+	close(releaseFirst)
+	select {
+	case <-secondStarted:
+	case <-time.After(time.Second):
+		t.Fatal("recovery owner did not run after stale handler exited")
+	}
+	if maxActive.Load() != 1 {
+		t.Fatalf("maximum concurrent executions = %d, want 1", maxActive.Load())
+	}
+}
+
+type busyHeartbeatStore struct {
+	DurableUpdateStore
+	renewCalls atomic.Int32
+}
+
+func (s *busyHeartbeatStore) RenewTelegramUpdateLease(context.Context, int, string, int64, time.Time, time.Time) (bool, error) {
+	s.renewCalls.Add(1)
+	return false, codedSQLiteError{code: 5}
+}
+
 type busyTransitionStore struct {
 	DurableUpdateStore
 	transition string

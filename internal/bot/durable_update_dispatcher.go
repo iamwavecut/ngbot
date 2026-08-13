@@ -298,6 +298,7 @@ func (d *DurableUpdateDispatcher) heartbeatLease(ctx context.Context, cancelProc
 	interval := max(d.options.ProcessingTimeout/3, time.Millisecond)
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	leaseUntil := record.LeaseUntil.Time
 	for {
 		select {
 		case <-ctx.Done():
@@ -306,9 +307,12 @@ func (d *DurableUpdateDispatcher) heartbeatLease(ctx context.Context, cancelProc
 		case <-stop:
 			done <- nil
 			return
-		case now := <-ticker.C:
-			renewed, err := d.retryStoreTransition(ctx, func() (bool, error) {
-				return d.store.RenewTelegramUpdateLease(ctx, record.UpdateID, record.LeaseOwner, record.LeaseVersion, now.Add(d.options.ProcessingTimeout), now)
+		case <-ticker.C:
+			var renewedUntil time.Time
+			renewed, err := d.retryStoreTransitionUntil(ctx, leaseUntil, func() (bool, error) {
+				now := time.Now()
+				renewedUntil = now.Add(d.options.ProcessingTimeout)
+				return d.store.RenewTelegramUpdateLease(ctx, record.UpdateID, record.LeaseOwner, record.LeaseVersion, renewedUntil, now)
 			})
 			if err != nil || !renewed {
 				cancelProcess()
@@ -318,7 +322,37 @@ func (d *DurableUpdateDispatcher) heartbeatLease(ctx context.Context, cancelProc
 				done <- NewTerminalUpdateFailure(UpdateFailureRuntime, "ambiguous_handler_lease_lost", err)
 				return
 			}
+			leaseUntil = renewedUntil
 		}
+	}
+}
+
+func (d *DurableUpdateDispatcher) retryStoreTransitionUntil(ctx context.Context, deadline time.Time, transition func() (bool, error)) (bool, error) {
+	backoff := d.options.SchedulerBackoff
+	for {
+		if !time.Now().Before(deadline) {
+			return false, context.DeadlineExceeded
+		}
+		changed, err := transition()
+		if err == nil {
+			return changed, nil
+		}
+		failure := ClassifyUpdateFailure(err)
+		if failure.Source != UpdateFailureSQLite || failure.Disposition != UpdateFailureRetryable {
+			return false, err
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return false, errors.Join(err, context.DeadlineExceeded)
+		}
+		timer := time.NewTimer(min(backoff, remaining))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return false, errors.Join(err, ctx.Err())
+		case <-timer.C:
+		}
+		backoff = min(backoff*2, d.options.MaxBackoff)
 	}
 }
 

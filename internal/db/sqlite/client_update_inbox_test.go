@@ -120,6 +120,34 @@ func TestTelegramUpdateInboxBlocksLaterChatUpdateThroughRetry(t *testing.T) {
 	}
 }
 
+func TestTelegramUpdateInboxRejectsLateLeaseRenewal(t *testing.T) {
+	t.Parallel()
+
+	client, err := NewSQLiteClient(t.Context(), t.TempDir(), "test.db")
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	now := time.Now()
+	if inserted, enqueueErr := client.EnqueueTelegramUpdate(t.Context(), &db.TelegramUpdate{
+		UpdateID: 11, DispatchKey: "chat:-11", Payload: []byte(`{"update_id":11}`), ReceivedAt: now,
+	}); enqueueErr != nil || !inserted {
+		t.Fatalf("enqueue update: inserted=%t err=%v", inserted, enqueueErr)
+	}
+	leaseUntil := now.Add(time.Second)
+	claimed, ok, err := client.ClaimTelegramUpdate(t.Context(), 11, "owner", now, leaseUntil)
+	if err != nil || !ok {
+		t.Fatalf("claim update: update=%#v ok=%t err=%v", claimed, ok, err)
+	}
+	renewed, err := client.RenewTelegramUpdateLease(t.Context(), 11, claimed.LeaseOwner, claimed.LeaseVersion, leaseUntil.Add(time.Second), leaseUntil.Add(time.Nanosecond))
+	if err != nil {
+		t.Fatalf("renew expired lease: %v", err)
+	}
+	if renewed {
+		t.Fatal("expired lease was resurrected")
+	}
+}
+
 func TestTelegramUpdateInboxRecoversProcessingAndDeadLettersPoison(t *testing.T) {
 	t.Parallel()
 

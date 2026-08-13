@@ -7,6 +7,7 @@
 - Durable execution preserves per-chat ordering, bounds global workers and pending memory, deduplicates update IDs, and recovers interrupted work on restart.
 - A single persisted-due scheduler wakes at the next `available_at`, recovers stale processing leases and future retries after restart, responds to newly persisted rows, runs bounded retention, and shuts down without per-retry goroutines.
 - Each active execution owns a versioned expiring lease and renews it while its handler runs. Terminal transitions use owner/version compare-and-set, so recovery cannot requeue a healthy long-running handler; an abandoned lease becomes runnable only after expiry.
+- Heartbeat retry is bounded by the currently persisted expiry, and SQLite renewal requires that lease to still be live. A late renewal cannot resurrect an expired owner; stale completion remains fenced while recovery waits for the keyed execution slot.
 - Retryable outcomes use bounded exponential backoff. Terminal, exhausted, malformed, stale security-relevant, and ambiguous panic outcomes remain operator-visible in `telegram_update_failures`.
 - LLM and moderation-capability outages are typed retryable failures. Exhausted LLM checks quarantine the author only when moderation rights are known available; known no-rights mode performs no unsafe Telegram action and retains the failure record.
 - Existing Gatekeeper action leases remain the idempotent side-effect boundary. The always-on banlist guard now owns a dedicated moderation action fence with a stable ban deadline and explicit `started → banned → completed/reconciliation` phases, so an ambiguous crash after Telegram success is never blindly re-banned.
@@ -28,6 +29,7 @@
 | Security timestamps | Membership, join-request, and reaction events bypassed the stale policy | Stale security events dead-letter; callbacks do not inherit their message's age |
 | Moderation fence | Banlist guard could repeat Telegram ban after an ambiguous crash | Stable-deadline fence moves ambiguity to reconciliation and proves one Telegram ban |
 | Execution lease | Five-minute recovery could requeue a still-running handler | Heartbeat keeps live leases current; owner/version CAS fences completion; crash leases recover after expiry |
+| Lease expiry race | SQLite busy retries could renew after expiry and overlap recovered ownership | Heartbeat exits at expiry, late SQL renewal is rejected, and keyed recovery cannot overlap the stale execution |
 | Chat-member joins | Known-banned ban failures were logged and swallowed | Retryable Telegram outcomes propagate through `Gatekeeper.Handle`; privilege loss completes safely in no-rights mode |
 
 ## Verification
