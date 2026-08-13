@@ -7,6 +7,7 @@ import (
 	"time"
 
 	api "github.com/OvyFlash/telegram-bot-api"
+	"github.com/iamwavecut/ngbot/internal/adapters/llm"
 	"github.com/iamwavecut/ngbot/internal/bot"
 	"github.com/iamwavecut/ngbot/internal/db"
 	handlersbase "github.com/iamwavecut/ngbot/internal/handlers/base"
@@ -36,6 +37,7 @@ const (
 	messageSkipReasonAnonymousSender     = "Unsupported anonymous sender"
 	messageSkipReasonNoModerationRights  = "Bot has no moderation rights"
 	messageSkipReasonExternalQuote       = "First-message external quote heuristic"
+	messageSkipReasonLLMUnavailable      = "LLM classification unavailable"
 	logFieldProbationPhase               = "probation_phase"
 )
 
@@ -231,7 +233,10 @@ func (r *Reactor) handleMessageChallenge(ctx context.Context, msg *api.Message, 
 
 	isSpam, err := r.checkMessageForSpam(ctx, chat.ID, content)
 	if err != nil {
-		return err
+		result.Skipped = true
+		result.SkipReason = messageSkipReasonLLMUnavailable
+		entry.WithFields(classificationFailureLogFields(err, "message", "allow_message")).Warn("message LLM classification failed open")
+		return nil
 	}
 	result.IsSpam = isSpam
 
@@ -295,6 +300,15 @@ func (r *Reactor) handleMessageChallenge(ctx context.Context, msg *api.Message, 
 	}
 
 	return nil
+}
+
+func classificationFailureLogFields(err error, path string, fallback string) log.Fields {
+	return log.Fields{
+		logFieldError:         "classification_failed",
+		"classification_path": path,
+		"fallback":            fallback,
+		"llm_outcome":         string(llm.FailureKindOf(err)),
+	}
 }
 
 func (r *Reactor) ensureMessageProbationStarted(ctx context.Context, chat *api.Chat, user *api.User, settings *db.Settings) error {

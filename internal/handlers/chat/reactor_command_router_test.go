@@ -2,10 +2,12 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"testing"
 
 	api "github.com/OvyFlash/telegram-bot-api"
+	"github.com/iamwavecut/ngbot/internal/adapters/llm"
 	"github.com/iamwavecut/ngbot/internal/config"
 	"github.com/iamwavecut/ngbot/internal/db"
 	moderation "github.com/iamwavecut/ngbot/internal/handlers/moderation"
@@ -461,6 +463,40 @@ func TestVoteBanCommandLLMSpamBansImmediatelyAndDeletesReportMessage(t *testing.
 	}
 	if deleteMessageCalls != 1 {
 		t.Fatalf("deleteMessage calls = %d, want 1", deleteMessageCalls)
+	}
+}
+
+func TestVoteBanCommandMalformedClassificationFailsOpenToReportFlow(t *testing.T) {
+	t.Parallel()
+
+	botAPI := newTestBotAPI(t, func(method string, _ *http.Request) any {
+		if method != testTelegramMethodGetChatMember {
+			t.Fatalf("unexpected bot method: %s", method)
+		}
+		return testChatMemberResponse(telegramMemberStatus, false, false, false)
+	})
+	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
+	actor := &api.User{ID: 100, FirstName: testFirstNameActor}
+	target := &api.User{ID: 200, FirstName: testFirstNameTarget}
+	reply := &api.Message{MessageID: 40, Chat: *chat, From: target, Text: "report-target-secret"}
+	command := &api.Message{MessageID: 50, Chat: *chat, From: actor, Text: testVoteBanCommand, ReplyToMessage: reply}
+	reportedCalls := 0
+	reactor := &Reactor{
+		s:            &testBotService{botAPI: botAPI, language: "en"},
+		bot:          botAPI,
+		store:        &testReactorStore{},
+		spamDetector: &testSpamDetector{err: llm.NewFailure(llm.FailureMalformedOutput, errors.New("malformed-secret"))},
+		processReported: func(context.Context, *api.Message, *api.Message, *api.Chat, string) (*moderation.ProcessingResult, error) {
+			reportedCalls++
+			return &moderation.ProcessingResult{}, nil
+		},
+	}
+
+	if err := reactor.voteBanCommand(t.Context(), command, chat, actor, &db.Settings{CommunityVotingEnabled: true}); err != nil {
+		t.Fatalf("voteBanCommand returned error: %v", err)
+	}
+	if reportedCalls != 1 {
+		t.Fatalf("report fallback calls = %d, want 1", reportedCalls)
 	}
 }
 

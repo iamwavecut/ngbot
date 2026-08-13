@@ -115,7 +115,8 @@ func (r *Reactor) moderateReactionUser(ctx context.Context, reaction *api.Messag
 
 	isSpam, err := r.spamDetector.IsSpam(ctx, profileText, nil)
 	if err != nil {
-		return fmt.Errorf("check reaction user profile spam: %w", err)
+		entry.WithFields(classificationFailureLogFields(err, "reaction_user_profile", "allow_reaction")).Warn("reaction user profile LLM classification failed open")
+		return nil
 	}
 	if isSpam == nil {
 		entry.Debug("reaction user profile spam check returned no decision")
@@ -153,7 +154,8 @@ func (r *Reactor) moderateReactionActorChat(ctx context.Context, chat *api.Chat,
 
 	isSpam, err := r.spamDetector.IsSpam(ctx, profileText, nil)
 	if err != nil {
-		return fmt.Errorf("check reaction actor chat profile spam: %w", err)
+		entry.WithFields(classificationFailureLogFields(err, "reaction_actor_profile", "allow_reaction")).Warn("reaction actor profile LLM classification failed open")
+		return nil
 	}
 	if isSpam == nil || !*isSpam {
 		entry.Debug("reaction actor chat profile is not spam")

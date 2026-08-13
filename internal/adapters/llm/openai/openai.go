@@ -92,11 +92,14 @@ func (o *API) ChatCompletion(ctx context.Context, messages []llm.ChatCompletionM
 		MaxTokens:   defaultMaxOutputTokens,
 	})
 	if err != nil {
-		return llm.ChatCompletionResponse{}, fmt.Errorf("create openai chat completion: %w", err)
+		return llm.ChatCompletionResponse{}, llm.NewFailure(llm.FailureKindOf(err), err)
 	}
 
 	if len(resp.Choices) == 0 {
 		return llm.ChatCompletionResponse{}, nil
+	}
+	if resp.Choices[0].FinishReason == openai.FinishReasonContentFilter {
+		return llm.ChatCompletionResponse{}, llm.NewFailure(llm.FailurePolicyBlocked, fmt.Errorf("OpenAI content policy blocked classification"))
 	}
 	o.logger.WithFields(log.Fields{
 		"prompt_tokens":     resp.Usage.PromptTokens,

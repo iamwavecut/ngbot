@@ -250,11 +250,7 @@ func (r *Reactor) voteBanCommand(ctx context.Context, msg *api.Message, chat *ap
 	}
 	isReportedSpam, err := r.checkReportedMessageForSpam(ctx, chat.ID, bot.ExtractContentFromMessage(target))
 	if err != nil {
-		entry.WithFields(log.Fields{
-			logFieldError: "classification_failed",
-			"fallback":    "report_flow",
-			"llm_outcome": "error",
-		}).Warn("reported spam LLM check failed; falling back to report flow")
+		entry.WithFields(classificationFailureLogFields(err, "report", "report_flow")).Warn("reported spam LLM check failed; falling back to report flow")
 	}
 	if isReportedSpam != nil && *isReportedSpam {
 		result, err := r.processBanned(ctx, target, chat, language)

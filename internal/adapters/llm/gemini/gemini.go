@@ -3,9 +3,11 @@ package gemini
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash"
 	"iter"
 	"net/http"
 	"strings"
@@ -43,6 +45,7 @@ type cacheEntry struct {
 
 type promptSegments struct {
 	systemInstruction *genai.Content
+	systemMessage     *llm.ChatCompletionMessage
 	cacheableSystem   bool
 	cacheablePrefix   []llm.ChatCompletionMessage
 	cachedContents    []*genai.Content
@@ -91,13 +94,17 @@ func NewGemini(apiKey, model string, logger *log.Entry) (adapters.LLM, error) {
 		return nil, fmt.Errorf("create gemini client: %w", err)
 	}
 
+	return newGeminiAPI(model, logger, client), nil
+}
+
+func newGeminiAPI(model string, logger *log.Entry, client *genai.Client) *API {
 	return &API{
 		model:           model,
 		logger:          logger.WithFields(log.Fields{"provider": providerName, "model": model}),
 		generateContent: client.Models.GenerateContent,
 		createCache:     client.Caches.Create,
 		listCaches:      client.Caches.All,
-	}, nil
+	}
 }
 
 func (g *API) ChatCompletion(ctx context.Context, messages []llm.ChatCompletionMessage) (llm.ChatCompletionResponse, error) {
@@ -114,8 +121,9 @@ func (g *API) ChatCompletion(ctx context.Context, messages []llm.ChatCompletionM
 	}
 
 	var resp *genai.GenerateContentResponse
+	cacheFallbackReason := ""
 	if classificationCapabilities&capabilityExplicitCache != 0 && (segments.cacheableSystem || len(segments.cachedContents) > 0) {
-		fingerprint := cacheFingerprint(g.model, segments.systemInstruction, segments.cacheablePrefix)
+		fingerprint := cacheFingerprint(g.model, segments.systemMessage, segments.cacheablePrefix)
 		cache, cacheErr := g.loadOrCreateCache(ctx, segments)
 		if cacheErr != nil {
 			fields := cacheUseErrorLogFields(cacheErr)
@@ -139,9 +147,10 @@ func (g *API) ChatCompletion(ctx context.Context, messages []llm.ChatCompletionM
 				fields["provider"] = providerName
 				g.logger.WithFields(fields).Warn("Gemini cached response was empty, retrying without cache")
 				g.invalidateLocalCache(fingerprint, cache.Name)
+				cacheFallbackReason = "empty_response"
 			}
 			if err != nil && !isCacheUseError(err) {
-				return llm.ChatCompletionResponse{}, fmt.Errorf("generate gemini content with cache: %w", err)
+				return llm.ChatCompletionResponse{}, llm.NewFailure(llm.FailureKindOf(err), err)
 			}
 			if err != nil {
 				g.invalidateLocalCache(fingerprint, cache.Name)
@@ -151,6 +160,7 @@ func (g *API) ChatCompletion(ctx context.Context, messages []llm.ChatCompletionM
 				fields["cache_outcome"] = "use_failed"
 				fields["provider"] = providerName
 				g.logger.WithFields(fields).Warn("Gemini explicit cache could not be used, retrying without cache")
+				cacheFallbackReason = "use_failed"
 			}
 		}
 	}
@@ -161,19 +171,30 @@ func (g *API) ChatCompletion(ctx context.Context, messages []llm.ChatCompletionM
 	config.SystemInstruction = segments.systemInstruction
 	resp, err = g.generateContent(ctx, g.model, contents, config)
 	if err != nil {
-		return llm.ChatCompletionResponse{}, fmt.Errorf("generate gemini content: %w", err)
+		return llm.ChatCompletionResponse{}, llm.NewFailure(llm.FailureKindOf(err), err)
 	}
 
 	g.logUsageMetadata(resp)
 	if !hasTextResponse(resp) {
 		fields := emptyResponseLogFields(resp)
 		g.logger.WithFields(fields).Warn("Gemini uncached response was empty")
-		return llm.ChatCompletionResponse{}, fmt.Errorf(
+		cause := fmt.Errorf(
 			"generate gemini content returned no text: candidates=%v finish_reasons=%v prompt_block_reason=%v",
 			fields["candidate_count"],
 			fields["finish_reasons"],
 			fields["prompt_block_reason"],
 		)
+		if fields["prompt_block_reason"] != "" {
+			return llm.ChatCompletionResponse{}, llm.NewFailure(llm.FailurePolicyBlocked, cause)
+		}
+		return llm.ChatCompletionResponse{}, llm.NewFailure(llm.FailureMalformedOutput, cause)
+	}
+	if cacheFallbackReason != "" {
+		g.logger.WithFields(log.Fields{
+			"cache_outcome":       "fallback_succeeded",
+			"cache_failure_stage": cacheFallbackReason,
+			"provider":            providerName,
+		}).Info("Gemini uncached fallback succeeded")
 	}
 	return toChatCompletionResponse(resp), nil
 }
@@ -207,6 +228,8 @@ func splitPromptSegments(messages []llm.ChatCompletionMessage) (promptSegments, 
 				return promptSegments{}, fmt.Errorf("system message must precede conversation contents")
 			}
 			segments.systemInstruction = genai.NewContentFromText(message.Content, genai.RoleUser)
+			systemMessage := message
+			segments.systemMessage = &systemMessage
 			segments.cacheableSystem = message.Cacheable
 		case llm.RoleAssistant:
 			if classificationCapabilities&capabilityPrefilledModelTurns == 0 {
@@ -246,7 +269,7 @@ func toGeminiContent(message llm.ChatCompletionMessage) (*genai.Content, error) 
 }
 
 func (g *API) loadOrCreateCache(ctx context.Context, segments promptSegments) (*genai.CachedContent, error) {
-	fingerprint := cacheFingerprint(g.model, segments.systemInstruction, segments.cacheablePrefix)
+	fingerprint := cacheFingerprint(g.model, segments.systemMessage, segments.cacheablePrefix)
 	displayName := cacheDisplayPrefix + fingerprint
 	for {
 		now := time.Now()
@@ -382,15 +405,19 @@ func (g *API) findCacheByDisplayName(ctx context.Context, displayName string) (*
 	return selected, nil
 }
 
-func cacheFingerprint(model string, systemInstruction *genai.Content, prefix []llm.ChatCompletionMessage) string {
-	hash := sha256.New()
-	writeNormalized(hash, model)
-	writeNormalized(hash, contentText(systemInstruction))
-	for _, message := range prefix {
-		writeNormalized(hash, message.Role)
-		writeNormalized(hash, message.Content)
+func cacheFingerprint(model string, systemMessage *llm.ChatCompletionMessage, prefix []llm.ChatCompletionMessage) string {
+	hasher := sha256.New()
+	writeFingerprintString(hasher, "ngbot-gemini-cache-v2")
+	writeFingerprintString(hasher, model)
+	writeFingerprintBool(hasher, systemMessage != nil)
+	if systemMessage != nil {
+		writeFingerprintMessage(hasher, *systemMessage)
 	}
-	return hex.EncodeToString(hash.Sum(nil))[:cacheHashLength]
+	writeFingerprintUint64(hasher, uint64(len(prefix)))
+	for _, message := range prefix {
+		writeFingerprintMessage(hasher, message)
+	}
+	return hex.EncodeToString(hasher.Sum(nil))[:cacheHashLength]
 }
 
 func cacheSortTime(cache *genai.CachedContent) time.Time {
@@ -420,9 +447,29 @@ func contentText(content *genai.Content) string {
 	return strings.Join(parts, "\n")
 }
 
-func writeNormalized(hasher interface{ Write([]byte) (int, error) }, value string) {
-	_, _ = hasher.Write([]byte(strings.Join(strings.Fields(strings.TrimSpace(value)), " ")))
-	_, _ = hasher.Write([]byte{'\n'})
+func writeFingerprintMessage(hasher hash.Hash, message llm.ChatCompletionMessage) {
+	writeFingerprintString(hasher, message.Role)
+	writeFingerprintBool(hasher, message.Cacheable)
+	writeFingerprintString(hasher, message.Content)
+}
+
+func writeFingerprintString(hasher hash.Hash, value string) {
+	writeFingerprintUint64(hasher, uint64(len(value)))
+	_, _ = hasher.Write([]byte(value))
+}
+
+func writeFingerprintBool(hasher hash.Hash, value bool) {
+	if value {
+		_, _ = hasher.Write([]byte{1})
+		return
+	}
+	_, _ = hasher.Write([]byte{0})
+}
+
+func writeFingerprintUint64(hasher hash.Hash, value uint64) {
+	var framed [8]byte
+	binary.BigEndian.PutUint64(framed[:], value)
+	_, _ = hasher.Write(framed[:])
 }
 
 func isCacheUseError(err error) bool {

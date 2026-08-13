@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/iamwavecut/ngbot/internal/adapters/llm"
@@ -82,5 +83,32 @@ func TestChatCompletionRejectsUnsupportedRoleWithoutRequest(t *testing.T) {
 	}
 	if requestCount != 0 {
 		t.Fatalf("unsupported role made %d HTTP requests", requestCount)
+	}
+}
+
+func TestChatCompletionClassifiesContentPolicyWithoutLeakingProviderMessage(t *testing.T) {
+	t.Parallel()
+	const providerSecret = "openai-policy-secret"
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(openaisdk.ChatCompletionResponse{
+			Choices: []openaisdk.ChatCompletionChoice{{FinishReason: openaisdk.FinishReasonContentFilter}},
+		}); err != nil {
+			t.Fatalf("encode response: %v", err)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	adapter, err := NewOpenAI("test-key", "", server.URL+"/v1", log.NewEntry(log.New()))
+	if err != nil {
+		t.Fatalf("NewOpenAI returned error: %v", err)
+	}
+	_, err = adapter.ChatCompletion(t.Context(), []llm.ChatCompletionMessage{{Role: llm.RoleUser, Content: providerSecret}})
+	if got := llm.FailureKindOf(err); got != llm.FailurePolicyBlocked {
+		t.Fatalf("policy failure kind = %q, want %q", got, llm.FailurePolicyBlocked)
+	}
+	if strings.Contains(err.Error(), providerSecret) {
+		t.Fatalf("policy failure leaked request content: %v", err)
 	}
 }

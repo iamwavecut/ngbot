@@ -3,9 +3,13 @@ package gemini
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"iter"
+	"net/http"
+	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -96,6 +100,181 @@ func TestNewGeminiUsesStableDefaultAndStructuredProviderLog(t *testing.T) {
 	}
 }
 
+func TestGeminiProductionWireCacheFallbackContract(t *testing.T) {
+	t.Parallel()
+	const wireCandidate = "wire-candidate-secret"
+
+	type wireRequest struct {
+		path string
+		body map[string]any
+	}
+	requests := make([]wireRequest, 0, 3)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("x-goog-api-key"); got != "wire-test-key" {
+			t.Errorf("x-goog-api-key = %q", got)
+		}
+		if got := r.Header.Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
+			t.Errorf("Content-Type = %q", got)
+		}
+		if got := r.Header.Get("x-goog-api-client"); got == "" {
+			t.Error("x-goog-api-client header is empty")
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode wire request: %v", err)
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		requests = append(requests, wireRequest{path: r.URL.Path, body: body})
+		w.Header().Set("Content-Type", "application/json")
+		switch len(requests) {
+		case 1:
+			_, _ = w.Write([]byte(`{"name":"cachedContents/wire-cache","displayName":"wire-cache"}`))
+		case 2:
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"code":400,"status":"INVALID_ARGUMENT","message":"cached request rejected"}}`))
+		case 3:
+			_, _ = w.Write([]byte(`{"candidates":[{"content":{"role":"model","parts":[{"text":"1"}]}}]}`))
+		default:
+			t.Errorf("unexpected request %d", len(requests))
+			http.Error(w, "unexpected request", http.StatusInternalServerError)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := genai.NewClient(t.Context(), &genai.ClientConfig{
+		APIKey:     "wire-test-key",
+		Backend:    genai.BackendGeminiAPI,
+		HTTPClient: server.Client(),
+		HTTPOptions: genai.HTTPOptions{
+			BaseURL:    server.URL,
+			APIVersion: "v1beta",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create real Gemini client: %v", err)
+	}
+	var logs bytes.Buffer
+	logger := log.New()
+	logger.SetOutput(&logs)
+	logger.SetLevel(log.DebugLevel)
+	api := newGeminiAPI(DefaultModel, log.NewEntry(logger), client)
+	api.listCaches = nil
+	response, err := api.ChatCompletion(t.Context(), []llm.ChatCompletionMessage{
+		{Role: llm.RoleSystem, Content: testSystemPrompt, Cacheable: true},
+		{Role: llm.RoleUser, Content: wireCandidate},
+	})
+	if err != nil {
+		t.Fatalf("ChatCompletion returned error: %v", err)
+	}
+	if got := response.Choices[0].Message.Content; got != "1" {
+		t.Fatalf("classification = %q, want 1", got)
+	}
+	if len(requests) != 3 {
+		t.Fatalf("wire requests = %d, want cache create plus cached and uncached generate", len(requests))
+	}
+
+	cacheCreate := requests[0]
+	if cacheCreate.path != "/v1beta/cachedContents" {
+		t.Fatalf("cache create path = %q", cacheCreate.path)
+	}
+	if got := cacheCreate.body["model"]; got != "models/"+DefaultModel {
+		t.Fatalf("cache model = %#v", got)
+	}
+	if cacheCreate.body["systemInstruction"] == nil {
+		t.Fatalf("cache create omitted system instruction: %#v", cacheCreate.body)
+	}
+	if got := wireContentText(t, cacheCreate.body["systemInstruction"]); got != testSystemPrompt {
+		t.Fatalf("cache system instruction = %q", got)
+	}
+	if got := cacheCreate.body["ttl"]; got != "21600s" {
+		t.Fatalf("cache ttl = %#v, want 21600s", got)
+	}
+
+	for index, request := range requests[1:] {
+		if request.path != "/v1beta/models/"+DefaultModel+":generateContent" {
+			t.Fatalf("generate request %d path = %q", index, request.path)
+		}
+		assertWireFieldOmitted(t, request.body, "temperature", "topP", "topK", "thinkingConfig")
+	}
+	cachedGenerate := requests[1].body
+	if cachedGenerate["cachedContent"] != "cachedContents/wire-cache" || cachedGenerate["systemInstruction"] != nil {
+		t.Fatalf("cached generate payload = %#v", cachedGenerate)
+	}
+	assertWireClassificationRequest(t, cachedGenerate, wireCandidate)
+	uncachedGenerate := requests[2].body
+	if uncachedGenerate["cachedContent"] != nil || uncachedGenerate["systemInstruction"] == nil {
+		t.Fatalf("uncached fallback payload = %#v", uncachedGenerate)
+	}
+	assertWireClassificationRequest(t, uncachedGenerate, wireCandidate)
+	if got := wireContentText(t, uncachedGenerate["systemInstruction"]); got != testSystemPrompt {
+		t.Fatalf("uncached system instruction = %q", got)
+	}
+	if !strings.Contains(logs.String(), "cache_outcome=fallback_succeeded") {
+		t.Fatalf("cache fallback success was not observable: %q", logs.String())
+	}
+	if strings.Contains(logs.String(), wireCandidate) {
+		t.Fatalf("cache fallback diagnostics leaked candidate content: %q", logs.String())
+	}
+}
+
+func assertWireClassificationRequest(t *testing.T, body map[string]any, candidate string) {
+	t.Helper()
+	contents, ok := body["contents"].([]any)
+	if !ok || len(contents) != 1 {
+		t.Fatalf("wire contents = %#v", body["contents"])
+	}
+	if got := wireContentText(t, contents[0]); got != candidate {
+		t.Fatalf("wire candidate = %q", got)
+	}
+	generationConfig, ok := body["generationConfig"].(map[string]any)
+	if !ok {
+		t.Fatalf("generation config = %#v", body["generationConfig"])
+	}
+	if generationConfig["maxOutputTokens"] != float64(defaultMaxOutputTokens) || generationConfig["responseMimeType"] != "text/plain" {
+		t.Fatalf("generation config = %#v", generationConfig)
+	}
+	safetySettings, ok := body["safetySettings"].([]any)
+	if !ok || len(safetySettings) != len(defaultSafetySettings()) {
+		t.Fatalf("safety settings = %#v", body["safetySettings"])
+	}
+}
+
+func wireContentText(t *testing.T, value any) string {
+	t.Helper()
+	content, ok := value.(map[string]any)
+	if !ok {
+		t.Fatalf("wire content = %#v", value)
+	}
+	parts, ok := content["parts"].([]any)
+	if !ok || len(parts) != 1 {
+		t.Fatalf("wire content parts = %#v", content["parts"])
+	}
+	part, ok := parts[0].(map[string]any)
+	if !ok {
+		t.Fatalf("wire content part = %#v", parts[0])
+	}
+	text, _ := part["text"].(string)
+	return text
+}
+
+func assertWireFieldOmitted(t *testing.T, value any, forbidden ...string) {
+	t.Helper()
+	switch value := value.(type) {
+	case map[string]any:
+		for key, child := range value {
+			if slices.Contains(forbidden, key) {
+				t.Fatalf("production wire unexpectedly included %q in %#v", key, value)
+			}
+			assertWireFieldOmitted(t, child, forbidden...)
+		}
+	case []any:
+		for _, child := range value {
+			assertWireFieldOmitted(t, child, forbidden...)
+		}
+	}
+}
+
 func TestCacheFingerprintIgnoresDynamicTail(t *testing.T) {
 	t.Parallel()
 
@@ -115,10 +294,58 @@ func TestCacheFingerprintIgnoresDynamicTail(t *testing.T) {
 		t.Fatalf("second splitPromptSegments returned error: %v", err)
 	}
 
-	firstFingerprint := cacheFingerprint(DefaultModel, first.systemInstruction, first.cacheablePrefix)
-	secondFingerprint := cacheFingerprint(DefaultModel, second.systemInstruction, second.cacheablePrefix)
+	firstFingerprint := cacheFingerprint(DefaultModel, first.systemMessage, first.cacheablePrefix)
+	secondFingerprint := cacheFingerprint(DefaultModel, second.systemMessage, second.cacheablePrefix)
 	if firstFingerprint != secondFingerprint {
 		t.Fatalf("expected identical fingerprints, got %q and %q", firstFingerprint, secondFingerprint)
+	}
+}
+
+func TestCacheFingerprintPreservesWhitespaceAndCacheMetadata(t *testing.T) {
+	t.Parallel()
+
+	compact := mustPromptSegments(t, "policy line")
+	whitespaceDistinct := mustPromptSegments(t, "policy  line")
+	if got, wantDifferent := cacheFingerprint(DefaultModel, compact.systemMessage, compact.cacheablePrefix), cacheFingerprint(DefaultModel, whitespaceDistinct.systemMessage, whitespaceDistinct.cacheablePrefix); got == wantDifferent {
+		t.Fatalf("whitespace-distinct system instructions shared fingerprint %q", got)
+	}
+
+	withCacheFlag := compact
+	withCacheFlag.cacheablePrefix = []llm.ChatCompletionMessage{{Role: llm.RoleUser, Content: "prefix", Cacheable: true}}
+	withoutCacheFlag := compact
+	withoutCacheFlag.cacheablePrefix = []llm.ChatCompletionMessage{{Role: llm.RoleUser, Content: "prefix"}}
+	if got, wantDifferent := cacheFingerprint(DefaultModel, withCacheFlag.systemMessage, withCacheFlag.cacheablePrefix), cacheFingerprint(DefaultModel, withoutCacheFlag.systemMessage, withoutCacheFlag.cacheablePrefix); got == wantDifferent {
+		t.Fatalf("cache metadata variants shared fingerprint %q", got)
+	}
+}
+
+func TestLoadOrCreateCacheDoesNotReuseWhitespaceDistinctRemoteCache(t *testing.T) {
+	t.Parallel()
+
+	first := mustPromptSegments(t, "policy line")
+	second := mustPromptSegments(t, "policy  line")
+	firstFingerprint := cacheFingerprint(DefaultModel, first.systemMessage, first.cacheablePrefix)
+	created := 0
+	api := &API{
+		model:  DefaultModel,
+		logger: log.New().WithField("test", "gemini"),
+		listCaches: listedCaches(&genai.CachedContent{
+			Name:        testExistingCacheName,
+			DisplayName: cacheDisplayPrefix + firstFingerprint,
+			ExpireTime:  time.Now().Add(time.Hour),
+		}),
+		createCache: func(_ context.Context, _ string, config *genai.CreateCachedContentConfig) (*genai.CachedContent, error) {
+			created++
+			return &genai.CachedContent{Name: "cachedContents/new", DisplayName: config.DisplayName}, nil
+		},
+	}
+
+	cache, err := api.loadOrCreateCache(t.Context(), second)
+	if err != nil {
+		t.Fatalf("loadOrCreateCache returned error: %v", err)
+	}
+	if created != 1 || cache.Name != "cachedContents/new" {
+		t.Fatalf("whitespace-distinct instruction reused remote cache: created=%d cache=%#v", created, cache)
 	}
 }
 
@@ -133,7 +360,7 @@ func TestLoadOrCreateCacheReusesMatchingDisplayName(t *testing.T) {
 		t.Fatalf("splitPromptSegments returned error: %v", err)
 	}
 
-	fingerprint := cacheFingerprint(DefaultModel, segments.systemInstruction, segments.cacheablePrefix)
+	fingerprint := cacheFingerprint(DefaultModel, segments.systemMessage, segments.cacheablePrefix)
 	createCalls := 0
 	api := &API{
 		model:  DefaultModel,
@@ -228,7 +455,7 @@ func TestLoadOrCreateCacheUsesLocalHandleAfterFirstLookup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("splitPromptSegments returned error: %v", err)
 	}
-	fingerprint := cacheFingerprint(DefaultModel, segments.systemInstruction, segments.cacheablePrefix)
+	fingerprint := cacheFingerprint(DefaultModel, segments.systemMessage, segments.cacheablePrefix)
 	listCalls := 0
 	api := &API{
 		model:  DefaultModel,
@@ -439,7 +666,7 @@ func TestChatCompletionFallsBackWhenCachedContentCannotBeUsed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("splitPromptSegments returned error: %v", err)
 	}
-	fingerprint := cacheFingerprint(DefaultModel, segments.systemInstruction, segments.cacheablePrefix)
+	fingerprint := cacheFingerprint(DefaultModel, segments.systemMessage, segments.cacheablePrefix)
 
 	callCount := 0
 	api := &API{
@@ -494,7 +721,7 @@ func TestChatCompletionRetriesGenericInvalidArgumentOnlyAfterCachedRequest(t *te
 	if err != nil {
 		t.Fatalf("splitPromptSegments returned error: %v", err)
 	}
-	fingerprint := cacheFingerprint(DefaultModel, segments.systemInstruction, segments.cacheablePrefix)
+	fingerprint := cacheFingerprint(DefaultModel, segments.systemMessage, segments.cacheablePrefix)
 
 	callCount := 0
 	api := &API{
@@ -572,7 +799,7 @@ func TestChatCompletionFallsBackWhenCachedResponseIsEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("splitPromptSegments returned error: %v", err)
 	}
-	fingerprint := cacheFingerprint(DefaultModel, segments.systemInstruction, segments.cacheablePrefix)
+	fingerprint := cacheFingerprint(DefaultModel, segments.systemMessage, segments.cacheablePrefix)
 
 	callCount := 0
 	api := &API{
@@ -627,7 +854,7 @@ func TestChatCompletionRejectsRepeatedEmptyResponseWithSafeDiagnostics(t *testin
 	if err != nil {
 		t.Fatalf("splitPromptSegments returned error: %v", err)
 	}
-	fingerprint := cacheFingerprint(DefaultModel, segments.systemInstruction, segments.cacheablePrefix)
+	fingerprint := cacheFingerprint(DefaultModel, segments.systemMessage, segments.cacheablePrefix)
 
 	callCount := 0
 	api := &API{
@@ -656,11 +883,34 @@ func TestChatCompletionRejectsRepeatedEmptyResponseWithSafeDiagnostics(t *testin
 	if callCount != 2 {
 		t.Fatalf("GenerateContent calls = %d, want 2", callCount)
 	}
-	if !strings.Contains(err.Error(), "returned no text") || !strings.Contains(err.Error(), string(genai.FinishReasonMaxTokens)) {
-		t.Fatalf("unexpected empty response error: %v", err)
+	if got := llm.FailureKindOf(err); got != llm.FailureMalformedOutput {
+		t.Fatalf("empty response failure kind = %q, want %q", got, llm.FailureMalformedOutput)
 	}
 	if strings.Contains(err.Error(), classifiedPayload) {
 		t.Fatalf("diagnostic error leaked classified message: %v", err)
+	}
+}
+
+func TestChatCompletionClassifiesPolicyBlockedResponseWithoutContent(t *testing.T) {
+	t.Parallel()
+	const providerSecret = "provider-policy-secret"
+
+	api := &API{
+		model:  DefaultModel,
+		logger: log.New().WithField("test", "gemini"),
+		generateContent: func(context.Context, string, []*genai.Content, *genai.GenerateContentConfig) (*genai.GenerateContentResponse, error) {
+			return &genai.GenerateContentResponse{PromptFeedback: &genai.GenerateContentResponsePromptFeedback{
+				BlockReason:        genai.BlockedReasonSafety,
+				BlockReasonMessage: providerSecret,
+			}}, nil
+		},
+	}
+	_, err := api.ChatCompletion(t.Context(), []llm.ChatCompletionMessage{{Role: llm.RoleUser, Content: testCandidate}})
+	if got := llm.FailureKindOf(err); got != llm.FailurePolicyBlocked {
+		t.Fatalf("policy failure kind = %q, want %q", got, llm.FailurePolicyBlocked)
+	}
+	if strings.Contains(err.Error(), providerSecret) {
+		t.Fatalf("policy failure leaked provider content: %v", err)
 	}
 }
 

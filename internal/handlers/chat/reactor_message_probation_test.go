@@ -122,8 +122,8 @@ func TestMessageProbationNilErrorAndPersistenceFailuresCannotGraduate(t *testing
 	now = now.Add(3 * time.Hour)
 	detector.err = errors.New("classifier unavailable")
 	second := &api.Message{MessageID: 2, Chat: *chat, From: user, Text: "classification error"}
-	if err := reactor.handleMessage(t.Context(), second, chat, user, settings); err == nil {
-		t.Fatal("expected classifier error")
+	if err := reactor.handleMessage(t.Context(), second, chat, user, settings); err != nil {
+		t.Fatalf("classification error did not fail open: %v", err)
 	}
 	probation, err := store.MessageProbation(t.Context(), chat.ID, user.ID)
 	if err != nil || probation == nil || probation.GraduatedAt.Valid {

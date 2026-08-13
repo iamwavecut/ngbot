@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	api "github.com/OvyFlash/telegram-bot-api"
+	"github.com/iamwavecut/ngbot/internal/adapters/llm"
 	botservice "github.com/iamwavecut/ngbot/internal/bot"
 	"github.com/iamwavecut/ngbot/internal/config"
 	"github.com/iamwavecut/ngbot/internal/db"
@@ -251,6 +253,65 @@ func TestCheckMessageForSpamDoesNotMirrorRawContent(t *testing.T) {
 	}
 }
 
+func TestNormalMessageClassificationTimeoutFailsOpen(t *testing.T) {
+	t.Parallel()
+
+	botAPI := newTestBotAPI(t, func(method string, _ *http.Request) any {
+		if method != testTelegramMethodGetChatMember {
+			t.Fatalf("unexpected bot method: %s", method)
+		}
+		return testChatMemberResponse(telegramMemberStatus, false, false, false)
+	})
+	store := &testReactorStore{}
+	reactor := &Reactor{
+		s:            &testBotService{botAPI: botAPI},
+		bot:          botAPI,
+		store:        store,
+		spamDetector: &testSpamDetector{err: context.DeadlineExceeded},
+		banService:   &testBanService{},
+		lastResults:  make(map[messageResultKey]*MessageProcessingResult),
+	}
+	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
+	user := &api.User{ID: 200, FirstName: testFirstNameUser}
+	message := &api.Message{MessageID: 302, Chat: *chat, From: user, Text: "normal-message-secret"}
+
+	if err := reactor.handleMessage(t.Context(), message, chat, user, &db.Settings{LLMFirstMessageEnabled: true}); err != nil {
+		t.Fatalf("classification timeout did not fail open: %v", err)
+	}
+	result := reactor.GetLastProcessingResult(chat.ID, message.MessageID)
+	if result == nil || !result.Skipped || result.SkipReason != messageSkipReasonLLMUnavailable {
+		t.Fatalf("unexpected fail-open result: %#v", result)
+	}
+}
+
+func TestClassificationFailureLogFieldsAreStructuredAndContentFree(t *testing.T) {
+	t.Parallel()
+	const secret = "provider-candidate-secret"
+
+	tests := []struct {
+		name    string
+		err     error
+		outcome llm.FailureKind
+	}{
+		{name: "timeout", err: context.DeadlineExceeded, outcome: llm.FailureTimeout},
+		{name: "malformed", err: llm.NewFailure(llm.FailureMalformedOutput, errors.New(secret)), outcome: llm.FailureMalformedOutput},
+		{name: "policy", err: llm.NewFailure(llm.FailurePolicyBlocked, errors.New(secret)), outcome: llm.FailurePolicyBlocked},
+		{name: "provider", err: errors.New(secret), outcome: llm.FailureProvider},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			fields := classificationFailureLogFields(tt.err, "message", "allow_message")
+			if fields["llm_outcome"] != string(tt.outcome) || fields["classification_path"] != "message" || fields["fallback"] != "allow_message" {
+				t.Fatalf("classification failure fields = %#v", fields)
+			}
+			if strings.Contains(fmt.Sprint(fields), secret) {
+				t.Fatalf("classification fields leaked provider content: %#v", fields)
+			}
+		})
+	}
+}
+
 func (d *testSpamDetector) IsSpam(_ context.Context, message string, _ []string) (*bool, error) {
 	d.calls++
 	d.messages = append(d.messages, message)
@@ -262,6 +323,9 @@ func (d *testSpamDetector) IsReportedSpam(_ context.Context, message string, _ [
 	d.reportedMessages = append(d.reportedMessages, message)
 	if d.reportedResult != nil {
 		return d.reportedResult, nil
+	}
+	if d.err != nil {
+		return nil, d.err
 	}
 	return d.result, nil
 }

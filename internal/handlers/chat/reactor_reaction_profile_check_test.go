@@ -2,14 +2,36 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
 
 	api "github.com/OvyFlash/telegram-bot-api"
+	"github.com/iamwavecut/ngbot/internal/adapters/llm"
 	"github.com/iamwavecut/ngbot/internal/db"
 	moderation "github.com/iamwavecut/ngbot/internal/handlers/moderation"
 )
+
+func TestReactionProfilePolicyFailureFailsOpen(t *testing.T) {
+	t.Parallel()
+
+	actorChat := &api.Chat{ID: -100999, Type: testChatTypeChannel, Title: "policy-secret-profile"}
+	botAPI := newTestBotAPI(t, func(method string, _ *http.Request) any {
+		if method != testTelegramMethodGetChat {
+			t.Fatalf("unexpected bot method: %s", method)
+		}
+		return map[string]any{"id": actorChat.ID, testJSONType: testChatTypeChannel, testJSONTitle: actorChat.Title}
+	})
+	reactor := &Reactor{
+		bot:          botAPI,
+		spamDetector: &testSpamDetector{err: llm.NewFailure(llm.FailurePolicyBlocked, errors.New("provider-policy-secret"))},
+	}
+	chat := &api.Chat{ID: -100123, Type: testChatTypeSupergroup}
+	if err := reactor.moderateReactionActorChat(t.Context(), chat, actorChat, reactor.getLogEntry()); err != nil {
+		t.Fatalf("reaction profile policy failure did not fail open: %v", err)
+	}
+}
 
 func TestHandleMessageReactionModeratesUnknownUserProfileSpam(t *testing.T) {
 	t.Parallel()
