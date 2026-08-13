@@ -63,6 +63,7 @@ grep -q 'reverse_proxy 127.0.0.1:{$NGBOT_WEBAPP_HOST_PORT:18080}' deploy/caddy/n
 
 test -x scripts/release.sh
 sh -n scripts/release.sh
+grep -Fq 'docker compose run --rm --no-deps -e SQLITE_TMPDIR=/data ngbot --database-maintenance' scripts/release.sh
 if scripts/release.sh >/dev/null 2>&1; then
 	echo "release verifier must reject a missing action" >&2
 	exit 1

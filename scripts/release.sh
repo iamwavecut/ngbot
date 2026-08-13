@@ -157,7 +157,7 @@ release() {
 	if [ -f "$database" ]; then
 		snapshot_database "$database" "$NGBOT_BACKUP_DIR/bot-$release_stamp-offline.db"
 	fi
-	docker compose run --rm --no-deps ngbot --database-maintenance
+	docker compose run --rm --no-deps -e SQLITE_TMPDIR=/data ngbot --database-maintenance
 	docker compose up -d --no-build ngbot
 	caddy reload --config "$NGBOT_CADDYFILE"
 	verify_runtime
