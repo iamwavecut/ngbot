@@ -162,6 +162,10 @@ func (s *testGatekeeperStore) CompleteLeasedChallengeWithoutPrivilegesVersion(co
 	return false, nil
 }
 
+func (s *testGatekeeperStore) ArchiveLeasedNoticeFailureVersion(context.Context, string, string, int64, string, string, time.Time, string, time.Time) (bool, error) {
+	return false, nil
+}
+
 func (s *testGatekeeperStore) DeleteLeasedChallengeActionVersion(context.Context, string, string, int64, string, string, time.Time) (bool, error) {
 	return false, nil
 }

@@ -269,14 +269,22 @@ func (g *Gatekeeper) advanceChallengePhase(ctx context.Context, challenge *db.Ch
 }
 
 func (g *Gatekeeper) reconcileAmbiguousChallengeEffect(ctx context.Context, challenge *db.Challenge, owner string, artifactMessageID int, cause error) error {
-	reconciled, err := g.store.ReconcileLeasedChallengeVersion(ctx, challenge.ChallengeID, owner, challenge.ActionVersion, challenge.Status, artifactMessageID, cause.Error(), time.Now())
+	safeCause := safeGatekeeperError(cause)
+	reconciled, err := g.store.ReconcileLeasedChallengeVersion(ctx, challenge.ChallengeID, owner, challenge.ActionVersion, challenge.Status, artifactMessageID, db.SafeGatekeeperErrorCode(cause), time.Now())
 	if err != nil {
-		return stderrors.Join(cause, err)
+		return stderrors.Join(safeCause, err)
 	}
 	if !reconciled {
-		return stderrors.Join(cause, errors.New("ambiguous challenge effect retained for lease-expiry reconciliation"))
+		return stderrors.Join(safeCause, errors.New(db.GatekeeperErrorStateConflict))
 	}
-	return cause
+	return safeCause
+}
+
+func safeGatekeeperError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return errors.New(db.SafeGatekeeperErrorCode(err))
 }
 
 func (g *Gatekeeper) processChallengeActionWithStats(ctx context.Context, challenge *db.Challenge, recordStats bool) error {
@@ -316,7 +324,7 @@ func (g *Gatekeeper) processChallengeActionWithStats(ctx context.Context, challe
 		} else {
 			available, err := g.banChecker.ModerationAvailable(ctx, challenge.ChatID)
 			if err != nil {
-				entry.WithError(err).Warn("failed to refresh moderation rights before challenge action")
+				entry.WithField(logFieldErrorCode, db.SafeGatekeeperErrorCode(err)).Warn("failed to refresh moderation rights before challenge action")
 			} else {
 				moderationAvailable = available
 			}
@@ -598,7 +606,7 @@ func (g *Gatekeeper) processChallengeActionWithStats(ctx context.Context, challe
 		return nil
 	}
 	if challenge.Status == db.ChallengeStatusWebAppFallbackPending && isTelegramConversationUnavailable(actionErr) {
-		entry.WithField(logFieldError, actionErr.Error()).Info("DM fallback is permanently unavailable; declining join request")
+		entry.WithField(logFieldErrorCode, db.SafeGatekeeperErrorCode(actionErr)).Info("DM fallback is permanently unavailable; declining join request")
 		changed, err := g.store.CompleteLeasedChallengeActionVersion(ctx, challenge.ChallengeID, owner, challenge.ActionVersion, challenge.Status, challenge.ActionPhase, db.ChallengeStatusRejectPending, time.Time{}, time.Now())
 		if err != nil || !changed {
 			return err
@@ -613,7 +621,7 @@ func (g *Gatekeeper) processChallengeActionWithStats(ctx context.Context, challe
 		passed := challenge.Status == db.ChallengeStatusApproveQueryPending ||
 			challenge.Status == db.ChallengeStatusApproveMemberPending ||
 			challenge.Status == db.ChallengeStatusUnrestrictPending
-		finishErr := g.finishChallengeWithoutPrivileges(ctx, challenge, owner, passed, actionErr.Error(), recordStats)
+		finishErr := g.finishChallengeWithoutPrivileges(ctx, challenge, owner, passed, db.SafeGatekeeperErrorCode(actionErr), recordStats)
 		if finishErr == nil {
 			return nil
 		}
@@ -630,25 +638,25 @@ func (g *Gatekeeper) retryOrReconcileChallengeAction(
 	entry *log.Entry,
 ) error {
 	if challenge.AttemptCount+1 >= maxChallengeActionAttempts {
-		reconciled, reconcileErr := g.store.ReconcileLeasedChallengeVersion(ctx, challenge.ChallengeID, owner, challenge.ActionVersion, challenge.Status, 0, actionErr.Error(), time.Now())
+		reconciled, reconcileErr := g.store.ReconcileLeasedChallengeVersion(ctx, challenge.ChallengeID, owner, challenge.ActionVersion, challenge.Status, 0, db.SafeGatekeeperErrorCode(actionErr), time.Now())
 		if reconcileErr != nil {
-			return stderrors.Join(actionErr, reconcileErr)
+			return stderrors.Join(safeGatekeeperError(actionErr), reconcileErr)
 		}
 		if reconciled {
-			entry.WithFields(log.Fields{logFieldError: actionErr.Error(), "attempt": challenge.AttemptCount + 1}).Error("gatekeeper action moved to operator reconciliation")
+			entry.WithFields(log.Fields{logFieldErrorCode: db.SafeGatekeeperErrorCode(actionErr), "attempt": challenge.AttemptCount + 1}).Error("gatekeeper action moved to operator reconciliation")
 		}
-		return actionErr
+		return safeGatekeeperError(actionErr)
 	}
 	nextAttemptAt := time.Now().Add(challengeRetryDelay(challenge.AttemptCount))
-	scheduled, scheduleErr := g.store.ScheduleLeasedChallengeRetryVersion(ctx, challenge.ChallengeID, owner, challenge.ActionVersion, challenge.Status, challenge.ActionPhase, nextAttemptAt, actionErr.Error(), time.Now())
+	scheduled, scheduleErr := g.store.ScheduleLeasedChallengeRetryVersion(ctx, challenge.ChallengeID, owner, challenge.ActionVersion, challenge.Status, challenge.ActionPhase, nextAttemptAt, db.SafeGatekeeperErrorCode(actionErr), time.Now())
 	if scheduleErr != nil {
-		return stderrors.Join(actionErr, scheduleErr)
+		return stderrors.Join(safeGatekeeperError(actionErr), scheduleErr)
 	}
 	if scheduled {
-		fields := log.Fields{logFieldError: actionErr.Error(), "attempt": challenge.AttemptCount + 1}
+		fields := log.Fields{logFieldErrorCode: db.SafeGatekeeperErrorCode(actionErr), "attempt": challenge.AttemptCount + 1}
 		entry.WithFields(fields).WithField("retry_in", time.Until(nextAttemptAt)).Warn("gatekeeper action failed; retry scheduled")
 	}
-	return actionErr
+	return safeGatekeeperError(actionErr)
 }
 
 func (g *Gatekeeper) finishPassedChallengeWithoutEnforcement(ctx context.Context, challenge *db.Challenge, recordStats bool) error {
@@ -699,9 +707,26 @@ func (g *Gatekeeper) finishChallengeWithoutPrivileges(ctx context.Context, chall
 	if err != nil {
 		g.getLogEntry().WithFields(log.Fields{
 			challengeIDLogField: challenge.ChallengeID,
-			logFieldError:       err.Error(),
+			logFieldErrorCode:   db.SafeGatekeeperErrorCode(err),
 		}).Error("failed to send no-rights challenge notice")
-		return g.reconcileAmbiguousChallengeEffect(ctx, challenge, owner, 0, err)
+		expiresAt := time.Now().Add(noPrivilegesNoticeRetention)
+		archiveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+		archived, archiveErr := g.store.ArchiveLeasedNoticeFailureVersion(
+			archiveCtx,
+			challenge.ChallengeID,
+			owner,
+			challenge.ActionVersion,
+			challenge.Status,
+			challenge.ActionPhase,
+			expiresAt,
+			db.SafeGatekeeperErrorCode(err),
+			time.Now(),
+		)
+		cancel()
+		if archiveErr != nil || !archived {
+			return stderrors.Join(safeGatekeeperError(err), archiveErr)
+		}
+		return safeGatekeeperError(err)
 	}
 	if err := g.advanceChallengePhase(ctx, challenge, owner, db.ChallengePhaseNoticeMessageDone); err != nil {
 		return g.reconcileAmbiguousChallengeEffect(ctx, challenge, owner, sent.MessageID, err)
@@ -759,7 +784,7 @@ func (g *Gatekeeper) deleteChallengeMessages(ctx context.Context, challenge *db.
 	entry := g.getLogEntry().WithField(challengeIDLogField, challenge.ChallengeID)
 	if challenge.JoinMessageID != 0 {
 		if err := bot.DeleteChatMessage(ctx, g.bot, challenge.ChatID, challenge.JoinMessageID); err != nil && !isTelegramMessageAlreadyDeleted(err) {
-			entry.WithField(logFieldError, err.Error()).Warn("failed to delete join message")
+			entry.WithField(logFieldErrorCode, db.SafeGatekeeperErrorCode(err)).Warn("failed to delete join message")
 		}
 	}
 }
@@ -768,7 +793,7 @@ func (g *Gatekeeper) deleteChallengePrompt(ctx context.Context, challenge *db.Ch
 	entry := g.getLogEntry().WithField(challengeIDLogField, challenge.ChallengeID)
 	if challenge.ChallengeMessageID != 0 {
 		if err := bot.DeleteChatMessage(ctx, g.bot, challenge.CommChatID, challenge.ChallengeMessageID); err != nil && !isTelegramMessageAlreadyDeleted(err) {
-			entry.WithField(logFieldError, err.Error()).Warn("failed to delete challenge message")
+			entry.WithField(logFieldErrorCode, db.SafeGatekeeperErrorCode(err)).Warn("failed to delete challenge message")
 		}
 	}
 }

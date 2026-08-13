@@ -43,7 +43,8 @@ func TestGatekeeperReconciliationCLIListsRedactedAndResolvesWithCAS(t *testing.T
 	if err != nil || !changed {
 		t.Fatalf("begin: %d %t %v", version, changed, err)
 	}
-	if reconciled, err := client.ReconcileLeasedChallengeVersion(t.Context(), challenge.ChallengeID, "owner", version, challenge.Status, 0, "ambiguous", now); err != nil || !reconciled {
+	errorSecret := "https://api.telegram.org/bot123456:SECRET/sendMessage body=query-secret web-secret"
+	if reconciled, err := client.ReconcileLeasedChallengeVersion(t.Context(), challenge.ChallengeID, "owner", version, challenge.Status, 0, errorSecret, now); err != nil || !reconciled {
 		t.Fatalf("reconcile: %t %v", reconciled, err)
 	}
 	if err := client.Close(); err != nil {
@@ -55,7 +56,7 @@ func TestGatekeeperReconciliationCLIListsRedactedAndResolvesWithCAS(t *testing.T
 	if err := runGatekeeperReconciliation(t.Context(), cfg, "list", &output); err != nil {
 		t.Fatal(err)
 	}
-	if bytes.Contains(output.Bytes(), []byte("query-secret")) || bytes.Contains(output.Bytes(), []byte("web-secret")) {
+	if bytes.Contains(output.Bytes(), []byte("query-secret")) || bytes.Contains(output.Bytes(), []byte("web-secret")) || bytes.Contains(output.Bytes(), []byte("SECRET")) || bytes.Contains(output.Bytes(), []byte("api.telegram.org")) {
 		t.Fatalf("CLI leaked tokens: %s", output.String())
 	}
 	var record db.ChallengeReconciliation
@@ -68,6 +69,18 @@ func TestGatekeeperReconciliationCLIListsRedactedAndResolvesWithCAS(t *testing.T
 	}
 	if err := runGatekeeperReconciliation(t.Context(), cfg, command, &bytes.Buffer{}); err == nil {
 		t.Fatal("stale resolve CAS succeeded")
+	}
+}
+
+func TestGatekeeperReconciliationCLIRequiresExclusiveProcessLock(t *testing.T) {
+	dataDir := t.TempDir()
+	lock, err := sqlite.AcquireProcessLock(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = lock.Close() }()
+	if err := runGatekeeperReconciliation(t.Context(), &config.Config{DotPath: dataDir}, "list", &bytes.Buffer{}); err == nil {
+		t.Fatal("reconciliation CLI opened database while service lock was held")
 	}
 }
 

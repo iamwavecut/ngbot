@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/json"
 	stderrors "errors"
 	"fmt"
@@ -761,27 +762,39 @@ func (g *Gatekeeper) startJoinRequestWebAppChallenge(ctx context.Context, reques
 		UserLanguage:       strings.TrimSpace(request.From.LanguageCode),
 		CreatedAt:          now,
 		ExpiresAt:          now.Add(settings.GetChallengeTimeout()),
+		NextAttemptAt:      sql.NullTime{Time: now, Valid: true},
 	}
 	if _, err := g.store.CreateChallenge(ctx, challenge); err != nil {
 		entry.WithField(logFieldError, err.Error()).Error("failed to create web app challenge")
 		return err
 	}
-	if err := handlersbase.IncrementDailyStat(ctx, g.stats, request.Chat.ID, handlersbase.StatChallengeStarted); err != nil {
-		entry.WithField(logFieldError, err.Error()).Warn("failed to increment started challenge stat")
+	owner := uuid.New()
+	leased, claimed, err := g.store.ClaimChallengeAction(ctx, challenge.ChallengeID, owner, now, now.Add(challengeActionLeaseDuration))
+	if err != nil || !claimed {
+		return stderrors.Join(err, errors.New("web app response boundary lease unavailable"))
+	}
+	challenge = leased
+	if err := g.beginChallengeEffect(ctx, challenge, owner, db.ChallengePhaseWebAppResponseStarted); err != nil {
+		return err
 	}
 	responseCtx, cancel := context.WithTimeout(ctx, joinQueryResponseTimeout)
-	defer cancel()
-	if err := bot.SendJoinRequestWebApp(responseCtx, g.bot, request.QueryID, webAppURL); err != nil {
-		claimed, claimErr := g.store.BeginDMFallback(ctx, challenge.ChallengeID)
-		if claimErr != nil {
-			return stderrors.Join(fmt.Errorf("send web app challenge: %w", err), claimErr)
-		}
-		if claimed {
-			challenge.Status = db.ChallengeStatusWebAppFallbackPending
-			fallbackErr := g.processChallengeAction(ctx, challenge)
-			return stderrors.Join(fmt.Errorf("send web app challenge: %w", err), fallbackErr)
-		}
-		return fmt.Errorf("send web app challenge: %w", err)
+	err = bot.SendJoinRequestWebApp(responseCtx, g.bot, request.QueryID, webAppURL)
+	cancel()
+	if err != nil {
+		reconcileCtx, reconcileCancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+		reconcileErr := g.reconcileAmbiguousChallengeEffect(reconcileCtx, challenge, owner, 0, err)
+		reconcileCancel()
+		return safeGatekeeperError(reconcileErr)
+	}
+	if err := g.advanceChallengePhase(ctx, challenge, owner, db.ChallengePhaseWebAppResponseDone); err != nil {
+		return g.reconcileAmbiguousChallengeEffect(ctx, challenge, owner, 0, err)
+	}
+	completed, err := g.store.CompleteLeasedChallengeActionVersion(ctx, challenge.ChallengeID, owner, challenge.ActionVersion, challenge.Status, challenge.ActionPhase, db.ChallengeStatusBanCheckPending, time.Time{}, time.Now())
+	if err != nil || !completed {
+		return stderrors.Join(err, errors.New("web app response completion fence lost"))
+	}
+	if err := handlersbase.IncrementDailyStat(ctx, g.stats, request.Chat.ID, handlersbase.StatChallengeStarted); err != nil {
+		entry.WithField(logFieldErrorCode, db.SafeGatekeeperErrorCode(err)).Warn("failed to increment started challenge stat")
 	}
 	return nil
 }

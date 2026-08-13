@@ -51,7 +51,7 @@ func (g *Gatekeeper) processNewChatMembers(ctx context.Context) error {
 		}
 		banned, err := g.banChecker.CheckBan(ctx, joiner.UserID)
 		if err != nil {
-			entry.WithField(logFieldError, err.Error()).Error("failed to check ban")
+			entry.WithField(logFieldErrorCode, db.SafeGatekeeperErrorCode(err)).Error("failed to check ban")
 			continue
 		}
 		if banned {

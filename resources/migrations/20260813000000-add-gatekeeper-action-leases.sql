@@ -41,7 +41,7 @@ CREATE TABLE gatekeeper_challenge_reconciliations (
 	expires_at TIMESTAMP NOT NULL,
 	effect_started_at TIMESTAMP,
 	reconciliation_due_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-	retention_until TIMESTAMP NOT NULL DEFAULT (datetime('now', '+30 days')),
+	retention_until TIMESTAMP,
 	resolution_status TEXT NOT NULL DEFAULT 'pending',
 	resolution TEXT NOT NULL DEFAULT '',
 	resolved_at TIMESTAMP,
@@ -63,7 +63,13 @@ INSERT INTO gatekeeper_challenge_reconciliations (
 SELECT challenge_id, comm_chat_id, user_id, chat_id, status, 'ready',
 	challenge_message_id, join_message_id, notice_message_id,
 	join_request_query_id <> '', web_app_token <> '', user_restricted,
-	attempt_count, last_error, created_at, expires_at
+	attempt_count,
+	CASE
+		WHEN upper(last_error) LIKE '%QUERY_ID_INVALID%' OR upper(last_error) LIKE '%QUERY IS TOO OLD%' THEN 'query_expired'
+		WHEN upper(last_error) LIKE '%BOT CAN''T INITIATE CONVERSATION%' OR upper(last_error) LIKE '%BOT_CANT_INITIATE_CONVERSATION%' OR upper(last_error) LIKE '%BOT WAS BLOCKED BY THE USER%' OR upper(last_error) LIKE '%USER IS DEACTIVATED%' THEN 'conversation_unavailable'
+		ELSE 'dependency_unavailable'
+	END,
+	created_at, expires_at
 FROM gatekeeper_challenges
 WHERE next_attempt_at IS NULL
 	AND status IN ('restrict_pending', 'web_app_fallback_pending', 'approve_query_pending', 'approve_member_pending', 'unrestrict_pending', 'reject_pending')
@@ -81,21 +87,34 @@ WHERE challenge_id IN (SELECT challenge_id FROM gatekeeper_challenge_reconciliat
 
 UPDATE gatekeeper_challenges
 SET next_attempt_at = CURRENT_TIMESTAMP,
-	action_phase = 'ready'
+	action_phase = 'ready',
+	last_error = CASE
+		WHEN last_error = '' THEN ''
+		WHEN upper(last_error) LIKE '%QUERY_ID_INVALID%' OR upper(last_error) LIKE '%QUERY IS TOO OLD%' THEN 'query_expired'
+		WHEN upper(last_error) LIKE '%BOT CAN''T INITIATE CONVERSATION%' OR upper(last_error) LIKE '%BOT_CANT_INITIATE_CONVERSATION%' OR upper(last_error) LIKE '%BOT WAS BLOCKED BY THE USER%' OR upper(last_error) LIKE '%USER IS DEACTIVATED%' THEN 'conversation_unavailable'
+		ELSE 'dependency_unavailable'
+	END
 WHERE next_attempt_at IS NULL
 	AND status IN ('restrict_pending', 'web_app_fallback_pending', 'approve_query_pending', 'approve_member_pending', 'unrestrict_pending', 'reject_pending');
 
+UPDATE gatekeeper_challenges
+SET last_error = CASE
+	WHEN upper(last_error) LIKE '%QUERY_ID_INVALID%' OR upper(last_error) LIKE '%QUERY IS TOO OLD%' THEN 'query_expired'
+	WHEN upper(last_error) LIKE '%CHAT_ADMIN_REQUIRED%' OR upper(last_error) LIKE '%NOT ENOUGH RIGHTS%' OR upper(last_error) LIKE '%NO PRIVILEGES%' OR upper(last_error) LIKE '%BOT IS NOT AN ADMINISTRATOR%' THEN 'permission_denied'
+	WHEN upper(last_error) LIKE '%BOT CAN''T INITIATE CONVERSATION%' OR upper(last_error) LIKE '%BOT_CANT_INITIATE_CONVERSATION%' OR upper(last_error) LIKE '%BOT WAS BLOCKED BY THE USER%' OR upper(last_error) LIKE '%USER IS DEACTIVATED%' THEN 'conversation_unavailable'
+	ELSE 'dependency_unavailable'
+END
+WHERE last_error <> '';
+
 -- +migrate Down
-INSERT OR IGNORE INTO gatekeeper_challenges (
-	challenge_id, comm_chat_id, user_id, chat_id, status,
-	join_message_id, challenge_message_id, notice_message_id,
-	created_at, expires_at, next_attempt_at, attempt_count, last_error, user_restricted
-)
-SELECT challenge_id, comm_chat_id, user_id, chat_id, action_status,
-	join_message_id, challenge_message_id, notice_message_id,
-	challenge_created_at, expires_at, NULL, attempt_count, last_error, user_restricted
-FROM gatekeeper_challenge_reconciliations
-WHERE resolution_status = 'pending';
+CREATE TEMP TABLE gatekeeper_reconciliation_rollback_guard (
+	pending_count INTEGER NOT NULL CHECK (pending_count = 0)
+);
+
+INSERT INTO gatekeeper_reconciliation_rollback_guard
+SELECT COUNT(*) FROM gatekeeper_challenge_reconciliations;
+
+DROP TABLE gatekeeper_reconciliation_rollback_guard;
 
 DROP INDEX IF EXISTS idx_gatekeeper_challenge_reconciliations_due;
 DROP INDEX IF EXISTS idx_gatekeeper_challenge_reconciliations_challenge;

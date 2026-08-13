@@ -310,7 +310,7 @@ func TestChallengeRetryExhaustionMovesToReconciliationAndAllowsRejoin(t *testing
 	if err != nil || len(reconciliations) != 1 {
 		t.Fatalf("operator reconciliation record missing: records=%#v err=%v", reconciliations, err)
 	}
-	if reconciliations[0].ChallengeID != challenge.ChallengeID || reconciliations[0].ActionStatus != db.ChallengeStatusRejectPending || reconciliations[0].LastError != "retries exhausted" {
+	if reconciliations[0].ChallengeID != challenge.ChallengeID || reconciliations[0].ActionStatus != db.ChallengeStatusRejectPending || reconciliations[0].LastError != db.GatekeeperErrorRetryExhausted {
 		t.Fatalf("unexpected reconciliation record: %#v", reconciliations[0])
 	}
 	replacement := &db.Challenge{
@@ -487,7 +487,7 @@ func TestReconciliationWorkflowRedactsTokensAndUsesCAS(t *testing.T) {
 		t.Fatalf("list reconciliations: records=%#v err=%v", records, err)
 	}
 	record := records[0]
-	if !record.JoinRequestQueryPresent || !record.WebAppTokenPresent || record.ChallengeMessageID != 44 || record.JoinMessageID != 45 || record.NoticeMessageID != 46 || record.ExpiresAt.IsZero() || record.RetentionUntil.IsZero() {
+	if !record.JoinRequestQueryPresent || !record.WebAppTokenPresent || record.ChallengeMessageID != 44 || record.JoinMessageID != 45 || record.NoticeMessageID != 46 || record.ExpiresAt.IsZero() || record.RetentionUntil.Valid {
 		t.Fatalf("incomplete reconciliation metadata: %#v", record)
 	}
 	if strings.Contains(fmt.Sprintf("%#v", record), "secret-query-token") || strings.Contains(fmt.Sprintf("%#v", record), "secret-web-token") {
@@ -501,6 +501,77 @@ func TestReconciliationWorkflowRedactsTokensAndUsesCAS(t *testing.T) {
 	}
 	if resolved, err := client.ResolveChallengeReconciliation(ctx, record.ID, record.Version, "stale", time.Now()); err != nil || resolved {
 		t.Fatalf("stale reconciliation CAS succeeded: resolved=%t err=%v", resolved, err)
+	}
+}
+
+func TestChallengeDurableErrorsAreContentFreeAndRetentionStartsAtResolution(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	client, err := NewSQLiteClient(ctx, t.TempDir(), "test.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	now := time.Now().Add(-60 * 24 * time.Hour)
+	secret := "https://api.telegram.org/bot123456:SECRET/sendMessage?token=web-secret body=query-secret"
+	challenge := &db.Challenge{CommChatID: 91, UserID: 92, ChatID: -93, Status: db.ChallengeStatusApproveQueryPending, CreatedAt: now, ExpiresAt: now.Add(time.Hour), NextAttemptAt: sql.NullTime{Time: now, Valid: true}}
+	if _, err := client.CreateChallenge(ctx, challenge); err != nil {
+		t.Fatal(err)
+	}
+	leased, claimed, err := client.ClaimChallengeAction(ctx, challenge.ChallengeID, "owner", time.Now(), time.Now().Add(time.Minute))
+	if err != nil || !claimed {
+		t.Fatalf("claim: challenge=%#v claimed=%t err=%v", leased, claimed, err)
+	}
+	if reconciled, err := client.ReconcileLeasedChallengeVersion(ctx, challenge.ChallengeID, "owner", leased.ActionVersion, challenge.Status, 0, secret, time.Now()); err != nil || !reconciled {
+		t.Fatalf("reconcile: %t %v", reconciled, err)
+	}
+	records, err := client.GetChallengeReconciliations(ctx)
+	if err != nil || len(records) != 1 {
+		t.Fatalf("records=%#v err=%v", records, err)
+	}
+	if strings.Contains(fmt.Sprintf("%#v", records[0]), "SECRET") || strings.Contains(records[0].LastError, "http") {
+		t.Fatalf("durable error leaked content: %#v", records[0])
+	}
+	if records[0].RetentionUntil.Valid {
+		t.Fatalf("unresolved record aged out: %#v", records[0])
+	}
+	resolvedAt := time.Now()
+	if resolved, err := client.ResolveChallengeReconciliation(ctx, records[0].ID, records[0].Version, "operator resolved", resolvedAt); err != nil || !resolved {
+		t.Fatalf("resolve: %t %v", resolved, err)
+	}
+	records, err = client.GetChallengeReconciliations(ctx)
+	if err != nil || !records[0].RetentionUntil.Valid || !records[0].RetentionUntil.Time.Equal(resolvedAt.Add(30*24*time.Hour)) {
+		t.Fatalf("retention did not start at resolution: %#v err=%v", records, err)
+	}
+	if count, err := client.CleanupResolvedChallengeReconciliations(ctx, resolvedAt.Add(29*24*time.Hour)); err != nil || count != 0 {
+		t.Fatalf("cleaned early: count=%d err=%v", count, err)
+	}
+	if count, err := client.CleanupResolvedChallengeReconciliations(ctx, resolvedAt.Add(31*24*time.Hour)); err != nil || count != 1 {
+		t.Fatalf("did not clean after retention: count=%d err=%v", count, err)
+	}
+}
+
+func TestBanCheckBoundaryCannotBeOverwritten(t *testing.T) {
+	t.Parallel()
+
+	client, err := NewSQLiteClient(t.Context(), t.TempDir(), "test.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	now := time.Now()
+	first := &db.Challenge{CommChatID: 11, UserID: 12, ChatID: -13, Status: db.ChallengeStatusBanCheckPending, JoinRequestQueryID: "first", CreatedAt: now, ExpiresAt: now.Add(time.Minute)}
+	if _, err := client.CreateChallenge(t.Context(), first); err != nil {
+		t.Fatal(err)
+	}
+	second := &db.Challenge{CommChatID: 11, UserID: 12, ChatID: -13, Status: db.ChallengeStatusBanCheckPending, JoinRequestQueryID: "second", CreatedAt: now, ExpiresAt: now.Add(time.Minute)}
+	if _, err := client.CreateChallenge(t.Context(), second); !errors.Is(err, ErrChallengeActionInProgress) {
+		t.Fatalf("duplicate boundary overwrite error=%v", err)
+	}
+	stored, err := client.GetChallengeByChatUser(t.Context(), first.ChatID, first.UserID)
+	if err != nil || stored == nil || stored.JoinRequestQueryID != "first" {
+		t.Fatalf("boundary overwritten: %#v err=%v", stored, err)
 	}
 }
 
@@ -687,7 +758,7 @@ func TestChallengeNoPrivilegesNoticeLifecycle(t *testing.T) {
 	if loaded == nil || loaded.Status != db.ChallengeStatusNoPrivilegesNotice || loaded.NoticeMessageID != 77 || loaded.UserRestricted || loaded.NextAttemptAt.Valid {
 		t.Fatalf("unexpected no-rights challenge state: %#v", loaded)
 	}
-	if !loaded.ExpiresAt.Equal(expiresAt) || loaded.LastError != "CHAT_ADMIN_REQUIRED" {
+	if !loaded.ExpiresAt.Equal(expiresAt) || loaded.LastError != db.GatekeeperErrorPermission {
 		t.Fatalf("unexpected no-rights challenge metadata: %#v", loaded)
 	}
 

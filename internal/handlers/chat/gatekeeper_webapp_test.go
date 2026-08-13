@@ -1104,12 +1104,8 @@ func TestStartJoinRequestWebAppChallengeFallsBackDurablyOnSendFailure(t *testing
 		t.Fatal("expected non-nil error from startJoinRequestWebAppChallenge when send fails")
 	}
 
-	if len(store.challenges) != 1 {
-		t.Fatalf("expected durable guarded challenge after send failure, got %d rows", len(store.challenges))
-	}
-	challenge := store.onlyChallenge(t)
-	if challenge.Status != db.ChallengeStatusBanCheckPending || challenge.JoinRequestQueryID != req.QueryID || challenge.WebAppToken == "" {
-		t.Fatalf("unexpected guarded state: %#v", challenge)
+	if len(store.challenges) != 0 {
+		t.Fatalf("ambiguous WebApp response remained active: %d rows", len(store.challenges))
 	}
 	if len(recorder.byMethod(testTelegramMethodJoinRequestQuery)) != 0 {
 		t.Fatal("join request query must remain durable until the CAPTCHA resolves")

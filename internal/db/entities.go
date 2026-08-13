@@ -122,7 +122,7 @@ type (
 		ExpiresAt               time.Time    `db:"expires_at"`
 		EffectStartedAt         sql.NullTime `db:"effect_started_at"`
 		ReconciliationDueAt     time.Time    `db:"reconciliation_due_at"`
-		RetentionUntil          time.Time    `db:"retention_until"`
+		RetentionUntil          sql.NullTime `db:"retention_until"`
 		ResolutionStatus        string       `db:"resolution_status"`
 		Resolution              string       `db:"resolution"`
 		ResolvedAt              sql.NullTime `db:"resolved_at"`
@@ -221,6 +221,10 @@ const (
 
 const (
 	ChallengePhaseReady                  = "ready"
+	ChallengePhaseQueueResponseStarted   = "queue_response_started"
+	ChallengePhaseQueueResponseDone      = "queue_response_done"
+	ChallengePhaseWebAppResponseStarted  = "webapp_response_started"
+	ChallengePhaseWebAppResponseDone     = "webapp_response_done"
 	ChallengePhaseRestrictStarted        = "restrict_started"
 	ChallengePhaseRestrictDone           = "restrict_done"
 	ChallengePhasePublicMessageStarted   = "public_message_started"

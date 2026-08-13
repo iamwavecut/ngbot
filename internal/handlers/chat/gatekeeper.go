@@ -121,6 +121,7 @@ type gatekeeperStore interface {
 	CompleteLeasedChallengeActivationVersion(ctx context.Context, challengeID, owner string, expectedVersion int64, expectedPhase string, restricted bool, messageID int, now time.Time) (bool, error)
 	MarkLeasedChallengeRestrictedVersion(ctx context.Context, challengeID, owner string, expectedVersion int64, expectedPhase string, now time.Time) (int64, bool, error)
 	CompleteLeasedChallengeWithoutPrivilegesVersion(ctx context.Context, challengeID, owner string, expectedVersion int64, expectedStatus, expectedPhase string, noticeMessageID int, expiresAt time.Time, lastError string, now time.Time) (bool, error)
+	ArchiveLeasedNoticeFailureVersion(ctx context.Context, challengeID, owner string, expectedVersion int64, expectedStatus, expectedPhase string, expiresAt time.Time, errorCode string, now time.Time) (bool, error)
 	DeleteLeasedChallengeActionVersion(ctx context.Context, challengeID, owner string, expectedVersion int64, expectedStatus, expectedPhase string, now time.Time) (bool, error)
 	ReconcileLeasedChallengeVersion(ctx context.Context, challengeID, owner string, expectedVersion int64, expectedStatus string, artifactMessageID int, lastError string, now time.Time) (bool, error)
 	RequestChallengeCancellation(ctx context.Context, challengeID, expectedStatus string, expectedVersion int64, lastError string) (bool, error)
@@ -143,8 +144,8 @@ func (g *Gatekeeper) moderationAvailable(ctx context.Context, chatID int64) bool
 	available, err := g.banChecker.ModerationAvailable(ctx, chatID)
 	if err != nil {
 		g.getLogEntry().WithFields(log.Fields{
-			logFieldChatID: chatID,
-			logFieldError:  err.Error(),
+			logFieldChatID:    chatID,
+			logFieldErrorCode: db.SafeGatekeeperErrorCode(err),
 		}).Warn("failed to inspect bot moderation rights; using no-rights mode")
 		return false
 	}
@@ -165,7 +166,7 @@ var defaultCaptchaVariants = map[string]string{
 	"🚗": "car",
 	"🌟": "star",
 	"🎈": "balloon",
-	"📚": "volume",
+	"📚": "book",
 	"🎵": "music",
 }
 

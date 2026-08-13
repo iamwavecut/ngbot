@@ -183,7 +183,7 @@ func (s *gatekeeperFlowStore) CompleteExternalAction(_ context.Context, challeng
 
 func (s *gatekeeperFlowStore) ClaimChallengeAction(_ context.Context, challengeID, owner string, now, leaseUntil time.Time) (*db.Challenge, bool, error) {
 	key, challenge := s.challengeByID(challengeID)
-	if challenge == nil || !isPendingChallengeAction(challenge.Status) || !challenge.NextAttemptAt.Valid || challenge.NextAttemptAt.Time.After(now) {
+	if challenge == nil || (!isPendingChallengeAction(challenge.Status) && challenge.Status != db.ChallengeStatusBanCheckPending) || !challenge.NextAttemptAt.Valid || challenge.NextAttemptAt.Time.After(now) {
 		return nil, false, nil
 	}
 	if challenge.ActionOwner != "" && challenge.ActionLeaseUntil.Valid && challenge.ActionLeaseUntil.Time.After(now) {
@@ -294,6 +294,24 @@ func (s *gatekeeperFlowStore) CompleteLeasedChallengeWithoutPrivilegesVersion(_ 
 		challenge.LastError = lastError
 	}
 	return changed, err
+}
+
+func (s *gatekeeperFlowStore) ArchiveLeasedNoticeFailureVersion(_ context.Context, challengeID, owner string, expectedVersion int64, expectedStatus, expectedPhase string, expiresAt time.Time, errorCode string, now time.Time) (bool, error) {
+	key, challenge := s.challengeByID(challengeID)
+	if challenge == nil || challenge.Status != expectedStatus || challenge.ActionOwner != owner || challenge.ActionVersion != expectedVersion || challenge.ActionPhase != expectedPhase || !challenge.ActionLeaseUntil.Time.After(now) {
+		return false, nil
+	}
+	clone := *challenge
+	clone.Status = db.ChallengeStatusNoPrivilegesNotice
+	clone.ExpiresAt = expiresAt
+	clone.NextAttemptAt = sql.NullTime{}
+	clone.LastError = db.SafeGatekeeperErrorText(errorCode)
+	clone.ActionOwner = ""
+	clone.ActionLeaseUntil = sql.NullTime{}
+	clone.ActionPhase = db.ChallengePhaseReady
+	clone.ActionVersion++
+	s.challenges[key] = &clone
+	return true, nil
 }
 
 func (s *gatekeeperFlowStore) DeleteLeasedChallengeActionVersion(_ context.Context, challengeID, owner string, expectedVersion int64, expectedStatus, expectedPhase string, now time.Time) (bool, error) {

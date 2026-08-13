@@ -25,6 +25,7 @@ const (
 	greetingPlaceholderChatTitle      = "{chat_title}"
 	greetingPlaceholderChatLinkTitled = "{chat_link_titled}"
 	greetingPlaceholderTimeout        = "{timeout}"
+	logFieldErrorCode                 = "error_code"
 )
 
 func (g *Gatekeeper) handleNewChatMembersV2(ctx context.Context, u *api.Update, chat *api.Chat, settings *db.Settings) error {
@@ -55,8 +56,8 @@ func (g *Gatekeeper) handleNewChatMembersV2(ctx context.Context, u *api.Update, 
 		isNotSpammer, err := g.store.IsChatNotSpammer(ctx, chat.ID, member.ID, member.UserName)
 		if err != nil {
 			entry.WithFields(log.Fields{
-				logFieldUserID: member.ID,
-				logFieldError:  err.Error(),
+				logFieldUserID:    member.ID,
+				logFieldErrorCode: db.SafeGatekeeperErrorCode(err),
 			}).Error("failed to check manual not-spammer override; continuing moderation")
 		} else if isNotSpammer {
 			continue
@@ -155,8 +156,8 @@ func (g *Gatekeeper) handleChatMember(ctx context.Context, u *api.Update, settin
 	isNotSpammer, err := g.store.IsChatNotSpammer(ctx, chat.ID, member.ID, member.UserName)
 	if err != nil {
 		entry.WithFields(log.Fields{
-			logFieldUserID: member.ID,
-			logFieldError:  err.Error(),
+			logFieldUserID:    member.ID,
+			logFieldErrorCode: db.SafeGatekeeperErrorCode(err),
 		}).Error("failed to check manual not-spammer override; continuing moderation")
 	} else if isNotSpammer {
 		return
@@ -317,8 +318,9 @@ func (g *Gatekeeper) handleChatJoinRequest(ctx context.Context, u *api.Update, s
 	if settings.GatekeeperEnabled && settings.GatekeeperCaptchaEnabled &&
 		u.ChatJoinRequest.QueryID != "" && g.joinCaptchaPublicURL() != "" {
 		if err := g.startJoinRequestWebAppChallenge(ctx, u.ChatJoinRequest, settings); err != nil {
-			entry.WithField(logFieldError, err.Error()).Warn("join WebApp response failed; queueing durable DM fallback")
+			entry.WithField(logFieldErrorCode, db.SafeGatekeeperErrorCode(err)).Warn("join WebApp response is ambiguous and requires reconciliation")
 			webAppResponseFailed = true
+			u.ChatJoinRequest.QueryID = ""
 		} else {
 			u.ChatJoinRequest.QueryID = ""
 			webAppQueued = true
@@ -336,34 +338,44 @@ func (g *Gatekeeper) handleChatJoinRequest(ctx context.Context, u *api.Update, s
 				UserLanguage:       strings.TrimSpace(u.ChatJoinRequest.From.LanguageCode),
 				CreatedAt:          now,
 				ExpiresAt:          now.Add(settings.GetChallengeTimeout()),
+				NextAttemptAt:      sql.NullTime{Time: now, Valid: true},
 			})
 			if err != nil {
 				return fmt.Errorf("persist join-query response boundary: %w", err)
 			}
 		}
+		owner := uuid.New()
+		leased, claimed, claimErr := g.store.ClaimChallengeAction(ctx, queueBoundary.ChallengeID, owner, time.Now(), time.Now().Add(challengeActionLeaseDuration))
+		if claimErr != nil || !claimed {
+			return stderrors.Join(claimErr, errors.New("join-query response boundary lease unavailable"))
+		}
+		queueBoundary = leased
+		if err := g.beginChallengeEffect(ctx, queueBoundary, owner, db.ChallengePhaseQueueResponseStarted); err != nil {
+			return err
+		}
 		responseCtx, cancel := context.WithTimeout(ctx, joinQueryResponseTimeout)
 		err = bot.AnswerJoinRequestQuery(responseCtx, g.bot, u.ChatJoinRequest.QueryID, bot.JoinRequestQueryResultQueue)
 		cancel()
 		if err != nil {
-			entry.WithField(logFieldError, err.Error()).Error("failed to queue join request query before moderation")
+			entry.WithField(logFieldErrorCode, db.SafeGatekeeperErrorCode(err)).Error("failed to queue join request query before moderation")
 			if queueBoundary != nil {
 				reconcileCtx, reconcileCancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 				reconciled, reconcileErr := g.store.ReconcileLeasedChallengeVersion(
 					reconcileCtx,
 					queueBoundary.ChallengeID,
-					"",
+					owner,
 					queueBoundary.ActionVersion,
 					queueBoundary.Status,
 					0,
-					err.Error(),
+					db.SafeGatekeeperErrorCode(err),
 					time.Now(),
 				)
 				reconcileCancel()
 				if reconcileErr != nil {
-					return stderrors.Join(err, fmt.Errorf("reconcile join-query response: %w", reconcileErr))
+					return stderrors.Join(safeGatekeeperError(err), fmt.Errorf("reconcile join-query response: %w", reconcileErr))
 				}
 				if !reconciled {
-					return stderrors.Join(err, errors.New("join-query response boundary changed before reconciliation"))
+					return stderrors.Join(safeGatekeeperError(err), errors.New("join-query response boundary changed before reconciliation"))
 				}
 				queueBoundary = nil
 			}
@@ -371,6 +383,13 @@ func (g *Gatekeeper) handleChatJoinRequest(ctx context.Context, u *api.Update, s
 				g.banChecker.MarkModerationUnavailable(u.ChatJoinRequest.Chat.ID)
 			}
 		} else {
+			if err := g.advanceChallengePhase(ctx, queueBoundary, owner, db.ChallengePhaseQueueResponseDone); err != nil {
+				return g.reconcileAmbiguousChallengeEffect(ctx, queueBoundary, owner, 0, err)
+			}
+			completed, completeErr := g.store.CompleteLeasedChallengeActionVersion(ctx, queueBoundary.ChallengeID, owner, queueBoundary.ActionVersion, queueBoundary.Status, queueBoundary.ActionPhase, db.ChallengeStatusBanCheckPending, time.Time{}, time.Now())
+			if completeErr != nil || !completed {
+				return stderrors.Join(completeErr, errors.New("join-query response completion fence lost"))
+			}
 			u.ChatJoinRequest.QueryID = ""
 		}
 	}
@@ -390,10 +409,10 @@ func (g *Gatekeeper) handleChatJoinRequest(ctx context.Context, u *api.Update, s
 		banned, err := g.banChecker.CheckBan(ctx, u.ChatJoinRequest.From.ID)
 		if err != nil {
 			entry.WithFields(log.Fields{
-				logFieldUserID: u.ChatJoinRequest.From.ID,
-				logFieldError:  err.Error(),
+				logFieldUserID:    u.ChatJoinRequest.From.ID,
+				logFieldErrorCode: db.SafeGatekeeperErrorCode(err),
 			}).Error("failed to check ban for chat join request")
-			return err
+			return safeGatekeeperError(err)
 		}
 		if banned {
 			g.processKnownBannedJoinRequest(ctx, u.ChatJoinRequest)
@@ -414,18 +433,7 @@ func (g *Gatekeeper) handleChatJoinRequest(ctx context.Context, u *api.Update, s
 		return nil
 	}
 	if webAppResponseFailed {
-		challenge, err := g.store.GetChallengeByChatUser(ctx, u.ChatJoinRequest.Chat.ID, u.ChatJoinRequest.From.ID)
-		if err != nil {
-			return err
-		}
-		if challenge != nil && challenge.Status == db.ChallengeStatusBanCheckPending {
-			queued, err := g.store.CompleteExternalAction(ctx, challenge.ChallengeID, db.ChallengeStatusBanCheckPending, db.ChallengeStatusWebAppFallbackPending, time.Time{})
-			if err != nil || !queued {
-				return err
-			}
-			challenge.Status = db.ChallengeStatusWebAppFallbackPending
-			return g.processChallengeAction(ctx, challenge)
-		}
+		return nil
 	}
 	if !settings.GatekeeperEnabled {
 		return nil
@@ -671,8 +679,8 @@ func (g *Gatekeeper) processKnownBannedJoinRequest(ctx context.Context, request 
 	}
 	if err != nil {
 		entry.WithFields(log.Fields{
-			logFieldUserID: userID,
-			logFieldError:  err.Error(),
+			logFieldUserID:    userID,
+			logFieldErrorCode: db.SafeGatekeeperErrorCode(err),
 		}).Error("failed to decline banned join request")
 		if moderation.IsTelegramPrivilegeError(err) {
 			g.banChecker.MarkModerationUnavailable(chatID)
@@ -682,8 +690,8 @@ func (g *Gatekeeper) processKnownBannedJoinRequest(ctx context.Context, request 
 	if g.banChecker != nil {
 		if err := g.banChecker.BanUserWithMessage(ctx, chatID, userID, 0); err != nil {
 			entry.WithFields(log.Fields{
-				logFieldUserID: userID,
-				logFieldError:  err.Error(),
+				logFieldUserID:    userID,
+				logFieldErrorCode: db.SafeGatekeeperErrorCode(err),
 			}).Error("failed to ban known banned join requester")
 			if moderation.IsTelegramPrivilegeError(err) {
 				g.banChecker.MarkModerationUnavailable(chatID)
@@ -701,13 +709,13 @@ func (g *Gatekeeper) processKnownBannedJoinedUser(ctx context.Context, chatID, u
 	if g.banChecker != nil {
 		if err := g.banChecker.BanUserWithMessage(ctx, chatID, userID, joinMessageID); err != nil {
 			entry.WithFields(log.Fields{
-				logFieldUserID: userID,
-				logFieldError:  err.Error(),
+				logFieldUserID:    userID,
+				logFieldErrorCode: db.SafeGatekeeperErrorCode(err),
 			}).Error("failed to ban known banned joined user")
 			if moderation.IsTelegramPrivilegeError(err) {
 				g.banChecker.MarkModerationUnavailable(chatID)
 			}
-			return err
+			return safeGatekeeperError(err)
 		}
 	}
 
@@ -716,7 +724,7 @@ func (g *Gatekeeper) processKnownBannedJoinedUser(ctx context.Context, chatID, u
 }
 
 func (g *Gatekeeper) completeKnownBannedRecentJoiner(ctx context.Context, chatID, userID int64, banErr error) {
-	if banErr != nil && !moderation.IsTelegramPrivilegeError(banErr) {
+	if banErr != nil && db.SafeGatekeeperErrorCode(banErr) != db.GatekeeperErrorPermission {
 		return
 	}
 	if err := g.store.ProcessRecentJoiner(ctx, chatID, userID, banErr == nil); err != nil {

@@ -22,6 +22,7 @@ import (
 	"github.com/iamwavecut/ngbot/internal/adapters/llm/openai"
 	"github.com/iamwavecut/ngbot/internal/bot"
 	"github.com/iamwavecut/ngbot/internal/config"
+	"github.com/iamwavecut/ngbot/internal/db"
 	"github.com/iamwavecut/ngbot/internal/db/sqlite"
 	adminHandlers "github.com/iamwavecut/ngbot/internal/handlers/admin"
 	chatHandlers "github.com/iamwavecut/ngbot/internal/handlers/chat"
@@ -192,6 +193,12 @@ func main() {
 		log.Info("Database maintenance completed")
 		return
 	}
+	processLock, err := sqlite.AcquireProcessLock(cfg.DotPath)
+	if err != nil {
+		log.WithField("error_code", db.SafeGatekeeperErrorCode(err)).Error("Failed to acquire database process lock")
+		os.Exit(1)
+	}
+	defer func() { _ = processLock.Close() }()
 
 	maskedConfig := maskConfiguration(&cfg)
 	if configJSON, err := json.MarshalIndent(maskedConfig, "", "  "); err != nil {
@@ -251,6 +258,11 @@ func main() {
 }
 
 func runGatekeeperReconciliation(ctx context.Context, cfg *config.Config, command string, output io.Writer) error {
+	processLock, err := sqlite.AcquireProcessLock(cfg.DotPath)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = processLock.Close() }()
 	client, err := sqlite.NewSQLiteClient(ctx, cfg.DotPath, "bot.db")
 	if err != nil {
 		return fmt.Errorf("open reconciliation database: %w", err)

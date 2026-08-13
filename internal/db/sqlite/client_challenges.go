@@ -33,6 +33,7 @@ func (c *sqliteClient) CreateChallenge(ctx context.Context, challenge *db.Challe
 	if challenge.ActionPhase == "" {
 		challenge.ActionPhase = db.ChallengePhaseReady
 	}
+	challenge.LastError = db.SafeGatekeeperErrorText(challenge.LastError)
 
 	query := `
 		INSERT INTO gatekeeper_challenges (
@@ -67,7 +68,7 @@ func (c *sqliteClient) CreateChallenge(ctx context.Context, challenge *db.Challe
 			action_phase = excluded.action_phase,
 			effect_started_at = excluded.effect_started_at,
 			cancel_requested = excluded.cancel_requested
-		WHERE gatekeeper_challenges.status NOT IN (?, ?, ?, ?, ?, ?)
+		WHERE gatekeeper_challenges.status NOT IN (?, ?, ?, ?, ?, ?, ?)
 	`
 	result, err := c.db.ExecContext(
 		ctx, query,
@@ -105,6 +106,7 @@ func (c *sqliteClient) CreateChallenge(ctx context.Context, challenge *db.Challe
 		db.ChallengeStatusApproveMemberPending,
 		db.ChallengeStatusUnrestrictPending,
 		db.ChallengeStatusRejectPending,
+		db.ChallengeStatusBanCheckPending,
 	)
 	if err != nil {
 		return nil, err
@@ -133,7 +135,7 @@ func (c *sqliteClient) ClaimChallengeAction(
 		UPDATE gatekeeper_challenges
 		SET action_owner = ?, action_lease_until = ?, action_version = action_version + 1
 		WHERE challenge_id = ?
-			AND status IN (?, ?, ?, ?, ?, ?)
+			AND status IN (?, ?, ?, ?, ?, ?, ?)
 			AND next_attempt_at IS NOT NULL
 			AND next_attempt_at <= ?
 			AND action_phase NOT LIKE '%started'
@@ -150,6 +152,7 @@ func (c *sqliteClient) ClaimChallengeAction(
 		db.ChallengeStatusApproveMemberPending,
 		db.ChallengeStatusUnrestrictPending,
 		db.ChallengeStatusRejectPending,
+		db.ChallengeStatusBanCheckPending,
 		now,
 		now,
 	)
@@ -276,7 +279,7 @@ func (c *sqliteClient) RequestChallengeCancellation(
 		SET cancel_requested = TRUE, last_error = ?
 		WHERE challenge_id = ? AND status = ? AND action_owner <> ''
 			AND action_version = ? AND cancel_requested = FALSE
-	`, lastError, challengeID, expectedStatus, expectedVersion)
+	`, db.SafeGatekeeperErrorText(lastError), challengeID, expectedStatus, expectedVersion)
 	if err != nil {
 		return false, err
 	}
@@ -302,10 +305,11 @@ func (c *sqliteClient) reconcileChallenge(
 	}
 	defer func() { _ = tx.Rollback() }()
 	condition := "challenge_id = ? AND status = ? AND action_owner = ? AND action_version = ?"
-	args := []any{artifactMessageID, lastError, now, challengeID, expectedStatus, owner, expectedVersion}
+	safeErrorCode := db.SafeGatekeeperErrorText(lastError)
+	args := []any{artifactMessageID, safeErrorCode, now, challengeID, expectedStatus, owner, expectedVersion}
 	if requireExpired {
 		condition = "challenge_id = ? AND status = ? AND action_phase = ? AND action_lease_until <= ?"
-		args = []any{artifactMessageID, lastError, now, challengeID, expectedStatus, expectedPhase, now}
+		args = []any{artifactMessageID, safeErrorCode, now, challengeID, expectedStatus, expectedPhase, now}
 	}
 	result, err := tx.ExecContext(
 		ctx, `
@@ -391,7 +395,7 @@ func (c *sqliteClient) ScheduleLeasedChallengeRetryVersion(
 			action_version = action_version + 1
 		WHERE challenge_id = ? AND status = ? AND action_owner = ? AND action_version = ?
 			AND action_phase = ? AND action_lease_until > ? AND cancel_requested = FALSE
-	`, nextAttemptAt, lastError, db.ChallengePhaseReady, challengeID, expectedStatus, owner, expectedVersion, expectedPhase, now)
+	`, nextAttemptAt, db.SafeGatekeeperErrorText(lastError), db.ChallengePhaseReady, challengeID, expectedStatus, owner, expectedVersion, expectedPhase, now)
 	if err != nil {
 		return false, err
 	}
@@ -474,13 +478,78 @@ func (c *sqliteClient) CompleteLeasedChallengeWithoutPrivilegesVersion(
 			action_phase = ?, effect_started_at = NULL, action_version = action_version + 1
 		WHERE challenge_id = ? AND status = ? AND action_owner = ? AND action_version = ?
 			AND action_phase = ? AND action_lease_until > ? AND cancel_requested = FALSE
-	`, db.ChallengeStatusNoPrivilegesNotice, noticeMessageID, expiresAt, lastError, db.ChallengePhaseReady,
+	`, db.ChallengeStatusNoPrivilegesNotice, noticeMessageID, expiresAt, db.SafeGatekeeperErrorText(lastError), db.ChallengePhaseReady,
 		challengeID, expectedStatus, owner, expectedVersion, expectedPhase, now)
 	if err != nil {
 		return false, err
 	}
 	affected, err := result.RowsAffected()
 	return affected == 1, err
+}
+
+func (c *sqliteClient) ArchiveLeasedNoticeFailureVersion(
+	ctx context.Context,
+	challengeID, owner string,
+	expectedVersion int64,
+	expectedStatus, expectedPhase string,
+	expiresAt time.Time,
+	errorCode string,
+	now time.Time,
+) (bool, error) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	tx, err := c.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	safeCode := db.SafeGatekeeperErrorText(errorCode)
+	condition := `challenge_id = ? AND status = ? AND action_owner = ? AND action_version = ?
+		AND action_phase = ? AND action_lease_until > ? AND cancel_requested = FALSE`
+	args := []any{challengeID, expectedStatus, owner, expectedVersion, expectedPhase, now}
+	result, err := tx.ExecContext(
+		ctx, `
+		INSERT INTO gatekeeper_challenge_reconciliations (
+			challenge_id, comm_chat_id, user_id, chat_id, action_status, action_phase,
+			challenge_message_id, join_message_id, notice_message_id,
+			join_request_query_present, web_app_token_present, user_restricted,
+			attempt_count, last_error, challenge_created_at, expires_at, effect_started_at,
+			reconciliation_due_at
+		)
+		SELECT challenge_id, comm_chat_id, user_id, chat_id, status, action_phase,
+			challenge_message_id, join_message_id, notice_message_id,
+			join_request_query_id <> '', web_app_token <> '', user_restricted,
+			attempt_count + 1, ?, created_at, ?, effect_started_at, ?
+		FROM gatekeeper_challenges WHERE `+condition,
+		append([]any{safeCode, expiresAt, now}, args...)...,
+	)
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil || affected != 1 {
+		return false, err
+	}
+	result, err = tx.ExecContext(
+		ctx, `
+		UPDATE gatekeeper_challenges
+		SET status = ?, notice_message_id = 0, expires_at = ?, next_attempt_at = NULL,
+			attempt_count = 0, last_error = ?, action_owner = '', action_lease_until = NULL,
+			action_phase = ?, effect_started_at = NULL, action_version = action_version + 1
+		WHERE `+condition,
+		append([]any{db.ChallengeStatusNoPrivilegesNotice, expiresAt, safeCode, db.ChallengePhaseReady}, args...)...,
+	)
+	if err != nil {
+		return false, err
+	}
+	affected, err = result.RowsAffected()
+	if err != nil || affected != 1 {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (c *sqliteClient) DeleteLeasedChallengeActionVersion(
@@ -533,9 +602,9 @@ func (c *sqliteClient) ResolveChallengeReconciliation(
 
 	result, err := c.db.ExecContext(ctx, `
 		UPDATE gatekeeper_challenge_reconciliations
-		SET resolution_status = ?, resolution = ?, resolved_at = ?, version = version + 1
+		SET resolution_status = ?, resolution = ?, resolved_at = ?, retention_until = ?, version = version + 1
 		WHERE id = ? AND version = ? AND resolution_status = ?
-	`, db.ChallengeReconciliationResolved, resolution, resolvedAt, id, expectedVersion, db.ChallengeReconciliationPending)
+	`, db.ChallengeReconciliationResolved, resolution, resolvedAt, resolvedAt.Add(30*24*time.Hour), id, expectedVersion, db.ChallengeReconciliationPending)
 	if err != nil {
 		return false, err
 	}
@@ -548,45 +617,11 @@ func (c *sqliteClient) RequeueChallengeReconciliation(
 	id, expectedVersion int64,
 	now time.Time,
 ) (bool, error) {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
-
-	tx, err := c.db.BeginTxx(ctx, nil)
-	if err != nil {
-		return false, err
-	}
-	defer func() { _ = tx.Rollback() }()
-	result, err := tx.ExecContext(ctx, `
-		INSERT INTO gatekeeper_challenges (
-			challenge_id, comm_chat_id, user_id, chat_id, status, created_at, expires_at,
-			next_attempt_at, attempt_count, last_error, user_restricted, action_phase
-		)
-		SELECT challenge_id, comm_chat_id, user_id, chat_id, action_status, challenge_created_at,
-			expires_at, ?, attempt_count, last_error, user_restricted, ?
-		FROM gatekeeper_challenge_reconciliations
-		WHERE id = ? AND version = ? AND resolution_status = ? AND action_phase = ?
-	`, now, db.ChallengePhaseReady, id, expectedVersion, db.ChallengeReconciliationPending, db.ChallengePhaseReady)
-	if err != nil {
-		return false, err
-	}
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return false, err
-	}
-	if affected != 1 {
-		return false, errors.New("only a pending pre-effect reconciliation can be requeued")
-	}
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE gatekeeper_challenge_reconciliations
-		SET resolution_status = ?, resolution = 'requeued', resolved_at = ?, version = version + 1
-		WHERE id = ? AND version = ? AND resolution_status = ?
-	`, db.ChallengeReconciliationResolved, now, id, expectedVersion, db.ChallengeReconciliationPending); err != nil {
-		return false, err
-	}
-	if err := tx.Commit(); err != nil {
-		return false, err
-	}
-	return true, nil
+	_ = ctx
+	_ = id
+	_ = expectedVersion
+	_ = now
+	return false, errors.New("requeue is disabled because reconciliation records contain no replay secrets")
 }
 
 func (c *sqliteClient) ReconcileExpiredChallengeEffects(ctx context.Context, now time.Time) (int, error) {
@@ -609,7 +644,7 @@ func (c *sqliteClient) ReconcileExpiredChallengeEffects(ctx context.Context, now
 		SELECT challenge_id, comm_chat_id, user_id, chat_id, status, action_phase,
 			challenge_message_id, join_message_id, notice_message_id,
 			join_request_query_id <> '', web_app_token <> '', user_restricted,
-			attempt_count + 1, 'action lease expired after irreversible effect started',
+			attempt_count + 1, 'ambiguous_external_effect',
 			created_at, expires_at, effect_started_at, ?
 		FROM gatekeeper_challenges
 		WHERE action_phase LIKE '%started' AND action_lease_until <= ?
@@ -937,7 +972,7 @@ func (c *sqliteClient) ScheduleChallengeRetry(
 		UPDATE gatekeeper_challenges
 		SET next_attempt_at = ?, attempt_count = attempt_count + 1, last_error = ?
 		WHERE challenge_id = ? AND status = ? AND action_owner = ''
-	`, nullableTime(nextAttemptAt), lastError, challengeID, expectedStatus)
+	`, nullableTime(nextAttemptAt), db.SafeGatekeeperErrorText(lastError), challengeID, expectedStatus)
 	if err != nil {
 		return false, err
 	}
@@ -964,7 +999,7 @@ func (c *sqliteClient) CompleteChallengeWithoutPrivileges(
 			attempt_count = 0,
 			last_error = ?
 		WHERE challenge_id = ? AND status = ? AND action_owner = ''
-	`, db.ChallengeStatusNoPrivilegesNotice, noticeMessageID, expiresAt, lastError, challengeID, expectedStatus)
+	`, db.ChallengeStatusNoPrivilegesNotice, noticeMessageID, expiresAt, db.SafeGatekeeperErrorText(lastError), challengeID, expectedStatus)
 	if err != nil {
 		return false, err
 	}

@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
@@ -15,6 +16,7 @@ import (
 	"github.com/iamwavecut/ngbot/internal/config"
 	"github.com/iamwavecut/ngbot/internal/db"
 	dbsqlite "github.com/iamwavecut/ngbot/internal/db/sqlite"
+	log "github.com/sirupsen/logrus"
 )
 
 type blockingNotSpammerStore struct {
@@ -267,9 +269,10 @@ func TestNoRightsNoticeFailureRetainsDurableRetry(t *testing.T) {
 		t.Fatalf("new sqlite client: %v", err)
 	}
 	t.Cleanup(func() { _ = client.Close() })
+	secret := "https://api.telegram.org/bot123456:SECRET/sendMessage body=query-secret web-secret"
 	botAPI := newTestBotAPI(t, func(method string, _ *http.Request) any {
 		if method == testTelegramMethodSendMessage {
-			return &testBotAPIError{code: http.StatusBadGateway, description: "temporary send failure"}
+			return &testBotAPIError{code: http.StatusBadGateway, description: secret}
 		}
 		return true
 	})
@@ -286,17 +289,40 @@ func TestNoRightsNoticeFailureRetainsDurableRetry(t *testing.T) {
 	if _, err := client.CreateChallenge(t.Context(), challenge); err != nil {
 		t.Fatalf("create challenge: %v", err)
 	}
+	var logOutput bytes.Buffer
+	logger := log.New()
+	logger.SetOutput(&logOutput)
 	gatekeeper := &Gatekeeper{
 		bot:        botAPI,
 		s:          &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI, language: "en"}, settings: webAppSettings()},
 		store:      client,
 		config:     &config.Config{},
 		banChecker: &testGatekeeperBanChecker{moderationUnavailable: true},
+		logger:     log.NewEntry(logger),
 	}
-	_ = gatekeeper.processChallengeAction(t.Context(), challenge)
+	actionErr := gatekeeper.processChallengeAction(t.Context(), challenge)
+	if actionErr == nil || strings.Contains(actionErr.Error(), "SECRET") {
+		t.Fatalf("unsafe returned action error: %v", actionErr)
+	}
 	records, err := client.GetChallengeReconciliations(t.Context())
 	if err != nil || len(records) != 1 || records[0].ActionPhase != db.ChallengePhaseNoticeMessageStarted {
 		t.Fatalf("ambiguous notice failure was not retained for reconciliation: records=%#v err=%v", records, err)
+	}
+	if strings.Contains(logOutput.String(), "SECRET") || strings.Contains(logOutput.String(), "api.telegram.org") || strings.Contains(records[0].LastError, "SECRET") {
+		t.Fatalf("secret-bearing error leaked: log=%q record=%#v", logOutput.String(), records[0])
+	}
+	active, err := client.GetChallengeByChatUser(t.Context(), challenge.ChatID, challenge.UserID)
+	if err != nil || active == nil || active.Status != db.ChallengeStatusNoPrivilegesNotice || active.NoticeMessageID != 0 {
+		t.Fatalf("no-rights lifecycle was not retained: challenge=%#v err=%v", active, err)
+	}
+	if remaining := time.Until(active.ExpiresAt); remaining < 29*time.Minute || remaining > 31*time.Minute {
+		t.Fatalf("no-rights retention=%s", remaining)
+	}
+	if expired, err := client.GetExpiredChallenges(t.Context(), active.ExpiresAt.Add(-time.Second)); err != nil || len(expired) != 0 {
+		t.Fatalf("notice expired before 30m: %#v err=%v", expired, err)
+	}
+	if expired, err := client.GetExpiredChallenges(t.Context(), active.ExpiresAt.Add(time.Second)); err != nil || len(expired) != 1 {
+		t.Fatalf("notice did not expire after 30m: %#v err=%v", expired, err)
 	}
 }
 
@@ -490,11 +516,56 @@ func TestJoinQueryResponseTimeoutIsDurablyActionable(t *testing.T) {
 	defer cancel()
 	_ = gatekeeper.handleChatJoinRequest(ctx, &api.Update{ChatJoinRequest: request}, settings)
 	records, err := client.GetChallengeReconciliations(t.Context())
-	if err != nil || len(records) != 1 || records[0].ActionStatus != db.ChallengeStatusBanCheckPending {
+	if err != nil || len(records) != 1 || records[0].ActionStatus != db.ChallengeStatusBanCheckPending || records[0].ActionPhase != db.ChallengePhaseQueueResponseStarted {
 		t.Fatalf("timed-out first response is not operator-actionable: records=%#v err=%v", records, err)
 	}
 	if !records[0].JoinRequestQueryPresent {
 		t.Fatal("reconciliation lost redacted query-presence metadata")
+	}
+	if requeued, err := client.RequeueChallengeReconciliation(t.Context(), records[0].ID, records[0].Version, time.Now()); err == nil || requeued {
+		t.Fatalf("ambiguous queue effect was requeued: requeued=%t err=%v", requeued, err)
+	}
+}
+
+func TestAmbiguousWebAppResponseWaitsForBanCheckAndNeverFallsBack(t *testing.T) {
+	t.Parallel()
+
+	client, err := dbsqlite.NewSQLiteClient(t.Context(), t.TempDir(), "test.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	checker := &blockingBanChecker{entered: make(chan struct{}), release: make(chan struct{})}
+	var fallbackCalls atomic.Int32
+	botAPI := newTestBotAPI(t, func(method string, _ *http.Request) any {
+		if method == testTelegramMethodSendMessage {
+			fallbackCalls.Add(1)
+		}
+		return true
+	})
+	botAPI.Client = contextTimeoutClient{}
+	settings := webAppSettings()
+	gatekeeper := &Gatekeeper{bot: botAPI, s: &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI}, settings: settings}, store: client, config: &config.Config{GatekeeperWebApp: config.GatekeeperWebApp{PublicURL: testWebAppURL}}, banChecker: checker}
+	request := &api.ChatJoinRequest{Chat: api.Chat{ID: -2020}, From: api.User{ID: 3020}, UserChatID: 3020, QueryID: "query-secret"}
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- gatekeeper.handleChatJoinRequest(ctx, &api.Update{ChatJoinRequest: request}, settings) }()
+	select {
+	case <-checker.entered:
+	case <-time.After(time.Second):
+		t.Fatal("provider ban check did not run after ambiguous WebApp response")
+	}
+	if fallbackCalls.Load() != 0 {
+		t.Fatalf("DM fallback ran before provider check: %d", fallbackCalls.Load())
+	}
+	records, err := client.GetChallengeReconciliations(t.Context())
+	if err != nil || len(records) != 1 || records[0].ActionPhase != db.ChallengePhaseWebAppResponseStarted {
+		t.Fatalf("ambiguous WebApp response not reconciled: %#v err=%v", records, err)
+	}
+	close(checker.release)
+	if err := <-done; err == nil || err.Error() != db.GatekeeperErrorDeadline {
+		t.Fatalf("join handler returned unsafe/unexpected error: %v", err)
 	}
 }
 

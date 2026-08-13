@@ -1231,8 +1231,18 @@ func TestGatekeeperActionLeaseMigrationUpgradesAndRollsBack(t *testing.T) {
 	`); err != nil {
 		t.Fatalf("insert reconciliation: %v", err)
 	}
+	if _, err := migrate.ExecMax(sqlDB, "sqlite3", source, migrate.Down, 1); err == nil {
+		t.Fatal("rollback silently ignored active/reconciliation tuple collision")
+	}
+	var reconciliationCount int
+	if err := sqlDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM gatekeeper_challenge_reconciliations WHERE challenge_id = 'lease-upgrade'`).Scan(&reconciliationCount); err != nil || reconciliationCount != 1 {
+		t.Fatalf("failed rollback lost reconciliation: count=%d err=%v", reconciliationCount, err)
+	}
+	if _, err := sqlDB.ExecContext(ctx, `DELETE FROM gatekeeper_challenge_reconciliations`); err != nil {
+		t.Fatalf("archive reconciliation records before rollback: %v", err)
+	}
 	if _, err := migrate.ExecMax(sqlDB, "sqlite3", source, migrate.Down, 1); err != nil {
-		t.Fatalf("roll back action lease migration: %v", err)
+		t.Fatalf("roll back action lease migration after collision resolution: %v", err)
 	}
 	var count int
 	if err := sqlDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM gatekeeper_challenges WHERE challenge_id = 'lease-upgrade'`).Scan(&count); err != nil {
