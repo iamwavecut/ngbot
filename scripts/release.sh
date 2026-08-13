@@ -11,25 +11,59 @@ require_command() {
 	}
 }
 
+require_sqlite_tool() {
+	command -v sqlite3 >/dev/null 2>&1 && return
+	require_command python3
+}
+
 verify_snapshot() {
 	database=$1
-	quick_check=$(sqlite3 "$database" "PRAGMA quick_check;")
-	[ "$quick_check" = "ok" ] || {
-		echo "SQLite quick_check failed for $database: $quick_check" >&2
-		exit 1
-	}
-	foreign_keys=$(sqlite3 "$database" "PRAGMA foreign_key_check;")
-	[ -z "$foreign_keys" ] || {
-		echo "SQLite foreign_key_check failed for $database" >&2
-		exit 1
-	}
+	if command -v sqlite3 >/dev/null 2>&1; then
+		quick_check=$(sqlite3 "$database" "PRAGMA quick_check;")
+		[ "$quick_check" = "ok" ] || {
+			echo "SQLite quick_check failed for $database: $quick_check" >&2
+			exit 1
+		}
+		foreign_keys=$(sqlite3 "$database" "PRAGMA foreign_key_check;")
+		[ -z "$foreign_keys" ] || {
+			echo "SQLite foreign_key_check failed for $database" >&2
+			exit 1
+		}
+		return
+	fi
+	python3 - "$database" <<'PY'
+import sqlite3
+import sys
+
+connection = sqlite3.connect(sys.argv[1])
+quick_check = connection.execute("PRAGMA quick_check").fetchall()
+foreign_keys = connection.execute("PRAGMA foreign_key_check").fetchall()
+connection.close()
+if quick_check != [("ok",)]:
+    raise SystemExit(f"SQLite quick_check failed for {sys.argv[1]}: {quick_check}")
+if foreign_keys:
+    raise SystemExit(f"SQLite foreign_key_check failed for {sys.argv[1]}")
+PY
 }
 
 snapshot_database() {
 	source_database=$1
 	target_database=$2
 	umask 077
-	sqlite3 "$source_database" ".backup '$target_database'"
+	if command -v sqlite3 >/dev/null 2>&1; then
+		sqlite3 "$source_database" ".backup '$target_database'"
+	else
+		python3 - "$source_database" "$target_database" <<'PY'
+import sqlite3
+import sys
+
+source = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
+target = sqlite3.connect(sys.argv[2])
+source.backup(target)
+target.close()
+source.close()
+PY
+	fi
 	chmod 0600 "$target_database"
 	verify_snapshot "$target_database"
 }
@@ -72,9 +106,10 @@ verify_runtime() {
 }
 
 release() {
-	for command in caddy curl docker git sqlite3; do
+	for command in caddy curl docker git; do
 		require_command "$command"
 	done
+	require_sqlite_tool
 	: "${NGBOT_VERSION:?set NGBOT_VERSION to the release version}"
 	: "${NGBOT_PUBLIC_URL:?set NGBOT_PUBLIC_URL to the public HTTPS origin}"
 	: "${NGBOT_CADDYFILE:?set NGBOT_CADDYFILE to the active Caddy configuration}"
