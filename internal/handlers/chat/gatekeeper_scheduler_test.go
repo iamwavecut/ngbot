@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/iamwavecut/ngbot/internal/bot"
 	"github.com/iamwavecut/ngbot/internal/config"
 	"github.com/iamwavecut/ngbot/internal/db"
 )
@@ -239,6 +240,7 @@ type testGatekeeperBanChecker struct {
 	banErr                error
 	checkErr              error
 	moderationUnavailable bool
+	moderationErr         error
 	markedUnavailable     bool
 }
 
@@ -254,7 +256,7 @@ func (c *testGatekeeperBanChecker) CheckBan(context.Context, int64) (bool, error
 }
 
 func (c *testGatekeeperBanChecker) ModerationAvailable(context.Context, int64) (bool, error) {
-	return !c.moderationUnavailable, nil
+	return !c.moderationUnavailable, c.moderationErr
 }
 
 func (c *testGatekeeperBanChecker) MarkModerationUnavailable(int64) {
@@ -348,5 +350,35 @@ func TestProcessNewChatMembersPrivilegeFailureClosesJoinerWithoutRetry(t *testin
 	}
 	if len(store.processed) != 1 || store.processed[0].isSpammer {
 		t.Fatalf("privilege-blocked joiner was left for retry: %#v", store.processed)
+	}
+}
+
+func TestProcessNewChatMembersCapabilityLookupFailureIsRetryable(t *testing.T) {
+	t.Parallel()
+
+	botAPI := newTestBotAPI(t, func(method string, _ *http.Request) any {
+		t.Fatalf("capability outage reached Telegram method %s", method)
+		return nil
+	})
+	store := &testGatekeeperStore{joiners: []*db.RecentJoiner{{ChatID: 100, UserID: 200}}}
+	checker := &testGatekeeperBanChecker{moderationErr: errors.New("capability lookup unavailable")}
+	gatekeeper := &Gatekeeper{
+		bot:        botAPI,
+		s:          &testBotService{botAPI: botAPI},
+		store:      store,
+		config:     &config.Config{},
+		banChecker: checker,
+	}
+
+	err := gatekeeper.processNewChatMembers(t.Context())
+	failure := bot.ClassifyUpdateFailure(err)
+	if failure.Source != bot.UpdateFailureCapability || failure.Disposition != bot.UpdateFailureRetryable {
+		t.Fatalf("capability failure = %#v", failure)
+	}
+	if checker.checkBanCalls != 0 {
+		t.Fatalf("provider calls during capability outage = %d", checker.checkBanCalls)
+	}
+	if len(store.processed) != 0 {
+		t.Fatalf("capability outage finalized joiner: %#v", store.processed)
 	}
 }

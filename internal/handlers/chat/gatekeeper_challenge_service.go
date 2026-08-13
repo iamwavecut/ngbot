@@ -27,6 +27,7 @@ const (
 	approvedJoinRequestChallengeTTL = 5 * time.Minute
 	webAppOpenDeadline              = 11 * time.Second
 	noPrivilegesNoticeRetention     = 30 * time.Minute
+	minimumTemporaryRestriction     = 31 * time.Second
 	challengeActionLeaseDuration    = 2 * time.Minute
 	challengeActionTimeout          = 90 * time.Second
 	joinQueryResponseTimeout        = 8 * time.Second
@@ -340,7 +341,7 @@ func (g *Gatekeeper) processChallengeActionWithStats(ctx context.Context, challe
 	actionCtx, cancel := context.WithTimeout(ctx, challengeActionTimeout)
 	defer cancel()
 	owner := uuid.New()
-	now := time.Now()
+	now := g.currentTime()
 	leased, claimed, err := g.store.ClaimChallengeAction(
 		actionCtx,
 		challenge.ChallengeID,
@@ -365,16 +366,11 @@ func (g *Gatekeeper) processChallengeActionWithStats(ctx context.Context, challe
 		db.ChallengeStatusApproveMemberPending,
 		db.ChallengeStatusUnrestrictPending,
 		db.ChallengeStatusRejectPending:
-		if g.banChecker == nil {
-			moderationAvailable = false
-		} else {
-			available, err := g.banChecker.ModerationAvailable(ctx, challenge.ChatID)
-			if err != nil {
-				entry.WithField(logFieldErrorCode, db.SafeGatekeeperErrorCode(err)).Warn("failed to refresh moderation rights before challenge action")
-			} else {
-				moderationAvailable = available
-			}
+		available, capabilityErr := g.moderationAvailable(ctx, challenge.ChatID)
+		if capabilityErr != nil {
+			return g.retryOrReconcileChallengeAction(ctx, challenge, owner, capabilityErr, entry)
 		}
+		moderationAvailable = available
 		if !moderationAvailable && challenge.Status != db.ChallengeStatusRestrictPending {
 			passed := challenge.Status != db.ChallengeStatusRejectPending
 			finishErr := g.finishChallengeWithoutPrivileges(ctx, challenge, owner, passed, "moderation unavailable", recordStats)
@@ -388,6 +384,27 @@ func (g *Gatekeeper) processChallengeActionWithStats(ctx context.Context, challe
 	var actionErr error
 	switch challenge.Status {
 	case db.ChallengeStatusBanCheckPending:
+		isNotSpammer, allowlistErr := g.store.IsChatNotSpammer(ctx, challenge.ChatID, challenge.UserID, challenge.Username)
+		if allowlistErr != nil {
+			entry.WithFields(log.Fields{logFieldUserID: challenge.UserID, logFieldErrorCode: db.SafeGatekeeperErrorCode(allowlistErr)}).Error("failed to recheck manual not-spammer override; continuing moderation")
+		} else if isNotSpammer {
+			deleted, deleteErr := g.store.DeleteLeasedChallengeActionVersion(ctx, challenge.ChallengeID, owner, challenge.ActionVersion, challenge.Status, challenge.ActionPhase, time.Now())
+			if deleteErr != nil || !deleted {
+				return stderrors.Join(deleteErr, errors.New("allowlisted ban-check cleanup fence lost"))
+			}
+			return nil
+		}
+		moderationAvailable, capabilityErr := g.moderationAvailable(ctx, challenge.ChatID)
+		if capabilityErr != nil {
+			return g.retryOrReconcileChallengeAction(ctx, challenge, owner, capabilityErr, entry)
+		}
+		if !moderationAvailable {
+			deleted, deleteErr := g.store.DeleteLeasedChallengeActionVersion(ctx, challenge.ChallengeID, owner, challenge.ActionVersion, challenge.Status, challenge.ActionPhase, time.Now())
+			if deleteErr != nil || !deleted {
+				return stderrors.Join(deleteErr, errors.New("no-rights ban-check cleanup fence lost"))
+			}
+			return nil
+		}
 		banned, checkErr := g.banChecker.CheckBan(ctx, challenge.UserID)
 		if checkErr != nil {
 			return g.retryOrReconcileChallengeAction(ctx, challenge, owner, checkErr, entry)
@@ -451,7 +468,7 @@ func (g *Gatekeeper) processChallengeActionWithStats(ctx context.Context, challe
 						ChatConfig: api.ChatConfig{ChatID: challenge.ChatID},
 						UserID:     challenge.UserID,
 					},
-					UntilDate: challenge.ExpiresAt.Unix(),
+					UntilDate: temporaryRestrictionDeadline(now, challenge.ExpiresAt, challenge.ExpiresAt.Sub(challenge.CreatedAt)).Unix(),
 					Permissions: &api.ChatPermissions{
 						CanSendMessages:       false,
 						CanSendAudios:         false,
@@ -654,7 +671,8 @@ func (g *Gatekeeper) processChallengeActionWithStats(ctx context.Context, challe
 			if err := g.beginChallengeEffect(ctx, challenge, owner, db.ChallengePhaseRejectBanStarted); err != nil {
 				return err
 			}
-			banErr := bot.BanUserFromChat(ctx, g.bot, challenge.UserID, challenge.ChatID, challenge.ExpiresAt.Add(settings.GetRejectTimeout()).Unix())
+			banDeadline := temporaryRestrictionDeadline(now, challenge.ExpiresAt.Add(settings.GetRejectTimeout()), settings.GetRejectTimeout())
+			banErr := bot.BanUserFromChat(ctx, g.bot, challenge.UserID, challenge.ChatID, banDeadline.Unix())
 			if banErr != nil && !isTelegramBanAlreadyApplied(banErr) {
 				return g.reconcileAmbiguousChallengeEffect(ctx, challenge, owner, 0, banErr)
 			}
@@ -728,6 +746,17 @@ func (g *Gatekeeper) processChallengeActionWithStats(ctx context.Context, challe
 	return g.retryOrReconcileChallengeAction(ctx, challenge, owner, actionErr, entry)
 }
 
+func temporaryRestrictionDeadline(now, candidate time.Time, fallback time.Duration) time.Time {
+	minimum := now.Add(minimumTemporaryRestriction)
+	if candidate.After(minimum) {
+		return candidate
+	}
+	if fallback < minimumTemporaryRestriction {
+		fallback = minimumTemporaryRestriction
+	}
+	return now.Add(fallback)
+}
+
 func (g *Gatekeeper) retryOrReconcileChallengeAction(
 	ctx context.Context,
 	challenge *db.Challenge,
@@ -738,23 +767,31 @@ func (g *Gatekeeper) retryOrReconcileChallengeAction(
 	if challenge.AttemptCount+1 >= maxChallengeActionAttempts {
 		reconciled, reconcileErr := g.store.ReconcileLeasedChallengeVersion(ctx, challenge.ChallengeID, owner, challenge.ActionVersion, challenge.Status, 0, db.SafeGatekeeperErrorCode(actionErr), time.Now())
 		if reconcileErr != nil {
-			return stderrors.Join(safeGatekeeperError(actionErr), reconcileErr)
+			return stderrors.Join(gatekeeperActionFailure(actionErr), reconcileErr)
 		}
 		if reconciled {
 			entry.WithFields(log.Fields{logFieldErrorCode: db.SafeGatekeeperErrorCode(actionErr), "attempt": challenge.AttemptCount + 1}).Error("gatekeeper action moved to operator reconciliation")
 		}
-		return safeGatekeeperError(actionErr)
+		return gatekeeperActionFailure(actionErr)
 	}
 	nextAttemptAt := time.Now().Add(challengeRetryDelay(challenge.AttemptCount))
 	scheduled, scheduleErr := g.store.ScheduleLeasedChallengeRetryVersion(ctx, challenge.ChallengeID, owner, challenge.ActionVersion, challenge.Status, challenge.ActionPhase, nextAttemptAt, db.SafeGatekeeperErrorCode(actionErr), time.Now())
 	if scheduleErr != nil {
-		return stderrors.Join(safeGatekeeperError(actionErr), scheduleErr)
+		return stderrors.Join(gatekeeperActionFailure(actionErr), scheduleErr)
 	}
 	if scheduled {
 		fields := log.Fields{logFieldErrorCode: db.SafeGatekeeperErrorCode(actionErr), "attempt": challenge.AttemptCount + 1}
 		entry.WithFields(fields).WithField("retry_in", time.Until(nextAttemptAt)).Warn("gatekeeper action failed; retry scheduled")
 	}
-	return safeGatekeeperError(actionErr)
+	return gatekeeperActionFailure(actionErr)
+}
+
+func gatekeeperActionFailure(err error) error {
+	var failure *bot.UpdateFailure
+	if stderrors.As(err, &failure) {
+		return failure
+	}
+	return safeGatekeeperError(err)
 }
 
 func (g *Gatekeeper) finishPassedChallengeWithoutEnforcement(ctx context.Context, challenge *db.Challenge, recordStats bool) error {

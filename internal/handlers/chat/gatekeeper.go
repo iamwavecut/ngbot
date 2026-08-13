@@ -81,6 +81,7 @@ type Gatekeeper struct {
 	Variants map[string]map[string]string `yaml:"variants"`
 
 	logger           *log.Entry
+	now              func() time.Time
 	workerCancel     context.CancelFunc
 	webAppServer     *http.Server
 	serveWebApp      func(*http.Server, net.Listener) error
@@ -143,19 +144,19 @@ type gatekeeperStore interface {
 	IsChatNotSpammer(ctx context.Context, chatID int64, userID int64, username string) (bool, error)
 }
 
-func (g *Gatekeeper) moderationAvailable(ctx context.Context, chatID int64) bool {
+func (g *Gatekeeper) moderationAvailable(ctx context.Context, chatID int64) (bool, error) {
 	if g.banChecker == nil {
-		return false
+		return false, nil
 	}
 	available, err := g.banChecker.ModerationAvailable(ctx, chatID)
 	if err != nil {
 		g.getLogEntry().WithFields(log.Fields{
 			logFieldChatID:    chatID,
 			logFieldErrorCode: db.SafeGatekeeperErrorCode(err),
-		}).Warn("failed to inspect bot moderation rights; using no-rights mode")
-		return false
+		}).Warn("failed to inspect bot moderation rights")
+		return false, bot.NewRetryableUpdateFailure(bot.UpdateFailureCapability, "capability_unknown", err)
 	}
-	return available
+	return available, nil
 }
 
 var challengeKeys = []string{
@@ -200,6 +201,8 @@ func NewGatekeeper(s bot.Service, botAPI *api.BotAPI, store gatekeeperStore, sta
 		config:     config,
 		Variants:   map[string]map[string]string{},
 		banChecker: banChecker,
+		logger:     entry,
+		now:        time.Now,
 	}
 
 	langs := i18n.GetLanguagesList()
@@ -220,6 +223,13 @@ func NewGatekeeper(s bot.Service, botAPI *api.BotAPI, store gatekeeperStore, sta
 	}
 	entry.Debug("created new gatekeeper")
 	return g
+}
+
+func (g *Gatekeeper) currentTime() time.Time {
+	if g != nil && g.now != nil {
+		return g.now()
+	}
+	return time.Now()
 }
 
 func (g *Gatekeeper) SetWebAppFatalErrorHandler(handler func(error)) {

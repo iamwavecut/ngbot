@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	api "github.com/OvyFlash/telegram-bot-api"
+	"github.com/iamwavecut/ngbot/internal/bot"
 	"github.com/iamwavecut/ngbot/internal/config"
 	"github.com/iamwavecut/ngbot/internal/db"
 	dbsqlite "github.com/iamwavecut/ngbot/internal/db/sqlite"
@@ -22,8 +24,9 @@ import (
 
 type blockingNotSpammerStore struct {
 	gatekeeperStore
-	entered chan struct{}
-	release chan struct{}
+	entered     chan struct{}
+	enteredOnce sync.Once
+	release     chan struct{}
 }
 
 type failingBindStore struct {
@@ -96,7 +99,7 @@ func (b *blockingBanChecker) CheckBan(ctx context.Context, _ int64) (bool, error
 }
 
 func (s *blockingNotSpammerStore) IsChatNotSpammer(ctx context.Context, _ int64, _ int64, _ string) (bool, error) {
-	close(s.entered)
+	s.enteredOnce.Do(func() { close(s.entered) })
 	select {
 	case <-ctx.Done():
 		return false, ctx.Err()
@@ -587,6 +590,121 @@ func TestBanCheckPendingRetriesAcrossRestartAndExhaustsSafely(t *testing.T) {
 	replacement := &db.Challenge{CommChatID: challenge.CommChatID, UserID: challenge.UserID, ChatID: challenge.ChatID, Status: db.ChallengeStatusPending, CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Minute)}
 	if _, err := client.CreateChallenge(t.Context(), replacement); err != nil {
 		t.Fatalf("rejoin blocked after exhaustion: %v", err)
+	}
+}
+
+func TestDurableChallengeCapabilityLookupFailureRetriesWithoutExternalEffect(t *testing.T) {
+	t.Parallel()
+
+	client, err := dbsqlite.NewSQLiteClient(t.Context(), t.TempDir(), "test.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	botAPI := newTestBotAPI(t, func(method string, _ *http.Request) any {
+		t.Fatalf("capability outage reached Telegram method %s", method)
+		return nil
+	})
+	now := time.Now()
+	challenge := &db.Challenge{
+		CommChatID:    7151,
+		UserID:        7151,
+		ChatID:        -7151,
+		Status:        db.ChallengeStatusApproveMemberPending,
+		CreatedAt:     now,
+		ExpiresAt:     now.Add(time.Minute),
+		NextAttemptAt: sql.NullTime{Time: now, Valid: true},
+	}
+	if _, err := client.CreateChallenge(t.Context(), challenge); err != nil {
+		t.Fatal(err)
+	}
+	gatekeeper := &Gatekeeper{
+		bot:        botAPI,
+		s:          &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI}, settings: webAppSettings()},
+		store:      client,
+		config:     &config.Config{},
+		banChecker: &testGatekeeperBanChecker{moderationErr: errors.New("capability lookup unavailable")},
+	}
+
+	err = gatekeeper.processChallengeAction(t.Context(), challenge)
+	failure := bot.ClassifyUpdateFailure(err)
+	if failure.Source != bot.UpdateFailureCapability || failure.Disposition != bot.UpdateFailureRetryable {
+		t.Fatalf("capability failure = %#v", failure)
+	}
+	stored, loadErr := client.GetChallengeByChatUser(t.Context(), challenge.ChatID, challenge.UserID)
+	if loadErr != nil || stored == nil || stored.Status != db.ChallengeStatusApproveMemberPending || !stored.NextAttemptAt.Valid || stored.AttemptCount != 1 {
+		t.Fatalf("capability outage was not retryable: challenge=%#v err=%v", stored, loadErr)
+	}
+}
+
+func TestStaleChallengeRestrictionUsesBoundedTemporaryDeadline(t *testing.T) {
+	t.Parallel()
+
+	fixedNow := time.Now().UTC().Truncate(time.Second).Add(time.Minute)
+	wantUntil := fixedNow.Add(time.Minute).Unix()
+	botAPI := newTestBotAPI(t, func(method string, request *http.Request) any {
+		if method == testTelegramMethodRestrictChatMember {
+			if err := request.ParseForm(); err != nil {
+				t.Fatal(err)
+			}
+			if got := request.Form.Get("until_date"); got != strconv.FormatInt(wantUntil, 10) {
+				t.Fatalf("serialized until_date = %q, want %d", got, wantUntil)
+			}
+			return true
+		}
+		if method == testTelegramMethodSendMessage {
+			return map[string]any{logFieldMessageID: 901}
+		}
+		t.Fatalf("unexpected Telegram method %s", method)
+		return nil
+	})
+	_, err := botAPI.RequestWithContext(t.Context(), api.RestrictChatMemberConfig{
+		ChatMemberConfig: api.ChatMemberConfig{ChatConfig: api.ChatConfig{ChatID: -7161}, UserID: 7161},
+		UntilDate:        temporaryRestrictionDeadline(fixedNow, fixedNow.Add(-time.Minute), time.Minute).Unix(),
+		Permissions:      &api.ChatPermissions{},
+	})
+	if err != nil {
+		t.Fatalf("serialize stale restriction: %v", err)
+	}
+}
+
+func TestBanCheckReplayStopsBeforeProviderForNewAllowlistOrNoRights(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		allowlist bool
+		noRights  bool
+	}{
+		{name: "allowlist added after persistence", allowlist: true},
+		{name: "confirmed no rights", noRights: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client, err := dbsqlite.NewSQLiteClient(t.Context(), t.TempDir(), "test.db")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = client.Close() })
+			now := time.Now()
+			challenge := &db.Challenge{CommChatID: 7171, UserID: 7171, Username: "fresh_allow", ChatID: -7171, Status: db.ChallengeStatusBanCheckPending, CreatedAt: now, ExpiresAt: now.Add(time.Minute), NextAttemptAt: sql.NullTime{Time: now, Valid: true}}
+			if _, err := client.CreateChallenge(t.Context(), challenge); err != nil {
+				t.Fatal(err)
+			}
+			if test.allowlist {
+				if _, err := client.CreateChatNotSpammerOverride(t.Context(), &db.ChatNotSpammerOverride{ChatID: challenge.ChatID, MatchType: db.NotSpammerMatchTypeUsername, MatchValue: challenge.Username, CreatedAt: now}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			checker := &testGatekeeperBanChecker{banned: true, moderationUnavailable: test.noRights}
+			gatekeeper := &Gatekeeper{store: client, config: &config.Config{}, banChecker: checker}
+			if err := gatekeeper.processChallengeAction(t.Context(), challenge); err != nil {
+				t.Fatalf("process replay: %v", err)
+			}
+			if checker.checkBanCalls != 0 || len(checker.bans) != 0 {
+				t.Fatalf("replay reached provider or Telegram: checks=%d bans=%#v", checker.checkBanCalls, checker.bans)
+			}
+			if stored, err := client.GetChallengeByChatUser(t.Context(), challenge.ChatID, challenge.UserID); err != nil || stored != nil {
+				t.Fatalf("safe replay recovery retained challenge: %#v err=%v", stored, err)
+			}
+		})
 	}
 }
 

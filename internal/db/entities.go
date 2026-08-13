@@ -79,6 +79,7 @@ type (
 		ChallengeID        string       `db:"challenge_id"`
 		CommChatID         int64        `db:"comm_chat_id"`
 		UserID             int64        `db:"user_id"`
+		Username           string       `db:"username"`
 		ChatID             int64        `db:"chat_id"`
 		Status             string       `db:"status"`
 		SuccessUUID        string       `db:"success_uuid"`

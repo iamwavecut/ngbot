@@ -44,7 +44,10 @@ func (g *Gatekeeper) handleNewChatMembersV2(ctx context.Context, u *api.Update, 
 		return nil
 	}
 	subfeaturesEnabled := settings.GatekeeperEnabled && (settings.GatekeeperCaptchaEnabled || settings.GatekeeperGreetingEnabled)
-	moderationAvailable := g.moderationAvailable(ctx, chat.ID)
+	moderationAvailable, err := g.moderationAvailable(ctx, chat.ID)
+	if err != nil {
+		return err
+	}
 
 	select {
 	case <-ctx.Done():
@@ -165,7 +168,11 @@ func (g *Gatekeeper) handleChatMember(ctx context.Context, u *api.Update, settin
 	} else if isNotSpammer {
 		return nil
 	}
-	if !g.moderationAvailable(ctx, chat.ID) {
+	moderationAvailable, err := g.moderationAvailable(ctx, chat.ID)
+	if err != nil {
+		return err
+	}
+	if !moderationAvailable {
 		if !settings.GatekeeperEnabled {
 			return nil
 		}
@@ -325,6 +332,9 @@ func (g *Gatekeeper) handleChatJoinRequest(ctx context.Context, u *api.Update, s
 	if settings.GatekeeperEnabled && settings.GatekeeperCaptchaEnabled &&
 		u.ChatJoinRequest.QueryID != "" && g.joinCaptchaPublicURL() != "" {
 		if err := g.startJoinRequestWebAppChallenge(ctx, u.ChatJoinRequest, settings); err != nil {
+			if !joinWebAppEffectStarted(err) {
+				return err
+			}
 			entry.WithField(logFieldErrorCode, db.SafeGatekeeperErrorCode(err)).Warn("join WebApp response is ambiguous and requires reconciliation")
 			webAppResponseFailed = true
 			u.ChatJoinRequest.QueryID = ""
@@ -342,6 +352,7 @@ func (g *Gatekeeper) handleChatJoinRequest(ctx context.Context, u *api.Update, s
 			queueBoundary, err = g.store.CreateChallenge(ctx, &db.Challenge{
 				CommChatID:         u.ChatJoinRequest.UserChatID,
 				UserID:             u.ChatJoinRequest.From.ID,
+				Username:           u.ChatJoinRequest.From.UserName,
 				ChatID:             u.ChatJoinRequest.Chat.ID,
 				Status:             db.ChallengeStatusBanCheckPending,
 				JoinRequestQueryID: u.ChatJoinRequest.QueryID,
@@ -415,7 +426,14 @@ func (g *Gatekeeper) handleChatJoinRequest(ctx context.Context, u *api.Update, s
 			logFieldError:  err.Error(),
 		}).Error("failed to check manual not-spammer override; continuing moderation")
 	}
-	if !isNotSpammer && g.moderationAvailable(ctx, u.ChatJoinRequest.Chat.ID) {
+	moderationAvailable := false
+	if !isNotSpammer {
+		moderationAvailable, err = g.moderationAvailable(ctx, u.ChatJoinRequest.Chat.ID)
+		if err != nil {
+			return err
+		}
+	}
+	if !isNotSpammer && moderationAvailable {
 		challenge, loadErr := g.store.GetChallengeByChatUser(ctx, u.ChatJoinRequest.Chat.ID, u.ChatJoinRequest.From.ID)
 		if loadErr != nil {
 			return loadErr
@@ -517,12 +535,20 @@ func (g *Gatekeeper) startChallenge(ctx context.Context, u *api.Update, user *ap
 	b := g.bot
 	challengeTimeout := settings.GetChallengeTimeout()
 	isPublic := recipientChatID == target.ID
-	moderationAvailable := isPublic && g.moderationAvailable(ctx, target.ID)
+	moderationAvailable := false
+	if isPublic {
+		var err error
+		moderationAvailable, err = g.moderationAvailable(ctx, target.ID)
+		if err != nil {
+			return err
+		}
+	}
 
 	now := time.Now()
 	challenge := &db.Challenge{
 		CommChatID:     recipientChatID,
 		UserID:         user.ID,
+		Username:       user.UserName,
 		ChatID:         target.ID,
 		Status:         db.ChallengeStatusPending,
 		SuccessUUID:    uuid.New(),

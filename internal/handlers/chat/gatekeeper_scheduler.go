@@ -43,7 +43,11 @@ func (g *Gatekeeper) processNewChatMembers(ctx context.Context) error {
 			}
 			continue
 		}
-		if !g.moderationAvailable(ctx, joiner.ChatID) {
+		moderationAvailable, err := g.moderationAvailable(ctx, joiner.ChatID)
+		if err != nil {
+			return err
+		}
+		if !moderationAvailable {
 			if err := g.store.ProcessRecentJoiner(ctx, joiner.ChatID, joiner.UserID, false); err != nil {
 				entry.WithField(logFieldError, err.Error()).Error("failed to close no-rights recent joiner")
 			}

@@ -570,12 +570,15 @@ main[data-state="blocked"] .bar {
 			button.textContent = decodeText(option.text);
 			button.setAttribute("aria-label", labels.option_label + " " + (index + 1) + ": " + button.textContent);
 		});
-		app.expand();
-		request("` + joinCaptchaReadyPath + `").then(({ response, data }) => {
-			if (!response.ok) fatal(data.message);
-		}).catch(() => fatal(labels.fatal_recovery));
-		app.ready();
-	} catch (error) {
+			app.expand();
+			request("` + joinCaptchaReadyPath + `").then(({ response, data }) => {
+				if (!response.ok) {
+					fatal(data.message || labels.fatal_recovery);
+					return;
+				}
+				app.ready();
+			}).catch(() => fatal(labels.fatal_recovery));
+		} catch (error) {
 		fatal(labels.fatal_recovery);
 		return;
 	}
@@ -767,6 +770,27 @@ func (g *Gatekeeper) joinCaptchaURL(token string) (string, error) {
 	return base.String(), nil
 }
 
+type joinWebAppStartError struct {
+	cause         error
+	effectStarted bool
+}
+
+func (e *joinWebAppStartError) Error() string { return e.cause.Error() }
+func (e *joinWebAppStartError) Unwrap() error { return e.cause }
+
+func joinWebAppPreEffectError(err error) error {
+	return &joinWebAppStartError{cause: gatekeeperUpdateFailure(err)}
+}
+
+func joinWebAppAmbiguousError(err error) error {
+	return &joinWebAppStartError{cause: safeGatekeeperError(err), effectStarted: true}
+}
+
+func joinWebAppEffectStarted(err error) bool {
+	var startErr *joinWebAppStartError
+	return stderrors.As(err, &startErr) && startErr.effectStarted
+}
+
 func (g *Gatekeeper) startJoinRequestWebAppChallenge(ctx context.Context, request *api.ChatJoinRequest, settings *db.Settings) error {
 	entry := g.getLogEntry().WithField(logFieldMethod, "startJoinRequestWebAppChallenge")
 	if request == nil {
@@ -794,11 +818,12 @@ func (g *Gatekeeper) startJoinRequestWebAppChallenge(ctx context.Context, reques
 	webAppToken := uuid.New()
 	webAppURL, err := g.joinCaptchaURL(webAppToken)
 	if err != nil {
-		return err
+		return joinWebAppPreEffectError(err)
 	}
 	challenge := &db.Challenge{
 		CommChatID:         request.UserChatID,
 		UserID:             request.From.ID,
+		Username:           request.From.UserName,
 		ChatID:             request.Chat.ID,
 		Status:             db.ChallengeStatusBanCheckPending,
 		SuccessUUID:        successUUID,
@@ -813,16 +838,16 @@ func (g *Gatekeeper) startJoinRequestWebAppChallenge(ctx context.Context, reques
 	}
 	if _, err := g.store.CreateChallenge(ctx, challenge); err != nil {
 		entry.WithField(logFieldError, err.Error()).Error("failed to create web app challenge")
-		return err
+		return joinWebAppPreEffectError(err)
 	}
 	owner := uuid.New()
 	leased, claimed, err := g.store.ClaimChallengeAction(ctx, challenge.ChallengeID, owner, now, now.Add(challengeActionLeaseDuration))
 	if err != nil || !claimed {
-		return stderrors.Join(err, errors.New("web app response boundary lease unavailable"))
+		return joinWebAppPreEffectError(stderrors.Join(err, errors.New("web app response boundary lease unavailable")))
 	}
 	challenge = leased
 	if err := g.beginChallengeEffect(ctx, challenge, owner, db.ChallengePhaseWebAppResponseStarted); err != nil {
-		return err
+		return joinWebAppPreEffectError(err)
 	}
 	responseCtx, cancel := context.WithTimeout(ctx, joinQueryResponseTimeout)
 	err = bot.SendJoinRequestWebApp(responseCtx, g.bot, request.QueryID, webAppURL)
@@ -831,14 +856,14 @@ func (g *Gatekeeper) startJoinRequestWebAppChallenge(ctx context.Context, reques
 		reconcileCtx, reconcileCancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 		reconcileErr := g.reconcileAmbiguousChallengeEffect(reconcileCtx, challenge, owner, 0, err)
 		reconcileCancel()
-		return safeGatekeeperError(reconcileErr)
+		return joinWebAppAmbiguousError(reconcileErr)
 	}
 	if err := g.advanceChallengePhase(ctx, challenge, owner, db.ChallengePhaseWebAppResponseDone); err != nil {
-		return g.reconcileAmbiguousChallengeEffect(ctx, challenge, owner, 0, err)
+		return joinWebAppAmbiguousError(g.reconcileAmbiguousChallengeEffect(ctx, challenge, owner, 0, err))
 	}
 	completed, err := g.store.CompleteLeasedChallengeActionVersion(ctx, challenge.ChallengeID, owner, challenge.ActionVersion, challenge.Status, challenge.ActionPhase, db.ChallengeStatusBanCheckPending, time.Time{}, time.Now())
 	if err != nil || !completed {
-		return stderrors.Join(err, errors.New("web app response completion fence lost"))
+		return joinWebAppAmbiguousError(stderrors.Join(err, errors.New("web app response completion fence lost")))
 	}
 	if err := handlersbase.IncrementDailyStat(ctx, g.stats, request.Chat.ID, handlersbase.StatChallengeStarted); err != nil {
 		entry.WithField(logFieldErrorCode, db.SafeGatekeeperErrorCode(err)).Warn("failed to increment started challenge stat")

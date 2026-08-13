@@ -12,11 +12,13 @@ import (
 )
 
 const challengeColumns = `
-	challenge_id, comm_chat_id, user_id, chat_id, status, success_uuid, web_app_token, join_request_query_id,
+	challenge_id, comm_chat_id, user_id, username, chat_id, status, success_uuid, web_app_token, join_request_query_id,
 	captcha_prompt, captcha_options_json, join_message_id, challenge_message_id, attempts, created_at, expires_at,
 	web_app_opened_at, user_language, next_attempt_at, attempt_count, last_error, notice_message_id, user_restricted,
 	action_owner, action_lease_until, action_version, action_phase, effect_started_at, cancel_requested
 `
+
+const challengeActionPageSize = 100
 
 var ErrChallengeActionInProgress = errors.New("gatekeeper challenge action is in progress")
 
@@ -37,13 +39,14 @@ func (c *sqliteClient) CreateChallenge(ctx context.Context, challenge *db.Challe
 
 	query := `
 		INSERT INTO gatekeeper_challenges (
-			challenge_id, comm_chat_id, user_id, chat_id, status, success_uuid, web_app_token, join_request_query_id, captcha_prompt,
+			challenge_id, comm_chat_id, user_id, username, chat_id, status, success_uuid, web_app_token, join_request_query_id, captcha_prompt,
 			captcha_options_json, join_message_id, challenge_message_id, attempts, created_at, expires_at, web_app_opened_at,
 			user_language, next_attempt_at, attempt_count, last_error, notice_message_id, user_restricted, action_owner, action_lease_until,
 			action_version, action_phase, effect_started_at, cancel_requested
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(comm_chat_id, user_id, chat_id) DO UPDATE SET
 			challenge_id = excluded.challenge_id,
+			username = excluded.username,
 			status = excluded.status,
 			success_uuid = excluded.success_uuid,
 			web_app_token = excluded.web_app_token,
@@ -75,6 +78,7 @@ func (c *sqliteClient) CreateChallenge(ctx context.Context, challenge *db.Challe
 		challenge.ChallengeID,
 		challenge.CommChatID,
 		challenge.UserID,
+		challenge.Username,
 		challenge.ChatID,
 		challenge.Status,
 		challenge.SuccessUUID,
@@ -1050,7 +1054,8 @@ func (c *sqliteClient) GetDueChallenges(ctx context.Context, now time.Time) ([]*
 		WHERE status IN (?, ?, ?, ?, ?, ?, ?)
 			AND next_attempt_at IS NOT NULL
 			AND next_attempt_at <= ?
-		ORDER BY next_attempt_at, created_at
+			ORDER BY next_attempt_at, created_at, challenge_id
+			LIMIT ?
 	`,
 		db.ChallengeStatusRestrictPending,
 		db.ChallengeStatusWebAppFallbackPending,
@@ -1060,6 +1065,7 @@ func (c *sqliteClient) GetDueChallenges(ctx context.Context, now time.Time) ([]*
 		db.ChallengeStatusRejectPending,
 		db.ChallengeStatusBanCheckPending,
 		now,
+		challengeActionPageSize,
 	)
 	return challenges, err
 }

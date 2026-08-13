@@ -22,6 +22,7 @@ import (
 	"time"
 
 	api "github.com/OvyFlash/telegram-bot-api"
+	"github.com/iamwavecut/ngbot/internal/bot"
 	"github.com/iamwavecut/ngbot/internal/config"
 	"github.com/iamwavecut/ngbot/internal/db"
 	"github.com/iamwavecut/ngbot/internal/lifecycle"
@@ -137,6 +138,26 @@ func assertJoinCaptchaReadinessStatus(t *testing.T, gatekeeper *Gatekeeper, want
 	gatekeeper.joinCaptchaWebAppHandler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, joinCaptchaReadyHealthPath, nil))
 	if recorder.Code != want {
 		t.Fatalf("readiness status = %d, want %d", recorder.Code, want)
+	}
+}
+
+func TestJoinRequestWebAppPreEffectFailurePreservesQueryForRetry(t *testing.T) {
+	t.Parallel()
+
+	request := &api.ChatJoinRequest{Chat: api.Chat{ID: -901}, From: api.User{ID: 902}, UserChatID: 902, QueryID: "retry-query"}
+	gatekeeper := &Gatekeeper{
+		s:          &gatekeeperTestService{settings: webAppSettings()},
+		store:      newGatekeeperFlowStore(),
+		config:     &config.Config{GatekeeperWebApp: config.GatekeeperWebApp{PublicURL: "%"}},
+		banChecker: &testGatekeeperBanChecker{},
+	}
+	err := gatekeeper.handleChatJoinRequest(t.Context(), &api.Update{ChatJoinRequest: request}, webAppSettings())
+	failure := bot.ClassifyUpdateFailure(err)
+	if failure.Disposition != bot.UpdateFailureRetryable {
+		t.Fatalf("pre-effect failure = %#v", failure)
+	}
+	if request.QueryID != "retry-query" {
+		t.Fatalf("pre-effect failure cleared query id: %q", request.QueryID)
 	}
 }
 
@@ -338,6 +359,9 @@ const source = Buffer.from(%q, "base64").toString("utf8");
 let click;
 let answerPosts = 0;
 let uncaught = 0;
+let readyCalls = 0;
+let readinessResolved = false;
+let readyBeforeReadiness = false;
 const makeClassList = () => ({ add() {}, remove() {} });
 const makeElement = () => ({
   dataset: {}, disabled: false, textContent: "", classList: makeClassList(),
@@ -359,13 +383,17 @@ const document = {
   },
   querySelectorAll(selector) { return selector === "[data-choice]" ? [button] : []; }
 };
-const app = { initData: "signed", ready() {}, expand() {}, close() {} };
+const app = { initData: "signed", ready() { readyCalls++; if (!readinessResolved) readyBeforeReadiness = true; }, expand() {}, close() {} };
 const sandbox = {
   window: { Telegram: { WebApp: app }, clearTimeout() {}, setTimeout(fn) { fn(); },
     clearInterval() {}, setInterval() { return 1; } },
   document, URLSearchParams, Uint8Array, TextDecoder,
   setTimeout(fn) { fn(); },
   fetch: async (target, options) => {
+	if (target.endsWith("/ready")) {
+		await new Promise(resolve => setImmediate(resolve));
+		readinessResolved = true;
+	}
     if (target.endsWith("/answer")) {
       if (!options || options.method !== "POST") throw new Error("answer request must use POST");
       answerPosts++;
@@ -384,7 +412,7 @@ process.on("uncaughtException", () => { uncaught++; });
   click();
   await new Promise(resolve => setImmediate(resolve));
   await new Promise(resolve => setImmediate(resolve));
-  process.stdout.write(JSON.stringify({ answerPosts, uncaught }));
+  process.stdout.write(JSON.stringify({ answerPosts, uncaught, readyCalls, readyBeforeReadiness }));
 })().catch(error => { process.stderr.write(error.stack); process.exitCode = 1; });
 `, base64.StdEncoding.EncodeToString([]byte(clientScript)), challenge.SuccessUUID, challenge.WebAppToken)
 
@@ -393,14 +421,16 @@ process.on("uncaughtException", () => { uncaught++; });
 		t.Fatalf("execute rendered client: %v\n%s", err, output)
 	}
 	var result struct {
-		AnswerPosts int `json:"answerPosts"`
-		Uncaught    int `json:"uncaught"`
+		AnswerPosts          int  `json:"answerPosts"`
+		Uncaught             int  `json:"uncaught"`
+		ReadyCalls           int  `json:"readyCalls"`
+		ReadyBeforeReadiness bool `json:"readyBeforeReadiness"`
 	}
 	if err := json.Unmarshal(output, &result); err != nil {
 		t.Fatalf("decode rendered client result %q: %v", output, err)
 	}
-	if result.AnswerPosts != 1 || result.Uncaught != 0 {
-		t.Fatalf("rendered click result = %+v, want one answer POST and no uncaught exception", result)
+	if result.AnswerPosts != 1 || result.Uncaught != 0 || result.ReadyCalls != 1 || result.ReadyBeforeReadiness {
+		t.Fatalf("rendered client result = %+v, want readiness before one ready call and one answer POST", result)
 	}
 }
 

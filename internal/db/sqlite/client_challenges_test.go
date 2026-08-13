@@ -68,6 +68,68 @@ func TestChallengeGenerationRejectsStaleOperations(t *testing.T) {
 	}
 }
 
+func TestChallengePersistsUsernameForDeferredIdentityChecks(t *testing.T) {
+	t.Parallel()
+
+	client, err := NewSQLiteClient(t.Context(), t.TempDir(), "test.db")
+	if err != nil {
+		t.Fatalf("new sqlite client: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	now := time.Now()
+	challenge := &db.Challenge{
+		CommChatID:    101,
+		UserID:        202,
+		Username:      "Deferred_User",
+		ChatID:        -303,
+		Status:        db.ChallengeStatusBanCheckPending,
+		CreatedAt:     now,
+		ExpiresAt:     now.Add(time.Minute),
+		NextAttemptAt: sql.NullTime{Time: now, Valid: true},
+	}
+	if _, err := client.CreateChallenge(t.Context(), challenge); err != nil {
+		t.Fatalf("create challenge: %v", err)
+	}
+
+	loaded, err := client.GetChallengeByChatUser(t.Context(), challenge.ChatID, challenge.UserID)
+	if err != nil {
+		t.Fatalf("load challenge: %v", err)
+	}
+	if loaded == nil || loaded.Username != challenge.Username {
+		t.Fatalf("persisted username = %#v, want %q", loaded, challenge.Username)
+	}
+}
+
+func TestDueChallengesLoadsBoundedPagesInStableOrder(t *testing.T) {
+	t.Parallel()
+
+	client, err := NewSQLiteClient(t.Context(), t.TempDir(), "test.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	now := time.Now().UTC().Truncate(time.Second)
+	for index := range challengeActionPageSize + 5 {
+		challenge := &db.Challenge{CommChatID: int64(index + 1), UserID: int64(index + 1), ChatID: -int64(index + 1), Status: db.ChallengeStatusBanCheckPending, CreatedAt: now.Add(time.Duration(index) * time.Millisecond), ExpiresAt: now.Add(time.Minute), NextAttemptAt: sql.NullTime{Time: now, Valid: true}}
+		if _, err := client.CreateChallenge(t.Context(), challenge); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first, err := client.GetDueChallenges(t.Context(), now)
+	if err != nil || len(first) != challengeActionPageSize {
+		t.Fatalf("first due page length = %d, err=%v", len(first), err)
+	}
+	for _, challenge := range first {
+		if deleted, err := client.DeleteChallengeInstance(t.Context(), challenge.ChallengeID, challenge.Status); err != nil || !deleted {
+			t.Fatalf("delete first page challenge: deleted=%t err=%v", deleted, err)
+		}
+	}
+	second, err := client.GetDueChallenges(t.Context(), now)
+	if err != nil || len(second) != 5 {
+		t.Fatalf("second due page length = %d, err=%v", len(second), err)
+	}
+}
+
 func TestChallengeActionLeaseHasOneOwnerAndRecoversAfterExpiry(t *testing.T) {
 	t.Parallel()
 
