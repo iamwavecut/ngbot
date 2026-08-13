@@ -47,22 +47,32 @@ func NewBanlistGuard(botAPI *api.BotAPI, store banlistGuardStore, banService mod
 }
 
 func (g *BanlistGuard) Handle(ctx context.Context, u *api.Update, chat *api.Chat, user *api.User) (bool, error) {
+	proceed, _, err := g.handleWithPrecheck(ctx, u, chat, user)
+	return proceed, err
+}
+
+func (g *BanlistGuard) handleWithPrecheck(ctx context.Context, u *api.Update, chat *api.Chat, user *api.User) (bool, moderation.BanlistPrecheck, error) {
+	precheck := moderation.BanlistPrecheck{}
 	if u == nil || chat == nil || g.banService == nil {
-		return true, nil
+		return true, precheck, nil
 	}
 	user = moderationUpdateUser(u, user)
 	if user == nil {
-		return true, nil
+		return true, precheck, nil
 	}
+	precheck.ChatID = chat.ID
+	precheck.UserID = user.ID
+	precheck.Username = user.UserName
 	msg := u.Message
 	if msg == nil {
 		msg = u.EditedMessage
 	}
 	if msg != nil && msg.SenderChat != nil {
-		return true, nil
+		return true, precheck, nil
 	}
 	if msg != nil && len(msg.NewChatMembers) != 0 {
-		return g.handleJoinedMembers(ctx, u, msg, chat)
+		proceed, err := g.handleJoinedMembers(ctx, u, msg, chat)
+		return proceed, precheck, err
 	}
 
 	isNotSpammer, err := g.store.IsChatNotSpammer(ctx, chat.ID, user.ID, user.UserName)
@@ -74,7 +84,11 @@ func (g *BanlistGuard) Handle(ctx context.Context, u *api.Update, chat *api.Chat
 			logFieldError:  err.Error(),
 		}).Error("failed to check manual not-spammer override; continuing banlist enforcement")
 	} else if isNotSpammer {
-		return true, nil
+		precheck.AllowlistChecked = true
+		precheck.Allowlisted = true
+		return true, precheck, nil
+	} else {
+		precheck.AllowlistChecked = true
 	}
 
 	knownBanned := g.banService.IsKnownBanned(user.ID)
@@ -86,21 +100,22 @@ func (g *BanlistGuard) Handle(ctx context.Context, u *api.Update, chat *api.Chat
 			logFieldUserID: user.ID,
 			logFieldError:  err.Error(),
 		}).Warn("moderation capability is unknown; stopping feature routing")
-		return false, bot.NewRetryableUpdateFailure(bot.UpdateFailureCapability, "capability_unknown", err)
+		return false, precheck, bot.NewRetryableUpdateFailure(bot.UpdateFailureCapability, "capability_unknown", err)
 	}
 	if !available {
-		return !knownBanned, nil
+		return !knownBanned, precheck, nil
 	}
 
 	banned := knownBanned
 	if !banned {
 		banned, err = g.banService.CheckBan(ctx, user.ID)
 		if err != nil {
-			return false, fmt.Errorf("check banlist before feature routing: %w", err)
+			return false, precheck, fmt.Errorf("check banlist before feature routing: %w", err)
 		}
+		precheck.ProviderChecked = true
 	}
 	if !banned {
-		return true, nil
+		return true, precheck, nil
 	}
 
 	var outcome banlistedMessageOutcome
@@ -118,13 +133,13 @@ func (g *BanlistGuard) Handle(ctx context.Context, u *api.Update, chat *api.Chat
 	})
 	if outcome.err != nil {
 		entry.WithField(logFieldError, outcome.err.Error()).Error("failed to enforce terminal banlist action")
-		return false, outcome.err
+		return false, precheck, outcome.err
 	} else if !outcome.moderationAvailable {
 		entry.Info("terminal banlist action skipped in no-rights mode")
 	} else {
 		entry.Info("terminal banlist action applied")
 	}
-	return false, nil
+	return false, precheck, nil
 }
 
 func (g *BanlistGuard) enforceDurableBanlistedMessage(ctx context.Context, store moderationActionStore, updateID int, msg *api.Message, chat *api.Chat, user *api.User) banlistedMessageOutcome {

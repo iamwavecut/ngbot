@@ -964,6 +964,90 @@ func TestSpamVoteCallbackUsesSpamCaseChatSettings(t *testing.T) {
 	}
 }
 
+func TestSpamVoteHandlerChainConsumesBanlistPrecheck(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		logChatID     int64
+		targetChatID  int64
+		allowlistChat int64
+		wantChecks    int
+	}{
+		{name: "same target normal voter", logChatID: -100, targetChatID: -100, wantChecks: 1},
+		{name: "same target allowlisted voter", logChatID: -100, targetChatID: -100, allowlistChat: -100, wantChecks: 0},
+		{name: "log allowlist does not authorize target", logChatID: 900, targetChatID: -100, allowlistChat: 900, wantChecks: 1},
+		{name: "target allowlist wins across log chat", logChatID: 900, targetChatID: -100, allowlistChat: -100, wantChecks: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			botAPI := newTestBotAPI(t, func(method string, _ *http.Request) any {
+				switch method {
+				case testTelegramMethodGetChatMember:
+					return testChatMemberResponse(telegramMemberStatus, false, false, false)
+				case "answerCallbackQuery":
+					return true
+				case "editMessageText":
+					return map[string]any{logFieldMessageID: 400, testJSONDate: 0, logFieldChat: map[string]any{"id": tt.logChatID, testJSONType: testChatTypeChannel}}
+				default:
+					t.Fatalf("unexpected bot method: %s", method)
+					return nil
+				}
+			})
+			ctx := t.Context()
+			dbClient, err := sqlite.NewSQLiteClient(ctx, t.TempDir(), "test.db")
+			if err != nil {
+				t.Fatalf("new sqlite client: %v", err)
+			}
+			t.Cleanup(func() { _ = dbClient.Close() })
+			if tt.allowlistChat != 0 {
+				if _, err := dbClient.CreateChatNotSpammerOverride(ctx, &db.ChatNotSpammerOverride{
+					ChatID: tt.allowlistChat, MatchType: db.NotSpammerMatchTypeUserID, MatchValue: "300", CreatedByUserID: 1,
+				}); err != nil {
+					t.Fatalf("create allowlist: %v", err)
+				}
+			}
+			settings := db.DefaultSettings(tt.targetChatID)
+			if err := dbClient.SetSettings(ctx, settings); err != nil {
+				t.Fatalf("set settings: %v", err)
+			}
+			spamCase, err := dbClient.CreateSpamCase(ctx, &db.SpamCase{
+				ChatID: tt.targetChatID, UserID: 200, MessageID: 40, MessageText: "spam", CreatedAt: time.Now(), Status: db.SpamCaseStatusPending,
+			})
+			if err != nil {
+				t.Fatalf("create spam case: %v", err)
+			}
+			service := botservice.NewService(ctx, botAPI, dbClient, "en", log.NewEntry(log.New()))
+			banService := &testBanService{}
+			spamControl := moderation.NewSpamControl(service, botAPI, dbClient, config.SpamControl{
+				MinVoters: 2, MaxVoters: 10, VotingTimeoutMinutes: time.Minute,
+			}, banService, false)
+			reactor := NewReactor(service, botAPI, dbClient, dbClient, banService, spamControl, nil, Config{})
+			features := NewReactorFeatures(reactor)
+			router := NewModerationRouter(NewBanlistGuard(botAPI, dbClient, banService), reactor, features)
+			processor := botservice.NewUpdateProcessor(service, router, features)
+			logChat := api.Chat{ID: tt.logChatID, Type: testChatTypeChannel}
+			voter := api.User{ID: 300, UserName: "voter_name", FirstName: "Voter"}
+			update := &api.Update{CallbackQuery: &api.CallbackQuery{
+				ID: "callback-id", From: &voter, Data: "spam_vote:" + strconv.FormatInt(spamCase.ID, 10) + ":1",
+				Message: &api.Message{MessageID: 400, Chat: logChat},
+			}}
+			if err := processor.Process(ctx, update); err != nil {
+				t.Fatalf("process callback: %v", err)
+			}
+			if banService.checkBanCalls != tt.wantChecks {
+				t.Fatalf("provider checks = %d, want %d", banService.checkBanCalls, tt.wantChecks)
+			}
+			votes, err := dbClient.GetSpamVotes(ctx, spamCase.ID)
+			if err != nil || len(votes) != 1 {
+				t.Fatalf("target vote result = %#v, err %v", votes, err)
+			}
+		})
+	}
+}
+
 func TestHandleMessageExternalQuoteHeuristic(t *testing.T) {
 	t.Parallel()
 

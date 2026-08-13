@@ -420,8 +420,12 @@ func buildRuntime(ctx context.Context, cfg *config.Config, errChan chan<- shutdo
 	reactorHandler := chatHandlers.NewReactor(service, botAPI, dbClient, dbClient, banService, spamControl, spamDetector, chatHandlers.Config{
 		SpamControl: cfg.SpamControl,
 	})
-	mandatoryModeration := chatHandlers.NewModerationRouter(banlistGuard, reactorHandler)
 	reactorFeatures := chatHandlers.NewReactorFeatures(reactorHandler)
+	var mandatoryFeatures *chatHandlers.ReactorFeatures
+	if slices.Contains(cfg.EnabledHandlers, handlerReactor) {
+		mandatoryFeatures = reactorFeatures
+	}
+	mandatoryModeration := chatHandlers.NewModerationRouter(banlistGuard, reactorHandler, mandatoryFeatures)
 
 	availableHandlers := map[string]bot.Handler{
 		handlerAdmin:      adminHandler,

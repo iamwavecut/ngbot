@@ -26,9 +26,15 @@ func (sc *SpamControl) RecordVote(ctx context.Context, caseID int64, voterID int
 	if spamCase.UserID == voterID {
 		return 0, 0, ErrSuspectCannotVote
 	}
-	isNotSpammer, err := sc.store.IsChatNotSpammer(ctx, spamCase.ChatID, voterID, username)
-	if err != nil {
-		return 0, 0, fmt.Errorf("check voter allowlist: %w", err)
+	precheck, hasPrecheck := BanlistPrecheckFromContext(ctx)
+	isNotSpammer := false
+	if hasPrecheck && precheck.AllowlistChecked && precheck.CoversIdentity(spamCase.ChatID, voterID, username) {
+		isNotSpammer = precheck.Allowlisted
+	} else {
+		isNotSpammer, err = sc.store.IsChatNotSpammer(ctx, spamCase.ChatID, voterID, username)
+		if err != nil {
+			return 0, 0, fmt.Errorf("check voter allowlist: %w", err)
+		}
 	}
 	available, err := sc.banService.ModerationAvailable(ctx, spamCase.ChatID)
 	if err != nil || !available {
@@ -50,7 +56,8 @@ func (sc *SpamControl) RecordVote(ctx context.Context, caseID int64, voterID int
 	if !settings.CommunityVotingEnabled {
 		return 0, 0, ErrCommunityVotingDisabled
 	}
-	eligible, err := sc.isEligibleVoter(ctx, spamCase.ChatID, voterID, isNotSpammer)
+	providerPrechecked := hasPrecheck && precheck.UserID == voterID && precheck.ProviderChecked
+	eligible, err := sc.isEligibleVoter(ctx, spamCase.ChatID, voterID, isNotSpammer || providerPrechecked)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -82,6 +89,17 @@ func (sc *SpamControl) RecordVote(ctx context.Context, caseID int64, voterID int
 	}
 
 	return notSpamVotes, spamVotes, nil
+}
+
+func (sc *SpamControl) VoteTargetChat(ctx context.Context, caseID int64) (int64, bool, error) {
+	spamCase, err := sc.store.GetSpamCase(ctx, caseID)
+	if err != nil {
+		return 0, false, err
+	}
+	if spamCase == nil {
+		return 0, false, nil
+	}
+	return spamCase.ChatID, true, nil
 }
 
 func (sc *SpamControl) isEligibleVoter(ctx context.Context, chatID, voterID int64, skipBanlist bool) (bool, error) {
