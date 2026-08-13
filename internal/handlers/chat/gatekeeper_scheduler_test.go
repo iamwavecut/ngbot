@@ -52,6 +52,16 @@ func TestTelegramTerminalErrorsAreClassifiedPerAction(t *testing.T) {
 	if !isTelegramJoinApprovalAlreadyApplied(alreadyMember) {
 		t.Fatal("existing member must be an idempotent member approval success")
 	}
+	if isTelegramBanAlreadyApplied(userMissing) {
+		t.Fatal("missing requester does not prove a ban was applied")
+	}
+}
+
+func TestChallengeActionDeadlineIsBelowLease(t *testing.T) {
+	t.Parallel()
+	if challengeActionTimeout >= challengeActionLeaseDuration {
+		t.Fatalf("action timeout %s must stay below lease %s", challengeActionTimeout, challengeActionLeaseDuration)
+	}
 }
 
 type testProcessedJoiner struct {
@@ -108,6 +118,10 @@ func (s *testGatekeeperStore) PrepareDMFallback(context.Context, string, string,
 	return false, nil
 }
 
+func (s *testGatekeeperStore) PrepareDMFallbackVersion(context.Context, string, string, int64, string, string, time.Time, time.Time) (int64, bool, error) {
+	return 0, false, nil
+}
+
 func (s *testGatekeeperStore) CompleteExternalAction(context.Context, string, string, string, time.Time) (bool, error) {
 	return false, nil
 }
@@ -116,32 +130,52 @@ func (s *testGatekeeperStore) ClaimChallengeAction(context.Context, string, stri
 	return nil, false, nil
 }
 
-func (s *testGatekeeperStore) CompleteLeasedChallengeAction(context.Context, string, string, string, string, time.Time) (bool, error) {
+func (s *testGatekeeperStore) BeginLeasedChallengeEffect(context.Context, string, string, int64, string, string, time.Time) (int64, bool, error) {
+	return 0, false, nil
+}
+
+func (s *testGatekeeperStore) AdvanceLeasedChallengePhase(context.Context, string, string, int64, string, string, time.Time) (int64, bool, error) {
+	return 0, false, nil
+}
+
+func (s *testGatekeeperStore) BindLeasedChallengeMessage(context.Context, string, string, int64, string, string, string, int, time.Time) (bool, error) {
 	return false, nil
 }
 
-func (s *testGatekeeperStore) ScheduleLeasedChallengeRetry(context.Context, string, string, string, time.Time, string) (bool, error) {
+func (s *testGatekeeperStore) CompleteLeasedChallengeActionVersion(context.Context, string, string, int64, string, string, string, time.Time, time.Time) (bool, error) {
 	return false, nil
 }
 
-func (s *testGatekeeperStore) ReconcileLeasedChallenge(context.Context, string, string, string, string) (bool, error) {
+func (s *testGatekeeperStore) ScheduleLeasedChallengeRetryVersion(context.Context, string, string, int64, string, string, time.Time, string, time.Time) (bool, error) {
 	return false, nil
 }
 
-func (s *testGatekeeperStore) CompleteLeasedChallengeActivation(context.Context, string, string, bool, int) (bool, error) {
+func (s *testGatekeeperStore) CompleteLeasedChallengeActivationVersion(context.Context, string, string, int64, string, bool, int, time.Time) (bool, error) {
 	return false, nil
 }
 
-func (s *testGatekeeperStore) MarkLeasedChallengeRestricted(context.Context, string, string) (bool, error) {
+func (s *testGatekeeperStore) MarkLeasedChallengeRestrictedVersion(context.Context, string, string, int64, string, time.Time) (int64, bool, error) {
+	return 0, false, nil
+}
+
+func (s *testGatekeeperStore) CompleteLeasedChallengeWithoutPrivilegesVersion(context.Context, string, string, int64, string, string, int, time.Time, string, time.Time) (bool, error) {
 	return false, nil
 }
 
-func (s *testGatekeeperStore) CompleteLeasedChallengeWithoutPrivileges(context.Context, string, string, string, int, time.Time, string) (bool, error) {
+func (s *testGatekeeperStore) DeleteLeasedChallengeActionVersion(context.Context, string, string, int64, string, string, time.Time) (bool, error) {
 	return false, nil
 }
 
-func (s *testGatekeeperStore) DeleteLeasedChallengeAction(context.Context, string, string, string) (bool, error) {
+func (s *testGatekeeperStore) ReconcileLeasedChallengeVersion(context.Context, string, string, int64, string, int, string, time.Time) (bool, error) {
 	return false, nil
+}
+
+func (s *testGatekeeperStore) RequestChallengeCancellation(context.Context, string, string, int64, string) (bool, error) {
+	return false, nil
+}
+
+func (s *testGatekeeperStore) ReconcileExpiredChallengeEffects(context.Context, time.Time) (int, error) {
+	return 0, nil
 }
 
 func (s *testGatekeeperStore) CompleteChallengeWithoutPrivileges(context.Context, string, string, int, time.Time, string) (bool, error) {

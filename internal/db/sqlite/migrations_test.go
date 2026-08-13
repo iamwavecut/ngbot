@@ -1167,6 +1167,27 @@ func TestGatekeeperActionLeaseMigrationUpgradesAndRollsBack(t *testing.T) {
 	`); err != nil {
 		t.Fatalf("insert legacy challenge: %v", err)
 	}
+	for _, row := range []struct {
+		id        string
+		userID    int64
+		status    string
+		lastError string
+	}{
+		{id: "legacy-temporary-dm", userID: 21, status: db.ChallengeStatusWebAppFallbackPending, lastError: "temporary upstream failure"},
+		{id: "legacy-reject", userID: 22, status: db.ChallengeStatusRejectPending},
+		{id: "legacy-invalid-query", userID: 23, status: db.ChallengeStatusApproveQueryPending, lastError: "Bad Request: QUERY_ID_INVALID"},
+		{id: "legacy-permanent-dm", userID: 24, status: db.ChallengeStatusWebAppFallbackPending, lastError: "Forbidden: bot can't initiate conversation"},
+	} {
+		if _, err := sqlDB.ExecContext(ctx, `
+			INSERT INTO gatekeeper_challenges (
+				comm_chat_id, user_id, chat_id, success_uuid, created_at, expires_at,
+				challenge_id, status, next_attempt_at, attempt_count, last_error
+			) VALUES (?, ?, -100, 'success', CURRENT_TIMESTAMP, datetime('now', '+10 minutes'),
+				?, ?, NULL, 8, ?)
+		`, row.userID, row.userID, row.id, row.status, row.lastError); err != nil {
+			t.Fatalf("insert %s: %v", row.id, err)
+		}
+	}
 	if _, err := migrate.ExecMax(sqlDB, "sqlite3", source, migrate.Up, 1); err != nil {
 		t.Fatalf("execute action lease migration: %v", err)
 	}
@@ -1184,11 +1205,29 @@ func TestGatekeeperActionLeaseMigrationUpgradesAndRollsBack(t *testing.T) {
 	if owner != "" || leaseUntil.Valid {
 		t.Fatalf("legacy challenge acquired a synthetic lease: owner=%q lease=%v", owner, leaseUntil.Valid)
 	}
+	for _, id := range []string{"legacy-temporary-dm", "legacy-reject"} {
+		var next sql.NullTime
+		if err := sqlDB.QueryRowContext(ctx, `SELECT next_attempt_at FROM gatekeeper_challenges WHERE challenge_id = ?`, id).Scan(&next); err != nil || !next.Valid {
+			t.Fatalf("legacy retry %s was not made due: next=%v err=%v", id, next.Valid, err)
+		}
+	}
+	for _, id := range []string{"legacy-invalid-query", "legacy-permanent-dm"} {
+		var activeCount, reconciliationCount int
+		if err := sqlDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM gatekeeper_challenges WHERE challenge_id = ?`, id).Scan(&activeCount); err != nil {
+			t.Fatalf("count active %s: %v", id, err)
+		}
+		if err := sqlDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM gatekeeper_challenge_reconciliations WHERE challenge_id = ?`, id).Scan(&reconciliationCount); err != nil {
+			t.Fatalf("count reconciliation %s: %v", id, err)
+		}
+		if activeCount != 0 || reconciliationCount != 1 {
+			t.Fatalf("legacy ambiguous action %s migration: active=%d reconciliation=%d", id, activeCount, reconciliationCount)
+		}
+	}
 	if _, err := sqlDB.ExecContext(ctx, `
 		INSERT INTO gatekeeper_challenge_reconciliations (
 			challenge_id, comm_chat_id, user_id, chat_id, action_status,
-			attempt_count, last_error, challenge_created_at
-		) VALUES ('lease-upgrade', 10, 20, -100, 'reject_pending', 4, 'exhausted', CURRENT_TIMESTAMP)
+			attempt_count, last_error, challenge_created_at, expires_at
+		) VALUES ('lease-upgrade', 10, 20, -100, 'reject_pending', 4, 'exhausted', CURRENT_TIMESTAMP, datetime('now', '+10 minutes'))
 	`); err != nil {
 		t.Fatalf("insert reconciliation: %v", err)
 	}

@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -17,8 +19,57 @@ import (
 	"github.com/iamwavecut/ngbot/internal/adapters/llm/openai"
 	"github.com/iamwavecut/ngbot/internal/bot"
 	"github.com/iamwavecut/ngbot/internal/config"
+	"github.com/iamwavecut/ngbot/internal/db"
+	"github.com/iamwavecut/ngbot/internal/db/sqlite"
 	log "github.com/sirupsen/logrus"
 )
+
+func TestGatekeeperReconciliationCLIListsRedactedAndResolvesWithCAS(t *testing.T) {
+	dataDir := t.TempDir()
+	client, err := sqlite.NewSQLiteClient(t.Context(), dataDir, "bot.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	challenge := &db.Challenge{CommChatID: 1, UserID: 2, ChatID: -3, Status: db.ChallengeStatusApproveQueryPending, WebAppToken: "web-secret", JoinRequestQueryID: "query-secret", CreatedAt: now, ExpiresAt: now.Add(time.Minute), NextAttemptAt: sql.NullTime{Time: now, Valid: true}}
+	if _, err := client.CreateChallenge(t.Context(), challenge); err != nil {
+		t.Fatal(err)
+	}
+	leased, claimed, err := client.ClaimChallengeAction(t.Context(), challenge.ChallengeID, "owner", now, now.Add(time.Minute))
+	if err != nil || !claimed {
+		t.Fatalf("claim: %#v %t %v", leased, claimed, err)
+	}
+	version, changed, err := client.BeginLeasedChallengeEffect(t.Context(), challenge.ChallengeID, "owner", leased.ActionVersion, challenge.Status, db.ChallengePhaseQueryAnswerStarted, now)
+	if err != nil || !changed {
+		t.Fatalf("begin: %d %t %v", version, changed, err)
+	}
+	if reconciled, err := client.ReconcileLeasedChallengeVersion(t.Context(), challenge.ChallengeID, "owner", version, challenge.Status, 0, "ambiguous", now); err != nil || !reconciled {
+		t.Fatalf("reconcile: %t %v", reconciled, err)
+	}
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{DotPath: dataDir}
+	var output bytes.Buffer
+	if err := runGatekeeperReconciliation(t.Context(), cfg, "list", &output); err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(output.Bytes(), []byte("query-secret")) || bytes.Contains(output.Bytes(), []byte("web-secret")) {
+		t.Fatalf("CLI leaked tokens: %s", output.String())
+	}
+	var record db.ChallengeReconciliation
+	if err := json.Unmarshal(bytes.TrimSpace(output.Bytes()), &record); err != nil {
+		t.Fatalf("decode list: %v output=%s", err, output.String())
+	}
+	command := fmt.Sprintf("resolve:%d:%d", record.ID, record.Version)
+	if err := runGatekeeperReconciliation(t.Context(), cfg, command, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := runGatekeeperReconciliation(t.Context(), cfg, command, &bytes.Buffer{}); err == nil {
+		t.Fatal("stale resolve CAS succeeded")
+	}
+}
 
 type testUpdateHandler struct {
 	name string

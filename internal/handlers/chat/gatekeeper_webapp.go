@@ -43,6 +43,7 @@ const (
 	joinCaptchaStateProcessing     = "processing"
 	joinCaptchaStateRejected       = "rejected"
 	joinCaptchaStateUnavailable    = "unavailable"
+	joinCaptchaTokenParameter      = "token"
 )
 
 type webAppCaptchaOption struct {
@@ -713,7 +714,7 @@ func (g *Gatekeeper) joinCaptchaURL(token string) (string, error) {
 	}
 	base.Path = joinCaptchaPath
 	base.RawPath = ""
-	base.RawQuery = url.Values{"token": {token}}.Encode()
+	base.RawQuery = url.Values{joinCaptchaTokenParameter: {token}}.Encode()
 	base.Fragment = ""
 	return base.String(), nil
 }
@@ -751,7 +752,7 @@ func (g *Gatekeeper) startJoinRequestWebAppChallenge(ctx context.Context, reques
 		CommChatID:         request.UserChatID,
 		UserID:             request.From.ID,
 		ChatID:             request.Chat.ID,
-		Status:             db.ChallengeStatusPending,
+		Status:             db.ChallengeStatusBanCheckPending,
 		SuccessUUID:        successUUID,
 		WebAppToken:        webAppToken,
 		JoinRequestQueryID: request.QueryID,
@@ -768,7 +769,9 @@ func (g *Gatekeeper) startJoinRequestWebAppChallenge(ctx context.Context, reques
 	if err := handlersbase.IncrementDailyStat(ctx, g.stats, request.Chat.ID, handlersbase.StatChallengeStarted); err != nil {
 		entry.WithField(logFieldError, err.Error()).Warn("failed to increment started challenge stat")
 	}
-	if err := bot.SendJoinRequestWebApp(ctx, g.bot, request.QueryID, webAppURL); err != nil {
+	responseCtx, cancel := context.WithTimeout(ctx, joinQueryResponseTimeout)
+	defer cancel()
+	if err := bot.SendJoinRequestWebApp(responseCtx, g.bot, request.QueryID, webAppURL); err != nil {
 		claimed, claimErr := g.store.BeginDMFallback(ctx, challenge.ChallengeID)
 		if claimErr != nil {
 			return stderrors.Join(fmt.Errorf("send web app challenge: %w", err), claimErr)
@@ -1207,9 +1210,9 @@ func (g *Gatekeeper) webAppChallengeFromRequest(w http.ResponseWriter, r *http.R
 }
 
 func (g *Gatekeeper) webAppChallengeByToken(w http.ResponseWriter, r *http.Request, renderPage bool) (*db.Challenge, bool) {
-	token := strings.TrimSpace(r.URL.Query().Get("token"))
+	token := strings.TrimSpace(r.URL.Query().Get(joinCaptchaTokenParameter))
 	if token == "" {
-		token = strings.TrimSpace(r.Form.Get("token"))
+		token = strings.TrimSpace(r.Form.Get(joinCaptchaTokenParameter))
 	}
 	if token == "" {
 		if renderPage {

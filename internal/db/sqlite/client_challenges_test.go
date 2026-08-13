@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -288,7 +289,7 @@ func TestChallengeRetryExhaustionMovesToReconciliationAndAllowsRejoin(t *testing
 	if err != nil || !claimed || leased == nil {
 		t.Fatalf("claim exhausted action: challenge=%#v claimed=%t err=%v", leased, claimed, err)
 	}
-	if reconciled, err := client.ReconcileLeasedChallenge(ctx, challenge.ChallengeID, "worker", db.ChallengeStatusRejectPending, "retries exhausted"); err != nil || !reconciled {
+	if reconciled, err := client.ReconcileLeasedChallengeVersion(ctx, challenge.ChallengeID, "worker", leased.ActionVersion, db.ChallengeStatusRejectPending, 0, "retries exhausted", time.Now()); err != nil || !reconciled {
 		t.Fatalf("persist reconciliation: reconciled=%t err=%v", reconciled, err)
 	}
 	due, err = client.GetDueChallenges(ctx, time.Now().Add(24*time.Hour))
@@ -322,6 +323,184 @@ func TestChallengeRetryExhaustionMovesToReconciliationAndAllowsRejoin(t *testing
 	}
 	if _, err := client.CreateChallenge(ctx, replacement); err != nil {
 		t.Fatalf("create replacement after reconciliation: %v", err)
+	}
+}
+
+func TestGenericChallengeDeleteCannotRemoveDurableOrLeasedAction(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	client, err := NewSQLiteClient(ctx, t.TempDir(), "test.db")
+	if err != nil {
+		t.Fatalf("new sqlite client: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	now := time.Now()
+	challenge := &db.Challenge{
+		CommChatID:    91,
+		UserID:        92,
+		ChatID:        -93,
+		Status:        db.ChallengeStatusApproveQueryPending,
+		CreatedAt:     now,
+		ExpiresAt:     now.Add(time.Minute),
+		NextAttemptAt: sql.NullTime{Time: now, Valid: true},
+	}
+	if _, err := client.CreateChallenge(ctx, challenge); err != nil {
+		t.Fatalf("create action: %v", err)
+	}
+	leased, claimed, err := client.ClaimChallengeAction(ctx, challenge.ChallengeID, "approval", now, now.Add(time.Minute))
+	if err != nil || !claimed {
+		t.Fatalf("claim action: challenge=%#v claimed=%t err=%v", leased, claimed, err)
+	}
+	if deleted, err := client.DeleteChallengeInstance(ctx, challenge.ChallengeID, challenge.Status); err != nil || deleted {
+		t.Fatalf("generic delete removed leased action: deleted=%t err=%v", deleted, err)
+	}
+	stored, err := client.GetChallengeByChatUser(ctx, challenge.ChatID, challenge.UserID)
+	if err != nil || stored == nil || stored.ActionOwner != "approval" {
+		t.Fatalf("leased action audit state was lost: challenge=%#v err=%v", stored, err)
+	}
+}
+
+func TestChallengeEffectFenceRejectsLateBindingAndArchivesAmbiguity(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	client, err := NewSQLiteClient(ctx, t.TempDir(), "test.db")
+	if err != nil {
+		t.Fatalf("new sqlite client: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	challenge := &db.Challenge{
+		CommChatID:    101,
+		UserID:        102,
+		ChatID:        -103,
+		Status:        db.ChallengeStatusWebAppFallbackPending,
+		CreatedAt:     now,
+		ExpiresAt:     now.Add(time.Minute),
+		NextAttemptAt: sql.NullTime{Time: now, Valid: true},
+	}
+	if _, err := client.CreateChallenge(ctx, challenge); err != nil {
+		t.Fatalf("create action: %v", err)
+	}
+	leased, claimed, err := client.ClaimChallengeAction(ctx, challenge.ChallengeID, "fallback", now, now.Add(40*time.Millisecond))
+	if err != nil || !claimed {
+		t.Fatalf("claim action: challenge=%#v claimed=%t err=%v", leased, claimed, err)
+	}
+	version, started, err := client.BeginLeasedChallengeEffect(ctx, challenge.ChallengeID, "fallback", leased.ActionVersion, challenge.Status, db.ChallengePhaseFallbackMessageStarted, now)
+	if err != nil || !started {
+		t.Fatalf("start effect: version=%d started=%t err=%v", version, started, err)
+	}
+	time.Sleep(60 * time.Millisecond)
+	if bound, err := client.BindLeasedChallengeMessage(ctx, challenge.ChallengeID, "fallback", version, challenge.Status, db.ChallengePhaseFallbackMessageStarted, db.ChallengePhaseFallbackMessageDone, 777, time.Now()); err != nil || bound {
+		t.Fatalf("late effect binding crossed lease fence: bound=%t err=%v", bound, err)
+	}
+	if reconciled, err := client.ReconcileExpiredChallengeEffect(ctx, challenge.ChallengeID, challenge.Status, db.ChallengePhaseFallbackMessageStarted, 777, "accepted send could not be bound", time.Now()); err != nil || !reconciled {
+		t.Fatalf("archive ambiguous effect: reconciled=%t err=%v", reconciled, err)
+	}
+	records, err := client.GetChallengeReconciliations(ctx)
+	if err != nil || len(records) != 1 || records[0].ActionPhase != db.ChallengePhaseFallbackMessageStarted || records[0].ArtifactMessageID != 777 {
+		t.Fatalf("ambiguous effect metadata missing: records=%#v err=%v", records, err)
+	}
+}
+
+func TestRejectSubeffectsAreFencedAndPersistedIndependently(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	client, err := NewSQLiteClient(ctx, t.TempDir(), "test.db")
+	if err != nil {
+		t.Fatalf("new sqlite client: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	now := time.Now()
+	challenge := &db.Challenge{
+		CommChatID:    111,
+		UserID:        112,
+		ChatID:        -113,
+		Status:        db.ChallengeStatusRejectPending,
+		CreatedAt:     now,
+		ExpiresAt:     now.Add(time.Minute),
+		NextAttemptAt: sql.NullTime{Time: now, Valid: true},
+	}
+	if _, err := client.CreateChallenge(ctx, challenge); err != nil {
+		t.Fatalf("create action: %v", err)
+	}
+	leased, claimed, err := client.ClaimChallengeAction(ctx, challenge.ChallengeID, "reject", now, now.Add(time.Minute))
+	if err != nil || !claimed {
+		t.Fatalf("claim action: challenge=%#v claimed=%t err=%v", leased, claimed, err)
+	}
+	version := leased.ActionVersion
+	for _, phase := range []string{db.ChallengePhaseRejectProbeDone, db.ChallengePhaseRejectBanDone, db.ChallengePhaseRejectDeclineDone} {
+		var changed bool
+		version, changed, err = client.AdvanceLeasedChallengePhase(ctx, challenge.ChallengeID, "reject", version, challenge.Status, phase, time.Now())
+		if err != nil || !changed {
+			t.Fatalf("advance %s: version=%d changed=%t err=%v", phase, version, changed, err)
+		}
+	}
+	stored, err := client.GetChallengeByChatUser(ctx, challenge.ChatID, challenge.UserID)
+	if err != nil || stored == nil || stored.ActionPhase != db.ChallengePhaseRejectDeclineDone || stored.ActionVersion != version {
+		t.Fatalf("reject progress was not durable: challenge=%#v err=%v", stored, err)
+	}
+}
+
+func TestReconciliationWorkflowRedactsTokensAndUsesCAS(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	client, err := NewSQLiteClient(ctx, t.TempDir(), "test.db")
+	if err != nil {
+		t.Fatalf("new sqlite client: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	now := time.Now()
+	challenge := &db.Challenge{
+		CommChatID:         121,
+		UserID:             122,
+		ChatID:             -123,
+		Status:             db.ChallengeStatusApproveQueryPending,
+		WebAppToken:        "secret-web-token",
+		JoinRequestQueryID: "secret-query-token",
+		ChallengeMessageID: 44,
+		JoinMessageID:      45,
+		NoticeMessageID:    46,
+		CreatedAt:          now,
+		ExpiresAt:          now.Add(time.Minute),
+		NextAttemptAt:      sql.NullTime{Time: now, Valid: true},
+	}
+	if _, err := client.CreateChallenge(ctx, challenge); err != nil {
+		t.Fatalf("create action: %v", err)
+	}
+	leased, claimed, err := client.ClaimChallengeAction(ctx, challenge.ChallengeID, "query", now, now.Add(time.Minute))
+	if err != nil || !claimed {
+		t.Fatalf("claim action: challenge=%#v claimed=%t err=%v", leased, claimed, err)
+	}
+	version, started, err := client.BeginLeasedChallengeEffect(ctx, challenge.ChallengeID, "query", leased.ActionVersion, challenge.Status, db.ChallengePhaseQueryAnswerStarted, now)
+	if err != nil || !started {
+		t.Fatalf("start query effect: version=%d started=%t err=%v", version, started, err)
+	}
+	if reconciled, err := client.ReconcileLeasedChallengeVersion(ctx, challenge.ChallengeID, "query", version, challenge.Status, 0, "ambiguous query answer", now); err != nil || !reconciled {
+		t.Fatalf("reconcile action: reconciled=%t err=%v", reconciled, err)
+	}
+	records, err := client.GetChallengeReconciliations(ctx)
+	if err != nil || len(records) != 1 {
+		t.Fatalf("list reconciliations: records=%#v err=%v", records, err)
+	}
+	record := records[0]
+	if !record.JoinRequestQueryPresent || !record.WebAppTokenPresent || record.ChallengeMessageID != 44 || record.JoinMessageID != 45 || record.NoticeMessageID != 46 || record.ExpiresAt.IsZero() || record.RetentionUntil.IsZero() {
+		t.Fatalf("incomplete reconciliation metadata: %#v", record)
+	}
+	if strings.Contains(fmt.Sprintf("%#v", record), "secret-query-token") || strings.Contains(fmt.Sprintf("%#v", record), "secret-web-token") {
+		t.Fatalf("reconciliation exposed secret tokens: %#v", record)
+	}
+	if requeued, err := client.RequeueChallengeReconciliation(ctx, record.ID, record.Version, time.Now()); err == nil || requeued {
+		t.Fatalf("ambiguous effect was requeued: requeued=%t err=%v", requeued, err)
+	}
+	if resolved, err := client.ResolveChallengeReconciliation(ctx, record.ID, record.Version, "inspected", time.Now()); err != nil || !resolved {
+		t.Fatalf("resolve reconciliation: resolved=%t err=%v", resolved, err)
+	}
+	if resolved, err := client.ResolveChallengeReconciliation(ctx, record.ID, record.Version, "stale", time.Now()); err != nil || resolved {
+		t.Fatalf("stale reconciliation CAS succeeded: resolved=%t err=%v", resolved, err)
 	}
 }
 

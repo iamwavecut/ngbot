@@ -311,17 +311,62 @@ func (g *Gatekeeper) handleChatJoinRequest(ctx context.Context, u *api.Update, s
 		return nil
 	}
 	webAppQueued := false
+	webAppResponseFailed := false
+	var queueBoundary *db.Challenge
+	var err error
 	if settings.GatekeeperEnabled && settings.GatekeeperCaptchaEnabled &&
 		u.ChatJoinRequest.QueryID != "" && g.joinCaptchaPublicURL() != "" {
 		if err := g.startJoinRequestWebAppChallenge(ctx, u.ChatJoinRequest, settings); err != nil {
-			return err
+			entry.WithField(logFieldError, err.Error()).Warn("join WebApp response failed; queueing durable DM fallback")
+			webAppResponseFailed = true
+		} else {
+			u.ChatJoinRequest.QueryID = ""
+			webAppQueued = true
 		}
-		u.ChatJoinRequest.QueryID = ""
-		webAppQueued = true
 	}
 	if settings.GatekeeperEnabled && u.ChatJoinRequest.QueryID != "" {
-		if err := bot.AnswerJoinRequestQuery(ctx, g.bot, u.ChatJoinRequest.QueryID, bot.JoinRequestQueryResultQueue); err != nil {
+		if !webAppResponseFailed {
+			now := time.Now()
+			queueBoundary, err = g.store.CreateChallenge(ctx, &db.Challenge{
+				CommChatID:         u.ChatJoinRequest.UserChatID,
+				UserID:             u.ChatJoinRequest.From.ID,
+				ChatID:             u.ChatJoinRequest.Chat.ID,
+				Status:             db.ChallengeStatusBanCheckPending,
+				JoinRequestQueryID: u.ChatJoinRequest.QueryID,
+				UserLanguage:       strings.TrimSpace(u.ChatJoinRequest.From.LanguageCode),
+				CreatedAt:          now,
+				ExpiresAt:          now.Add(settings.GetChallengeTimeout()),
+			})
+			if err != nil {
+				return fmt.Errorf("persist join-query response boundary: %w", err)
+			}
+		}
+		responseCtx, cancel := context.WithTimeout(ctx, joinQueryResponseTimeout)
+		err = bot.AnswerJoinRequestQuery(responseCtx, g.bot, u.ChatJoinRequest.QueryID, bot.JoinRequestQueryResultQueue)
+		cancel()
+		if err != nil {
 			entry.WithField(logFieldError, err.Error()).Error("failed to queue join request query before moderation")
+			if queueBoundary != nil {
+				reconcileCtx, reconcileCancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+				reconciled, reconcileErr := g.store.ReconcileLeasedChallengeVersion(
+					reconcileCtx,
+					queueBoundary.ChallengeID,
+					"",
+					queueBoundary.ActionVersion,
+					queueBoundary.Status,
+					0,
+					err.Error(),
+					time.Now(),
+				)
+				reconcileCancel()
+				if reconcileErr != nil {
+					return stderrors.Join(err, fmt.Errorf("reconcile join-query response: %w", reconcileErr))
+				}
+				if !reconciled {
+					return stderrors.Join(err, errors.New("join-query response boundary changed before reconciliation"))
+				}
+				queueBoundary = nil
+			}
 			if moderation.IsTelegramPrivilegeError(err) {
 				g.banChecker.MarkModerationUnavailable(u.ChatJoinRequest.Chat.ID)
 			}
@@ -356,16 +401,42 @@ func (g *Gatekeeper) handleChatJoinRequest(ctx context.Context, u *api.Update, s
 		}
 	}
 	if webAppQueued {
+		challenge, err := g.store.GetChallengeByChatUser(ctx, u.ChatJoinRequest.Chat.ID, u.ChatJoinRequest.From.ID)
+		if err != nil {
+			return err
+		}
+		if challenge != nil && challenge.Status == db.ChallengeStatusBanCheckPending {
+			activated, err := g.store.CompleteExternalAction(ctx, challenge.ChallengeID, db.ChallengeStatusBanCheckPending, db.ChallengeStatusPending, time.Time{})
+			if err != nil || !activated {
+				return err
+			}
+		}
 		return nil
+	}
+	if webAppResponseFailed {
+		challenge, err := g.store.GetChallengeByChatUser(ctx, u.ChatJoinRequest.Chat.ID, u.ChatJoinRequest.From.ID)
+		if err != nil {
+			return err
+		}
+		if challenge != nil && challenge.Status == db.ChallengeStatusBanCheckPending {
+			queued, err := g.store.CompleteExternalAction(ctx, challenge.ChallengeID, db.ChallengeStatusBanCheckPending, db.ChallengeStatusWebAppFallbackPending, time.Time{})
+			if err != nil || !queued {
+				return err
+			}
+			challenge.Status = db.ChallengeStatusWebAppFallbackPending
+			return g.processChallengeAction(ctx, challenge)
+		}
 	}
 	if !settings.GatekeeperEnabled {
 		return nil
 	}
 	if !settings.GatekeeperCaptchaEnabled && !settings.GatekeeperGreetingEnabled {
+		g.deleteJoinQueryBoundary(ctx, queueBoundary)
 		entry.Debug("both gatekeeper subfeatures are disabled")
 		return nil
 	}
 	if !settings.GatekeeperCaptchaEnabled {
+		g.deleteJoinQueryBoundary(ctx, queueBoundary)
 		entry.Debug("captcha is disabled for join requests, leaving request for manual review")
 		return nil
 	}
@@ -394,6 +465,19 @@ func (g *Gatekeeper) handleChatJoinRequest(ctx context.Context, u *api.Update, s
 		u.ChatJoinRequest.UserChatID,
 		settings,
 	)
+}
+
+func (g *Gatekeeper) deleteJoinQueryBoundary(ctx context.Context, challenge *db.Challenge) {
+	if challenge == nil {
+		return
+	}
+	deleted, err := g.store.DeleteChallengeInstance(ctx, challenge.ChallengeID, db.ChallengeStatusBanCheckPending)
+	if err != nil || !deleted {
+		g.getLogEntry().WithFields(log.Fields{
+			challengeIDLogField: challenge.ChallengeID,
+			logFieldError:       err,
+		}).Warn("failed to remove completed join-query response boundary")
+	}
 }
 
 func (g *Gatekeeper) startChallenge(ctx context.Context, u *api.Update, user *api.User, target *api.Chat, recipientChatID int64, languageChatID int64, settings *db.Settings) error {
@@ -658,6 +742,57 @@ func (g *Gatekeeper) cleanupKnownBannedArtifacts(ctx context.Context, chatID, us
 			return
 		}
 		cleanedChallenges[key] = struct{}{}
+		if challenge.ActionOwner != "" {
+			requested, err := g.store.RequestChallengeCancellation(
+				ctx,
+				challenge.ChallengeID,
+				challenge.Status,
+				challenge.ActionVersion,
+				"known-banned policy superseded durable challenge action",
+			)
+			if err != nil {
+				entry.WithFields(log.Fields{
+					challengeIDLogField: challenge.ChallengeID,
+					logFieldStatus:      challenge.Status,
+					logFieldError:       err.Error(),
+				}).Error("failed to request durable challenge action cancellation")
+				return
+			}
+			if !requested {
+				entry.WithFields(log.Fields{
+					challengeIDLogField: challenge.ChallengeID,
+					logFieldStatus:      challenge.Status,
+				}).Warn("durable challenge action changed before cancellation request")
+			}
+			return
+		}
+		if isPendingChallengeAction(challenge.Status) {
+			reconciled, err := g.store.ReconcileLeasedChallengeVersion(
+				ctx,
+				challenge.ChallengeID,
+				"",
+				challenge.ActionVersion,
+				challenge.Status,
+				0,
+				"known-banned policy canceled unleased durable challenge action",
+				time.Now(),
+			)
+			if err != nil {
+				entry.WithFields(log.Fields{
+					challengeIDLogField: challenge.ChallengeID,
+					logFieldStatus:      challenge.Status,
+					logFieldError:       err.Error(),
+				}).Error("failed to reconcile canceled unleased durable challenge action")
+				return
+			}
+			if !reconciled {
+				entry.WithFields(log.Fields{
+					challengeIDLogField: challenge.ChallengeID,
+					logFieldStatus:      challenge.Status,
+				}).Warn("unleased durable challenge action changed before cancellation")
+			}
+			return
+		}
 
 		if challenge.ChallengeMessageID != 0 {
 			if err := bot.DeleteChatMessage(ctx, g.bot, challenge.CommChatID, challenge.ChallengeMessageID); err != nil {

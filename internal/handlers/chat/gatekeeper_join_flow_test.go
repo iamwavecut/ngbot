@@ -160,6 +160,23 @@ func (s *gatekeeperFlowStore) PrepareDMFallback(_ context.Context, challengeID, 
 	return true, nil
 }
 
+func (s *gatekeeperFlowStore) PrepareDMFallbackVersion(_ context.Context, challengeID, owner string, expectedVersion int64, successUUID, userLanguage string, expiresAt, now time.Time) (int64, bool, error) {
+	key, challenge := s.challengeByID(challengeID)
+	if challenge == nil || challenge.Status != db.ChallengeStatusWebAppFallbackPending || challenge.ActionOwner != owner || challenge.ActionVersion != expectedVersion || challenge.ActionPhase != db.ChallengePhaseReady || !challenge.ActionLeaseUntil.Time.After(now) {
+		return expectedVersion, false, nil
+	}
+	clone := *challenge
+	clone.SuccessUUID = successUUID
+	clone.UserLanguage = userLanguage
+	clone.ExpiresAt = expiresAt
+	clone.WebAppToken = ""
+	clone.ChallengeMessageID = 0
+	clone.Attempts = 0
+	clone.ActionVersion++
+	s.challenges[key] = &clone
+	return clone.ActionVersion, true, nil
+}
+
 func (s *gatekeeperFlowStore) CompleteExternalAction(_ context.Context, challengeID, expectedStatus, nextStatus string, expiresAt time.Time) (bool, error) {
 	return s.transition(challengeID, expectedStatus, nextStatus, expiresAt), nil
 }
@@ -175,98 +192,140 @@ func (s *gatekeeperFlowStore) ClaimChallengeAction(_ context.Context, challengeI
 	clone := *challenge
 	clone.ActionOwner = owner
 	clone.ActionLeaseUntil = sql.NullTime{Time: leaseUntil, Valid: true}
+	clone.ActionVersion++
+	if clone.ActionPhase == "" {
+		clone.ActionPhase = db.ChallengePhaseReady
+	}
 	s.challenges[key] = &clone
 	return cloneChallenge(&clone), true, nil
 }
 
-func (s *gatekeeperFlowStore) CompleteLeasedChallengeAction(_ context.Context, challengeID, owner, expectedStatus, nextStatus string, expiresAt time.Time) (bool, error) {
+func (s *gatekeeperFlowStore) BeginLeasedChallengeEffect(_ context.Context, challengeID, owner string, expectedVersion int64, expectedStatus, phase string, now time.Time) (int64, bool, error) {
+	return s.advanceLeasedChallengePhase(challengeID, owner, expectedVersion, expectedStatus, phase, now, true)
+}
+
+func (s *gatekeeperFlowStore) AdvanceLeasedChallengePhase(_ context.Context, challengeID, owner string, expectedVersion int64, expectedStatus, phase string, now time.Time) (int64, bool, error) {
+	return s.advanceLeasedChallengePhase(challengeID, owner, expectedVersion, expectedStatus, phase, now, false)
+}
+
+func (s *gatekeeperFlowStore) advanceLeasedChallengePhase(challengeID, owner string, expectedVersion int64, expectedStatus, phase string, now time.Time, started bool) (int64, bool, error) {
 	key, challenge := s.challengeByID(challengeID)
-	if challenge == nil || challenge.Status != expectedStatus || challenge.ActionOwner != owner {
+	if challenge == nil || challenge.Status != expectedStatus || challenge.ActionOwner != owner || challenge.ActionVersion != expectedVersion || !challenge.ActionLeaseUntil.Valid || !challenge.ActionLeaseUntil.Time.After(now) {
+		return expectedVersion, false, nil
+	}
+	clone := *challenge
+	clone.ActionVersion++
+	clone.ActionPhase = phase
+	if started {
+		clone.EffectStartedAt = sql.NullTime{Time: now, Valid: true}
+	}
+	s.challenges[key] = &clone
+	return clone.ActionVersion, true, nil
+}
+
+func (s *gatekeeperFlowStore) BindLeasedChallengeMessage(_ context.Context, challengeID, owner string, expectedVersion int64, expectedStatus, expectedPhase, completedPhase string, messageID int, now time.Time) (bool, error) {
+	key, challenge := s.challengeByID(challengeID)
+	if challenge == nil || challenge.Status != expectedStatus || challenge.ActionOwner != owner || challenge.ActionVersion != expectedVersion || challenge.ActionPhase != expectedPhase || !challenge.ActionLeaseUntil.Time.After(now) {
+		return false, nil
+	}
+	clone := *challenge
+	clone.ChallengeMessageID = messageID
+	clone.ActionPhase = completedPhase
+	clone.ActionVersion++
+	s.challenges[key] = &clone
+	return true, nil
+}
+
+func (s *gatekeeperFlowStore) CompleteLeasedChallengeActionVersion(_ context.Context, challengeID, owner string, expectedVersion int64, expectedStatus, expectedPhase, nextStatus string, expiresAt, now time.Time) (bool, error) {
+	key, challenge := s.challengeByID(challengeID)
+	if challenge == nil || challenge.Status != expectedStatus || challenge.ActionOwner != owner || challenge.ActionVersion != expectedVersion || challenge.ActionPhase != expectedPhase || !challenge.ActionLeaseUntil.Time.After(now) {
 		return false, nil
 	}
 	clone := *challenge
 	clone.ActionOwner = ""
 	clone.ActionLeaseUntil = sql.NullTime{}
+	clone.ActionPhase = db.ChallengePhaseReady
+	clone.ActionVersion++
 	s.challenges[key] = &clone
 	return s.transition(challengeID, expectedStatus, nextStatus, expiresAt), nil
 }
 
-func (s *gatekeeperFlowStore) ScheduleLeasedChallengeRetry(_ context.Context, challengeID, owner, expectedStatus string, nextAttemptAt time.Time, lastError string) (bool, error) {
+func (s *gatekeeperFlowStore) ScheduleLeasedChallengeRetryVersion(_ context.Context, challengeID, owner string, expectedVersion int64, expectedStatus, expectedPhase string, nextAttemptAt time.Time, lastError string, now time.Time) (bool, error) {
 	key, challenge := s.challengeByID(challengeID)
-	if challenge == nil || challenge.Status != expectedStatus || challenge.ActionOwner != owner {
+	if challenge == nil || challenge.Status != expectedStatus || challenge.ActionOwner != owner || challenge.ActionVersion != expectedVersion || challenge.ActionPhase != expectedPhase || !challenge.ActionLeaseUntil.Time.After(now) {
 		return false, nil
 	}
 	clone := *challenge
+	clone.ActionOwner = ""
+	clone.ActionLeaseUntil = sql.NullTime{}
+	clone.ActionPhase = db.ChallengePhaseReady
+	clone.ActionVersion++
 	clone.NextAttemptAt = sql.NullTime{Time: nextAttemptAt, Valid: true}
 	clone.AttemptCount++
 	clone.LastError = lastError
-	clone.ActionOwner = ""
-	clone.ActionLeaseUntil = sql.NullTime{}
 	s.challenges[key] = &clone
 	return true, nil
 }
 
-func (s *gatekeeperFlowStore) ReconcileLeasedChallenge(_ context.Context, challengeID, owner, expectedStatus, _ string) (bool, error) {
+func (s *gatekeeperFlowStore) CompleteLeasedChallengeActivationVersion(_ context.Context, challengeID, owner string, expectedVersion int64, expectedPhase string, restricted bool, messageID int, now time.Time) (bool, error) {
+	changed, err := s.CompleteLeasedChallengeActionVersion(context.Background(), challengeID, owner, expectedVersion, db.ChallengeStatusRestrictPending, expectedPhase, db.ChallengeStatusPending, time.Time{}, now)
+	if changed {
+		_, challenge := s.challengeByID(challengeID)
+		challenge.UserRestricted = restricted
+		challenge.ChallengeMessageID = messageID
+	}
+	return changed, err
+}
+
+func (s *gatekeeperFlowStore) MarkLeasedChallengeRestrictedVersion(_ context.Context, challengeID, owner string, expectedVersion int64, expectedPhase string, now time.Time) (int64, bool, error) {
+	version, changed, err := s.advanceLeasedChallengePhase(challengeID, owner, expectedVersion, db.ChallengeStatusRestrictPending, db.ChallengePhaseRestrictDone, now, false)
+	if changed {
+		_, challenge := s.challengeByID(challengeID)
+		challenge.UserRestricted = true
+	}
+	return version, changed, err
+}
+
+func (s *gatekeeperFlowStore) CompleteLeasedChallengeWithoutPrivilegesVersion(_ context.Context, challengeID, owner string, expectedVersion int64, expectedStatus, expectedPhase string, noticeMessageID int, expiresAt time.Time, lastError string, now time.Time) (bool, error) {
+	changed, err := s.CompleteLeasedChallengeActionVersion(context.Background(), challengeID, owner, expectedVersion, expectedStatus, expectedPhase, db.ChallengeStatusNoPrivilegesNotice, expiresAt, now)
+	if changed {
+		_, challenge := s.challengeByID(challengeID)
+		challenge.NoticeMessageID = noticeMessageID
+		challenge.LastError = lastError
+	}
+	return changed, err
+}
+
+func (s *gatekeeperFlowStore) DeleteLeasedChallengeActionVersion(_ context.Context, challengeID, owner string, expectedVersion int64, expectedStatus, expectedPhase string, now time.Time) (bool, error) {
 	key, challenge := s.challengeByID(challengeID)
-	if challenge == nil || challenge.Status != expectedStatus || challenge.ActionOwner != owner {
+	if challenge == nil || challenge.Status != expectedStatus || challenge.ActionOwner != owner || challenge.ActionVersion != expectedVersion || challenge.ActionPhase != expectedPhase || !challenge.ActionLeaseUntil.Time.After(now) {
 		return false, nil
 	}
 	delete(s.challenges, key)
 	return true, nil
 }
 
-func (s *gatekeeperFlowStore) CompleteLeasedChallengeActivation(_ context.Context, challengeID, owner string, restricted bool, messageID int) (bool, error) {
+func (s *gatekeeperFlowStore) ReconcileLeasedChallengeVersion(_ context.Context, challengeID, owner string, expectedVersion int64, expectedStatus string, _ int, _ string, _ time.Time) (bool, error) {
 	key, challenge := s.challengeByID(challengeID)
-	if challenge == nil || challenge.Status != db.ChallengeStatusRestrictPending || challenge.ActionOwner != owner {
-		return false, nil
-	}
-	clone := *challenge
-	clone.Status = db.ChallengeStatusPending
-	clone.UserRestricted = restricted
-	clone.ChallengeMessageID = messageID
-	clone.NextAttemptAt = sql.NullTime{}
-	clone.ActionOwner = ""
-	clone.ActionLeaseUntil = sql.NullTime{}
-	s.challenges[key] = &clone
-	return true, nil
-}
-
-func (s *gatekeeperFlowStore) MarkLeasedChallengeRestricted(_ context.Context, challengeID, owner string) (bool, error) {
-	key, challenge := s.challengeByID(challengeID)
-	if challenge == nil || challenge.Status != db.ChallengeStatusRestrictPending || challenge.ActionOwner != owner {
-		return false, nil
-	}
-	clone := *challenge
-	clone.UserRestricted = true
-	s.challenges[key] = &clone
-	return true, nil
-}
-
-func (s *gatekeeperFlowStore) CompleteLeasedChallengeWithoutPrivileges(_ context.Context, challengeID, owner, expectedStatus string, noticeMessageID int, expiresAt time.Time, lastError string) (bool, error) {
-	key, challenge := s.challengeByID(challengeID)
-	if challenge == nil || challenge.Status != expectedStatus || challenge.ActionOwner != owner {
-		return false, nil
-	}
-	clone := *challenge
-	clone.Status = db.ChallengeStatusNoPrivilegesNotice
-	clone.NoticeMessageID = noticeMessageID
-	clone.ExpiresAt = expiresAt
-	clone.NextAttemptAt = sql.NullTime{}
-	clone.AttemptCount = 0
-	clone.LastError = lastError
-	clone.ActionOwner = ""
-	clone.ActionLeaseUntil = sql.NullTime{}
-	s.challenges[key] = &clone
-	return true, nil
-}
-
-func (s *gatekeeperFlowStore) DeleteLeasedChallengeAction(_ context.Context, challengeID, owner, expectedStatus string) (bool, error) {
-	key, challenge := s.challengeByID(challengeID)
-	if challenge == nil || challenge.Status != expectedStatus || challenge.ActionOwner != owner {
+	if challenge == nil || challenge.Status != expectedStatus || challenge.ActionOwner != owner || challenge.ActionVersion != expectedVersion {
 		return false, nil
 	}
 	delete(s.challenges, key)
 	return true, nil
+}
+
+func (s *gatekeeperFlowStore) RequestChallengeCancellation(_ context.Context, challengeID, expectedStatus string, expectedVersion int64, lastError string) (bool, error) {
+	_, challenge := s.challengeByID(challengeID)
+	if challenge == nil || challenge.Status != expectedStatus || challenge.ActionOwner == "" || challenge.ActionVersion != expectedVersion || challenge.CancelRequested {
+		return false, nil
+	}
+	challenge.CancelRequested = true
+	challenge.LastError = lastError
+	return true, nil
+}
+
+func (s *gatekeeperFlowStore) ReconcileExpiredChallengeEffects(context.Context, time.Time) (int, error) {
+	return 0, nil
 }
 
 func (s *gatekeeperFlowStore) CompleteChallengeWithoutPrivileges(_ context.Context, challengeID, expectedStatus string, noticeMessageID int, expiresAt time.Time, lastError string) (bool, error) {
@@ -942,9 +1001,8 @@ func TestFailedChallengeActivationRetainsDurableActivationRetry(t *testing.T) {
 	if err := gatekeeper.startChallenge(context.Background(), nil, user, chat, chat.ID, chat.ID, settings); err == nil {
 		t.Fatal("expected challenge activation failure")
 	}
-	challenge := store.onlyChallenge(t)
-	if challenge.Status != db.ChallengeStatusRestrictPending || challenge.AttemptCount != 1 || !challenge.NextAttemptAt.Valid || challenge.LastError == "" {
-		t.Fatalf("expected durable activation retry after partial activation, got %#v", challenge)
+	if len(store.challenges) != 0 {
+		t.Fatalf("ambiguous activation remained eligible for blind retry: %#v", store.challenges)
 	}
 	if restrictCalls != 1 {
 		t.Fatalf("expected one leased restriction attempt, got %d calls", restrictCalls)

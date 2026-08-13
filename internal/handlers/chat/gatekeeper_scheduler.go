@@ -194,6 +194,9 @@ func (g *Gatekeeper) processExpiredChallenges(ctx context.Context) error {
 }
 
 func (g *Gatekeeper) processDueChallengeActions(ctx context.Context) error {
+	if _, err := g.store.ReconcileExpiredChallengeEffects(ctx, time.Now()); err != nil {
+		return fmt.Errorf("reconcile expired challenge effects: %w", err)
+	}
 	due, err := g.store.GetDueChallenges(ctx, time.Now())
 	if err != nil {
 		return err
@@ -267,42 +270,56 @@ func (g *Gatekeeper) fallbackClaimedWebAppChallenge(ctx context.Context, challen
 	if challenge.WebAppToken != "" {
 		challenge.SuccessUUID = uuid.New()
 		challenge.ExpiresAt = time.Now().Add(settings.GetChallengeTimeout())
-		prepared, err := g.store.PrepareDMFallback(ctx, challenge.ChallengeID, challenge.SuccessUUID, challenge.UserLanguage, challenge.ExpiresAt)
+		version, prepared, err := g.store.PrepareDMFallbackVersion(ctx, challenge.ChallengeID, owner, challenge.ActionVersion, challenge.SuccessUUID, challenge.UserLanguage, challenge.ExpiresAt, time.Now())
 		if err != nil {
 			return fmt.Errorf("prepare dm fallback: %w", err)
 		}
 		if !prepared {
 			return nil
 		}
+		challenge.ActionVersion = version
 		challenge.WebAppToken = ""
 		challenge.ChallengeMessageID = 0
 		challenge.Attempts = 0
 	}
 	if challenge.ChallengeMessageID == 0 {
+		if err := g.beginChallengeEffect(ctx, challenge, owner, db.ChallengePhaseFallbackMessageStarted); err != nil {
+			return err
+		}
 		messageID, err := g.sendChallengeMessage(ctx, challenge, user, &targetChat.Chat, challenge.CommChatID, settings)
 		if err != nil {
-			return fmt.Errorf("send dm fallback challenge: %w", err)
+			if isTelegramConversationUnavailable(err) {
+				if phaseErr := g.advanceChallengePhase(ctx, challenge, owner, db.ChallengePhaseReady); phaseErr != nil {
+					return phaseErr
+				}
+				return fmt.Errorf("send dm fallback challenge: %w", err)
+			}
+			return g.reconcileAmbiguousChallengeEffect(ctx, challenge, owner, 0, fmt.Errorf("send dm fallback challenge: %w", err))
 		}
 		if messageID == 0 {
 			return errors.New("dm fallback challenge text is empty")
 		}
-		attached, err := g.store.AttachChallengeMessage(ctx, challenge.ChallengeID, db.ChallengeStatusWebAppFallbackPending, messageID)
+		attached, err := g.store.BindLeasedChallengeMessage(ctx, challenge.ChallengeID, owner, challenge.ActionVersion, db.ChallengeStatusWebAppFallbackPending, db.ChallengePhaseFallbackMessageStarted, db.ChallengePhaseFallbackMessageDone, messageID, time.Now())
 		if err != nil || !attached {
-			_ = bot.DeleteChatMessage(ctx, g.bot, challenge.CommChatID, messageID)
 			if err != nil {
-				return fmt.Errorf("attach dm fallback message: %w", err)
+				return g.reconcileAmbiguousChallengeEffect(ctx, challenge, owner, messageID, fmt.Errorf("attach dm fallback message: %w", err))
 			}
-			return errors.New("dm fallback challenge changed before message binding")
+			return g.reconcileAmbiguousChallengeEffect(ctx, challenge, owner, messageID, errors.New("dm fallback challenge changed before message binding"))
 		}
+		challenge.ActionVersion++
+		challenge.ActionPhase = db.ChallengePhaseFallbackMessageDone
 		challenge.ChallengeMessageID = messageID
 	}
-	completed, err := g.store.CompleteLeasedChallengeAction(
+	completed, err := g.store.CompleteLeasedChallengeActionVersion(
 		ctx,
 		challenge.ChallengeID,
 		owner,
+		challenge.ActionVersion,
 		db.ChallengeStatusWebAppFallbackPending,
+		challenge.ActionPhase,
 		db.ChallengeStatusPending,
 		time.Time{},
+		time.Now(),
 	)
 	if err != nil {
 		return fmt.Errorf("complete dm fallback: %w", err)

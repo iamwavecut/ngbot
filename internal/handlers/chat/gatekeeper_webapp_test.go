@@ -1105,14 +1105,11 @@ func TestStartJoinRequestWebAppChallengeFallsBackDurablyOnSendFailure(t *testing
 	}
 
 	if len(store.challenges) != 1 {
-		t.Fatalf("expected durable fallback challenge after send failure, got %d rows", len(store.challenges))
+		t.Fatalf("expected durable guarded challenge after send failure, got %d rows", len(store.challenges))
 	}
 	challenge := store.onlyChallenge(t)
-	if challenge.Status != db.ChallengeStatusPending || challenge.JoinRequestQueryID != req.QueryID || challenge.WebAppToken != "" {
-		t.Fatalf("unexpected fallback state: %#v", challenge)
-	}
-	if challenge.ChallengeMessageID == 0 {
-		t.Fatal("expected fallback message binding")
+	if challenge.Status != db.ChallengeStatusBanCheckPending || challenge.JoinRequestQueryID != req.QueryID || challenge.WebAppToken == "" {
+		t.Fatalf("unexpected guarded state: %#v", challenge)
 	}
 	if len(recorder.byMethod(testTelegramMethodJoinRequestQuery)) != 0 {
 		t.Fatal("join request query must remain durable until the CAPTCHA resolves")
@@ -1353,12 +1350,8 @@ func TestHandleJoinCaptchaAnswerPersistsApprovalRetryWhenApproveFails(t *testing
 	if body["done"] != true || body["state"] != "processing" {
 		t.Fatalf("expected durable processing response, got %#v", body)
 	}
-	got := store.onlyChallenge(t)
-	if got.Status != db.ChallengeStatusApproveQueryPending {
-		t.Fatalf("expected durable approval state, got %q", got.Status)
-	}
-	if got.AttemptCount != 1 || !got.NextAttemptAt.Valid || got.LastError == "" {
-		t.Fatalf("expected persisted retry metadata, got %#v", got)
+	if len(store.challenges) != 0 {
+		t.Fatalf("uncertain query result remained eligible for blind retry: %#v", store.challenges)
 	}
 }
 

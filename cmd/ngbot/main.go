@@ -5,10 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/signal"
 	"slices"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -43,6 +46,7 @@ const (
 	adminSettingsCommand            = "settings"
 	adminSettingsCommandDescription = "Bot settings"
 	databaseMaintenanceArgument     = "--database-maintenance"
+	gatekeeperReconcileArgument     = "--gatekeeper-reconcile="
 )
 
 type updateLoopComponent struct {
@@ -167,6 +171,17 @@ func main() {
 	log.SetOutput(os.Stdout)
 	log.SetLevel(log.Level(cfg.LogLevel))
 	tool.SetLogger(log.StandardLogger())
+	for _, argument := range os.Args[1:] {
+		if command, ok := strings.CutPrefix(argument, gatekeeperReconcileArgument); ok {
+			reconcileCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+			defer stop()
+			if err := runGatekeeperReconciliation(reconcileCtx, &cfg, command, os.Stdout); err != nil {
+				log.WithError(err).Error("Gatekeeper reconciliation failed")
+				os.Exit(1)
+			}
+			return
+		}
+	}
 	if slices.Contains(os.Args[1:], databaseMaintenanceArgument) {
 		maintenanceCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 		defer stop()
@@ -233,6 +248,80 @@ func main() {
 	if shutdown.exitCode != 0 {
 		os.Exit(shutdown.exitCode)
 	}
+}
+
+func runGatekeeperReconciliation(ctx context.Context, cfg *config.Config, command string, output io.Writer) error {
+	client, err := sqlite.NewSQLiteClient(ctx, cfg.DotPath, "bot.db")
+	if err != nil {
+		return fmt.Errorf("open reconciliation database: %w", err)
+	}
+	defer func() { _ = client.Close() }()
+	now := time.Now()
+	switch {
+	case command == "list":
+		records, err := client.GetChallengeReconciliations(ctx)
+		if err != nil {
+			return err
+		}
+		encoder := json.NewEncoder(output)
+		for _, record := range records {
+			if err := encoder.Encode(record); err != nil {
+				return err
+			}
+		}
+		return nil
+	case command == "cleanup":
+		count, err := client.CleanupResolvedChallengeReconciliations(ctx, now)
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprintf(output, "cleaned=%d\n", count)
+		return err
+	case strings.HasPrefix(command, "resolve:"):
+		id, version, err := parseReconciliationTarget(strings.TrimPrefix(command, "resolve:"))
+		if err != nil {
+			return err
+		}
+		resolved, err := client.ResolveChallengeReconciliation(ctx, id, version, "operator resolved", now)
+		if err != nil {
+			return err
+		}
+		if !resolved {
+			return errors.New("reconciliation changed or is already resolved")
+		}
+		return nil
+	case strings.HasPrefix(command, "requeue:"):
+		id, version, err := parseReconciliationTarget(strings.TrimPrefix(command, "requeue:"))
+		if err != nil {
+			return err
+		}
+		requeued, err := client.RequeueChallengeReconciliation(ctx, id, version, now)
+		if err != nil {
+			return err
+		}
+		if !requeued {
+			return errors.New("reconciliation changed or cannot be requeued")
+		}
+		return nil
+	default:
+		return errors.New("expected list, cleanup, resolve:<id>:<version>, or requeue:<id>:<version>")
+	}
+}
+
+func parseReconciliationTarget(value string) (int64, int64, error) {
+	parts := strings.Split(value, ":")
+	if len(parts) != 2 {
+		return 0, 0, errors.New("reconciliation target must be <id>:<version>")
+	}
+	id, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil || id <= 0 {
+		return 0, 0, errors.New("reconciliation id must be positive")
+	}
+	version, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil || version <= 0 {
+		return 0, 0, errors.New("reconciliation version must be positive")
+	}
+	return id, version, nil
 }
 
 func runDatabaseMaintenance(ctx context.Context, cfg *config.Config) error {

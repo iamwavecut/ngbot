@@ -95,21 +95,38 @@ type (
 		LastError          string       `db:"last_error"`
 		ActionOwner        string       `db:"action_owner"`
 		ActionLeaseUntil   sql.NullTime `db:"action_lease_until"`
+		ActionVersion      int64        `db:"action_version"`
+		ActionPhase        string       `db:"action_phase"`
+		EffectStartedAt    sql.NullTime `db:"effect_started_at"`
+		CancelRequested    bool         `db:"cancel_requested"`
 	}
 
 	ChallengeReconciliation struct {
-		ID                  int64     `db:"id"`
-		ChallengeID         string    `db:"challenge_id"`
-		CommChatID          int64     `db:"comm_chat_id"`
-		UserID              int64     `db:"user_id"`
-		ChatID              int64     `db:"chat_id"`
-		ActionStatus        string    `db:"action_status"`
-		JoinRequestQueryID  string    `db:"join_request_query_id"`
-		UserRestricted      bool      `db:"user_restricted"`
-		AttemptCount        int       `db:"attempt_count"`
-		LastError           string    `db:"last_error"`
-		ChallengeCreatedAt  time.Time `db:"challenge_created_at"`
-		ReconciliationDueAt time.Time `db:"reconciliation_due_at"`
+		ID                      int64        `db:"id"`
+		ChallengeID             string       `db:"challenge_id"`
+		CommChatID              int64        `db:"comm_chat_id"`
+		UserID                  int64        `db:"user_id"`
+		ChatID                  int64        `db:"chat_id"`
+		ActionStatus            string       `db:"action_status"`
+		ActionPhase             string       `db:"action_phase"`
+		ArtifactMessageID       int          `db:"artifact_message_id"`
+		ChallengeMessageID      int          `db:"challenge_message_id"`
+		JoinMessageID           int          `db:"join_message_id"`
+		NoticeMessageID         int          `db:"notice_message_id"`
+		JoinRequestQueryPresent bool         `db:"join_request_query_present"`
+		WebAppTokenPresent      bool         `db:"web_app_token_present"`
+		UserRestricted          bool         `db:"user_restricted"`
+		AttemptCount            int          `db:"attempt_count"`
+		LastError               string       `db:"last_error"`
+		ChallengeCreatedAt      time.Time    `db:"challenge_created_at"`
+		ExpiresAt               time.Time    `db:"expires_at"`
+		EffectStartedAt         sql.NullTime `db:"effect_started_at"`
+		ReconciliationDueAt     time.Time    `db:"reconciliation_due_at"`
+		RetentionUntil          time.Time    `db:"retention_until"`
+		ResolutionStatus        string       `db:"resolution_status"`
+		Resolution              string       `db:"resolution"`
+		ResolvedAt              sql.NullTime `db:"resolved_at"`
+		Version                 int64        `db:"version"`
 	}
 
 	ChatManager struct {
@@ -185,6 +202,7 @@ const (
 	NotSpammerMatchTypeUserID              = "user_id"
 	NotSpammerMatchTypeUsername            = "username"
 	ChallengeStatusPending                 = "pending"
+	ChallengeStatusBanCheckPending         = "ban_check_pending"
 	ChallengeStatusPassedWaitingMemberJoin = "passed_waiting_member_join"
 	ChallengeStatusWebAppFallbackPending   = "web_app_fallback_pending"
 	ChallengeStatusRestrictPending         = "restrict_pending"
@@ -199,6 +217,34 @@ const (
 	SpamCaseStatusSpam                     = "spam"
 	SpamCaseStatusFalsePositive            = "false_positive"
 	SpamCaseStatusNotEnforced              = "not_enforced"
+)
+
+const (
+	ChallengePhaseReady                  = "ready"
+	ChallengePhaseRestrictStarted        = "restrict_started"
+	ChallengePhaseRestrictDone           = "restrict_done"
+	ChallengePhasePublicMessageStarted   = "public_message_started"
+	ChallengePhasePublicMessageDone      = "public_message_done"
+	ChallengePhaseFallbackMessageStarted = "fallback_message_started"
+	ChallengePhaseFallbackMessageDone    = "fallback_message_done"
+	ChallengePhaseQueryAnswerStarted     = "query_answer_started"
+	ChallengePhaseQueryAnswerDone        = "query_answer_done"
+	ChallengePhaseMemberApprovalStarted  = "member_approval_started"
+	ChallengePhaseMemberApprovalDone     = "member_approval_done"
+	ChallengePhaseUnrestrictStarted      = "unrestrict_started"
+	ChallengePhaseUnrestrictDone         = "unrestrict_done"
+	ChallengePhaseNoticeMessageStarted   = "notice_message_started"
+	ChallengePhaseNoticeMessageDone      = "notice_message_done"
+	ChallengePhaseRejectProbeDone        = "reject_probe_done"
+	ChallengePhaseRejectBanStarted       = "reject_ban_started"
+	ChallengePhaseRejectBanDone          = "reject_ban_done"
+	ChallengePhaseRejectDeclineStarted   = "reject_decline_started"
+	ChallengePhaseRejectDeclineDone      = "reject_decline_done"
+)
+
+const (
+	ChallengeReconciliationPending  = "pending"
+	ChallengeReconciliationResolved = "resolved"
 )
 
 // GetLanguage Returns chat's set language

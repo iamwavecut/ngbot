@@ -63,8 +63,9 @@ type (
 )
 
 const (
-	LLMProviderGemini = "gemini"
-	LLMProviderOpenAI = "openai"
+	LLMProviderGemini             = "gemini"
+	LLMProviderOpenAI             = "openai"
+	gatekeeperActionLeaseDuration = 2 * time.Minute
 )
 
 func Load() (Config, error) {
@@ -95,6 +96,9 @@ func validateConfig(cfg *Config) error {
 	}
 	if cfg.Telegram.RequestTimeout <= cfg.Telegram.PollTimeout {
 		return fmt.Errorf("telegram request timeout must be greater than poll timeout")
+	}
+	if cfg.Telegram.RequestTimeout >= gatekeeperActionLeaseDuration {
+		return fmt.Errorf("telegram request timeout must be less than gatekeeper action lease (%s)", gatekeeperActionLeaseDuration)
 	}
 	if cfg.Telegram.RecoveryWindow <= cfg.Telegram.RequestTimeout {
 		return fmt.Errorf("telegram recovery window must be greater than request timeout")

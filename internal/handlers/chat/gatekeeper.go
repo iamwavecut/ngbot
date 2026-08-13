@@ -53,6 +53,7 @@ const (
 	maxChallengeAttempts   = 3
 	testJoinCaptchaCommand = "test_join_captcha"
 	gatekeeperName         = "Gatekeeper"
+	challengeIDLogField    = "challenge_id"
 
 	updateTypeCallbackQuery   updateType = "callback_query"
 	updateTypeChatMember      updateType = "chat_member"
@@ -106,18 +107,24 @@ type gatekeeperStore interface {
 	AttachChallengeMessage(ctx context.Context, challengeID, expectedStatus string, messageID int) (bool, error)
 	AttachJoinMessage(ctx context.Context, challengeID, expectedStatus string, messageID int) (bool, error)
 	PrepareDMFallback(ctx context.Context, challengeID, successUUID, userLanguage string, expiresAt time.Time) (bool, error)
+	PrepareDMFallbackVersion(ctx context.Context, challengeID, owner string, expectedVersion int64, successUUID, userLanguage string, expiresAt, now time.Time) (int64, bool, error)
 	CompleteExternalAction(ctx context.Context, challengeID, expectedStatus, nextStatus string, expiresAt time.Time) (bool, error)
 	ScheduleChallengeRetry(ctx context.Context, challengeID, expectedStatus string, nextAttemptAt time.Time, lastError string) (bool, error)
 	CompleteChallengeWithoutPrivileges(ctx context.Context, challengeID, expectedStatus string, noticeMessageID int, expiresAt time.Time, lastError string) (bool, error)
 	DeleteChallengeInstance(ctx context.Context, challengeID, expectedStatus string) (bool, error)
 	ClaimChallengeAction(ctx context.Context, challengeID, owner string, now, leaseUntil time.Time) (*db.Challenge, bool, error)
-	CompleteLeasedChallengeAction(ctx context.Context, challengeID, owner, expectedStatus, nextStatus string, expiresAt time.Time) (bool, error)
-	ScheduleLeasedChallengeRetry(ctx context.Context, challengeID, owner, expectedStatus string, nextAttemptAt time.Time, lastError string) (bool, error)
-	ReconcileLeasedChallenge(ctx context.Context, challengeID, owner, expectedStatus, lastError string) (bool, error)
-	CompleteLeasedChallengeActivation(ctx context.Context, challengeID, owner string, restricted bool, messageID int) (bool, error)
-	MarkLeasedChallengeRestricted(ctx context.Context, challengeID, owner string) (bool, error)
-	CompleteLeasedChallengeWithoutPrivileges(ctx context.Context, challengeID, owner, expectedStatus string, noticeMessageID int, expiresAt time.Time, lastError string) (bool, error)
-	DeleteLeasedChallengeAction(ctx context.Context, challengeID, owner, expectedStatus string) (bool, error)
+	BeginLeasedChallengeEffect(ctx context.Context, challengeID, owner string, expectedVersion int64, expectedStatus, phase string, now time.Time) (int64, bool, error)
+	AdvanceLeasedChallengePhase(ctx context.Context, challengeID, owner string, expectedVersion int64, expectedStatus, phase string, now time.Time) (int64, bool, error)
+	BindLeasedChallengeMessage(ctx context.Context, challengeID, owner string, expectedVersion int64, expectedStatus, expectedPhase, completedPhase string, messageID int, now time.Time) (bool, error)
+	CompleteLeasedChallengeActionVersion(ctx context.Context, challengeID, owner string, expectedVersion int64, expectedStatus, expectedPhase, nextStatus string, expiresAt, now time.Time) (bool, error)
+	ScheduleLeasedChallengeRetryVersion(ctx context.Context, challengeID, owner string, expectedVersion int64, expectedStatus, expectedPhase string, nextAttemptAt time.Time, lastError string, now time.Time) (bool, error)
+	CompleteLeasedChallengeActivationVersion(ctx context.Context, challengeID, owner string, expectedVersion int64, expectedPhase string, restricted bool, messageID int, now time.Time) (bool, error)
+	MarkLeasedChallengeRestrictedVersion(ctx context.Context, challengeID, owner string, expectedVersion int64, expectedPhase string, now time.Time) (int64, bool, error)
+	CompleteLeasedChallengeWithoutPrivilegesVersion(ctx context.Context, challengeID, owner string, expectedVersion int64, expectedStatus, expectedPhase string, noticeMessageID int, expiresAt time.Time, lastError string, now time.Time) (bool, error)
+	DeleteLeasedChallengeActionVersion(ctx context.Context, challengeID, owner string, expectedVersion int64, expectedStatus, expectedPhase string, now time.Time) (bool, error)
+	ReconcileLeasedChallengeVersion(ctx context.Context, challengeID, owner string, expectedVersion int64, expectedStatus string, artifactMessageID int, lastError string, now time.Time) (bool, error)
+	RequestChallengeCancellation(ctx context.Context, challengeID, expectedStatus string, expectedVersion int64, lastError string) (bool, error)
+	ReconcileExpiredChallengeEffects(ctx context.Context, now time.Time) (int, error)
 	GetDueChallenges(ctx context.Context, now time.Time) ([]*db.Challenge, error)
 	GetExpiredChallenges(ctx context.Context, now time.Time) ([]*db.Challenge, error)
 	MarkWebAppChallengeOpened(ctx context.Context, token string, openedAt time.Time) error
@@ -158,7 +165,7 @@ var defaultCaptchaVariants = map[string]string{
 	"🚗": "car",
 	"🌟": "star",
 	"🎈": "balloon",
-	"📚": "book",
+	"📚": "volume",
 	"🎵": "music",
 }
 

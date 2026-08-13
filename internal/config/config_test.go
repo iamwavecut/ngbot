@@ -28,6 +28,18 @@ func TestLoadUsesProviderSpecificCredential(t *testing.T) {
 	}
 }
 
+func TestValidateConfigRejectsTelegramTimeoutAtOrBeyondActionLease(t *testing.T) {
+	t.Parallel()
+	cfg := Config{
+		EnabledHandlers: []string{"gatekeeper"},
+		Telegram:        Telegram{PollTimeout: time.Minute, RequestTimeout: 2 * time.Minute, RecoveryWindow: 10 * time.Minute},
+		SpamControl:     SpamControl{MessageProbationDuration: time.Hour},
+	}
+	if err := validateConfig(&cfg); err == nil {
+		t.Fatal("expected Telegram timeout/action lease validation error")
+	}
+}
+
 func TestValidateConfig(t *testing.T) {
 	t.Parallel()
 
