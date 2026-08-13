@@ -85,6 +85,52 @@ func TestJoinCaptchaRateLimitUsesTrustedForwardedClient(t *testing.T) {
 	}
 }
 
+func TestJoinCaptchaRateLimiterEvictsOldestClientAtCapacity(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 13, 16, 0, 0, 0, time.UTC)
+	limiter := newJoinCaptchaRateLimiter(2, time.Hour, func() time.Time { return now })
+	for index := range joinCaptchaRateClientLimit {
+		client := fmt.Sprintf("client-%04d", index)
+		if !limiter.allow(client) {
+			t.Fatalf("client %d was unexpectedly rejected", index)
+		}
+		now = now.Add(time.Millisecond)
+	}
+	if len(limiter.clients) != joinCaptchaRateClientLimit {
+		t.Fatalf("client state size = %d, want %d", len(limiter.clients), joinCaptchaRateClientLimit)
+	}
+
+	if !limiter.allow("new-legitimate-client") {
+		t.Fatal("4097th distinct client was globally rate limited")
+	}
+	if len(limiter.clients) != joinCaptchaRateClientLimit {
+		t.Fatalf("client state grew to %d, want bounded %d", len(limiter.clients), joinCaptchaRateClientLimit)
+	}
+	if _, exists := limiter.clients["client-0000"]; exists {
+		t.Fatal("oldest client state was not evicted")
+	}
+}
+
+func TestJoinCaptchaRateLimiterDropsExpiredClientStateAtCapacity(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 13, 16, 0, 0, 0, time.UTC)
+	limiter := newJoinCaptchaRateLimiter(1, time.Minute, func() time.Time { return now })
+	for index := range joinCaptchaRateClientLimit {
+		if !limiter.allow(fmt.Sprintf("expired-client-%04d", index)) {
+			t.Fatalf("client %d was unexpectedly rejected", index)
+		}
+	}
+	now = now.Add(time.Minute)
+	if !limiter.allow("new-client") {
+		t.Fatal("new client was rejected after prior state expired")
+	}
+	if len(limiter.clients) != 1 {
+		t.Fatalf("expired client state was retained: size=%d, want 1", len(limiter.clients))
+	}
+}
+
 func TestJoinCaptchaAdmissionRejectsOverflow(t *testing.T) {
 	t.Parallel()
 
@@ -122,7 +168,7 @@ func TestJoinCaptchaTelemetryDoesNotLogBearerOrToken(t *testing.T) {
 	handler := joinCaptchaTelemetryMiddleware(log.NewEntry(logger), http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
-	req := httptest.NewRequest(http.MethodGet, joinCaptchaPath+"?token=webapp-bearer-secret", nil)
+	req := httptest.NewRequest(http.MethodGet, "/arbitrary-webapp-bearer-secret?token=webapp-bearer-secret", nil)
 	req.Header.Set("Authorization", "Bearer authorization-secret")
 	handler.ServeHTTP(httptest.NewRecorder(), req)
 
@@ -132,7 +178,10 @@ func TestJoinCaptchaTelemetryDoesNotLogBearerOrToken(t *testing.T) {
 			t.Fatalf("telemetry leaked %q in %q", secret, logged)
 		}
 	}
-	if !strings.Contains(logged, joinCaptchaPath) || !strings.Contains(logged, `"status":204`) {
+	if strings.Contains(logged, "/arbitrary-webapp-bearer-secret") {
+		t.Fatalf("telemetry logged an untrusted raw path: %q", logged)
+	}
+	if !strings.Contains(logged, `"http_route":"other"`) || !strings.Contains(logged, `"status":204`) {
 		t.Fatalf("telemetry is missing safe request metadata: %q", logged)
 	}
 }

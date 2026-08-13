@@ -17,8 +17,9 @@ import (
 )
 
 type joinCaptchaRateWindowState struct {
-	count   int
-	resetAt time.Time
+	count    int
+	lastSeen time.Time
+	resetAt  time.Time
 }
 
 type joinCaptchaRateLimiter struct {
@@ -76,17 +77,26 @@ func (l *joinCaptchaRateLimiter) allow(client string) bool {
 			}
 		}
 		if len(l.clients) >= joinCaptchaRateClientLimit {
-			return false
+			var oldestClient string
+			var oldestSeen time.Time
+			for key, candidate := range l.clients {
+				if oldestClient == "" || candidate.lastSeen.Before(oldestSeen) {
+					oldestClient = key
+					oldestSeen = candidate.lastSeen
+				}
+			}
+			delete(l.clients, oldestClient)
 		}
 	}
 	if !ok {
-		l.clients[client] = joinCaptchaRateWindowState{count: 1, resetAt: now.Add(l.window)}
+		l.clients[client] = joinCaptchaRateWindowState{count: 1, lastSeen: now, resetAt: now.Add(l.window)}
 		return true
 	}
 	if state.count >= l.limit {
 		return false
 	}
 	state.count++
+	state.lastSeen = now
 	l.clients[client] = state
 	return true
 }
@@ -135,7 +145,7 @@ func joinCaptchaTelemetryMiddleware(logger *log.Entry, next http.Handler) http.H
 		entry := logger.WithFields(log.Fields{
 			"duration_ms":  time.Since(started).Milliseconds(),
 			"http_method":  r.Method,
-			"http_path":    r.URL.Path,
+			"http_route":   joinCaptchaTelemetryRoute(r.URL.Path),
 			logFieldStatus: recorder.status,
 		})
 		if recorder.status >= http.StatusInternalServerError {
@@ -144,6 +154,29 @@ func joinCaptchaTelemetryMiddleware(logger *log.Entry, next http.Handler) http.H
 		}
 		entry.Info("gatekeeper web app request")
 	})
+}
+
+func joinCaptchaTelemetryRoute(path string) string {
+	switch path {
+	case joinCaptchaPath:
+		return "join_captcha"
+	case joinCaptchaAnswerPath:
+		return "join_captcha_answer"
+	case joinCaptchaReadyPath:
+		return "join_captcha_ready"
+	case joinCaptchaStatusPath:
+		return "join_captcha_status"
+	case joinCaptchaRobotsPath:
+		return "robots"
+	case joinCaptchaSitemapPath:
+		return "sitemap"
+	case joinCaptchaLivePath:
+		return "liveness"
+	case joinCaptchaReadyHealthPath:
+		return "readiness"
+	default:
+		return "other"
+	}
 }
 
 func joinCaptchaClientAddress(r *http.Request) string {

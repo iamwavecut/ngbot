@@ -13,7 +13,9 @@ chmod 0600 .env
 sudo install -d -m 0700 -o 65532 -g 65532 /home/username/.ngbot
 ```
 
-Set `NGBOT_DATA_PATH=/home/username/.ngbot`, `NG_TOKEN`, and only the LLM credential required by the selected provider. Validate permissions with `stat -c '%a %n' .env` on Linux or `stat -f '%Lp %N' .env` on macOS. Do not display the file contents in automation logs.
+Set `NGBOT_DATA_PATH=/home/username/.ngbot`, `NG_TOKEN`, and only the LLM credential required by the selected provider. Application `NG_*` values belong in this file because Compose reads `.env` automatically; they are not shell assignments that need to be typed before `docker compose`. `NG_GATEKEEPER_WEBAPP_MAX_CONCURRENT` and `NG_GATEKEEPER_WEBAPP_REQUESTS_PER_MINUTE` must both be greater than zero. Validate permissions with `stat -c '%a %n' .env` on Linux or `stat -f '%Lp %N' .env` on macOS. Do not display the file contents in automation logs.
+
+`NGBOT_WEBAPP_HOST_PORT` is the one canonical host-port variable used by both Compose and the Caddy template. Set the same value in `.env` for Compose and in Caddy's own service environment. Do not expose the bot `.env` to Caddy; it contains credentials that the proxy does not need.
 
 ## Secret rotation
 
@@ -41,7 +43,7 @@ docker image inspect ngbot-ngbot --format '{{ index .Config.Labels "org.opencont
 
 `/livez` means the embedded HTTP process is serving. `/readyz` becomes healthy only after all runtime components start, and becomes unhealthy before shutdown. Docker probes `/readyz`; an unexpected WebApp serving failure exits the process so `restart: unless-stopped` can recover it. Caddy must proxy only from host loopback and terminate TLS.
 
-Compose retains five 10 MiB JSON log files. WebApp access telemetry intentionally omits query strings, client identities, request bodies, cookies, and authorization headers.
+Compose retains five 10 MiB JSON log files. WebApp access telemetry intentionally emits only an allowlisted route name, method, status, and duration; it omits raw paths, query strings, client identities, request bodies, cookies, and authorization headers.
 
 ## Native execution
 

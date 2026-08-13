@@ -128,10 +128,10 @@ func validateConfig(cfg *Config) error {
 			return fmt.Errorf("gatekeeper web app public url must contain only scheme and authority")
 		}
 	}
-	if cfg.GatekeeperWebApp.MaxConcurrent < 0 {
+	if cfg.GatekeeperWebApp.MaxConcurrent <= 0 {
 		return fmt.Errorf("gatekeeper web app maximum concurrent requests must be positive")
 	}
-	if cfg.GatekeeperWebApp.RequestsPerMinute < 0 {
+	if cfg.GatekeeperWebApp.RequestsPerMinute <= 0 {
 		return fmt.Errorf("gatekeeper web app requests per minute must be positive")
 	}
 	return nil

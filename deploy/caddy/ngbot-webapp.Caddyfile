@@ -47,5 +47,5 @@ Noindex: /
 	@blockedCrawler header_regexp User-Agent `(?i)(ahrefsbot|amazonbot|anthropic-ai|applebot|applebot-extended|baiduspider|bingbot|blexbot|bytespider|ccbot|chatgpt-user|claude-web|claudebot|diffbot|dotbot|facebookbot|google-extended|googlebot|googleother|gptbot|meta-externalagent|mj12bot|oai-searchbot|perplexity-user|perplexitybot|petalbot|semrushbot|yandexbot)`
 	respond @blockedCrawler "" 403
 
-	reverse_proxy 127.0.0.1:{$NG_GATEKEEPER_WEBAPP_HOST_PORT:18080}
+	reverse_proxy 127.0.0.1:{$NGBOT_WEBAPP_HOST_PORT:18080}
 }

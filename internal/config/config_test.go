@@ -58,17 +58,17 @@ func TestValidateConfigRejectsInvalidWebAppAdmissionLimits(t *testing.T) {
 		want   string
 	}{
 		{
-			name: "requests per minute",
+			name: "zero requests per minute",
 			webApp: GatekeeperWebApp{
 				MaxConcurrent:     32,
-				RequestsPerMinute: -1,
+				RequestsPerMinute: 0,
 			},
 			want: "requests per minute",
 		},
 		{
-			name: "maximum concurrent requests",
+			name: "zero maximum concurrent requests",
 			webApp: GatekeeperWebApp{
-				MaxConcurrent:     -1,
+				MaxConcurrent:     0,
 				RequestsPerMinute: 120,
 			},
 			want: "concurrent",
@@ -267,6 +267,8 @@ func TestValidateConfig(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
+			tt.cfg.GatekeeperWebApp.MaxConcurrent = 32
+			tt.cfg.GatekeeperWebApp.RequestsPerMinute = 120
 
 			err := validateConfig(&tt.cfg)
 			if tt.wantErr && err == nil {
@@ -380,6 +382,10 @@ func validConfigForLLM() Config {
 	return Config{
 		EnabledHandlers: []string{"reactor"},
 		SpamControl:     SpamControl{MessageProbationDuration: 3 * time.Hour},
+		GatekeeperWebApp: GatekeeperWebApp{
+			MaxConcurrent:     32,
+			RequestsPerMinute: 120,
+		},
 		Telegram: Telegram{
 			PollTimeout:    60 * time.Second,
 			RequestTimeout: 75 * time.Second,

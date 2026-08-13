@@ -102,8 +102,8 @@ See [.env.example](.env.example) for a quick reference. `NGBOT_*` variables conf
 | | `NG_TELEGRAM_RECOVERY_WINDOW` | Maximum degraded polling window before restart | `10m` | Must be greater than request timeout |
 | | `NG_GATEKEEPER_WEBAPP_PUBLIC_URL` | Public HTTPS origin for join-request CAPTCHA Mini App | | Absolute URL, e.g. `https://captcha.example.com` |
 | | `NG_GATEKEEPER_WEBAPP_LISTEN_ADDR` | Native embedded Mini App server listen address | `127.0.0.1:8080` | Compose enforces `0.0.0.0:8080` inside the container |
-| | `NG_GATEKEEPER_WEBAPP_MAX_CONCURRENT` | Maximum in-flight Mini App requests | `32` | Positive integer |
-| | `NG_GATEKEEPER_WEBAPP_REQUESTS_PER_MINUTE` | Per-client Mini App request limit | `120` | Positive integer |
+| | `NG_GATEKEEPER_WEBAPP_MAX_CONCURRENT` | Maximum in-flight Mini App requests | `32` | Integer greater than zero; `0` is invalid |
+| | `NG_GATEKEEPER_WEBAPP_REQUESTS_PER_MINUTE` | Per-client Mini App request limit | `120` | Integer greater than zero; `0` is invalid |
 | | `NG_LLM_GEMINI_API_KEY` | Gemini credential; required when `reactor` uses Gemini | | Preferred over the legacy key |
 | | `NG_LLM_OPENAI_API_KEY` | OpenAI credential; required when `reactor` uses OpenAI | | Preferred over the legacy key |
 | | `NG_LLM_API_KEY` | Legacy credential fallback for the selected provider | | Used only when its dedicated key is empty |
@@ -127,19 +127,23 @@ The language codes in `NG_LANG` are the same complete locale catalog used by the
 
 The Docker Compose file binds the Mini App server to `127.0.0.1:${NGBOT_WEBAPP_HOST_PORT:-18080}` on the host. A matching Caddy template is available at `deploy/caddy/ngbot-webapp.Caddyfile`.
 
-Set these values on the host before enabling the Caddy site:
-
-```bash
-export NGBOT_GATEKEEPER_WEBAPP_DOMAIN=antifraud.rtfm.rsvp
-export NGBOT_WEBAPP_HOST_PORT=18080
-```
-
-Then configure the bot with:
+Put the application values in the same mode-`0600` `.env` that Compose reads automatically:
 
 ```bash
 NG_GATEKEEPER_WEBAPP_PUBLIC_URL=https://antifraud.rtfm.rsvp
-NG_GATEKEEPER_WEBAPP_LISTEN_ADDR=127.0.0.1:8080 # native only; Compose overrides this safely
+NGBOT_WEBAPP_HOST_PORT=18080
 ```
+
+These are file entries, not shell assignments to run before `docker compose`: Compose reads `.env` itself. It enforces the container listener, so leave `NG_GATEKEEPER_WEBAPP_LISTEN_ADDR` at its native default in `.env`.
+
+Configure the separate Caddy service environment with the public domain and the same canonical host-port variable (for example through its systemd `Environment=` or `EnvironmentFile=` settings):
+
+```bash
+NGBOT_GATEKEEPER_WEBAPP_DOMAIN=antifraud.rtfm.rsvp
+NGBOT_WEBAPP_HOST_PORT=18080
+```
+
+Do not give Caddy the bot `.env`, because it contains application credentials that Caddy does not need.
 
 The Mini App endpoint is intentionally hostile to indexing and unauthorized embedding:
 
@@ -155,7 +159,7 @@ The Mini App endpoint is intentionally hostile to indexing and unauthorized embe
 10. POST bodies are size-limited before form parsing.
 11. Known crawler and LLM user agents are rejected before challenge lookup.
 12. MIME sniffing and legacy cross-domain policies are disabled.
-13. Concurrent admission and per-client request rates are bounded; access telemetry records only method, path, status, and duration, never query strings, authorization headers, or bearer tokens.
+13. Concurrent admission and per-client request rates are bounded; access telemetry records only method, an allowlisted route name, status, and duration, never raw paths, query strings, authorization headers, or bearer tokens.
 
 The embedded server exposes `GET /livez` for process liveness and `GET /readyz` for readiness. A fatal serving error triggers graceful process shutdown with exit status 1 so Compose can restart the service. Container health checks use `/readyz`; use `./ngbot --version` and the OCI revision label to verify a deployed artifact.
 

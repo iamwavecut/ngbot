@@ -4,7 +4,7 @@ set -eu
 repository_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$repository_root"
 
-if [ ! -f compose.yaml ] || git check-ignore -q compose.yaml; then
+if [ ! -f compose.yaml ] || git check-ignore -q compose.yaml || ! git ls-files --error-unmatch compose.yaml >/dev/null 2>&1; then
 	echo "compose.yaml must be the tracked deployment source" >&2
 	exit 1
 fi
@@ -25,19 +25,21 @@ fi
 validation_dir=$(mktemp -d)
 trap 'rm -rf "$validation_dir"' EXIT HUP INT TERM
 install -d -m 0700 "$validation_dir/data"
+validation_port=19090
 
 NG_TOKEN=validation-token \
 NGBOT_DATA_PATH="$validation_dir/data" \
+NGBOT_WEBAPP_HOST_PORT="$validation_port" \
 NGBOT_VERSION=v0.0.0-validation \
 NGBOT_REVISION=0123456789abcdef \
 NGBOT_BUILD_DATE=2026-08-13T16:00:00Z \
 	docker compose -f compose.yaml config --format json >"$validation_dir/rendered.json"
 
-jq -e --arg data "$validation_dir/data" '
+jq -e --arg data "$validation_dir/data" --arg port "$validation_port" '
   .services.ngbot.environment.NG_DOT_PATH == "/data" and
   .services.ngbot.environment.NG_GATEKEEPER_WEBAPP_LISTEN_ADDR == "0.0.0.0:8080" and
   any(.services.ngbot.volumes[]; .type == "bind" and .source == $data and .target == "/data") and
-  any(.services.ngbot.ports[]; .host_ip == "127.0.0.1" and .target == 8080 and .published == "18080") and
+  any(.services.ngbot.ports[]; .host_ip == "127.0.0.1" and .target == 8080 and .published == $port) and
   .services.ngbot.restart == "unless-stopped" and
   .services.ngbot.logging.driver == "json-file" and
   .services.ngbot.logging.options["max-size"] == "10m" and
@@ -55,3 +57,4 @@ fi
 grep -q 'Content-Security-Policy' deploy/caddy/ngbot-webapp.Caddyfile
 grep -q 'Referrer-Policy "no-referrer"' deploy/caddy/ngbot-webapp.Caddyfile
 grep -q 'X-Content-Type-Options "nosniff"' deploy/caddy/ngbot-webapp.Caddyfile
+grep -q 'reverse_proxy 127.0.0.1:{$NGBOT_WEBAPP_HOST_PORT:18080}' deploy/caddy/ngbot-webapp.Caddyfile

@@ -70,7 +70,7 @@ go mod tidy -diff
 go run -ldflags='-X main.version=v0.0.0-task7 -X main.revision=66bc102-task7 -X main.buildDate=2026-08-13T16:00:00Z' ./cmd/ngbot --version
 ```
 
-Result: vet passed, lint reported `0 issues`, the final full race run passed, module tidy produced no diff, and the binary reported all injected identity fields. The first full race attempt exposed the existing timing-sensitive polling test once (`expected at least 3 polling attempts, got 2`); its focused race rerun and the subsequent full race rerun passed without code changes.
+Result: vet passed, lint reported `0 issues`, module tidy produced no diff, and the binary reported all injected identity fields. Full race attempts exposed existing timing-sensitive tests outside Task 7: polling once (`expected at least 3 polling attempts, got 2`) and SQLite banlist cleanup later (`ordinary write did not run between banlist cleanup batches`). Focused race runs for the Task 7 packages passed.
 
 ## Implemented controls
 
@@ -91,3 +91,37 @@ Result: vet passed, lint reported `0 issues`, the final full race run passed, mo
 Release automation must set `NGBOT_VERSION`, exact `NGBOT_REVISION`, and an RFC 3339 `NGBOT_BUILD_DATE`; their `dev`/`unknown` defaults are intentionally conspicuous for local builds. Production deployment remains Task 8 and was not performed here.
 
 The local Docker client was present, so rendered Compose validation completed, but the Docker daemon was unavailable at the configured OrbStack socket. Consequently an actual container build remains for the Task 8/full-branch gate; CI now performs that build with explicit identity arguments.
+
+## Review fix round 1
+
+RED checks added after review:
+
+```sh
+go test ./internal/config ./internal/handlers/chat
+./scripts/validate-deployment.sh
+```
+
+The focused tests failed because zero admission values were accepted, the 4,097th distinct rate-limit client received a global 429, and telemetry emitted an arbitrary raw path. The validator failed after rendering port `19090` because it still asserted the hard-coded default and because Caddy used a different variable name.
+
+GREEN changes:
+
+- Standardized `NGBOT_WEBAPP_HOST_PORT` across Compose, Caddy, `.env.example`, and both operator guides. The validator renders `19090` and compares against that same input.
+- Required `compose.yaml` to pass `git ls-files --error-unmatch`, in addition to file and ignore checks.
+- Made the fixed-window limiter evict expired entries first and then the least-recently-seen entry at its 4,096-client cap, admitting the new client without growing memory.
+- Replaced raw-path telemetry with a closed route-name mapping whose fallback is `other`.
+- Rejected both zero and negative admission limits and documented the greater-than-zero contract.
+- Clarified that Compose reads application variables from `.env` automatically, while Caddy receives only its non-secret domain and canonical port through its own service environment.
+
+Review-round GREEN verification:
+
+```sh
+go test ./internal/config ./internal/handlers/chat
+go test ./...
+go test -race ./internal/config ./internal/handlers/chat
+go vet ./...
+go tool golangci-lint run --enable=unused --enable=unparam --enable=ineffassign --enable=goconst ./...
+./scripts/validate-deployment.sh
+git diff --check
+```
+
+All listed checks passed; lint reported `0 issues`. The required full `go test -race ./...` was also run, but its SQLite package hit the existing unrelated timing-sensitive `TestBanlistCleanupYieldsToQueuedOrdinaryWriter` (`ordinary write did not run between banlist cleanup batches`). The changed config and WebApp packages pass under the race detector; no SQLite production or test code changed in this round.
