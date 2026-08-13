@@ -91,6 +91,7 @@ const sandbox = {
   setTimeout(fn) { fn(); },
   fetch: async (target, options) => {
     if (target.endsWith("/answer")) {
+      if (!options || options.method !== "POST") throw new Error("answer request must use POST");
       answerPosts++;
       if (options.redirect !== "error") throw new Error("redirect mode was not error");
     }
