@@ -75,10 +75,6 @@ func (s *defaultBanService) UnmuteUser(ctx context.Context, chatID, userID int64
 	return nil
 }
 
-func (s *defaultBanService) restorePermissions(ctx context.Context, chatID, userID int64, permissions *api.ChatPermissions) error {
-	return s.restorePermissionsUntil(ctx, chatID, userID, permissions, 0)
-}
-
 func (s *defaultBanService) restorePermissionsUntil(ctx context.Context, chatID, userID int64, permissions *api.ChatPermissions, untilDate int64) error {
 	config := api.RestrictChatMemberConfig{
 		ChatMemberConfig: api.ChatMemberConfig{

@@ -18,7 +18,11 @@ const telegramUpdateColumns = `
 	lease_owner, lease_version, lease_until
 `
 
-const telegramUpdateCleanupBatchSize = 500
+const (
+	telegramUpdateCleanupBatchSize         = 500
+	telegramUpdateFailureRuntime           = "runtime"
+	telegramUpdateFailureUnclassifiedError = "unclassified_error"
+)
 
 func normalizedTelegramUpdateInboxLimits(limits db.TelegramUpdateInboxLimits) db.TelegramUpdateInboxLimits {
 	if limits.MaxPendingRows <= 0 {
@@ -403,10 +407,10 @@ func (c *sqliteClient) CleanupTelegramUpdates(ctx context.Context, completedBefo
 
 func sanitizeTelegramUpdateFailureSource(source string) string {
 	switch source {
-	case "sqlite", "llm", "telegram", "capability", "payload", "runtime":
+	case "sqlite", "llm", "telegram", "capability", "payload", telegramUpdateFailureRuntime:
 		return source
 	default:
-		return "runtime"
+		return telegramUpdateFailureRuntime
 	}
 }
 
@@ -414,13 +418,13 @@ func sanitizeTelegramUpdateFailureReason(reason string) string {
 	switch reason {
 	case "sqlite_error", "database_busy", "timeout", "malformed_output", "policy_blocked", "provider_error",
 		"permission_denied", "rate_limited", "server_error", "request_rejected", "capability_unknown",
-		"malformed_payload", "malformed_update", "context_interrupted", "unclassified_error", "retry_exhausted",
+		"malformed_payload", "malformed_update", "context_interrupted", telegramUpdateFailureUnclassifiedError, "retry_exhausted",
 		"sender_chat_classification_failed", "moderation_fence_unavailable", "moderation_effect_ambiguous",
 		"persist_ban_effect", "invalid_moderation_action", "complete_moderation_fence",
 		"ambiguous_handler_lease_lost", "ambiguous_handler_panic":
 		return reason
 	default:
-		return "unclassified_error"
+		return telegramUpdateFailureUnclassifiedError
 	}
 }
 
