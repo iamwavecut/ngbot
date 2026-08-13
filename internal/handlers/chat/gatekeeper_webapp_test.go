@@ -385,6 +385,17 @@ func TestJoinCaptchaAnswerApprovesMatchingTokenUserAndChoice(t *testing.T) {
 	if got.Status != db.ChallengeStatusPassedWaitingMemberJoin {
 		t.Fatalf("expected handoff status, got %q", got.Status)
 	}
+
+	again := httptest.NewRequest(http.MethodPost, joinCaptchaAnswerPath, strings.NewReader(form.Encode()))
+	again.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	againRR := httptest.NewRecorder()
+	gatekeeper.handleJoinCaptchaAnswer(againRR, again)
+	if againRR.Code != http.StatusOK {
+		t.Fatalf("second submission status = %d: %s", againRR.Code, againRR.Body.String())
+	}
+	if answers := recorder.byMethod(testTelegramMethodJoinRequestQuery); len(answers) != 1 {
+		t.Fatalf("opaque correct token caused %d approvals, want exactly one", len(answers))
+	}
 }
 
 func TestCaptchaRevalidationDoesNotCallProviderWithoutModerationRights(t *testing.T) {
@@ -740,7 +751,7 @@ func TestJoinCaptchaWebAppLocalizesAndObfuscatesChallengeText(t *testing.T) {
 	t.Parallel()
 
 	store := newGatekeeperFlowStore()
-	optionsJSON, err := encodeWebAppCaptchaOptions("ru", []webAppCaptchaOption{
+	optionsJSON, err := encodeWebAppCaptchaOptions("ru", "Выберите символ.", []webAppCaptchaOption{
 		{ID: testCorrectChoice, Symbol: "🐩"},
 		{ID: testWrongChoice, Symbol: "🍎"},
 	})
@@ -768,7 +779,7 @@ func TestJoinCaptchaWebAppLocalizesAndObfuscatesChallengeText(t *testing.T) {
 		t.Fatalf("unexpected status %d: %s", rr.Code, rr.Body.String())
 	}
 	body := rr.Body.String()
-	for _, want := range []string{"Контроль входа", "Проверка", "Решите выражение", "секунд", "Жду выбор", "Проверяю ответ", `<html lang="ru">`, "telegram-web-app.js?63", `role="status"`, "prefers-reduced-motion", "data:image/png;base64,"} {
+	for _, want := range []string{"Контроль входа", "Проверка", "Выберите символ", "секунд", "Жду выбор", "Проверяю ответ", `<html lang="ru">`, "telegram-web-app.js?63", `role="status"`, "prefers-reduced-motion", "data:image/png;base64,"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("expected localized page to contain %q, got %q", want, body)
 		}
@@ -1160,7 +1171,7 @@ func TestJoinCaptchaAnswerUsesChallengeLocaleForVisibleErrors(t *testing.T) {
 		}
 	})
 	store := newGatekeeperFlowStore()
-	optionsJSON, err := encodeWebAppCaptchaOptions("ru", []webAppCaptchaOption{
+	optionsJSON, err := encodeWebAppCaptchaOptions("ru", "Выберите символ.", []webAppCaptchaOption{
 		{ID: testCorrectChoice, Symbol: "🐩"},
 		{ID: testWrongChoice, Symbol: "🍎"},
 	})
