@@ -4,6 +4,7 @@
 
 - Implementation commit: `8eb9d475a95ebfaa489fdd2d4323f1715b64579d`
 - Review-fix implementation commit: `d42729ffddb561fcfb2de481246921dc8eb40861`
+- Review-fix round 2 implementation commit: `990fbc03d4641c1c4fcc4ee4eff5adf4621f045c`
 - Base commit: `66bc10254740218d820f79c1ca5ca71451535661`
 
 ## Scope delivered
@@ -29,6 +30,13 @@
 - Derived voting mute duration from the durable case deadline plus a recovery margin. Expired permission snapshots survive cleanup and are removed only after a successful restore.
 - Reused the allowlist/capability/cached/provider revalidation order on CAPTCHA completion. Cached denies remain terminal without rights; online providers are called only after moderation rights are known available.
 
+## Review fix round 2
+
+- BanlistGuard now returns the exact chat/user/username allowlist and provider decision to the mandatory router.
+- Spam-vote callbacks resolve the durable spam-case target chat before the mandatory guard, so target-chat username-aware allowlist priority is authoritative even when the callback message is hosted in a separate log channel.
+- ReactorFeatures consumes that decision in the same mandatory-handler call. RecordVote reuses an exact target allowlist decision and a safe global provider decision, while still performing a target lookup when a log-chat decision does not cover the target identity.
+- Full-chain coverage proves one provider call for a normal target voter, zero for a target allowlist match, zero for that match across a separate log chat, and one target decision when only the log chat is allowlisted.
+
 ## RED evidence
 
 1. Focused moderation/router tests initially failed to compile because `PriorPermissionsJSON` did not exist; after exposing that seam, command spam still reached routing and untrusted `SenderChat` produced zero classifier calls.
@@ -53,6 +61,8 @@
 - Round 1 `go vet ./...`: PASS.
 - Round 1 strict golangci-lint command: PASS, zero issues.
 - Round 1 focused package race run: `cmd/ngbot`, `moderation`, and `sqlite` PASS; the combined `chat` run hit the two pre-existing Task 3 deadline-sensitive tests named below, and both PASS together when rerun under `-race`.
+- Round 2 full handler-chain callback regression: PASS normally and under `-race`.
+- Round 2 `go test ./...`, `go vet ./...`, strict golangci-lint, and `git diff --check`: PASS.
 
 ## Decisions and invariants
 
