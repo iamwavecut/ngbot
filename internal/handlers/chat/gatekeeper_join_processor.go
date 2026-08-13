@@ -321,6 +321,9 @@ func (g *Gatekeeper) handleChatJoinRequest(ctx context.Context, u *api.Update, s
 			entry.WithField(logFieldErrorCode, db.SafeGatekeeperErrorCode(err)).Warn("join WebApp response is ambiguous and requires reconciliation")
 			webAppResponseFailed = true
 			u.ChatJoinRequest.QueryID = ""
+			continuationCtx, continuationCancel := context.WithTimeout(context.WithoutCancel(ctx), challengeActionTimeout)
+			defer continuationCancel()
+			ctx = continuationCtx
 		} else {
 			u.ChatJoinRequest.QueryID = ""
 			webAppQueued = true
@@ -406,13 +409,17 @@ func (g *Gatekeeper) handleChatJoinRequest(ctx context.Context, u *api.Update, s
 		}).Error("failed to check manual not-spammer override; continuing moderation")
 	}
 	if !isNotSpammer && g.moderationAvailable(ctx, u.ChatJoinRequest.Chat.ID) {
-		banned, err := g.banChecker.CheckBan(ctx, u.ChatJoinRequest.From.ID)
-		if err != nil {
-			entry.WithFields(log.Fields{
-				logFieldUserID:    u.ChatJoinRequest.From.ID,
-				logFieldErrorCode: db.SafeGatekeeperErrorCode(err),
-			}).Error("failed to check ban for chat join request")
-			return safeGatekeeperError(err)
+		challenge, loadErr := g.store.GetChallengeByChatUser(ctx, u.ChatJoinRequest.Chat.ID, u.ChatJoinRequest.From.ID)
+		if loadErr != nil {
+			return loadErr
+		}
+		if challenge != nil && challenge.Status == db.ChallengeStatusBanCheckPending {
+			return g.processChallengeAction(ctx, challenge)
+		}
+		banned, checkErr := g.banChecker.CheckBan(ctx, u.ChatJoinRequest.From.ID)
+		if checkErr != nil {
+			entry.WithFields(log.Fields{logFieldUserID: u.ChatJoinRequest.From.ID, logFieldErrorCode: db.SafeGatekeeperErrorCode(checkErr)}).Error("failed to check ban for chat join request")
+			return safeGatekeeperError(checkErr)
 		}
 		if banned {
 			g.processKnownBannedJoinRequest(ctx, u.ChatJoinRequest)
@@ -460,8 +467,8 @@ func (g *Gatekeeper) handleChatJoinRequest(ctx context.Context, u *api.Update, s
 			ChatID: u.ChatJoinRequest.UserChatID,
 		},
 	}); err != nil {
-		entry.WithField(logFieldError, err.Error()).Error("failed to get user private chat info")
-		return err
+		entry.WithField(logFieldErrorCode, db.SafeGatekeeperErrorCode(err)).Error("failed to get user private chat info")
+		return safeGatekeeperError(err)
 	}
 
 	return g.startChallenge(
@@ -529,7 +536,7 @@ func (g *Gatekeeper) startChallenge(ctx context.Context, u *api.Update, user *ap
 		challenge.NextAttemptAt = sql.NullTime{Time: now, Valid: true}
 	}
 	if _, err := g.store.CreateChallenge(ctx, challenge); err != nil {
-		entry.WithField(logFieldError, err.Error()).Error("failed to create challenge")
+		entry.WithField(logFieldErrorCode, db.SafeGatekeeperErrorCode(err)).Error("failed to create challenge")
 		return err
 	}
 	if moderationAvailable {
@@ -541,8 +548,8 @@ func (g *Gatekeeper) startChallenge(ctx context.Context, u *api.Update, user *ap
 
 	sentMessageID, err := g.sendChallengeMessage(ctx, challenge, user, target, languageChatID, settings)
 	if err != nil {
-		entry.WithField(logFieldError, err.Error()).Error("failed to send gatekeeper challenge")
-		return stderrors.Join(err, g.compensateChallengeActivation(ctx, challenge, false))
+		entry.WithField(logFieldErrorCode, db.SafeGatekeeperErrorCode(err)).Error("failed to send gatekeeper challenge")
+		return stderrors.Join(safeGatekeeperError(err), g.compensateChallengeActivation(ctx, challenge, false))
 	}
 	if sentMessageID == 0 {
 		return g.compensateChallengeActivation(ctx, challenge, false)

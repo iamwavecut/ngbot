@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"database/sql"
 	stderrors "errors"
 	"fmt"
 	"strconv"
@@ -341,6 +342,58 @@ func (g *Gatekeeper) processChallengeActionWithStats(ctx context.Context, challe
 
 	var actionErr error
 	switch challenge.Status {
+	case db.ChallengeStatusBanCheckPending:
+		banned, checkErr := g.banChecker.CheckBan(ctx, challenge.UserID)
+		if checkErr != nil {
+			return g.retryOrReconcileChallengeAction(ctx, challenge, owner, checkErr, entry)
+		}
+		settings, settingsErr := g.fetchAndValidateSettings(ctx, challenge.ChatID)
+		if settingsErr != nil {
+			return g.retryOrReconcileChallengeAction(ctx, challenge, owner, settingsErr, entry)
+		}
+		if banned {
+			if err := g.beginChallengeEffect(ctx, challenge, owner, db.ChallengePhaseRejectBanStarted); err != nil {
+				return err
+			}
+			if err := g.banChecker.BanUserWithMessage(ctx, challenge.ChatID, challenge.UserID, challenge.JoinMessageID); err != nil {
+				return g.reconcileAmbiguousChallengeEffect(ctx, challenge, owner, 0, err)
+			}
+			if err := g.advanceChallengePhase(ctx, challenge, owner, db.ChallengePhaseRejectBanDone); err != nil {
+				return g.reconcileAmbiguousChallengeEffect(ctx, challenge, owner, 0, err)
+			}
+		}
+		if !banned && (!settings.GatekeeperEnabled || !settings.GatekeeperCaptchaEnabled) {
+			deleted, deleteErr := g.store.DeleteLeasedChallengeActionVersion(ctx, challenge.ChallengeID, owner, challenge.ActionVersion, challenge.Status, challenge.ActionPhase, time.Now())
+			if deleteErr != nil || !deleted {
+				return stderrors.Join(deleteErr, errors.New("ban-check cleanup fence lost"))
+			}
+			return nil
+		}
+		nextStatus := db.ChallengeStatusPending
+		if banned {
+			nextStatus = db.ChallengeStatusRejectPending
+		} else if challenge.WebAppToken == "" {
+			nextStatus = db.ChallengeStatusWebAppFallbackPending
+		}
+		changed, transitionErr := g.store.CompleteLeasedChallengeActionVersion(ctx, challenge.ChallengeID, owner, challenge.ActionVersion, challenge.Status, challenge.ActionPhase, nextStatus, time.Time{}, time.Now())
+		if transitionErr != nil || !changed {
+			return stderrors.Join(transitionErr, errors.New("ban-check completion fence lost"))
+		}
+		challenge.Status = nextStatus
+		challenge.ActionOwner = ""
+		challenge.ActionLeaseUntil = sql.NullTime{}
+		challenge.ActionPhase = db.ChallengePhaseReady
+		if nextStatus == db.ChallengeStatusRejectPending {
+			challenge.ActionPhase = db.ChallengePhaseRejectBanDone
+		}
+		challenge.ActionVersion++
+		if challenge.WebAppToken == "" {
+			challenge.JoinRequestQueryID = ""
+		}
+		if nextStatus == db.ChallengeStatusPending {
+			return nil
+		}
+		return g.processChallengeActionWithStats(ctx, challenge, recordStats)
 	case db.ChallengeStatusRestrictPending:
 		restricted := challenge.UserRestricted
 		if moderationAvailable && !restricted {

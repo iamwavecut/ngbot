@@ -359,15 +359,20 @@ func (c *sqliteClient) CompleteLeasedChallengeActionVersion(
 	if isDurableChallengeActionStatus(nextStatus) {
 		nextAttempt = now
 	}
+	nextPhase := db.ChallengePhaseReady
+	if expectedStatus == db.ChallengeStatusBanCheckPending && nextStatus == db.ChallengeStatusRejectPending {
+		nextPhase = db.ChallengePhaseRejectBanDone
+	}
 	result, err := c.db.ExecContext(ctx, `
 		UPDATE gatekeeper_challenges
 		SET status = ?, next_attempt_at = ?, attempt_count = 0, last_error = '',
 			action_owner = '', action_lease_until = NULL, action_phase = ?, effect_started_at = NULL,
 			action_version = action_version + 1,
+			join_request_query_id = CASE WHEN ? THEN '' ELSE join_request_query_id END,
 			expires_at = CASE WHEN ? IS NULL THEN expires_at ELSE ? END
 		WHERE challenge_id = ? AND status = ? AND action_owner = ? AND action_version = ?
 			AND action_phase = ? AND action_lease_until > ? AND cancel_requested = FALSE
-	`, nextStatus, nextAttempt, db.ChallengePhaseReady, nullableTime(expiresAt), nullableTime(expiresAt),
+	`, nextStatus, nextAttempt, nextPhase, expectedPhase == db.ChallengePhaseQueueResponseDone, nullableTime(expiresAt), nullableTime(expiresAt),
 		challengeID, expectedStatus, owner, expectedVersion, expectedPhase, now)
 	if err != nil {
 		return false, err
@@ -690,7 +695,8 @@ func isDurableChallengeActionStatus(status string) bool {
 		db.ChallengeStatusApproveQueryPending,
 		db.ChallengeStatusApproveMemberPending,
 		db.ChallengeStatusUnrestrictPending,
-		db.ChallengeStatusRejectPending:
+		db.ChallengeStatusRejectPending,
+		db.ChallengeStatusBanCheckPending:
 		return true
 	default:
 		return false
@@ -1041,7 +1047,7 @@ func (c *sqliteClient) GetDueChallenges(ctx context.Context, now time.Time) ([]*
 		ctx, &challenges, `
 		SELECT `+challengeColumns+`
 		FROM gatekeeper_challenges
-		WHERE status IN (?, ?, ?, ?, ?, ?)
+		WHERE status IN (?, ?, ?, ?, ?, ?, ?)
 			AND next_attempt_at IS NOT NULL
 			AND next_attempt_at <= ?
 		ORDER BY next_attempt_at, created_at
@@ -1052,6 +1058,7 @@ func (c *sqliteClient) GetDueChallenges(ctx context.Context, now time.Time) ([]*
 		db.ChallengeStatusApproveMemberPending,
 		db.ChallengeStatusUnrestrictPending,
 		db.ChallengeStatusRejectPending,
+		db.ChallengeStatusBanCheckPending,
 		now,
 	)
 	return challenges, err

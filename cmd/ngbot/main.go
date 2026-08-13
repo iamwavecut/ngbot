@@ -302,21 +302,8 @@ func runGatekeeperReconciliation(ctx context.Context, cfg *config.Config, comman
 			return errors.New("reconciliation changed or is already resolved")
 		}
 		return nil
-	case strings.HasPrefix(command, "requeue:"):
-		id, version, err := parseReconciliationTarget(strings.TrimPrefix(command, "requeue:"))
-		if err != nil {
-			return err
-		}
-		requeued, err := client.RequeueChallengeReconciliation(ctx, id, version, now)
-		if err != nil {
-			return err
-		}
-		if !requeued {
-			return errors.New("reconciliation changed or cannot be requeued")
-		}
-		return nil
 	default:
-		return errors.New("expected list, cleanup, resolve:<id>:<version>, or requeue:<id>:<version>")
+		return errors.New("expected list, cleanup, or resolve:<id>:<version>")
 	}
 }
 

@@ -50,6 +50,8 @@ const (
 	testWrongChoice        = "wrong-choice"
 	testWebAppFormToken    = "token"
 	testMessageText        = "hello there"
+	testCaptchaBook        = "book"
+	testCaptchaCar         = "car"
 )
 
 type testBotAPIError struct {

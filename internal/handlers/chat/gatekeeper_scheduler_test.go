@@ -237,6 +237,7 @@ type testGatekeeperBanChecker struct {
 	bans                  []testGatekeeperBan
 	knownBanned           map[int64]bool
 	banErr                error
+	checkErr              error
 	moderationUnavailable bool
 	markedUnavailable     bool
 }
@@ -249,7 +250,7 @@ type testGatekeeperBan struct {
 
 func (c *testGatekeeperBanChecker) CheckBan(context.Context, int64) (bool, error) {
 	c.checkBanCalls++
-	return c.banned, nil
+	return c.banned, c.checkErr
 }
 
 func (c *testGatekeeperBanChecker) ModerationAvailable(context.Context, int64) (bool, error) {

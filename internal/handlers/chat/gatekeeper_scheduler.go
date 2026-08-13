@@ -217,7 +217,8 @@ func isPendingChallengeAction(status string) bool {
 		db.ChallengeStatusApproveQueryPending,
 		db.ChallengeStatusApproveMemberPending,
 		db.ChallengeStatusUnrestrictPending,
-		db.ChallengeStatusRejectPending:
+		db.ChallengeStatusRejectPending,
+		db.ChallengeStatusBanCheckPending:
 		return true
 	default:
 		return false
@@ -267,7 +268,7 @@ func (g *Gatekeeper) fallbackClaimedWebAppChallenge(ctx context.Context, challen
 	if user.FirstName == "" && user.UserName == "" {
 		user.FirstName = "friend"
 	}
-	if challenge.WebAppToken != "" {
+	if challenge.WebAppToken != "" || challenge.SuccessUUID == "" {
 		challenge.SuccessUUID = uuid.New()
 		challenge.ExpiresAt = time.Now().Add(settings.GetChallengeTimeout())
 		version, prepared, err := g.store.PrepareDMFallbackVersion(ctx, challenge.ChallengeID, owner, challenge.ActionVersion, challenge.SuccessUUID, challenge.UserLanguage, challenge.ExpiresAt, time.Now())

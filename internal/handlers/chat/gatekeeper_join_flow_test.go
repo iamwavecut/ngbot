@@ -232,6 +232,9 @@ func (s *gatekeeperFlowStore) BindLeasedChallengeMessage(_ context.Context, chal
 	clone.ChallengeMessageID = messageID
 	clone.ActionPhase = completedPhase
 	clone.ActionVersion++
+	if expectedPhase == db.ChallengePhaseQueueResponseDone {
+		clone.JoinRequestQueryID = ""
+	}
 	s.challenges[key] = &clone
 	return true, nil
 }
@@ -245,7 +248,13 @@ func (s *gatekeeperFlowStore) CompleteLeasedChallengeActionVersion(_ context.Con
 	clone.ActionOwner = ""
 	clone.ActionLeaseUntil = sql.NullTime{}
 	clone.ActionPhase = db.ChallengePhaseReady
+	if expectedStatus == db.ChallengeStatusBanCheckPending && nextStatus == db.ChallengeStatusRejectPending {
+		clone.ActionPhase = db.ChallengePhaseRejectBanDone
+	}
 	clone.ActionVersion++
+	if expectedPhase == db.ChallengePhaseQueueResponseDone {
+		clone.JoinRequestQueryID = ""
+	}
 	s.challenges[key] = &clone
 	return s.transition(challengeID, expectedStatus, nextStatus, expiresAt), nil
 }

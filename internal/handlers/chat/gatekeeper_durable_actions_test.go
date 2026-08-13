@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -37,9 +38,30 @@ type deadlineCapturingClient struct {
 
 type contextTimeoutClient struct{}
 
+type transportErrorClient struct {
+	err error
+}
+
+func (c transportErrorClient) Do(*http.Request) (*http.Response, error) {
+	return nil, c.err
+}
+
 func (contextTimeoutClient) Do(request *http.Request) (*http.Response, error) {
 	<-request.Context().Done()
 	return nil, request.Context().Err()
+}
+
+type methodTimeoutClient struct {
+	base   api.HTTPClient
+	method string
+}
+
+func (c methodTimeoutClient) Do(request *http.Request) (*http.Response, error) {
+	if strings.HasSuffix(request.URL.Path, "/"+c.method) {
+		<-request.Context().Done()
+		return nil, request.Context().Err()
+	}
+	return c.base.Do(request)
 }
 
 func (c *deadlineCapturingClient) Do(request *http.Request) (*http.Response, error) {
@@ -487,6 +509,119 @@ func TestJoinQueryRespondsBeforeSlowAllowlistLookup(t *testing.T) {
 	}
 }
 
+func TestLegacyQueuedJoinRequestTransitionsProtectedBoundaryToDMCaptcha(t *testing.T) {
+	t.Parallel()
+	client, err := dbsqlite.NewSQLiteClient(t.Context(), t.TempDir(), "test.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	var sends atomic.Int32
+	botAPI := newTestBotAPI(t, func(method string, _ *http.Request) any {
+		switch method {
+		case testTelegramMethodJoinRequestQuery:
+			return true
+		case testTelegramMethodGetChat:
+			return map[string]any{"id": 7001, testJSONType: telegramChatTypePrivate, testJSONFirstName: "N"}
+		case testTelegramMethodSendMessage:
+			sends.Add(1)
+			return map[string]any{logFieldMessageID: 801}
+		default:
+			return true
+		}
+	})
+	settings := webAppSettings()
+	gatekeeper := &Gatekeeper{bot: botAPI, s: &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI}, settings: settings}, store: client, config: &config.Config{}, banChecker: &testGatekeeperBanChecker{}, Variants: map[string]map[string]string{"en": {"A": "apple", "B": testCaptchaBook, "C": testCaptchaCar}}}
+	request := &api.ChatJoinRequest{Chat: api.Chat{ID: -7001, Title: testGroupTitle}, From: api.User{ID: 7001, FirstName: "N", LanguageCode: "en"}, UserChatID: 7001, QueryID: "legacy-query"}
+	if err := gatekeeper.handleChatJoinRequest(t.Context(), &api.Update{ChatJoinRequest: request}, settings); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := client.GetChallengeByChatUser(t.Context(), request.Chat.ID, request.From.ID)
+	if err != nil || stored == nil || stored.Status != db.ChallengeStatusPending || stored.ChallengeMessageID != 801 || sends.Load() != 1 {
+		t.Fatalf("protected queue boundary did not become DM CAPTCHA: challenge=%#v sends=%d err=%v", stored, sends.Load(), err)
+	}
+}
+
+func TestBanCheckPendingRetriesAcrossRestartAndExhaustsSafely(t *testing.T) {
+	t.Parallel()
+	dataDir := t.TempDir()
+	client, err := dbsqlite.NewSQLiteClient(t.Context(), dataDir, "test.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	challenge := &db.Challenge{CommChatID: 7101, UserID: 7101, ChatID: -7101, Status: db.ChallengeStatusBanCheckPending, CreatedAt: now, ExpiresAt: now.Add(time.Minute), NextAttemptAt: sql.NullTime{Time: now, Valid: true}}
+	if _, err := client.CreateChallenge(t.Context(), challenge); err != nil {
+		t.Fatal(err)
+	}
+	checker := &testGatekeeperBanChecker{checkErr: errors.New("transient provider")}
+	gatekeeper := &Gatekeeper{store: client, config: &config.Config{}, banChecker: checker}
+	_ = gatekeeper.processChallengeAction(t.Context(), challenge)
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
+	}
+	client, err = dbsqlite.NewSQLiteClient(t.Context(), dataDir, "test.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	due, err := client.GetDueChallenges(t.Context(), time.Now().Add(time.Minute))
+	if err != nil || len(due) != 1 || due[0].Status != db.ChallengeStatusBanCheckPending {
+		t.Fatalf("ban check not restart-due: %#v err=%v", due, err)
+	}
+	gatekeeper.store = client
+	for i := due[0].AttemptCount; i < maxChallengeActionAttempts-1; i++ {
+		if scheduled, err := client.ScheduleChallengeRetry(t.Context(), challenge.ChallengeID, db.ChallengeStatusBanCheckPending, time.Now(), db.GatekeeperErrorUnavailable); err != nil || !scheduled {
+			t.Fatalf("seed prior retry %d: scheduled=%t err=%v", i, scheduled, err)
+		}
+	}
+	due, _ = client.GetDueChallenges(t.Context(), time.Now().Add(time.Second))
+	if len(due) != 1 {
+		t.Fatalf("exhaustion action not due: %#v", due)
+	}
+	_ = gatekeeper.processChallengeAction(t.Context(), due[0])
+	records, err := client.GetChallengeReconciliations(t.Context())
+	if err != nil || len(records) != 1 || records[0].ActionStatus != db.ChallengeStatusBanCheckPending {
+		t.Fatalf("ban check exhaustion not reconciled: %#v err=%v", records, err)
+	}
+	replacement := &db.Challenge{CommChatID: challenge.CommChatID, UserID: challenge.UserID, ChatID: challenge.ChatID, Status: db.ChallengeStatusPending, CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Minute)}
+	if _, err := client.CreateChallenge(t.Context(), replacement); err != nil {
+		t.Fatalf("rejoin blocked after exhaustion: %v", err)
+	}
+}
+
+func TestLegacyJoinTransportLogsNeverExposeSecretURL(t *testing.T) {
+	t.Parallel()
+	secret := "https://api.telegram.org/bot123456:SECRET/sendMessage?body=query-secret"
+	for _, test := range []struct {
+		name string
+		run  func(*Gatekeeper, *db.Settings) error
+	}{
+		{name: "private chat probe", run: func(g *Gatekeeper, settings *db.Settings) error {
+			request := &api.ChatJoinRequest{Chat: api.Chat{ID: -7201}, From: api.User{ID: 7201}, UserChatID: 7201}
+			return g.handleChatJoinRequest(t.Context(), &api.Update{ChatJoinRequest: request}, settings)
+		}},
+		{name: "challenge send", run: func(g *Gatekeeper, settings *db.Settings) error {
+			return g.startChallenge(t.Context(), nil, &api.User{ID: 7202, FirstName: "N"}, &api.Chat{ID: -7202}, -7202, -7202, settings)
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store := newGatekeeperFlowStore()
+			botAPI := newTestBotAPI(t, func(string, *http.Request) any { return true })
+			botAPI.Client = transportErrorClient{err: &url.Error{Op: http.MethodPost, URL: secret, Err: errors.New("secret response body")}}
+			settings := webAppSettings()
+			var output bytes.Buffer
+			logger := log.New()
+			logger.SetOutput(&output)
+			gatekeeper := &Gatekeeper{bot: botAPI, s: &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI}, settings: settings}, store: store, config: &config.Config{}, banChecker: &testGatekeeperBanChecker{moderationUnavailable: true}, logger: log.NewEntry(logger), Variants: map[string]map[string]string{"en": {"A": "apple", "B": testCaptchaBook, "C": testCaptchaCar}}}
+			_ = test.run(gatekeeper, settings)
+			if strings.Contains(output.String(), "SECRET") || strings.Contains(output.String(), "api.telegram.org") || strings.Contains(output.String(), "query-secret") {
+				t.Fatalf("transport secret leaked in log: %s", output.String())
+			}
+		})
+	}
+}
+
 func TestJoinQueryResponseTimeoutIsDurablyActionable(t *testing.T) {
 	t.Parallel()
 
@@ -528,8 +663,6 @@ func TestJoinQueryResponseTimeoutIsDurablyActionable(t *testing.T) {
 }
 
 func TestAmbiguousWebAppResponseWaitsForBanCheckAndNeverFallsBack(t *testing.T) {
-	t.Parallel()
-
 	client, err := dbsqlite.NewSQLiteClient(t.Context(), t.TempDir(), "test.db")
 	if err != nil {
 		t.Fatal(err)
@@ -543,7 +676,7 @@ func TestAmbiguousWebAppResponseWaitsForBanCheckAndNeverFallsBack(t *testing.T) 
 		}
 		return true
 	})
-	botAPI.Client = contextTimeoutClient{}
+	botAPI.Client = methodTimeoutClient{base: botAPI.Client, method: testTelegramMethodSendJoinWebApp}
 	settings := webAppSettings()
 	gatekeeper := &Gatekeeper{bot: botAPI, s: &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI}, settings: settings}, store: client, config: &config.Config{GatekeeperWebApp: config.GatekeeperWebApp{PublicURL: testWebAppURL}}, banChecker: checker}
 	request := &api.ChatJoinRequest{Chat: api.Chat{ID: -2020}, From: api.User{ID: 3020}, UserChatID: 3020, QueryID: "query-secret"}
@@ -564,8 +697,8 @@ func TestAmbiguousWebAppResponseWaitsForBanCheckAndNeverFallsBack(t *testing.T) 
 		t.Fatalf("ambiguous WebApp response not reconciled: %#v err=%v", records, err)
 	}
 	close(checker.release)
-	if err := <-done; err == nil || err.Error() != db.GatekeeperErrorDeadline {
-		t.Fatalf("join handler returned unsafe/unexpected error: %v", err)
+	if err := <-done; err != nil {
+		t.Fatalf("join handler: %v", err)
 	}
 }
 
