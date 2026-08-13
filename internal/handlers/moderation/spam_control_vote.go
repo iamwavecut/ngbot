@@ -81,13 +81,6 @@ func (sc *SpamControl) RecordVote(ctx context.Context, caseID int64, voterID int
 }
 
 func (sc *SpamControl) isEligibleVoter(ctx context.Context, chatID, voterID int64) (bool, error) {
-	member, err := sc.s.IsMember(ctx, chatID, voterID)
-	if err != nil {
-		return false, fmt.Errorf("check stored membership: %w", err)
-	}
-	if member {
-		return true, nil
-	}
 	chatMember, err := bot.GetChatMember(ctx, sc.bot, api.GetChatMemberConfig{
 		ChatConfigWithUser: api.ChatConfigWithUser{
 			ChatConfig: api.ChatConfig{ChatID: chatID},
@@ -97,7 +90,14 @@ func (sc *SpamControl) isEligibleVoter(ctx context.Context, chatID, voterID int6
 	if err != nil {
 		return false, fmt.Errorf("verify voter membership: %w", err)
 	}
-	return !chatMember.HasLeft() && !chatMember.WasKicked(), nil
+	if chatMember.HasLeft() || chatMember.WasKicked() {
+		return false, nil
+	}
+	banned, err := sc.banService.CheckBan(ctx, voterID)
+	if err != nil {
+		return false, fmt.Errorf("check voter banlist: %w", err)
+	}
+	return !banned, nil
 }
 
 func (sc *SpamControl) requiredVoters(ctx context.Context, caseID int64) (int, error) {

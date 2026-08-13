@@ -231,7 +231,8 @@ func parseWebAppInitData(raw string) (webAppInitData, error) {
 		return webAppInitData{}, err
 	}
 	var user struct {
-		ID int64 `json:"id"`
+		ID       int64  `json:"id"`
+		Username string `json:"username"`
 	}
 	if err := json.Unmarshal([]byte(values.Get(logFieldUser)), &user); err != nil {
 		return webAppInitData{}, err
@@ -240,6 +241,7 @@ func parseWebAppInitData(raw string) (webAppInitData, error) {
 	return webAppInitData{
 		QueryID:  values.Get("query_id"),
 		UserID:   user.ID,
+		Username: user.Username,
 		AuthDate: authDate,
 	}, nil
 }

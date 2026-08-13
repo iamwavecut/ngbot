@@ -387,6 +387,51 @@ func TestJoinCaptchaAnswerApprovesMatchingTokenUserAndChoice(t *testing.T) {
 	}
 }
 
+func TestJoinCaptchaWrongChoiceConsumesChallengeInOneAttempt(t *testing.T) {
+	t.Parallel()
+
+	store := newGatekeeperFlowStore()
+	challenge := newWebAppChallenge(time.Now().Add(3 * time.Minute))
+	if _, err := store.CreateChallenge(t.Context(), challenge); err != nil {
+		t.Fatal(err)
+	}
+	botAPI := newTestBotAPI(t, func(method string, _ *http.Request) any {
+		switch method {
+		case testTelegramMethodJoinRequestQuery, testTelegramMethodBanChatMember:
+			return true
+		case testTelegramMethodGetChatMember:
+			return testChatMemberResponse("administrator", false, false, true)
+		default:
+			t.Fatalf("unexpected method %q", method)
+			return nil
+		}
+	})
+	gatekeeper := &Gatekeeper{
+		bot:        botAPI,
+		s:          &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI}, settings: webAppSettings()},
+		store:      store,
+		config:     &config.Config{},
+		banChecker: &testGatekeeperBanChecker{},
+	}
+	form := url.Values{
+		testWebAppFormToken:    {challenge.WebAppToken},
+		testWebAppFormChoice:   {testWrongChoice},
+		testWebAppFormInitData: {signedWebAppInitData(t, botAPI.Token, challenge.JoinRequestQueryID, challenge.UserID)},
+	}
+	req := httptest.NewRequest(http.MethodPost, joinCaptchaAnswerPath, strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+
+	gatekeeper.handleJoinCaptchaAnswer(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("wrong choice status = %d, want %d", rr.Code, http.StatusForbidden)
+	}
+	if len(store.challenges) != 0 {
+		t.Fatalf("wrong choice left a reusable challenge: %#v", store.challenges)
+	}
+}
+
 func TestHandleJoinCaptchaAnswerConflictsWhenAlreadyClaimed(t *testing.T) {
 	t.Parallel()
 
@@ -1018,8 +1063,15 @@ func TestJoinCaptchaAnswerIncrementsWrongChoiceWithoutAnsweringQuery(t *testing.
 	recorder := &botRequestRecorder{}
 	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
 		recorder.record(t, method, r)
-		t.Fatalf("unexpected bot method: %s", method)
-		return nil
+		switch method {
+		case testTelegramMethodGetChatMember:
+			return testChatMemberResponse("administrator", false, false, true)
+		case testTelegramMethodJoinRequestQuery, testTelegramMethodBanChatMember:
+			return true
+		default:
+			t.Fatalf("unexpected bot method: %s", method)
+			return nil
+		}
 	})
 	store := newGatekeeperFlowStore()
 	challenge := newWebAppChallenge(time.Now().Add(3 * time.Minute))
@@ -1045,22 +1097,18 @@ func TestJoinCaptchaAnswerIncrementsWrongChoiceWithoutAnsweringQuery(t *testing.
 
 	gatekeeper.handleJoinCaptchaAnswer(rr, req)
 
-	if rr.Code != http.StatusOK {
+	if rr.Code != http.StatusForbidden {
 		t.Fatalf("unexpected status %d: %s", rr.Code, rr.Body.String())
 	}
 	var body map[string]any
 	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if body["ok"] != false || body["done"] != false {
+	if body["ok"] != false || body["done"] != true {
 		t.Fatalf("unexpected response: %#v", body)
 	}
-	if len(recorder.requests) != 0 {
-		t.Fatalf("expected no bot requests, got %d", len(recorder.requests))
-	}
-	got := store.onlyChallenge(t)
-	if got.Attempts != 1 {
-		t.Fatalf("expected one failed attempt, got %d", got.Attempts)
+	if len(store.challenges) != 0 {
+		t.Fatalf("wrong choice left reusable challenge: %#v", store.challenges)
 	}
 }
 
@@ -1070,8 +1118,15 @@ func TestJoinCaptchaAnswerUsesChallengeLocaleForVisibleErrors(t *testing.T) {
 	recorder := &botRequestRecorder{}
 	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
 		recorder.record(t, method, r)
-		t.Fatalf("unexpected bot method: %s", method)
-		return nil
+		switch method {
+		case testTelegramMethodGetChatMember:
+			return testChatMemberResponse("administrator", false, false, true)
+		case testTelegramMethodJoinRequestQuery, testTelegramMethodBanChatMember:
+			return true
+		default:
+			t.Fatalf("unexpected bot method: %s", method)
+			return nil
+		}
 	})
 	store := newGatekeeperFlowStore()
 	optionsJSON, err := encodeWebAppCaptchaOptions("ru", []webAppCaptchaOption{
@@ -1106,14 +1161,14 @@ func TestJoinCaptchaAnswerUsesChallengeLocaleForVisibleErrors(t *testing.T) {
 
 	gatekeeper.handleJoinCaptchaAnswer(rr, req)
 
-	if rr.Code != http.StatusOK {
+	if rr.Code != http.StatusForbidden {
 		t.Fatalf("unexpected status %d: %s", rr.Code, rr.Body.String())
 	}
 	var body map[string]any
 	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if body["message"] != "Не тот вариант. Попробуйте ещё раз." {
+	if body["message"] != "Слишком много неверных ответов. Заявка заблокирована." {
 		t.Fatalf("expected localized message, got %#v", body)
 	}
 }

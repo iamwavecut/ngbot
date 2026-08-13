@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -378,6 +379,7 @@ type testBanService struct {
 	checkBanCalls         int
 	checkBan              bool
 	knownBanned           bool
+	knownBannedUsers      map[int64]bool
 	bans                  []testGatekeeperBan
 	banDeadlines          []time.Time
 	moderationUnavailable bool
@@ -417,7 +419,12 @@ func (s *testBanService) BanUserWithMessageUntil(ctx context.Context, chatID, us
 func (s *testBanService) UnbanUser(context.Context, int64, int64) error            { return nil }
 func (s *testBanService) IsRestricted(context.Context, int64, int64) (bool, error) { return false, nil }
 
-func (s *testBanService) IsKnownBanned(int64) bool { return s.knownBanned }
+func (s *testBanService) IsKnownBanned(userID int64) bool {
+	if s.knownBannedUsers != nil {
+		return s.knownBannedUsers[userID]
+	}
+	return s.knownBanned
+}
 
 type testNotSpammerStore struct {
 	testReactorStore
@@ -431,6 +438,108 @@ func (s *testNotSpammerStore) IsChatNotSpammer(context.Context, int64, int64, st
 
 func boolPtr(value bool) *bool {
 	return &value
+}
+
+func TestUntrustedSenderChatSpamIsDeletedAndSenderChatBanned(t *testing.T) {
+	t.Parallel()
+
+	var methods []string
+	botAPI := newTestBotAPI(t, func(method string, _ *http.Request) any {
+		methods = append(methods, method)
+		switch method {
+		case "getChat":
+			return map[string]any{"id": -100, testJSONType: testChatTypeSupergroup, "linked_chat_id": -999}
+		case testTelegramMethodDeleteMessage, "banChatSenderChat":
+			return true
+		default:
+			t.Fatalf("unexpected method %q", method)
+			return nil
+		}
+	})
+	detector := &testSpamDetector{result: boolPtr(true)}
+	reactor := &Reactor{
+		s:            &testBotService{botAPI: botAPI},
+		bot:          botAPI,
+		store:        &testReactorStore{},
+		spamDetector: detector,
+		banService:   &testBanService{},
+		lastResults:  make(map[messageResultKey]*MessageProcessingResult),
+	}
+	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
+	message := &api.Message{
+		MessageID: 501,
+		Chat:      *chat,
+		SenderChat: &api.Chat{
+			ID:       -200,
+			Type:     testChatTypeChannel,
+			Title:    "Untrusted channel",
+			UserName: "untrusted",
+		},
+		Text: "adversarial sender chat payload",
+	}
+
+	if err := reactor.handleMessage(t.Context(), message, chat, nil, &db.Settings{LLMFirstMessageEnabled: true}); err != nil {
+		t.Fatalf("handle sender chat: %v", err)
+	}
+	if detector.calls != 1 {
+		t.Fatalf("sender chat classification calls = %d, want 1", detector.calls)
+	}
+	if !slices.Contains(methods, testTelegramMethodDeleteMessage) || !slices.Contains(methods, "banChatSenderChat") {
+		t.Fatalf("sender chat enforcement methods = %#v", methods)
+	}
+}
+
+func TestCommandRunsProbationContentPolicyBeforeFeatureRouting(t *testing.T) {
+	t.Parallel()
+
+	botAPI := newTestBotAPI(t, func(method string, _ *http.Request) any {
+		if method != testTelegramMethodGetChatMember {
+			t.Fatalf("unexpected method %q", method)
+		}
+		return testChatMemberResponse(telegramMemberStatus, false, false, false)
+	})
+	service := &testBotService{
+		botAPI:   botAPI,
+		settings: &db.Settings{ID: -100, LLMFirstMessageEnabled: true, CommunityVotingEnabled: true},
+	}
+	store := &testReactorStore{}
+	processedSpam := 0
+	reactor := &Reactor{
+		s:            service,
+		bot:          botAPI,
+		store:        store,
+		spamDetector: &testSpamDetector{result: boolPtr(true)},
+		banService:   &testBanService{},
+		lastResults:  make(map[messageResultKey]*MessageProcessingResult),
+		processSpam: func(context.Context, *api.Message, *api.Chat, string) (*moderation.ProcessingResult, error) {
+			processedSpam++
+			return &moderation.ProcessingResult{MessageDeleted: true, UserBanned: true}, nil
+		},
+	}
+	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
+	user := &api.User{ID: 200, FirstName: testFirstNameUser}
+	message := &api.Message{
+		MessageID: 502,
+		Chat:      *chat,
+		From:      user,
+		Text:      "/settings adversarial prompt",
+		Entities:  []api.MessageEntity{{Type: testEntityBotCommand, Offset: 0, Length: 9}},
+	}
+
+	proceed, err := reactor.Handle(t.Context(), &api.Update{UpdateID: 77, Message: message}, chat, user)
+	if err != nil {
+		t.Fatalf("Handle command: %v", err)
+	}
+	if proceed {
+		t.Fatal("spam command reached downstream feature handlers")
+	}
+	if processedSpam != 1 {
+		t.Fatalf("spam command processing calls = %d, want 1", processedSpam)
+	}
+	probation, err := store.MessageProbation(t.Context(), chat.ID, user.ID)
+	if err != nil || probation == nil || probation.GraduatedAt.Valid {
+		t.Fatalf("command probation = %#v, err=%v", probation, err)
+	}
 }
 
 func TestFirstMessageDeletionEvasionKeepsSecondMessageUnderChallenge(t *testing.T) {

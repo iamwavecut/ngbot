@@ -67,6 +67,7 @@ func (g *Gatekeeper) createCaptchaButtons(userID int64, successUUID string, lang
 	}
 
 	correctVariant := captchaRandomSet[rand.Intn(len(captchaRandomSet))]
+	correctVariant[1] = correctVariant[0]
 	var buttons []api.InlineKeyboardButton
 	for _, v := range captchaRandomSet {
 		result := strconv.FormatInt(userID, 10) + ";" + uuid.New()

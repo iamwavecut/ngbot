@@ -52,7 +52,7 @@ import (
 
 const (
 	captchaSize            = 5
-	maxChallengeAttempts   = 3
+	maxChallengeAttempts   = 1
 	testJoinCaptchaCommand = "test_join_captcha"
 	gatekeeperName         = "Gatekeeper"
 	challengeIDLogField    = "challenge_id"

@@ -42,10 +42,10 @@ const (
 )
 
 func (r *Reactor) handleMessage(ctx context.Context, msg *api.Message, chat *api.Chat, user *api.User, settings *db.Settings) error {
-	return r.handleMessageChallenge(ctx, msg, chat, user, settings, false)
+	return r.handleMessageChallenge(ctx, msg, chat, user, settings, false, false)
 }
 
-func (r *Reactor) handleMessageChallenge(ctx context.Context, msg *api.Message, chat *api.Chat, user *api.User, settings *db.Settings, recheck bool) error {
+func (r *Reactor) handleMessageChallenge(ctx context.Context, msg *api.Message, chat *api.Chat, user *api.User, settings *db.Settings, recheck, routed bool) error {
 	var userID int64
 	if user != nil {
 		userID = user.ID
@@ -75,6 +75,9 @@ func (r *Reactor) handleMessageChallenge(ctx context.Context, msg *api.Message, 
 	}
 
 	if user == nil {
+		if msg.SenderChat != nil {
+			return r.handleSenderChatContent(ctx, msg, chat, result, entry)
+		}
 		result.Stage = StageSpamCheck
 		result.Skipped = true
 		result.SkipReason = messageSkipReasonAnonymousSender
@@ -102,13 +105,13 @@ func (r *Reactor) handleMessageChallenge(ctx context.Context, msg *api.Message, 
 	} else if isNotSpammer {
 		result.Skipped = true
 		result.SkipReason = "User is manually marked as not spammer"
-		if recheck {
+		if recheck || routed {
 			return nil
 		}
 		_, err = r.rememberAuthorIfPossible(ctx, chat, user, entry)
 		return err
 	}
-	if r.banService.IsKnownBanned(user.ID) {
+	if r.banService != nil && r.banService.IsKnownBanned(user.ID) {
 		return r.enforceBanlistedMessage(ctx, msg, chat, user, result, entry)
 	}
 
@@ -132,7 +135,10 @@ func (r *Reactor) handleMessageChallenge(ctx context.Context, msg *api.Message, 
 	}
 
 	result.Stage = StageBanCheck
-	isBanned, err := r.banService.CheckBan(ctx, user.ID)
+	isBanned := false
+	if r.banService != nil {
+		isBanned, err = r.banService.CheckBan(ctx, user.ID)
+	}
 	if err != nil {
 		return errors.Wrap(err, "failed to check ban")
 	}
@@ -272,7 +278,7 @@ func (r *Reactor) handleMessageChallenge(ctx context.Context, msg *api.Message, 
 			return nil
 		}
 
-		if recheck {
+		if recheck || routed {
 			return nil
 		}
 		inserted, err := r.store.RecordChallengedMessage(ctx, chat.ID, user.ID, msg.MessageID)
@@ -307,6 +313,48 @@ func (r *Reactor) handleMessageChallenge(ctx context.Context, msg *api.Message, 
 	return nil
 }
 
+func (r *Reactor) handleSenderChatContent(ctx context.Context, msg *api.Message, chat *api.Chat, result *MessageProcessingResult, entry *log.Entry) error {
+	available, err := r.moderationAvailable(ctx, chat.ID)
+	if err != nil || !available {
+		result.Skipped = true
+		result.SkipReason = messageSkipReasonNoModerationRights
+		return nil
+	}
+	content := bot.ExtractContentFromMessage(msg)
+	if content == "" || r.spamDetector == nil {
+		result.Skipped = true
+		result.SkipReason = messageSkipReasonAnonymousSender
+		return nil
+	}
+	result.Stage = StageSpamCheck
+	isSpam, err := r.checkMessageForSpam(ctx, chat.ID, content)
+	if err != nil {
+		result.Skipped = true
+		result.SkipReason = messageSkipReasonLLMUnavailable
+		return nil
+	}
+	result.IsSpam = isSpam
+	if isSpam == nil || !*isSpam {
+		return nil
+	}
+	if err := bot.DeleteChatMessage(ctx, r.bot, chat.ID, msg.MessageID); err != nil && !isTelegramMessageAlreadyDeleted(err) {
+		result.Actions.Error = err.Error()
+		return fmt.Errorf("delete sender chat message: %w", err)
+	}
+	result.Actions.MessageDeleted = true
+	if _, err := r.bot.RequestWithContext(ctx, api.BanChatSenderChatConfig{
+		ChatConfig:   api.ChatConfig{ChatID: chat.ID},
+		SenderChatID: msg.SenderChat.ID,
+	}); err != nil {
+		r.markModerationUnavailableOnPrivilege(chat.ID, err)
+		result.Actions.Error = err.Error()
+		return fmt.Errorf("ban sender chat: %w", err)
+	}
+	result.Actions.UserBanned = true
+	entry.WithField("sender_chat_id", msg.SenderChat.ID).Info("moderated untrusted sender chat")
+	return nil
+}
+
 func classificationFailureLogFields(err error, path string, fallback string) log.Fields {
 	return log.Fields{
 		logFieldError:         "classification_failed",
@@ -314,46 +362,6 @@ func classificationFailureLogFields(err error, path string, fallback string) log
 		"fallback":            fallback,
 		"llm_outcome":         string(llm.FailureKindOf(err)),
 	}
-}
-
-func (r *Reactor) ensureMessageProbationStarted(ctx context.Context, chat *api.Chat, user *api.User, settings *db.Settings) error {
-	if chat == nil || user == nil || settings == nil || !settings.LLMFirstMessageEnabled {
-		return nil
-	}
-	moderationAvailable, err := r.moderationAvailable(ctx, chat.ID)
-	if err != nil || !moderationAvailable || r.banService.IsKnownBanned(user.ID) {
-		return nil
-	}
-	probation, err := r.store.MessageProbation(ctx, chat.ID, user.ID)
-	if err != nil {
-		return fmt.Errorf("get routed message probation: %w", err)
-	}
-	if probation != nil {
-		return nil
-	}
-	isMember, err := r.s.IsMember(ctx, chat.ID, user.ID)
-	if err != nil {
-		return fmt.Errorf("check routed message membership: %w", err)
-	}
-	if isMember {
-		return nil
-	}
-	entry := r.getLogEntry().WithFields(log.Fields{
-		logFieldChatID: chat.ID,
-		logFieldUserID: user.ID,
-	})
-	if r.isChatAdministrator(ctx, chat.ID, user.ID, entry) {
-		return nil
-	}
-	isNotSpammer, err := r.store.IsChatNotSpammer(ctx, chat.ID, user.ID, user.UserName)
-	if err != nil {
-		return fmt.Errorf("check routed message not-spammer override: %w", err)
-	}
-	if isNotSpammer {
-		return nil
-	}
-	_, err = r.startMessageProbation(ctx, chat.ID, user.ID, r.currentTime(), entry)
-	return err
 }
 
 func (r *Reactor) startMessageProbation(

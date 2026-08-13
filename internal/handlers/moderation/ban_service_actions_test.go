@@ -14,7 +14,9 @@ import (
 )
 
 type testBanStore struct {
-	removed [][2]int64
+	removed     [][2]int64
+	restriction *db.UserRestriction
+	addErr      error
 }
 
 func (s *testBanStore) GetKV(context.Context, string) (string, error) {
@@ -41,8 +43,55 @@ func (s *testBanStore) GetBanlist(context.Context) (map[int64]struct{}, error) {
 	return nil, nil
 }
 
-func (s *testBanStore) AddRestriction(context.Context, *db.UserRestriction) error {
-	return nil
+func (s *testBanStore) AddRestriction(_ context.Context, restriction *db.UserRestriction) error {
+	s.restriction = restriction
+	return s.addErr
+}
+
+func TestMuteUserRestoresCapturedPermissionsWhenPersistenceFails(t *testing.T) {
+	t.Parallel()
+
+	var restrictions []api.ChatPermissions
+	botAPI := newModerationTestBotAPI(t, func(method string, r *http.Request) any {
+		switch method {
+		case "getChatMember":
+			return map[string]any{
+				"user":   map[string]any{"id": 200, "is_bot": false, "first_name": "User"},
+				"status": "member",
+			}
+		case "getChat":
+			return map[string]any{
+				"id": -100, "type": "supergroup",
+				"permissions": map[string]any{"can_send_messages": true, "can_send_photos": true},
+			}
+		case "restrictChatMember":
+			if err := r.ParseForm(); err != nil {
+				t.Fatalf("parse form: %v", err)
+			}
+			var permissions api.ChatPermissions
+			if err := json.Unmarshal([]byte(r.Form.Get("permissions")), &permissions); err != nil {
+				t.Fatalf("unmarshal permissions: %v", err)
+			}
+			restrictions = append(restrictions, permissions)
+			return true
+		default:
+			t.Fatalf("unexpected bot method: %s", method)
+			return nil
+		}
+	})
+	store := &testBanStore{addErr: errors.New("database unavailable")}
+	service := &defaultBanService{bot: botAPI, db: store}
+
+	err := service.MuteUser(t.Context(), -100, 200)
+	if err == nil {
+		t.Fatal("expected persistence failure")
+	}
+	if len(restrictions) != 2 {
+		t.Fatalf("restriction calls = %d, want mute and restore", len(restrictions))
+	}
+	if !restrictions[1].CanSendMessages || !restrictions[1].CanSendPhotos {
+		t.Fatalf("compensating permissions = %#v", restrictions[1])
+	}
 }
 
 func (s *testBanStore) RemoveRestriction(_ context.Context, chatID int64, userID int64) error {
@@ -51,6 +100,9 @@ func (s *testBanStore) RemoveRestriction(_ context.Context, chatID int64, userID
 }
 
 func (s *testBanStore) GetActiveRestriction(context.Context, int64, int64) (*db.UserRestriction, error) {
+	if s.restriction != nil {
+		return s.restriction, nil
+	}
 	return &db.UserRestriction{ExpiresAt: time.Now().Add(time.Minute)}, nil
 }
 
@@ -58,7 +110,7 @@ func (s *testBanStore) RemoveExpiredRestrictions(context.Context) error {
 	return nil
 }
 
-func TestUnmuteUserSendsExplicitAllowPermissions(t *testing.T) {
+func TestUnmuteUserRestoresCapturedRestrictivePermissions(t *testing.T) {
 	t.Parallel()
 
 	var permissions api.ChatPermissions
@@ -84,26 +136,33 @@ func TestUnmuteUserSendsExplicitAllowPermissions(t *testing.T) {
 		return true
 	})
 
-	service := &defaultBanService{bot: botAPI, db: &testBanStore{}}
+	want := api.ChatPermissions{
+		CanSendMessages:      true,
+		CanSendPhotos:        true,
+		CanInviteUsers:       true,
+		CanReactToMessages:   true,
+		CanSendVoiceNotes:    false,
+		CanManageTopics:      false,
+		CanPinMessages:       false,
+		CanSendOtherMessages: false,
+	}
+	encoded, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &testBanStore{restriction: &db.UserRestriction{
+		ChatID:               -100,
+		UserID:               200,
+		ExpiresAt:            time.Now().Add(time.Minute),
+		PriorPermissionsJSON: string(encoded),
+	}}
+	service := &defaultBanService{bot: botAPI, db: store}
 	if err := service.UnmuteUser(context.Background(), -100, 200); err != nil {
 		t.Fatalf("unmute user: %v", err)
 	}
 
-	if !permissions.CanSendMessages ||
-		!permissions.CanSendAudios ||
-		!permissions.CanSendDocuments ||
-		!permissions.CanSendPhotos ||
-		!permissions.CanSendVideos ||
-		!permissions.CanSendVideoNotes ||
-		!permissions.CanSendVoiceNotes ||
-		!permissions.CanSendPolls ||
-		!permissions.CanSendOtherMessages ||
-		!permissions.CanAddWebPagePreviews ||
-		!permissions.CanChangeInfo ||
-		!permissions.CanInviteUsers ||
-		!permissions.CanPinMessages ||
-		!permissions.CanManageTopics {
-		t.Fatalf("expected all send permissions to be true, got %#v", permissions)
+	if permissions != want {
+		t.Fatalf("restored permissions = %#v, want %#v", permissions, want)
 	}
 }
 
@@ -180,10 +239,22 @@ func TestMutePrivilegeFailureImmediatelyDisablesModeration(t *testing.T) {
 	t.Parallel()
 
 	botAPI := newModerationRetryTestBotAPI(t, func(method string, _ *http.Request) testAPIResponse {
-		if method != "restrictChatMember" {
+		switch method {
+		case "getChatMember":
+			return testAPIResponse{OK: true, Result: map[string]any{
+				"user":   map[string]any{"id": 200, "is_bot": false, "first_name": "User"},
+				"status": "member",
+			}}
+		case "getChat":
+			return testAPIResponse{OK: true, Result: map[string]any{
+				"id": -100, "type": "supergroup", "permissions": map[string]any{"can_send_messages": true},
+			}}
+		case "restrictChatMember":
+			return testAPIResponse{OK: false, Description: "Bad Request: CHAT_ADMIN_REQUIRED"}
+		default:
 			t.Fatalf("unexpected bot method: %s", method)
+			return testAPIResponse{OK: true}
 		}
-		return testAPIResponse{OK: false, Description: "Bad Request: CHAT_ADMIN_REQUIRED"}
 	})
 	service := NewBanService(botAPI, &testBanStore{})
 

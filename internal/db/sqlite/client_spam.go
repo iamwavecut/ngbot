@@ -21,12 +21,13 @@ func (s *sqliteClient) AddRestriction(ctx context.Context, restriction *db.UserR
 	defer s.mutex.Unlock()
 
 	query := `
-		INSERT INTO user_restrictions (user_id, chat_id, restricted_at, expires_at, reason)
-		VALUES (?, ?, ?, ?, ?)
+		INSERT INTO user_restrictions (user_id, chat_id, restricted_at, expires_at, reason, prior_permissions_json)
+		VALUES (?, ?, ?, ?, ?, ?)
 		ON CONFLICT(chat_id, user_id) DO UPDATE SET
 			restricted_at = excluded.restricted_at,
 			expires_at = excluded.expires_at,
-			reason = excluded.reason
+			reason = excluded.reason,
+			prior_permissions_json = excluded.prior_permissions_json
 	`
 	_, err := s.db.ExecContext(
 		ctx, query,
@@ -35,6 +36,7 @@ func (s *sqliteClient) AddRestriction(ctx context.Context, restriction *db.UserR
 		restriction.RestrictedAt,
 		restriction.ExpiresAt,
 		restriction.Reason,
+		restriction.PriorPermissionsJSON,
 	)
 	return err
 }

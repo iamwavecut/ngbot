@@ -151,9 +151,6 @@ func (sc *SpamControl) getSpamCase(ctx context.Context, msg *api.Message, preVot
 			spamCase = nil
 		}
 	}
-	if spamCase != nil && preVoteRestricted && !spamCase.PreVoteRestricted {
-		spamCase = nil
-	}
 	if spamCase == nil {
 		now := time.Now()
 		var resolveAt *time.Time
@@ -168,7 +165,7 @@ func (sc *SpamControl) getSpamCase(ctx context.Context, msg *api.Message, preVot
 			MessageText:       bot.ExtractContentFromMessage(msg),
 			CreatedAt:         now,
 			Status:            spamCaseStatusPending,
-			PreVoteRestricted: preVoteRestricted,
+			PreVoteRestricted: false,
 			ResolveAt:         resolveAt,
 		})
 		if err != nil {
@@ -334,10 +331,6 @@ func (sc *SpamControl) preprocessMessage(ctx context.Context, msg *api.Message, 
 
 	if voting {
 		if err := sc.banService.MuteUser(ctx, chat.ID, msg.From.ID); err != nil {
-			spamCase.PreVoteRestricted = false
-			if updateErr := sc.store.SetSpamCasePreVoteRestricted(ctx, spamCase.ID, false); updateErr != nil {
-				persistenceErr = fmt.Errorf("record failed pre-vote restriction: %w", updateErr)
-			}
 			if isTelegramPrivilegeError(err) {
 				sc.banService.MarkModerationUnavailable(chat.ID)
 				result.Error = errChatAdminRequired
@@ -348,6 +341,11 @@ func (sc *SpamControl) preprocessMessage(ctx context.Context, msg *api.Message, 
 				result.Error = err.Error()
 			}
 		} else {
+			if err := sc.store.SetSpamCasePreVoteRestricted(ctx, spamCase.ID, true); err != nil {
+				compensationErr := sc.banService.UnmuteUser(ctx, chat.ID, msg.From.ID)
+				return result, errors.Join(fmt.Errorf("record pre-vote restriction: %w", err), compensationErr)
+			}
+			spamCase.PreVoteRestricted = true
 			result.UserBanned = true
 			if err := bot.DeleteChatMessage(ctx, sc.bot, chat.ID, msg.MessageID); err != nil {
 				log.WithField("error", err.Error()).WithField("chat_title", chat.Title).WithField("chat_username", chat.UserName).Error("failed to delete message")

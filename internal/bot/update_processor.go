@@ -13,8 +13,9 @@ import (
 )
 
 const (
-	UpdateTimeout    = 5 * time.Minute
-	logFieldUpdateID = "update_id"
+	UpdateTimeout            = 5 * time.Minute
+	logFieldUpdateID         = "update_id"
+	richMessageUsernameField = "username"
 )
 
 const (
@@ -296,6 +297,14 @@ func UnrestrictChatting(ctx context.Context, bot *api.BotAPI, userID int64, chat
 	case <-ctx.Done():
 		return ctx.Err()
 	default:
+		chat, err := GetChat(ctx, bot, api.ChatInfoConfig{ChatConfig: api.ChatConfig{ChatID: chatID}})
+		if err != nil {
+			return errors.WithMessage(err, "cant load chat permissions")
+		}
+		permissions := chat.Permissions
+		if permissions == nil {
+			permissions = &api.ChatPermissions{}
+		}
 		if _, err := bot.RequestWithContext(ctx, api.RestrictChatMemberConfig{
 			ChatMemberConfig: api.ChatMemberConfig{
 				ChatConfig: api.ChatConfig{
@@ -303,23 +312,9 @@ func UnrestrictChatting(ctx context.Context, bot *api.BotAPI, userID int64, chat
 				},
 				UserID: userID,
 			},
-			UntilDate: time.Now().Add(10 * time.Minute).Unix(),
-			Permissions: &api.ChatPermissions{
-				CanSendMessages:       true,
-				CanSendAudios:         true,
-				CanSendDocuments:      true,
-				CanSendPhotos:         true,
-				CanSendVideos:         true,
-				CanSendVideoNotes:     true,
-				CanSendVoiceNotes:     true,
-				CanSendPolls:          true,
-				CanSendOtherMessages:  true,
-				CanAddWebPagePreviews: true,
-				CanChangeInfo:         true,
-				CanInviteUsers:        true,
-				CanPinMessages:        true,
-				CanManageTopics:       true,
-			},
+			UntilDate:                     time.Now().Add(10 * time.Minute).Unix(),
+			Permissions:                   permissions,
+			UseIndependentChatPermissions: true,
 		}); err != nil {
 			return errors.WithMessage(err, "cant unrestrict")
 		}
@@ -516,7 +511,7 @@ func appendRichMessageText(parts *[]string, value any) {
 			"email_address",
 			"phone_number",
 			"bank_card_number",
-			"username",
+			richMessageUsernameField,
 			"hashtag",
 			"cashtag",
 			"bot_command",

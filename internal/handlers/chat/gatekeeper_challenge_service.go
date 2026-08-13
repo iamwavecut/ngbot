@@ -155,12 +155,46 @@ func (g *Gatekeeper) handleChallenge(ctx context.Context, u *api.Update, chat *a
 		}
 		return nil
 	}
+	banned, err := g.revalidateChallengeIdentity(ctx, challenge, user.UserName)
+	if err != nil {
+		return err
+	}
+	if banned {
+		return g.failChallenge(ctx, challenge, rejectText, rejectDuration)
+	}
 
 	if _, err := b.RequestWithContext(ctx, api.NewCallback(cq.ID, i18n.Get("Welcome, friend!", language))); err != nil {
 		entry.WithField(logFieldError, err.Error()).Error("cant answer callback query")
 	}
 
 	return g.completeChallenge(ctx, challenge, &targetChat, language)
+}
+
+func (g *Gatekeeper) revalidateChallengeIdentity(ctx context.Context, challenge *db.Challenge, username string) (bool, error) {
+	if challenge == nil {
+		return false, errors.New("challenge is nil")
+	}
+	isNotSpammer, err := g.store.IsChatNotSpammer(ctx, challenge.ChatID, challenge.UserID, username)
+	if err == nil && isNotSpammer {
+		return false, nil
+	}
+	if err != nil {
+		g.getLogEntry().WithFields(log.Fields{
+			logFieldUserID: challenge.UserID,
+			logFieldError:  err.Error(),
+		}).Error("failed to check manual not-spammer override; continuing moderation")
+	}
+	if g.banChecker == nil {
+		return false, nil
+	}
+	if g.banChecker.IsKnownBanned(challenge.UserID) {
+		return true, nil
+	}
+	banned, err := g.banChecker.CheckBan(ctx, challenge.UserID)
+	if err != nil {
+		return false, fmt.Errorf("recheck challenge banlist: %w", err)
+	}
+	return banned, nil
 }
 
 func (g *Gatekeeper) completeChallenge(ctx context.Context, challenge *db.Challenge, target *api.ChatFullInfo, language string) error {

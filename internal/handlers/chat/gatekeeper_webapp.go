@@ -95,6 +95,7 @@ type joinCaptchaAnswerResponse struct {
 type webAppInitData struct {
 	QueryID  string
 	UserID   int64
+	Username string
 	AuthDate int64
 }
 
@@ -912,6 +913,7 @@ func (g *Gatekeeper) createWebAppCaptchaOptions(lang string, optionsCount int, s
 		usedIDs[ID] = struct{}{}
 	}
 	correctVariant := captchaRandomSet[mathrand.Intn(len(captchaRandomSet))]
+	correctVariant[1] = correctVariant[0]
 
 	options := make([]webAppCaptchaOption, 0, len(captchaRandomSet))
 	for _, variant := range captchaRandomSet {
@@ -1126,14 +1128,18 @@ func (g *Gatekeeper) handleJoinCaptchaAnswer(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	isNotSpammer, err := g.store.IsChatNotSpammer(r.Context(), challenge.ChatID, challenge.UserID, "")
+	initData, err := parseWebAppInitData(r.Form.Get("init_data"))
 	if err != nil {
-		g.getLogEntry().
-			WithField(logFieldUserID, challenge.UserID).
-			WithField(logFieldError, err.Error()).
-			Error("failed to check manual not-spammer override; continuing moderation")
+		writeJoinCaptchaJSON(w, http.StatusUnauthorized, joinCaptchaAnswerResponse{Message: copy.TelegramCheckFailed})
+		return
 	}
-	if !isNotSpammer && g.banChecker != nil && g.banChecker.IsKnownBanned(challenge.UserID) {
+	banned, err := g.revalidateChallengeIdentity(r.Context(), challenge, initData.Username)
+	if err != nil {
+		g.getLogEntry().WithField(logFieldError, err.Error()).Error("failed to revalidate web app challenge identity")
+		writeJoinCaptchaJSON(w, http.StatusServiceUnavailable, joinCaptchaAnswerResponse{Message: copy.CouldNotConfirm})
+		return
+	}
+	if banned {
 		if err := g.declineWebAppChallenge(r.Context(), challenge); err != nil {
 			g.getLogEntry().WithField(logFieldError, err.Error()).Error("failed to decline banned web app challenge")
 		}

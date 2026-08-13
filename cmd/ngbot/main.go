@@ -421,12 +421,12 @@ func buildRuntime(ctx context.Context, cfg *config.Config, errChan chan<- shutdo
 		SpamControl: cfg.SpamControl,
 	})
 
-	configuredHandlers := selectUpdateHandlers(cfg.EnabledHandlers, map[string]bot.Handler{
+	availableHandlers := map[string]bot.Handler{
 		handlerAdmin:      adminHandler,
 		handlerGatekeeper: gatekeeperHandler,
 		handlerReactor:    reactorHandler,
-	})
-	updateHandlers := append([]bot.Handler{banlistGuard}, configuredHandlers...)
+	}
+	updateHandlers := mandatoryUpdateHandlers(cfg.EnabledHandlers, availableHandlers, banlistGuard, reactorHandler)
 
 	updateLoop := newUpdateLoopComponent(
 		botAPI,
@@ -480,6 +480,16 @@ func reportWebAppFatalError(errChan chan<- shutdownSignal) func(error) {
 			log.WithError(err).Error("WebApp fatal error dropped")
 		}
 	}
+}
+
+func mandatoryUpdateHandlers(enabled []string, available map[string]bot.Handler, banlistGuard, moderationRouter bot.Handler) []bot.Handler {
+	handlers := []bot.Handler{banlistGuard, moderationRouter}
+	for _, handler := range selectUpdateHandlers(enabled, available) {
+		if handler != moderationRouter {
+			handlers = append(handlers, handler)
+		}
+	}
+	return handlers
 }
 
 func newTelegramBotAPI(token, endpoint string, client *http.Client) (*api.BotAPI, error) {

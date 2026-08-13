@@ -47,19 +47,24 @@ func NewBanlistGuard(botAPI *api.BotAPI, store banlistGuardStore, banService mod
 }
 
 func (g *BanlistGuard) Handle(ctx context.Context, u *api.Update, chat *api.Chat, user *api.User) (bool, error) {
-	if u == nil {
+	if u == nil || chat == nil || g.banService == nil {
+		return true, nil
+	}
+	user = moderationUpdateUser(u, user)
+	if user == nil {
 		return true, nil
 	}
 	msg := u.Message
 	if msg == nil {
 		msg = u.EditedMessage
 	}
-	if msg == nil || msg.SenderChat != nil || len(msg.NewChatMembers) != 0 || chat == nil || user == nil || g.banService == nil {
+	if msg != nil && msg.SenderChat != nil {
 		return true, nil
 	}
-	if !g.banService.IsKnownBanned(user.ID) {
-		return true, nil
+	if msg != nil && len(msg.NewChatMembers) != 0 {
+		return g.handleJoinedMembers(ctx, u, msg, chat)
 	}
+
 	isNotSpammer, err := g.store.IsChatNotSpammer(ctx, chat.ID, user.ID, user.UserName)
 	if err != nil {
 		log.WithFields(log.Fields{
@@ -72,17 +77,43 @@ func (g *BanlistGuard) Handle(ctx context.Context, u *api.Update, chat *api.Chat
 		return true, nil
 	}
 
+	knownBanned := g.banService.IsKnownBanned(user.ID)
+	available, err := g.banService.ModerationAvailable(ctx, chat.ID)
+	if err != nil {
+		log.WithFields(log.Fields{
+			logFieldObject: logObjectBanlistGuard,
+			logFieldChatID: chat.ID,
+			logFieldUserID: user.ID,
+			logFieldError:  err.Error(),
+		}).Warn("moderation capability is unknown; stopping feature routing")
+		return false, bot.NewRetryableUpdateFailure(bot.UpdateFailureCapability, "capability_unknown", err)
+	}
+	if !available {
+		return !knownBanned, nil
+	}
+
+	banned := knownBanned
+	if !banned {
+		banned, err = g.banService.CheckBan(ctx, user.ID)
+		if err != nil {
+			return false, fmt.Errorf("check banlist before feature routing: %w", err)
+		}
+	}
+	if !banned {
+		return true, nil
+	}
+
 	var outcome banlistedMessageOutcome
 	if actionStore, ok := g.store.(moderationActionStore); ok {
 		outcome = g.enforceDurableBanlistedMessage(ctx, actionStore, u.UpdateID, msg, chat, user)
 	} else {
-		outcome = enforceBanlistedMessage(ctx, g.bot, g.banService, msg, chat, user)
+		outcome = g.enforce(ctx, msg, chat, user)
 	}
 	entry := log.WithFields(log.Fields{
 		logFieldObject: logObjectBanlistGuard,
 		logFieldChatID: chat.ID,
 		logFieldUserID: user.ID,
-		"message_id":   msg.MessageID,
+		"message_id":   messageID(msg),
 		"edited":       u.EditedMessage != nil,
 	})
 	if outcome.err != nil {
@@ -106,9 +137,10 @@ func (g *BanlistGuard) enforceDurableBanlistedMessage(ctx context.Context, store
 	}
 	now := time.Now()
 	owner := uuid.New()
-	actionKey := fmt.Sprintf("banlist:%d:%d:%d:%d", updateID, chat.ID, user.ID, msg.MessageID)
+	msgID := messageID(msg)
+	actionKey := fmt.Sprintf("banlist:%d:%d:%d:%d", updateID, chat.ID, user.ID, msgID)
 	action, err := store.BeginModerationAction(ctx, &db.ModerationActionFence{
-		ActionKey: actionKey, ChatID: chat.ID, UserID: user.ID, MessageID: msg.MessageID, BanUntil: now.Add(10 * time.Minute),
+		ActionKey: actionKey, ChatID: chat.ID, UserID: user.ID, MessageID: msgID, BanUntil: now.Add(10 * time.Minute),
 	}, owner, now)
 	if err != nil {
 		return banlistedMessageOutcome{moderationAvailable: true, err: bot.NewRetryableUpdateFailure(bot.UpdateFailureSQLite, "moderation_fence_unavailable", err)}
@@ -117,7 +149,7 @@ func (g *BanlistGuard) enforceDurableBanlistedMessage(ctx context.Context, store
 	switch action.Status {
 	case db.ModerationActionCompleted:
 		outcome.userBanned = true
-		outcome.messageDeleted = true
+		outcome.messageDeleted = action.MessageID != 0
 		return outcome
 	case db.ModerationActionReconciliation:
 		outcome.err = bot.NewTerminalUpdateFailure(bot.UpdateFailureRuntime, "moderation_effect_ambiguous", errors.New("moderation action requires reconciliation"))
@@ -129,9 +161,9 @@ func (g *BanlistGuard) enforceDurableBanlistedMessage(ctx context.Context, store
 			return outcome
 		}
 		if service, ok := g.banService.(deadlineBanService); ok {
-			err = service.BanUserWithMessageUntil(ctx, chat.ID, user.ID, msg.MessageID, action.BanUntil)
+			err = service.BanUserWithMessageUntil(ctx, chat.ID, user.ID, msgID, action.BanUntil)
 		} else {
-			err = g.banService.BanUserWithMessage(ctx, chat.ID, user.ID, msg.MessageID)
+			err = g.banService.BanUserWithMessage(ctx, chat.ID, user.ID, msgID)
 		}
 		if err != nil {
 			if moderation.IsTelegramPrivilegeError(err) {
@@ -159,16 +191,69 @@ func (g *BanlistGuard) enforceDurableBanlistedMessage(ctx context.Context, store
 		outcome.err = bot.NewTerminalUpdateFailure(bot.UpdateFailurePayload, "invalid_moderation_action", fmt.Errorf("unexpected moderation action status %q", action.Status))
 		return outcome
 	}
-	if err := bot.DeleteChatMessage(ctx, g.bot, chat.ID, msg.MessageID); err != nil && !isTelegramMessageAlreadyDeleted(err) {
-		outcome.err = err
-		return outcome
+	if msgID != 0 {
+		if err := bot.DeleteChatMessage(ctx, g.bot, chat.ID, msgID); err != nil && !isTelegramMessageAlreadyDeleted(err) {
+			outcome.err = err
+			return outcome
+		}
+		outcome.messageDeleted = true
 	}
-	outcome.messageDeleted = true
 	advanced, err := store.AdvanceModerationAction(ctx, action.ActionKey, action.Owner, db.ModerationActionBanned, db.ModerationActionCompleted, "", time.Now())
 	if err != nil || !advanced {
 		outcome.err = bot.NewRetryableUpdateFailure(bot.UpdateFailureSQLite, "complete_moderation_fence", errors.Join(err, errors.New("moderation completion fence changed")))
 	}
 	return outcome
+}
+
+func (g *BanlistGuard) handleJoinedMembers(ctx context.Context, u *api.Update, msg *api.Message, chat *api.Chat) (bool, error) {
+	safeMembers := make([]api.User, 0, len(msg.NewChatMembers))
+	for i := range msg.NewChatMembers {
+		member := &msg.NewChatMembers[i]
+		if member.IsBot {
+			safeMembers = append(safeMembers, *member)
+			continue
+		}
+		memberUpdate := *u
+		memberMessage := *msg
+		memberMessage.NewChatMembers = nil
+		memberUpdate.Message = &memberMessage
+		proceed, err := g.Handle(ctx, &memberUpdate, chat, member)
+		if err != nil {
+			return false, err
+		}
+		if proceed {
+			safeMembers = append(safeMembers, *member)
+		}
+	}
+	msg.NewChatMembers = safeMembers
+	return len(safeMembers) != 0, nil
+}
+
+func moderationUpdateUser(u *api.Update, fallback *api.User) *api.User {
+	if u.ChatMember != nil {
+		return u.ChatMember.NewChatMember.User
+	}
+	if u.MyChatMember != nil {
+		return nil
+	}
+	return fallback
+}
+
+func (g *BanlistGuard) enforce(ctx context.Context, msg *api.Message, chat *api.Chat, user *api.User) banlistedMessageOutcome {
+	if msg != nil {
+		return enforceBanlistedMessage(ctx, g.bot, g.banService, msg, chat, user)
+	}
+	if err := g.banService.BanUserWithMessage(ctx, chat.ID, user.ID, 0); err != nil {
+		return banlistedMessageOutcome{moderationAvailable: true, err: fmt.Errorf("ban user: %w", err)}
+	}
+	return banlistedMessageOutcome{moderationAvailable: true, userBanned: true}
+}
+
+func messageID(msg *api.Message) int {
+	if msg == nil {
+		return 0
+	}
+	return msg.MessageID
 }
 
 func enforceBanlistedMessage(

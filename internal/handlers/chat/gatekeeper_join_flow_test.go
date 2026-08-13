@@ -1464,6 +1464,8 @@ func TestManualJoinRequestApprovalSkipsPublicCaptchaAndSendsOnlyGreeting(t *test
 		recorder.record(t, method, r)
 
 		switch method {
+		case "getChat":
+			return map[string]any{"id": groupChat.ID, testJSONType: testChatTypeSupergroup, "permissions": map[string]any{"can_send_messages": true}}
 		case testTelegramMethodSendMessage:
 			return recorder.nextSendMessageResult()
 		case testTelegramMethodRestrictChatMember, testTelegramMethodDeleteMessage:
@@ -1540,6 +1542,8 @@ func TestDirectJoinCaptchaIncludesGreetingImmediatelyAndBackfillsJoinMessageID(t
 		recorder.record(t, method, r)
 
 		switch method {
+		case "getChat":
+			return map[string]any{"id": groupChat.ID, testJSONType: testChatTypeSupergroup, "permissions": map[string]any{"can_send_messages": true}}
 		case testTelegramMethodSendMessage:
 			return recorder.nextSendMessageResult()
 		case testTelegramMethodRestrictChatMember, testTelegramMethodDeleteMessage:

@@ -244,6 +244,26 @@ func TestSelectUpdateHandlersPreservesConfiguredOrder(t *testing.T) {
 	}
 }
 
+func TestMandatoryModerationRouterPrecedesAdminConsumedCommands(t *testing.T) {
+	t.Parallel()
+
+	admin := &testUpdateHandler{name: handlerAdmin}
+	gatekeeper := &testUpdateHandler{name: handlerGatekeeper}
+	reactor := &testUpdateHandler{name: handlerReactor}
+	banlist := &testUpdateHandler{name: "banlist"}
+
+	got := mandatoryUpdateHandlers(
+		[]string{handlerAdmin, handlerGatekeeper, handlerReactor},
+		map[string]bot.Handler{handlerAdmin: admin, handlerGatekeeper: gatekeeper, handlerReactor: reactor},
+		banlist,
+		reactor,
+	)
+	want := []bot.Handler{banlist, reactor, admin, gatekeeper}
+	if !slices.Equal(got, want) {
+		t.Fatalf("mandatory handler order = %#v, want %#v", got, want)
+	}
+}
+
 type commandRegistrationCall struct {
 	method   string
 	scope    string

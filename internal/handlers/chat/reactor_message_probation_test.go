@@ -326,8 +326,8 @@ func TestCommandsAndMentionsStartProbationWithoutClassification(t *testing.T) {
 			t.Fatalf("routed message probation for %d: probation=%#v err=%v", userID, probation, err)
 		}
 	}
-	if detector.calls != 0 {
-		t.Fatalf("command or mention reached probation LLM: %d calls", detector.calls)
+	if detector.calls != 2 {
+		t.Fatalf("command and mention semantic checks = %d, want 2", detector.calls)
 	}
 }
 

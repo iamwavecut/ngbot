@@ -279,12 +279,68 @@ type testModerationBanService struct {
 	unmuteErr             error
 	moderationUnavailable bool
 	markedUnavailable     bool
+	checkBan              bool
 }
 
 func (s *testModerationBanService) Start(context.Context) error { return nil }
 func (s *testModerationBanService) Stop(context.Context) error  { return nil }
 func (s *testModerationBanService) CheckBan(context.Context, int64) (bool, error) {
-	return false, nil
+	return s.checkBan, nil
+}
+
+func TestRecordVoteRejectsDepartedVoterEvenWhenMembershipCacheSaysMember(t *testing.T) {
+	t.Parallel()
+
+	botAPI := newModerationTestBotAPI(t, func(method string, _ *http.Request) any {
+		if method != "getChatMember" {
+			t.Fatalf("unexpected method %q", method)
+		}
+		return map[string]any{
+			"user":      map[string]any{"id": 300, "is_bot": false, "first_name": "Voter"},
+			"status":    "left",
+			"is_member": false,
+		}
+	})
+	spamCase := &db.SpamCase{ID: 1, ChatID: -100, UserID: 200, Status: db.SpamCaseStatusPending}
+	service := &testModerationService{botAPI: botAPI}
+	control := &SpamControl{
+		s:          service,
+		bot:        botAPI,
+		store:      &testModerationStore{spamCase: spamCase},
+		banService: &testModerationBanService{},
+	}
+
+	_, _, err := control.RecordVote(t.Context(), spamCase.ID, 300, false)
+	if !errors.Is(err, ErrVoterNotEligible) {
+		t.Fatalf("RecordVote error = %v, want ErrVoterNotEligible", err)
+	}
+}
+
+func TestRecordVoteRejectsFreshlyBanlistedVoter(t *testing.T) {
+	t.Parallel()
+
+	botAPI := newModerationTestBotAPI(t, func(method string, _ *http.Request) any {
+		if method != "getChatMember" {
+			t.Fatalf("unexpected method %q", method)
+		}
+		return map[string]any{
+			"user":      map[string]any{"id": 300, "is_bot": false, "first_name": "Voter"},
+			"status":    "member",
+			"is_member": true,
+		}
+	})
+	spamCase := &db.SpamCase{ID: 1, ChatID: -100, UserID: 200, Status: db.SpamCaseStatusPending}
+	control := &SpamControl{
+		s:          &testModerationService{botAPI: botAPI},
+		bot:        botAPI,
+		store:      &testModerationStore{spamCase: spamCase},
+		banService: &testModerationBanService{checkBan: true},
+	}
+
+	_, _, err := control.RecordVote(t.Context(), spamCase.ID, 300, false)
+	if !errors.Is(err, ErrVoterNotEligible) {
+		t.Fatalf("RecordVote error = %v, want ErrVoterNotEligible", err)
+	}
 }
 
 func (s *testModerationBanService) ModerationAvailable(context.Context, int64) (bool, error) {

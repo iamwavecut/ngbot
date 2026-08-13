@@ -430,6 +430,9 @@ func TestVotingSurfacePersistenceFailureCompensatesBeforeModeration(t *testing.T
 	if banService.muteCalls != 0 {
 		t.Fatalf("mute started before durable voting surface: %d calls", banService.muteCalls)
 	}
+	if store.spamCase == nil || store.spamCase.PreVoteRestricted {
+		t.Fatalf("failed presentation left a false mute marker: %#v", store.spamCase)
+	}
 	if len(deletedMessageIDs) != 1 || deletedMessageIDs[0] != "701" {
 		t.Fatalf("expected only voting prompt compensation, got deleted message ids %v", deletedMessageIDs)
 	}

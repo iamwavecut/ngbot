@@ -2,14 +2,25 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
 	api "github.com/OvyFlash/telegram-bot-api"
+	"github.com/iamwavecut/ngbot/internal/bot"
 	"github.com/iamwavecut/ngbot/internal/db"
 )
 
 func (s *defaultBanService) MuteUser(ctx context.Context, chatID, userID int64) error {
+	priorPermissions, err := s.effectiveMemberPermissions(ctx, chatID, userID)
+	if err != nil {
+		return fmt.Errorf("capture permissions before restriction: %w", err)
+	}
+	priorPermissionsJSON, err := json.Marshal(priorPermissions)
+	if err != nil {
+		return fmt.Errorf("encode permissions before restriction: %w", err)
+	}
 	expiresAt := time.Now().Add(10 * time.Minute)
 	config := api.RestrictChatMemberConfig{
 		ChatMemberConfig: api.ChatMemberConfig{
@@ -30,27 +41,52 @@ func (s *defaultBanService) MuteUser(ctx context.Context, chatID, userID int64) 
 	}
 
 	restriction := &db.UserRestriction{
-		UserID:       userID,
-		ChatID:       chatID,
-		RestrictedAt: time.Now(),
-		ExpiresAt:    expiresAt,
-		Reason:       "Spam suspect",
+		UserID:               userID,
+		ChatID:               chatID,
+		RestrictedAt:         time.Now(),
+		ExpiresAt:            expiresAt,
+		Reason:               "Spam suspect",
+		PriorPermissionsJSON: string(priorPermissionsJSON),
 	}
 
 	if err := s.db.AddRestriction(ctx, restriction); err != nil {
-		return fmt.Errorf("failed to add restriction: %w", err)
+		persistErr := fmt.Errorf("failed to add restriction: %w", err)
+		if restoreErr := s.restorePermissions(ctx, chatID, userID, priorPermissions); restoreErr != nil {
+			return errors.Join(persistErr, fmt.Errorf("restore permissions after persistence failure: %w", restoreErr))
+		}
+		return persistErr
 	}
 
 	return nil
 }
 
 func (s *defaultBanService) UnmuteUser(ctx context.Context, chatID, userID int64) error {
+	restriction, err := s.db.GetActiveRestriction(ctx, chatID, userID)
+	if err != nil {
+		return fmt.Errorf("load restriction permissions: %w", err)
+	}
+	permissions, err := s.permissionsBeforeRestriction(ctx, chatID, restriction)
+	if err != nil {
+		return err
+	}
+	if err := s.restorePermissions(ctx, chatID, userID, permissions); err != nil {
+		return err
+	}
+
+	if err := s.db.RemoveRestriction(ctx, chatID, userID); err != nil {
+		return fmt.Errorf("failed to remove restriction: %w", err)
+	}
+
+	return nil
+}
+
+func (s *defaultBanService) restorePermissions(ctx context.Context, chatID, userID int64, permissions *api.ChatPermissions) error {
 	config := api.RestrictChatMemberConfig{
 		ChatMemberConfig: api.ChatMemberConfig{
 			ChatConfig: api.ChatConfig{ChatID: chatID},
 			UserID:     userID,
 		},
-		Permissions:                   unrestrictedChatPermissions(),
+		Permissions:                   permissions,
 		UseIndependentChatPermissions: true,
 	}
 
@@ -59,10 +95,6 @@ func (s *defaultBanService) UnmuteUser(ctx context.Context, chatID, userID int64
 			s.MarkModerationUnavailable(chatID)
 		}
 		return withPrivilegeError(err, "unrestrict")
-	}
-
-	if err := s.db.RemoveRestriction(ctx, chatID, userID); err != nil {
-		return fmt.Errorf("failed to remove restriction: %w", err)
 	}
 
 	return nil
@@ -133,21 +165,64 @@ func (s *defaultBanService) IsRestricted(ctx context.Context, chatID, userID int
 	return restriction != nil && restriction.ExpiresAt.After(time.Now()), nil
 }
 
-func unrestrictedChatPermissions() *api.ChatPermissions {
+func (s *defaultBanService) effectiveMemberPermissions(ctx context.Context, chatID, userID int64) (*api.ChatPermissions, error) {
+	member, err := bot.GetChatMember(ctx, s.bot, api.NewGetChatMember(chatID, userID))
+	if err != nil {
+		return nil, err
+	}
+	if member.Status == "restricted" {
+		return chatMemberPermissions(member), nil
+	}
+	chat, err := bot.GetChat(ctx, s.bot, api.ChatInfoConfig{ChatConfig: api.ChatConfig{ChatID: chatID}})
+	if err != nil {
+		return nil, err
+	}
+	if chat.Permissions == nil {
+		return &api.ChatPermissions{}, nil
+	}
+	permissions := *chat.Permissions
+	return &permissions, nil
+}
+
+func (s *defaultBanService) permissionsBeforeRestriction(ctx context.Context, chatID int64, restriction *db.UserRestriction) (*api.ChatPermissions, error) {
+	if restriction == nil {
+		return nil, fmt.Errorf("prior permissions are unavailable")
+	}
+	if restriction.PriorPermissionsJSON == "" {
+		chat, err := bot.GetChat(ctx, s.bot, api.ChatInfoConfig{ChatConfig: api.ChatConfig{ChatID: chatID}})
+		if err != nil {
+			return nil, fmt.Errorf("load effective chat permissions: %w", err)
+		}
+		if chat.Permissions == nil {
+			return &api.ChatPermissions{}, nil
+		}
+		permissions := *chat.Permissions
+		return &permissions, nil
+	}
+	permissions := &api.ChatPermissions{}
+	if err := json.Unmarshal([]byte(restriction.PriorPermissionsJSON), permissions); err != nil {
+		return nil, fmt.Errorf("decode prior permissions: %w", err)
+	}
+	return permissions, nil
+}
+
+func chatMemberPermissions(member api.ChatMember) *api.ChatPermissions {
 	return &api.ChatPermissions{
-		CanSendMessages:       true,
-		CanSendAudios:         true,
-		CanSendDocuments:      true,
-		CanSendPhotos:         true,
-		CanSendVideos:         true,
-		CanSendVideoNotes:     true,
-		CanSendVoiceNotes:     true,
-		CanSendPolls:          true,
-		CanSendOtherMessages:  true,
-		CanAddWebPagePreviews: true,
-		CanChangeInfo:         true,
-		CanInviteUsers:        true,
-		CanPinMessages:        true,
-		CanManageTopics:       true,
+		CanSendMessages:       member.CanSendMessages,
+		CanSendAudios:         member.CanSendAudios,
+		CanSendDocuments:      member.CanSendDocuments,
+		CanSendPhotos:         member.CanSendPhotos,
+		CanSendVideos:         member.CanSendVideos,
+		CanSendVideoNotes:     member.CanSendVideoNotes,
+		CanSendVoiceNotes:     member.CanSendVoiceNotes,
+		CanSendPolls:          member.CanSendPolls,
+		CanReactToMessages:    member.CanReactToMessages,
+		CanSendOtherMessages:  member.CanSendOtherMessages,
+		CanAddWebPagePreviews: member.CanAddWebPagePreviews,
+		CanEditTag:            member.CanEditTag,
+		CanChangeInfo:         member.CanChangeInfo,
+		CanInviteUsers:        member.CanInviteUsers,
+		CanPinMessages:        member.CanPinMessages,
+		CanManageTopics:       member.CanManageTopics,
 	}
 }

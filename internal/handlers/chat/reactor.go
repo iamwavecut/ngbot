@@ -159,8 +159,11 @@ func (r *Reactor) Handle(ctx context.Context, u *api.Update, chat *api.Chat, use
 			return true, nil
 		}
 		if u.Message.IsCommand() {
-			if err := r.ensureMessageProbationStarted(ctx, chat, user, settings); err != nil {
-				return true, err
+			if err := r.handleMessageChallenge(ctx, u.Message, chat, user, settings, false, true); err != nil {
+				return false, err
+			}
+			if r.messageWasModerated(chat.ID, u.Message.MessageID) {
+				return false, nil
 			}
 			if err := r.handleCommand(ctx, u.Message, chat, user, settings); err != nil {
 				entry.WithField(logFieldError, err.Error()).Error("error handling message")
@@ -168,9 +171,12 @@ func (r *Reactor) Handle(ctx context.Context, u *api.Update, chat *api.Chat, use
 			}
 			return true, nil
 		}
-		if messageMentionsCurrentBot(u.Message, r.bot.Self) {
-			if err := r.ensureMessageProbationStarted(ctx, chat, user, settings); err != nil {
-				return true, err
+		if user != nil && messageMentionsCurrentBot(u.Message, r.bot.Self) {
+			if err := r.handleMessageChallenge(ctx, u.Message, chat, user, settings, false, true); err != nil {
+				return false, err
+			}
+			if r.messageWasModerated(chat.ID, u.Message.MessageID) {
+				return false, nil
 			}
 			if err := r.voteBanCommand(ctx, u.Message, chat, user, settings); err != nil {
 				entry.WithField(logFieldError, err.Error()).Error("error handling bot mention report")
@@ -181,6 +187,9 @@ func (r *Reactor) Handle(ctx context.Context, u *api.Update, chat *api.Chat, use
 		if err := r.handleMessage(ctx, u.Message, chat, user, settings); err != nil {
 			entry.WithField(logFieldError, err.Error()).Error("error handling message")
 			return true, err
+		}
+		if r.messageWasModerated(chat.ID, u.Message.MessageID) {
+			return false, nil
 		}
 	}
 
@@ -216,7 +225,12 @@ func (r *Reactor) handleEditedMessage(ctx context.Context, msg *api.Message, cha
 		logFieldMessageID:  msg.MessageID,
 		"active_probation": activeProbation,
 	}).Debug("rechecking edited probation message")
-	return r.handleMessageChallenge(ctx, msg, chat, user, settings, true)
+	return r.handleMessageChallenge(ctx, msg, chat, user, settings, true, false)
+}
+
+func (r *Reactor) messageWasModerated(chatID int64, messageID int) bool {
+	result := r.GetLastProcessingResult(chatID, messageID)
+	return result != nil && result.IsSpam != nil && *result.IsSpam
 }
 
 func (r *Reactor) currentTime() time.Time {

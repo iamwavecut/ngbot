@@ -72,3 +72,58 @@ func TestBanUserFromChatRevokesMessages(t *testing.T) {
 		t.Fatal("expected banChatMember call")
 	}
 }
+
+func TestUnrestrictChattingRestoresRestrictiveChatDefaults(t *testing.T) {
+	t.Parallel()
+
+	var restored api.ChatPermissions
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Helper()
+
+		method := path.Base(r.URL.Path)
+		var result any = true
+		switch method {
+		case "getMe":
+			result = map[string]any{"id": 1, "is_bot": true, "first_name": "Test", "username": "testbot"}
+		case "getChat":
+			result = map[string]any{
+				"id": -100, "type": "supergroup",
+				"permissions": map[string]any{
+					"can_send_messages": true,
+					"can_send_photos":   false,
+					"can_invite_users":  false,
+				},
+			}
+		case "restrictChatMember":
+			if err := r.ParseForm(); err != nil {
+				t.Fatalf("parse form: %v", err)
+			}
+			if err := json.Unmarshal([]byte(r.Form.Get("permissions")), &restored); err != nil {
+				t.Fatalf("decode permissions: %v", err)
+			}
+		default:
+			t.Fatalf("unexpected bot method: %s", method)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": result}); err != nil {
+			t.Fatalf("encode response: %v", err)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	botAPI, err := api.NewBotAPIWithOptions(
+		"TEST_TOKEN",
+		api.WithAPIEndpoint(fmt.Sprintf("%s/bot%%s/%%s", server.URL)),
+		api.WithHTTPClient(server.Client()),
+	)
+	if err != nil {
+		t.Fatalf("new bot api: %v", err)
+	}
+	if err := UnrestrictChatting(t.Context(), botAPI, 200, -100); err != nil {
+		t.Fatalf("unrestrict user: %v", err)
+	}
+	if !restored.CanSendMessages || restored.CanSendPhotos || restored.CanInviteUsers {
+		t.Fatalf("restored permissions = %#v", restored)
+	}
+}

@@ -160,11 +160,11 @@ func TestBanlistGuardCapabilityUnknownReturnsRetryableFailure(t *testing.T) {
 func TestBanlistGuardLeavesJoinServiceMessageForGatekeeper(t *testing.T) {
 	t.Parallel()
 
-	banService := &testBanService{knownBanned: true}
-	guard := NewBanlistGuard(&api.BotAPI{}, &testNotSpammerStore{}, banService)
 	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
 	actor := &api.User{ID: 200}
 	joined := api.User{ID: 300}
+	banService := &testBanService{knownBannedUsers: map[int64]bool{actor.ID: true}}
+	guard := NewBanlistGuard(&api.BotAPI{}, &testNotSpammerStore{}, banService)
 	message := &api.Message{MessageID: 42, Chat: *chat, From: actor, NewChatMembers: []api.User{joined}}
 
 	proceed, err := guard.Handle(context.Background(), &api.Update{Message: message}, chat, actor)
@@ -176,6 +176,37 @@ func TestBanlistGuardLeavesJoinServiceMessageForGatekeeper(t *testing.T) {
 	}
 	if len(banService.bans) != 0 {
 		t.Fatalf("join actor was incorrectly banned: %#v", banService.bans)
+	}
+}
+
+func TestBanlistGuardRemovesBannedJoinBeforeGatekeeper(t *testing.T) {
+	t.Parallel()
+
+	botAPI := newTestBotAPI(t, func(method string, _ *http.Request) any {
+		if method != testTelegramMethodDeleteMessage {
+			t.Fatalf("unexpected bot method: %s", method)
+		}
+		return true
+	})
+	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
+	actor := &api.User{ID: 200}
+	joined := api.User{ID: 300}
+	banService := &testBanService{knownBannedUsers: map[int64]bool{joined.ID: true}}
+	guard := NewBanlistGuard(botAPI, &testNotSpammerStore{}, banService)
+	message := &api.Message{MessageID: 42, Chat: *chat, From: actor, NewChatMembers: []api.User{joined}}
+
+	proceed, err := guard.Handle(t.Context(), &api.Update{Message: message}, chat, actor)
+	if err != nil {
+		t.Fatalf("handle banned join: %v", err)
+	}
+	if proceed {
+		t.Fatal("banned joined user reached gatekeeper")
+	}
+	if len(message.NewChatMembers) != 0 {
+		t.Fatalf("banned joiners left in update: %#v", message.NewChatMembers)
+	}
+	if len(banService.bans) != 1 || banService.bans[0].userID != joined.ID {
+		t.Fatalf("join bans = %#v", banService.bans)
 	}
 }
 
@@ -268,5 +299,52 @@ func TestBanlistGuardDoesNotRepeatAmbiguousBanAfterCrash(t *testing.T) {
 	}
 	if len(banService.banDeadlines) != 1 || !banService.banDeadlines[0].Equal(store.action.BanUntil) {
 		t.Fatalf("stable ban deadlines = %#v, action=%#v", banService.banDeadlines, store.action)
+	}
+}
+
+func TestBanlistGuardChecksProviderBeforeJoinRequestFeatureRouting(t *testing.T) {
+	t.Parallel()
+
+	banService := &testBanService{checkBan: true}
+	guard := NewBanlistGuard(&api.BotAPI{}, &testNotSpammerStore{}, banService)
+	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
+	user := &api.User{ID: 200, UserName: "provider_banned"}
+	update := &api.Update{ChatJoinRequest: &api.ChatJoinRequest{Chat: *chat, From: *user}}
+
+	proceed, err := guard.Handle(t.Context(), update, chat, user)
+	if err != nil {
+		t.Fatalf("handle provider-banned join request: %v", err)
+	}
+	if proceed {
+		t.Fatal("provider-banned join request reached feature routing")
+	}
+	if len(banService.bans) != 1 || banService.bans[0].userID != user.ID {
+		t.Fatalf("join request bans = %#v", banService.bans)
+	}
+}
+
+func TestBanlistGuardModeratesMemberUpdateSubjectInsteadOfAdministratorActor(t *testing.T) {
+	t.Parallel()
+
+	banService := &testBanService{checkBan: true}
+	guard := NewBanlistGuard(&api.BotAPI{}, &testNotSpammerStore{}, banService)
+	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
+	actor := &api.User{ID: 200, UserName: "admin"}
+	subject := &api.User{ID: 300, UserName: "joined_user"}
+	update := &api.Update{ChatMember: &api.ChatMemberUpdated{
+		Chat:          *chat,
+		From:          *actor,
+		NewChatMember: api.ChatMember{User: subject, Status: telegramMemberStatus},
+	}}
+
+	proceed, err := guard.Handle(t.Context(), update, chat, actor)
+	if err != nil {
+		t.Fatalf("handle member update: %v", err)
+	}
+	if proceed {
+		t.Fatal("provider-banned member update reached feature routing")
+	}
+	if len(banService.bans) != 1 || banService.bans[0].userID != subject.ID {
+		t.Fatalf("member update bans = %#v", banService.bans)
 	}
 }
