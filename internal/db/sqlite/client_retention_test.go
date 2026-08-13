@@ -94,6 +94,71 @@ func TestCleanupRetentionHonorsCutoffsReferencesAndBatchLimit(t *testing.T) {
 	assertIDs(t, client, "spam_cases", "id", []int64{101, 104, 105, 106})
 }
 
+func TestCleanupRetentionPreservesChallengedBindingsNeededBySpamCases(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	client, err := NewSQLiteClient(ctx, t.TempDir(), "test.db")
+	if err != nil {
+		t.Fatalf("new sqlite client: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+
+	now := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
+	challengedAt := now.Add(-challengedMessageRetention - time.Hour)
+	auditCutoff := now.Add(-terminalSpamCaseRetention)
+	if err := client.SetSettings(ctx, db.DefaultSettings(-100)); err != nil {
+		t.Fatalf("create chat: %v", err)
+	}
+	if _, err := client.db.ExecContext(ctx, `
+		INSERT INTO chat_challenged_messages (chat_id, message_id, user_id, challenged_at)
+		VALUES
+			(-100, 1, 11, ?),
+			(-100, 2, 12, ?),
+			(-100, 3, 13, ?),
+			(-100, 4, 14, ?),
+			(-100, 5, 15, ?),
+			(-100, 6, 16, ?)
+	`, challengedAt, challengedAt, challengedAt, challengedAt, challengedAt, challengedAt); err != nil {
+		t.Fatalf("seed challenged messages: %v", err)
+	}
+	if _, err := client.db.ExecContext(ctx, `
+		INSERT INTO spam_cases (
+			id, chat_id, user_id, message_id, message_text, created_at,
+			pre_vote_restricted, status, resolved_at
+		) VALUES
+			(102, -100, 12, 2, 'pending reference', ?, 1, 'pending', NULL),
+			(103, -100, 13, 3, 'inside audit window', ?, 1, 'spam', ?),
+			(104, -100, 14, 4, 'at audit cutoff', ?, 1, 'false_positive', ?),
+			(105, -100, 15, 5, 'queued deletion artifact', ?, 1, 'not_enforced', ?),
+			(106, -100, 16, 6, 'expired terminal case', ?, 1, 'spam', ?)
+	`,
+		now.Add(-time.Hour),
+		auditCutoff.Add(time.Second), auditCutoff.Add(time.Second),
+		auditCutoff, auditCutoff,
+		auditCutoff.Add(-time.Second), auditCutoff.Add(-time.Second),
+		auditCutoff.Add(-time.Second), auditCutoff.Add(-time.Second),
+	); err != nil {
+		t.Fatalf("seed spam cases: %v", err)
+	}
+	if _, err := client.db.ExecContext(ctx, `
+		INSERT INTO spam_case_report_messages (case_id, chat_id, message_id, created_at)
+		VALUES (105, -100, 500, ?)
+	`, now.Add(-time.Hour)); err != nil {
+		t.Fatalf("seed queued report deletion: %v", err)
+	}
+
+	result, err := client.CleanupRetention(ctx, now, 100)
+	if err != nil {
+		t.Fatalf("cleanup retention: %v", err)
+	}
+	if result.ChallengedMessages != 3 || result.TerminalSpamCases != 2 {
+		t.Fatalf("cleanup result = %+v, want 3 challenged messages and 2 terminal cases", result)
+	}
+	assertIDs(t, client, "chat_challenged_messages", "message_id", []int64{2, 3, 5})
+	assertIDs(t, client, "spam_cases", "id", []int64{102, 103, 105})
+}
+
 func TestRetentionCleanupRunsAfterCrashRestart(t *testing.T) {
 	t.Parallel()
 

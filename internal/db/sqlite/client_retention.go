@@ -55,12 +55,28 @@ func (c *sqliteClient) CleanupRetention(ctx context.Context, now time.Time, limi
 					WHERE spam_case.chat_id = challenged.chat_id
 						AND spam_case.user_id = challenged.user_id
 						AND spam_case.message_id = challenged.message_id
-						AND spam_case.status NOT IN (?, ?, ?)
+						AND (
+							spam_case.status NOT IN (?, ?, ?)
+							OR spam_case.resolved_at IS NULL
+							OR spam_case.resolved_at > ?
+							OR EXISTS (
+								SELECT 1
+								FROM spam_case_report_messages AS report
+								WHERE report.case_id = spam_case.id
+							)
+						)
 				)
 			ORDER BY challenged.challenged_at, challenged.chat_id, challenged.message_id
 			LIMIT ?
 		)
-	`, now.Add(-challengedMessageRetention), db.SpamCaseStatusSpam, db.SpamCaseStatusFalsePositive, db.SpamCaseStatusNotEnforced, limit)
+	`,
+		now.Add(-challengedMessageRetention),
+		db.SpamCaseStatusSpam,
+		db.SpamCaseStatusFalsePositive,
+		db.SpamCaseStatusNotEnforced,
+		now.Add(-terminalSpamCaseRetention),
+		limit,
+	)
 	if err != nil {
 		return RetentionResult{}, fmt.Errorf("clean challenged messages: %w", err)
 	}
