@@ -404,6 +404,7 @@ func (s *testBanService) MarkModerationUnavailable(int64) {
 	s.moderationUnavailable = true
 	s.markedUnavailable = true
 }
+
 func (s *testBanService) MuteUser(context.Context, int64, int64, time.Time) error {
 	s.muteCalls++
 	return nil
@@ -413,6 +414,7 @@ func (s *testBanService) BanUserWithMessage(_ context.Context, chatID, userID in
 	s.bans = append(s.bans, testGatekeeperBan{chatID: chatID, userID: userID, messageID: messageID})
 	return nil
 }
+
 func (s *testBanService) BanUserWithMessageUntil(ctx context.Context, chatID, userID int64, messageID int, until time.Time) error {
 	s.banDeadlines = append(s.banDeadlines, until)
 	return s.BanUserWithMessage(ctx, chatID, userID, messageID)

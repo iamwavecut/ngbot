@@ -6,7 +6,6 @@ import (
 	"net"
 	"net/url"
 	"os"
-	"slices"
 	"strings"
 	"time"
 
@@ -108,10 +107,8 @@ func validateConfig(cfg *Config) error {
 	if cfg.Telegram.RecoveryWindow <= cfg.Telegram.RequestTimeout {
 		return fmt.Errorf("telegram recovery window must be greater than request timeout")
 	}
-	if slices.Contains(cfg.EnabledHandlers, "reactor") {
-		if err := validateLLMConfig(cfg.LLM); err != nil {
-			return err
-		}
+	if err := validateLLMConfig(cfg.LLM); err != nil {
+		return err
 	}
 	if cfg.SpamControl.MessageProbationDuration <= 0 {
 		return fmt.Errorf("spam message probation duration must be positive")

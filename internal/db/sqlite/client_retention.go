@@ -43,7 +43,8 @@ func (c *sqliteClient) CleanupRetention(ctx context.Context, now time.Time, limi
 	defer func() { _ = tx.Rollback() }()
 
 	result := RetentionResult{}
-	result.ChallengedMessages, err = deleteRetentionBatch(ctx, tx, `
+	result.ChallengedMessages, err = deleteRetentionBatch(
+		ctx, tx, `
 		DELETE FROM chat_challenged_messages
 		WHERE (chat_id, message_id) IN (
 			SELECT challenged.chat_id, challenged.message_id

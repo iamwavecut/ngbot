@@ -367,14 +367,24 @@ func TestValidateConfigRequiresOnlySelectedProviderCredential(t *testing.T) {
 	}
 }
 
-func TestValidateConfigSkipsLLMWhenReactorIsDisabled(t *testing.T) {
+func TestValidateConfigRequiresLLMForMandatoryModeration(t *testing.T) {
 	t.Parallel()
 
 	cfg := validConfigForLLM()
 	cfg.EnabledHandlers = []string{"admin", "gatekeeper"}
 	cfg.LLM = LLM{}
-	if err := validateConfig(&cfg); err != nil {
-		t.Fatalf("unused LLM configuration blocked startup: %v", err)
+	if err := validateConfig(&cfg); err == nil {
+		t.Fatal("mandatory moderation accepted an empty LLM configuration")
+	}
+
+	cfg.LLM = LLM{
+		Type:           LLMProviderOpenAI,
+		OpenAIAPIKey:   "openai-key",
+		BaseURL:        "http://api.example.test/v1",
+		RequestTimeout: 45 * time.Second,
+	}
+	if err := validateConfig(&cfg); err == nil {
+		t.Fatal("mandatory moderation accepted a plaintext OpenAI endpoint")
 	}
 }
 

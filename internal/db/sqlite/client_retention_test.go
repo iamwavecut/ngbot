@@ -122,7 +122,8 @@ func TestCleanupRetentionPreservesChallengedBindingsNeededBySpamCases(t *testing
 	`, challengedAt, challengedAt, challengedAt, challengedAt, challengedAt, challengedAt); err != nil {
 		t.Fatalf("seed challenged messages: %v", err)
 	}
-	if _, err := client.db.ExecContext(ctx, `
+	if _, err := client.db.ExecContext(
+		ctx, `
 		INSERT INTO spam_cases (
 			id, chat_id, user_id, message_id, message_text, created_at,
 			pre_vote_restricted, status, resolved_at
