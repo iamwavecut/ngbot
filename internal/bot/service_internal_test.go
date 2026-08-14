@@ -355,13 +355,13 @@ func TestIsMemberDoesNotCachePositiveLookupAcrossDeleteMember(t *testing.T) {
 		var result any
 		switch r.URL.Path {
 		case "/botTEST/getMe":
-			result = map[string]any{"id": 1, "is_bot": true, "first_name": "test"}
+			result = map[string]any{"id": 1, testTelegramFieldIsBot: true, testTelegramFieldFirstName: "test"}
 		case "/botTEST/getChatMember":
-			result = map[string]any{"status": "member", "user": map[string]any{"id": userID, "is_bot": false, "first_name": "member"}}
+			result = map[string]any{"status": "member", "user": map[string]any{"id": userID, testTelegramFieldIsBot: false, testTelegramFieldFirstName: "member"}}
 		default:
 			t.Fatalf("unexpected Telegram path %q", r.URL.Path)
 		}
-		if err := json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": result}); err != nil {
+		if err := json.NewEncoder(w).Encode(map[string]any{"ok": true, testTelegramFieldResult: result}); err != nil {
 			t.Fatalf("encode Telegram response: %v", err)
 		}
 	}))

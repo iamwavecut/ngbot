@@ -24,10 +24,10 @@ func TestBanUserFromChatRevokesMessages(t *testing.T) {
 		switch method {
 		case "getMe":
 			result = map[string]any{
-				"id":         1,
-				"is_bot":     true,
-				"first_name": "Test",
-				"username":   "testbot",
+				"id":                       1,
+				testTelegramFieldIsBot:     true,
+				testTelegramFieldFirstName: "Test",
+				"username":                 "testbot",
 			}
 		case "banChatMember":
 			if err := r.ParseForm(); err != nil {
@@ -49,8 +49,8 @@ func TestBanUserFromChatRevokesMessages(t *testing.T) {
 
 		w.Header().Set("Content-Type", "application/json")
 		if err := json.NewEncoder(w).Encode(map[string]any{
-			"ok":     true,
-			"result": result,
+			"ok":                    true,
+			testTelegramFieldResult: result,
 		}); err != nil {
 			t.Fatalf("encode response: %v", err)
 		}
@@ -84,10 +84,10 @@ func TestUnrestrictChattingRestoresRestrictiveChatDefaults(t *testing.T) {
 		var result any = true
 		switch method {
 		case "getMe":
-			result = map[string]any{"id": 1, "is_bot": true, "first_name": "Test", "username": "testbot"}
+			result = map[string]any{"id": 1, testTelegramFieldIsBot: true, testTelegramFieldFirstName: "Test", "username": "testbot"}
 		case "getChat":
 			result = map[string]any{
-				"id": -100, "type": "supergroup",
+				"id": -100, "type": testChatTypeSupergroup,
 				"permissions": map[string]any{
 					"can_send_messages": true,
 					"can_send_photos":   false,
@@ -106,7 +106,7 @@ func TestUnrestrictChattingRestoresRestrictiveChatDefaults(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": result}); err != nil {
+		if err := json.NewEncoder(w).Encode(map[string]any{"ok": true, testTelegramFieldResult: result}); err != nil {
 			t.Fatalf("encode response: %v", err)
 		}
 	}))

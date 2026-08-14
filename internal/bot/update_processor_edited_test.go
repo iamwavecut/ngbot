@@ -33,7 +33,7 @@ func TestUpdateProcessorUsesEditDateForFreshness(t *testing.T) {
 				calls++
 				return true, nil
 			}))
-			chat := api.Chat{ID: -100, Type: "supergroup"}
+			chat := api.Chat{ID: -100, Type: testChatTypeSupergroup}
 			user := &api.User{ID: 200}
 			update := &api.Update{
 				UpdateID: 300,
@@ -88,7 +88,7 @@ func TestUpdateProcessorRoutesStaleIdentityAndSecurityUpdates(t *testing.T) {
 	t.Parallel()
 
 	stale := time.Now().Add(-UpdateTimeout - time.Minute).Unix()
-	chat := api.Chat{ID: -100, Type: "supergroup"}
+	chat := api.Chat{ID: -100, Type: testChatTypeSupergroup}
 	user := api.User{ID: 200}
 	tests := []struct {
 		name   string
@@ -129,7 +129,7 @@ func TestUpdateProcessorDoesNotUseCallbackMessageDateAsEventTime(t *testing.T) {
 	}))
 	update := &api.Update{UpdateID: 303, CallbackQuery: &api.CallbackQuery{
 		ID: "callback", From: &api.User{ID: 200},
-		Message: &api.Message{MessageID: 10, Date: time.Now().Add(-24 * time.Hour).Unix(), Chat: api.Chat{ID: -100, Type: "supergroup"}},
+		Message: &api.Message{MessageID: 10, Date: time.Now().Add(-24 * time.Hour).Unix(), Chat: api.Chat{ID: -100, Type: testChatTypeSupergroup}},
 	}}
 	if err := processor.Process(t.Context(), update); err != nil {
 		t.Fatalf("process callback: %v", err)
