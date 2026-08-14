@@ -487,8 +487,6 @@ func TestDurableUpdateDispatcherKeepsLeaseThroughBusyCompletion(t *testing.T) {
 }
 
 func TestDurableUpdateDispatcherKeepsLeaseThroughBusyFailureTransitions(t *testing.T) {
-	t.Parallel()
-
 	for _, test := range []struct {
 		name         string
 		finalStatus  string
@@ -498,8 +496,6 @@ func TestDurableUpdateDispatcherKeepsLeaseThroughBusyFailureTransitions(t *testi
 		{name: "dead_letter", finalStatus: db.TelegramUpdateStatusDeadLetter, handlerCalls: 1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-
 			base, err := sqlite.NewSQLiteClient(t.Context(), t.TempDir(), "test.db")
 			if err != nil {
 				t.Fatalf("open database: %v", err)
