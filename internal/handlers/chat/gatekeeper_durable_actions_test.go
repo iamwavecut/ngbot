@@ -39,8 +39,6 @@ type deadlineCapturingClient struct {
 	observed chan time.Duration
 }
 
-type contextTimeoutClient struct{}
-
 type transportErrorClient struct {
 	err error
 }
@@ -49,20 +47,15 @@ func (c transportErrorClient) Do(*http.Request) (*http.Response, error) {
 	return nil, c.err
 }
 
-func (contextTimeoutClient) Do(request *http.Request) (*http.Response, error) {
-	<-request.Context().Done()
-	return nil, request.Context().Err()
-}
-
-type methodTimeoutClient struct {
+type methodErrorClient struct {
 	base   api.HTTPClient
 	method string
+	err    error
 }
 
-func (c methodTimeoutClient) Do(request *http.Request) (*http.Response, error) {
+func (c methodErrorClient) Do(request *http.Request) (*http.Response, error) {
 	if strings.HasSuffix(request.URL.Path, "/"+c.method) {
-		<-request.Context().Done()
-		return nil, request.Context().Err()
+		return nil, c.err
 	}
 	return c.base.Do(request)
 }
@@ -749,7 +742,7 @@ func TestJoinQueryResponseTimeoutIsDurablyActionable(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = client.Close() })
 	botAPI := newTestBotAPI(t, func(string, *http.Request) any { return true })
-	botAPI.Client = contextTimeoutClient{}
+	botAPI.Client = methodErrorClient{base: botAPI.Client, method: testTelegramMethodJoinRequestQuery, err: context.DeadlineExceeded}
 	settings := webAppSettings()
 	settings.GatekeeperCaptchaEnabled = false
 	gatekeeper := &Gatekeeper{
@@ -765,9 +758,7 @@ func TestJoinQueryResponseTimeoutIsDurablyActionable(t *testing.T) {
 		UserChatID: 2006,
 		QueryID:    "timeout-query",
 	}
-	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
-	defer cancel()
-	_ = gatekeeper.handleChatJoinRequest(ctx, &api.Update{ChatJoinRequest: request}, settings)
+	_ = gatekeeper.handleChatJoinRequest(t.Context(), &api.Update{ChatJoinRequest: request}, settings)
 	records, err := client.GetChallengeReconciliations(t.Context())
 	if err != nil || len(records) != 1 || records[0].ActionStatus != db.ChallengeStatusBanCheckPending || records[0].ActionPhase != db.ChallengePhaseQueueResponseStarted {
 		t.Fatalf("timed-out first response is not operator-actionable: records=%#v err=%v", records, err)
@@ -794,14 +785,12 @@ func TestAmbiguousWebAppResponseWaitsForBanCheckAndNeverFallsBack(t *testing.T) 
 		}
 		return true
 	})
-	botAPI.Client = methodTimeoutClient{base: botAPI.Client, method: testTelegramMethodSendJoinWebApp}
+	botAPI.Client = methodErrorClient{base: botAPI.Client, method: testTelegramMethodSendJoinWebApp, err: context.DeadlineExceeded}
 	settings := webAppSettings()
 	gatekeeper := &Gatekeeper{bot: botAPI, s: &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI}, settings: settings}, store: client, config: &config.Config{GatekeeperWebApp: config.GatekeeperWebApp{PublicURL: testWebAppURL}}, banChecker: checker}
 	request := &api.ChatJoinRequest{Chat: api.Chat{ID: -2020}, From: api.User{ID: 3020}, UserChatID: 3020, QueryID: "query-secret"}
-	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
-	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- gatekeeper.handleChatJoinRequest(ctx, &api.Update{ChatJoinRequest: request}, settings) }()
+	go func() { done <- gatekeeper.handleChatJoinRequest(t.Context(), &api.Update{ChatJoinRequest: request}, settings) }()
 	select {
 	case <-checker.entered:
 	case <-time.After(time.Second):
