@@ -14,7 +14,7 @@ func TestExtractTextFromMessageIncludesRichMessageText(t *testing.T) {
 	const payload = `{
 		"message_id": 1,
 		"date": 1,
-		"chat": {"id": -100, "type": "supergroup"},
+		"chat": {"id": -100, "type": testChatTypeSupergroup},
 		"rich_message": {
 			"blocks": [
 				{"type": "heading", "text": "Special offer", "size": 2},

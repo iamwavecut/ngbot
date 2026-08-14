@@ -194,7 +194,7 @@ func messageUpdate(updateID int, chatID int64, messageID int) api.Update {
 		UpdateID: updateID,
 		Message: &api.Message{
 			MessageID: messageID,
-			Chat:      api.Chat{ID: chatID, Type: "supergroup"},
+			Chat:      api.Chat{ID: chatID, Type: testChatTypeSupergroup},
 			From:      &api.User{ID: int64(messageID)},
 			Date:      time.Now().Unix(),
 		},
