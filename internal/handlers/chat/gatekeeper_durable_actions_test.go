@@ -790,7 +790,9 @@ func TestAmbiguousWebAppResponseWaitsForBanCheckAndNeverFallsBack(t *testing.T) 
 	gatekeeper := &Gatekeeper{bot: botAPI, s: &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI}, settings: settings}, store: client, config: &config.Config{GatekeeperWebApp: config.GatekeeperWebApp{PublicURL: testWebAppURL}}, banChecker: checker}
 	request := &api.ChatJoinRequest{Chat: api.Chat{ID: -2020}, From: api.User{ID: 3020}, UserChatID: 3020, QueryID: "query-secret"}
 	done := make(chan error, 1)
-	go func() { done <- gatekeeper.handleChatJoinRequest(t.Context(), &api.Update{ChatJoinRequest: request}, settings) }()
+	go func() {
+		done <- gatekeeper.handleChatJoinRequest(t.Context(), &api.Update{ChatJoinRequest: request}, settings)
+	}()
 	select {
 	case <-checker.entered:
 	case <-time.After(time.Second):
