@@ -546,8 +546,6 @@ func TestDurableUpdateDispatcherKeepsLeaseThroughBusyFailureTransitions(t *testi
 }
 
 func TestDurableUpdateDispatcherHeartbeatsLongRunningHandler(t *testing.T) {
-	t.Parallel()
-
 	store, err := sqlite.NewSQLiteClient(t.Context(), t.TempDir(), "test.db")
 	if err != nil {
 		t.Fatalf("open database: %v", err)
@@ -564,7 +562,7 @@ func TestDurableUpdateDispatcherHeartbeatsLongRunningHandler(t *testing.T) {
 		return nil
 	}, nil, DurableUpdateDispatcherOptions{
 		MaxWorkers: 2, PendingBudget: 2, MaxAttempts: 2,
-		ProcessingTimeout: 30 * time.Millisecond, RecoveryInterval: 5 * time.Millisecond,
+		ProcessingTimeout: 500 * time.Millisecond, RecoveryInterval: 20 * time.Millisecond,
 		SchedulerBackoff: time.Millisecond,
 	}, nil)
 	if err := dispatcher.Start(t.Context()); err != nil {
@@ -580,7 +578,7 @@ func TestDurableUpdateDispatcherHeartbeatsLongRunningHandler(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("handler did not start")
 	}
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(1100 * time.Millisecond)
 	close(release)
 	waitForConditionTimeout(t, time.Second, func() bool {
 		record, found, recordErr := store.TelegramUpdate(t.Context(), update.UpdateID)
