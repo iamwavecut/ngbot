@@ -570,7 +570,7 @@ func TestVoteBanCommandAllowlistedTargetBypassesBanlistShortcut(t *testing.T) {
 	})
 	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
 	actor := &api.User{ID: 100, FirstName: testFirstNameActor}
-	target := &api.User{ID: 200, FirstName: testFirstNameTarget, UserName: "allowlisted"}
+	target := &api.User{ID: 200, FirstName: testFirstNameTarget, UserName: testAllowlistedUser}
 	reply := &api.Message{MessageID: 40, Chat: *chat, From: target, Text: "reported text"}
 	command := &api.Message{MessageID: 50, Chat: *chat, From: actor, Text: testVoteBanCommand, ReplyToMessage: reply}
 	detector := &testSpamDetector{reportedResult: boolPtr(false)}
@@ -626,7 +626,7 @@ func TestMessageMentionCurrentBotTriggersReportFlow(t *testing.T) {
 		From:            actor,
 		Text:            "@testbot",
 		Entities: []api.MessageEntity{{
-			Type:   "mention",
+			Type:   testEntityMention,
 			Offset: 0,
 			Length: len("@testbot"),
 		}},
@@ -669,7 +669,7 @@ func TestMessageMentionsCurrentBot(t *testing.T) {
 	msg := &api.Message{
 		Text: "hi @testbot",
 		Entities: []api.MessageEntity{{
-			Type:   "mention",
+			Type:   testEntityMention,
 			Offset: 3,
 			Length: len("@testbot"),
 		}},

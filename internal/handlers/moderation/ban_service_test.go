@@ -196,7 +196,7 @@ func TestCheckBanPublishesOnlinePositiveBeforeBlockedPersistence(t *testing.T) {
 		knownBanned: map[int64]struct{}{},
 		providers: []banlistProvider{
 			{
-				name: "positive",
+				name: moderationTestBanlistProviderPositive,
 				check: func(context.Context, *http.Client, int64) (bool, error) {
 					return true, nil
 				},
@@ -225,7 +225,7 @@ func TestCheckBanPublishesOnlinePositiveBeforeBlockedPersistence(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("online persistence worker did not receive observation")
 	}
-	if store.hasSource(banlistSourceKey{provider: "positive", feedType: banlistFeedOnline}, 789) {
+	if store.hasSource(banlistSourceKey{provider: moderationTestBanlistProviderPositive, feedType: banlistFeedOnline}, 789) {
 		t.Fatal("blocked persistence unexpectedly completed")
 	}
 	store.releasePersistence()
@@ -234,7 +234,7 @@ func TestCheckBanPublishesOnlinePositiveBeforeBlockedPersistence(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("online persistence did not complete after writer was released")
 	}
-	if !store.hasSource(banlistSourceKey{provider: "positive", feedType: banlistFeedOnline}, 789) {
+	if !store.hasSource(banlistSourceKey{provider: moderationTestBanlistProviderPositive, feedType: banlistFeedOnline}, 789) {
 		t.Fatal("online positive was not persisted by lifecycle worker")
 	}
 }

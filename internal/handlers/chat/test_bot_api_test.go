@@ -25,9 +25,11 @@ const (
 	testCorrectChoice      = "correct-choice"
 	testCaptchaOptionsJSON = `[{"id":"correct-choice","symbol":"A"},{"id":"wrong-choice","symbol":"B"}]`
 	testJoinRequestDecline = "decline"
+	testJoinRequestQuery   = "query"
 	testWebAppFormChoice   = "choice"
 	testWebAppFormInitData = "init_data"
 	testEntityBotCommand   = "bot_command"
+	testEntityMention      = "mention"
 	testVoteBanCommand     = "/voteban"
 	testJSONIsBot          = "is_bot"
 	testJSONFirstName      = "first_name"
@@ -39,6 +41,7 @@ const (
 	testChatTypeSupergroup = "supergroup"
 	testMemberStatusLeft   = "left"
 	testGroupUsername      = "waveclub"
+	testGenericGroupTitle  = "Group"
 	testJoinQueryID        = "join-query"
 	testExpiredChallengeID = "uuid-expired"
 	testToken              = "tok"
@@ -50,8 +53,16 @@ const (
 	testWrongChoice        = "wrong-choice"
 	testWebAppFormToken    = "token"
 	testMessageText        = "hello there"
+	testSpamMessageText    = "spam"
+	testSafeFirstMessage   = "safe first message"
+	testCandidateValue     = "candidate"
+	testAllowlistedUser    = "allowlisted"
 	testCaptchaBook        = "book"
 	testCaptchaCar         = "car"
+	testJSONLinkedChatID   = "linked_chat_id"
+	testFirstNameForwarder = "Forwarder"
+	testFirstNameVoter     = "Voter"
+	testRichBlockParagraph = "paragraph"
 )
 
 type testBotAPIError struct {

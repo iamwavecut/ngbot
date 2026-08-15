@@ -134,7 +134,7 @@ func TestChallengeMarkerFailureDoesNotRememberAuthor(t *testing.T) {
 	}
 	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
 	user := &api.User{ID: 200, FirstName: testFirstNameUser}
-	message := &api.Message{MessageID: 301, Chat: *chat, From: user, Text: "safe first message"}
+	message := &api.Message{MessageID: 301, Chat: *chat, From: user, Text: testSafeFirstMessage}
 
 	err := reactor.handleMessage(t.Context(), message, chat, user, &db.Settings{LLMFirstMessageEnabled: true})
 	if err == nil || !strings.Contains(err.Error(), "record challenged message") {
@@ -294,7 +294,7 @@ func TestMessageCapabilityLookupFailureReturnsRetryableFailure(t *testing.T) {
 	}
 	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
 	user := &api.User{ID: 200}
-	err := reactor.handleMessage(t.Context(), &api.Message{MessageID: 1, Chat: *chat, From: user, Text: "candidate"}, chat, user, &db.Settings{LLMFirstMessageEnabled: true})
+	err := reactor.handleMessage(t.Context(), &api.Message{MessageID: 1, Chat: *chat, From: user, Text: testCandidateValue}, chat, user, &db.Settings{LLMFirstMessageEnabled: true})
 	failure := botservice.ClassifyUpdateFailure(err)
 	if failure.Source != botservice.UpdateFailureCapability || failure.Disposition != botservice.UpdateFailureRetryable {
 		t.Fatalf("capability failure = %#v", failure)
@@ -310,7 +310,7 @@ func TestSenderChatCapabilityLookupFailureReturnsRetryableFailure(t *testing.T) 
 		lastResults: make(map[messageResultKey]*MessageProcessingResult),
 	}
 	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
-	message := &api.Message{MessageID: 2, Chat: *chat, SenderChat: &api.Chat{ID: -200, Type: testChatTypeChannel}, Text: "candidate"}
+	message := &api.Message{MessageID: 2, Chat: *chat, SenderChat: &api.Chat{ID: -200, Type: testChatTypeChannel}, Text: testCandidateValue}
 	err := reactor.handleSenderChatContent(t.Context(), message, chat, &MessageProcessingResult{}, reactor.getLogEntry())
 	failure := botservice.ClassifyUpdateFailure(err)
 	if failure.Source != botservice.UpdateFailureCapability || failure.Disposition != botservice.UpdateFailureRetryable {
@@ -328,7 +328,7 @@ func TestSenderChatMalformedClassificationReturnsRetryableFailure(t *testing.T) 
 		lastResults:  make(map[messageResultKey]*MessageProcessingResult),
 	}
 	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
-	message := &api.Message{MessageID: 3, Chat: *chat, SenderChat: &api.Chat{ID: -200, Type: testChatTypeChannel}, Text: "candidate"}
+	message := &api.Message{MessageID: 3, Chat: *chat, SenderChat: &api.Chat{ID: -200, Type: testChatTypeChannel}, Text: testCandidateValue}
 	err := reactor.handleSenderChatContent(t.Context(), message, chat, &MessageProcessingResult{}, reactor.getLogEntry())
 	failure := botservice.ClassifyUpdateFailure(err)
 	if failure.Source != botservice.UpdateFailureLLM || failure.Disposition != botservice.UpdateFailureRetryable {
@@ -359,7 +359,7 @@ func TestDetectedSpamActionFailurePropagates(t *testing.T) {
 	}
 	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
 	user := &api.User{ID: 200}
-	message := &api.Message{MessageID: 4, Chat: *chat, From: user, Text: "spam"}
+	message := &api.Message{MessageID: 4, Chat: *chat, From: user, Text: testSpamMessageText}
 	err := reactor.handleMessage(t.Context(), message, chat, user, &db.Settings{LLMFirstMessageEnabled: true, CommunityVotingEnabled: true})
 	if !errors.Is(err, actionErr) {
 		t.Fatalf("action error = %v, want %v", err, actionErr)
@@ -374,7 +374,7 @@ func TestModerationRouterForwardsExhaustedLLMDegradation(t *testing.T) {
 	router := NewModerationRouter(nil, reactor)
 	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
 	user := &api.User{ID: 200}
-	update := &api.Update{Message: &api.Message{MessageID: 5, Chat: *chat, From: user, Text: "candidate"}}
+	update := &api.Update{Message: &api.Message{MessageID: 5, Chat: *chat, From: user, Text: testCandidateValue}}
 	failure := botservice.ClassifyUpdateFailure(botservice.NewRetryableUpdateFailure(botservice.UpdateFailureLLM, "provider", errors.New("unavailable")))
 	if err := router.HandleExhaustedUpdateFailure(t.Context(), update, chat, user, failure); err != nil {
 		t.Fatalf("degrade through router: %v", err)
@@ -401,7 +401,7 @@ func TestExhaustedLLMFailureQuarantinesOnlyWithKnownRights(t *testing.T) {
 			reactor := &Reactor{banService: banService}
 			chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
 			user := &api.User{ID: 200}
-			update := &api.Update{UpdateID: 1, Message: &api.Message{MessageID: 2, Chat: *chat, From: user, Text: "candidate"}}
+			update := &api.Update{UpdateID: 1, Message: &api.Message{MessageID: 2, Chat: *chat, From: user, Text: testCandidateValue}}
 			failure := botservice.ClassifyUpdateFailure(botservice.NewRetryableUpdateFailure(botservice.UpdateFailureLLM, "provider_error", errors.New("unavailable")))
 			if err := reactor.HandleExhaustedUpdateFailure(t.Context(), update, chat, user, failure); err != nil {
 				t.Fatalf("degrade exhausted LLM failure: %v", err)
@@ -533,8 +533,8 @@ func TestUntrustedSenderChatSpamIsDeletedAndSenderChatBanned(t *testing.T) {
 	botAPI := newTestBotAPI(t, func(method string, _ *http.Request) any {
 		methods = append(methods, method)
 		switch method {
-		case "getChat":
-			return map[string]any{"id": -100, testJSONType: testChatTypeSupergroup, "linked_chat_id": -999}
+		case testTelegramMethodGetChat:
+			return map[string]any{"id": -100, testJSONType: testChatTypeSupergroup, testJSONLinkedChatID: -999}
 		case testTelegramMethodDeleteMessage, "banChatSenderChat":
 			return true
 		default:
@@ -582,8 +582,8 @@ func TestSenderChatIsAuthoritativeWithFromOnNewAndEditedMessages(t *testing.T) {
 	botAPI := newTestBotAPI(t, func(method string, _ *http.Request) any {
 		methods = append(methods, method)
 		switch method {
-		case "getChat":
-			return map[string]any{"id": -100, testJSONType: testChatTypeSupergroup, "linked_chat_id": -999}
+		case testTelegramMethodGetChat:
+			return map[string]any{"id": -100, testJSONType: testChatTypeSupergroup, testJSONLinkedChatID: -999}
 		case testTelegramMethodDeleteMessage, testTelegramMethodBanChatSenderChat:
 			return true
 		default:
@@ -601,12 +601,12 @@ func TestSenderChatIsAuthoritativeWithFromOnNewAndEditedMessages(t *testing.T) {
 		lastResults:  make(map[messageResultKey]*MessageProcessingResult),
 	}
 	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
-	from := &api.User{ID: 200, FirstName: "Forwarder"}
+	from := &api.User{ID: 200, FirstName: testFirstNameForwarder}
 	senderChat := &api.Chat{ID: -200, Type: testChatTypeChannel, Title: "Untrusted"}
 	settings := &db.Settings{LLMFirstMessageEnabled: true, CommunityVotingEnabled: true}
 
 	for _, edited := range []bool{false, true} {
-		message := &api.Message{MessageID: 600 + detector.calls, Chat: *chat, From: from, SenderChat: senderChat, Text: "spam"}
+		message := &api.Message{MessageID: 600 + detector.calls, Chat: *chat, From: from, SenderChat: senderChat, Text: testSpamMessageText}
 		var err error
 		if edited {
 			err = reactor.handleEditedMessage(t.Context(), message, chat, from, settings)
@@ -641,7 +641,7 @@ func TestAnonymousAdminSenderChatWithFromRemainsTrustedOnNewAndEdit(t *testing.T
 		banService: &testBanService{}, lastResults: make(map[messageResultKey]*MessageProcessingResult),
 	}
 	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
-	from := &api.User{ID: 200, FirstName: "Forwarder"}
+	from := &api.User{ID: 200, FirstName: testFirstNameForwarder}
 	message := &api.Message{MessageID: 620, Chat: *chat, From: from, SenderChat: chat, Text: "admin post"}
 	settings := &db.Settings{LLMFirstMessageEnabled: true}
 	if err := reactor.handleMessage(t.Context(), message, chat, from, settings); err != nil {
@@ -783,7 +783,7 @@ func TestFirstMessageDeletionEvasionKeepsSecondMessageUnderChallenge(t *testing.
 		lastResults: make(map[messageResultKey]*MessageProcessingResult),
 	}
 
-	first := &api.Message{MessageID: 300, Chat: *chat, From: user, Text: "safe first message"}
+	first := &api.Message{MessageID: 300, Chat: *chat, From: user, Text: testSafeFirstMessage}
 	if err := reactor.handleMessage(t.Context(), first, chat, user, settings); err != nil {
 		t.Fatalf("handle safe first message: %v", err)
 	}
@@ -843,7 +843,7 @@ func TestEditedChallengedMessageIsRechecked(t *testing.T) {
 		Chat:      *chat,
 		From:      user,
 		Date:      now.Unix(),
-		Text:      "safe first message",
+		Text:      testSafeFirstMessage,
 	}
 
 	proceed, err := reactor.Handle(t.Context(), &api.Update{Message: message}, chat, user)
@@ -939,7 +939,7 @@ func TestSpamVoteCallbackUsesSpamCaseChatSettings(t *testing.T) {
 		case "getChatMember":
 			return map[string]any{
 				logFieldStatus: telegramMemberStatus,
-				logFieldUser:   map[string]any{"id": 300, testJSONIsBot: false, testJSONFirstName: "Voter"},
+				logFieldUser:   map[string]any{"id": 300, testJSONIsBot: false, testJSONFirstName: testFirstNameVoter},
 			}
 		case "answerCallbackQuery":
 			callbackAnswers++
@@ -976,12 +976,12 @@ func TestSpamVoteCallbackUsesSpamCaseChatSettings(t *testing.T) {
 	spamCase, err := dbClient.CreateSpamCase(ctx, &db.SpamCase{
 		ChatID:                -100,
 		UserID:                200,
-		MessageText:           "spam",
+		MessageText:           testSpamMessageText,
 		CreatedAt:             time.Now(),
 		ChannelUsername:       "log_channel",
 		ChannelPostID:         400,
 		NotificationMessageID: 0,
-		Status:                "pending",
+		Status:                db.SpamCaseStatusPending,
 	})
 	if err != nil {
 		t.Fatalf("create spam case: %v", err)
@@ -997,7 +997,7 @@ func TestSpamVoteCallbackUsesSpamCaseChatSettings(t *testing.T) {
 	reactor := NewReactor(service, botAPI, dbClient, dbClient, &testBanService{}, spamControl, nil, Config{})
 
 	logChat := &api.Chat{ID: 900, Type: testChatTypeChannel}
-	voter := &api.User{ID: 300, FirstName: "Voter"}
+	voter := &api.User{ID: 300, FirstName: testFirstNameVoter}
 	update := &api.Update{
 		CallbackQuery: &api.CallbackQuery{
 			ID:   "callback-id",
@@ -1099,7 +1099,7 @@ func TestSpamVoteHandlerChainConsumesBanlistPrecheck(t *testing.T) {
 				t.Fatalf("set settings: %v", err)
 			}
 			spamCase, err := dbClient.CreateSpamCase(ctx, &db.SpamCase{
-				ChatID: tt.targetChatID, UserID: 200, MessageID: 40, MessageText: "spam", CreatedAt: time.Now(), Status: db.SpamCaseStatusPending,
+				ChatID: tt.targetChatID, UserID: 200, MessageID: 40, MessageText: testSpamMessageText, CreatedAt: time.Now(), Status: db.SpamCaseStatusPending,
 			})
 			if err != nil {
 				t.Fatalf("create spam case: %v", err)
@@ -1114,7 +1114,7 @@ func TestSpamVoteHandlerChainConsumesBanlistPrecheck(t *testing.T) {
 			router := NewModerationRouter(NewBanlistGuard(botAPI, dbClient, banService), reactor, features)
 			processor := botservice.NewUpdateProcessor(service, router, features)
 			logChat := api.Chat{ID: tt.logChatID, Type: testChatTypeChannel}
-			voter := api.User{ID: 300, UserName: "voter_name", FirstName: "Voter"}
+			voter := api.User{ID: 300, UserName: "voter_name", FirstName: testFirstNameVoter}
 			update := &api.Update{CallbackQuery: &api.CallbackQuery{
 				ID: "callback-id", From: &voter, Data: "spam_vote:" + strconv.FormatInt(spamCase.ID, 10) + ":1",
 				Message: &api.Message{MessageID: 400, Chat: logChat},
@@ -1518,10 +1518,10 @@ func TestHandleMessageLinkedChannelSenderBypassesSpamPipeline(t *testing.T) {
 				t.Fatalf("expected linked group lookup, got chat_id %q", got)
 			}
 			return map[string]any{
-				"id":             -100,
-				testJSONType:     testChatTypeSupergroup,
-				testJSONTitle:    "Discussion",
-				"linked_chat_id": -200,
+				"id":                 -100,
+				testJSONType:         testChatTypeSupergroup,
+				testJSONTitle:        "Discussion",
+				testJSONLinkedChatID: -200,
 			}
 		default:
 			t.Fatalf("unexpected bot method: %s", method)
@@ -1554,7 +1554,7 @@ func TestHandleMessageLinkedChannelSenderBypassesSpamPipeline(t *testing.T) {
 	msg := &api.Message{
 		MessageID: 15,
 		Chat:      *chat,
-		From:      &api.User{ID: 200, FirstName: "Forwarder"},
+		From:      &api.User{ID: 200, FirstName: testFirstNameForwarder},
 		SenderChat: &api.Chat{
 			ID:    -200,
 			Type:  testChatTypeChannel,
@@ -1610,7 +1610,7 @@ func TestHandleMessageSenderChatLookupFailureIsRetryable(t *testing.T) {
 		banService: &testBanService{}, lastResults: make(map[messageResultKey]*MessageProcessingResult),
 	}
 	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
-	message := &api.Message{MessageID: 16, Chat: *chat, SenderChat: &api.Chat{ID: -200, Type: testChatTypeChannel}, Text: "candidate"}
+	message := &api.Message{MessageID: 16, Chat: *chat, SenderChat: &api.Chat{ID: -200, Type: testChatTypeChannel}, Text: testCandidateValue}
 	_, err := reactor.Handle(t.Context(), &api.Update{Message: message}, chat, nil)
 	failure := botservice.ClassifyUpdateFailure(err)
 	if failure.Disposition != botservice.UpdateFailureRetryable || failure.Source != botservice.UpdateFailureTelegram {

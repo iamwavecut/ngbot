@@ -1,6 +1,6 @@
 module github.com/iamwavecut/ngbot
 
-go 1.25.12
+go 1.25.13
 
 require (
 	github.com/OvyFlash/telegram-bot-api v0.0.0-20260715235732-aca8bf3898bb

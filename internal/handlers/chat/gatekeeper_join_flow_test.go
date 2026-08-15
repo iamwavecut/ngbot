@@ -634,7 +634,7 @@ func TestDisabledGatekeeperCleanChatMemberOnlyChecksBanlist(t *testing.T) {
 	t.Parallel()
 
 	user := api.User{ID: 200, FirstName: testFirstNameUser}
-	chat := api.Chat{ID: -100, Type: testChatTypeSupergroup, Title: "Group"}
+	chat := api.Chat{ID: -100, Type: testChatTypeSupergroup, Title: testGenericGroupTitle}
 	banChecker := &testGatekeeperBanChecker{}
 	gatekeeper := &Gatekeeper{
 		s:          &gatekeeperTestService{testBotService: testBotService{language: "en"}, settings: &db.Settings{GatekeeperEnabled: false}},
@@ -659,7 +659,7 @@ func TestDisabledGatekeeperBannedChatMemberStillBans(t *testing.T) {
 	t.Parallel()
 
 	user := api.User{ID: 200, FirstName: testFirstNameUser}
-	chat := api.Chat{ID: -100, Type: testChatTypeSupergroup, Title: "Group"}
+	chat := api.Chat{ID: -100, Type: testChatTypeSupergroup, Title: testGenericGroupTitle}
 	banChecker := &testGatekeeperBanChecker{banned: true}
 	gatekeeper := &Gatekeeper{
 		s:          &gatekeeperTestService{testBotService: testBotService{language: "en"}, settings: &db.Settings{GatekeeperEnabled: false}},
@@ -684,7 +684,7 @@ func TestChatMemberKnownBannedBanFailurePropagatesTypedOutcome(t *testing.T) {
 	t.Parallel()
 
 	user := api.User{ID: 200, FirstName: testFirstNameUser}
-	chat := api.Chat{ID: -100, Type: testChatTypeSupergroup, Title: "Group"}
+	chat := api.Chat{ID: -100, Type: testChatTypeSupergroup, Title: testGenericGroupTitle}
 	for _, test := range []struct {
 		name            string
 		banErr          error
@@ -726,7 +726,7 @@ func TestDisabledGatekeeperAllowlistedBannedChatMemberSkipsBan(t *testing.T) {
 	t.Parallel()
 
 	user := api.User{ID: 200, FirstName: testFirstNameUser}
-	chat := api.Chat{ID: -100, Type: testChatTypeSupergroup, Title: "Group"}
+	chat := api.Chat{ID: -100, Type: testChatTypeSupergroup, Title: testGenericGroupTitle}
 	store := newGatekeeperFlowStore()
 	store.isNotSpammer = true
 	banChecker := &testGatekeeperBanChecker{banned: true}
@@ -1242,7 +1242,7 @@ func TestJoinRequestCaptchaSuccessHandoffSkipsSecondCaptchaAndSendsGreetingOnce(
 				testJSONType:      telegramChatTypePrivate,
 				testJSONFirstName: testFirstNameNeo,
 			}
-		case "approveChatJoinRequest":
+		case testTelegramMethodApproveJoinRequest:
 			handoffChallenge := store.onlyChallenge(t)
 			if handoffChallenge.Status != db.ChallengeStatusApproveMemberPending {
 				t.Fatalf("expected durable approval claim before Telegram effect, got %q", handoffChallenge.Status)
@@ -1346,8 +1346,8 @@ func TestJoinRequestCaptchaSuccessHandoffSkipsSecondCaptchaAndSendsGreetingOnce(
 	if len(store.challenges) != 0 {
 		t.Fatalf("expected handoff challenge to be deleted after member join, got %d rows", len(store.challenges))
 	}
-	if len(recorder.byMethod("approveChatJoinRequest")) != 1 {
-		t.Fatalf("expected one join request approval, got %d", len(recorder.byMethod("approveChatJoinRequest")))
+	if len(recorder.byMethod(testTelegramMethodApproveJoinRequest)) != 1 {
+		t.Fatalf("expected one join request approval, got %d", len(recorder.byMethod(testTelegramMethodApproveJoinRequest)))
 	}
 	if len(recorder.byMethod(testTelegramMethodDeleteMessage)) != 1 {
 		t.Fatalf("expected one DM challenge cleanup, got %d", len(recorder.byMethod(testTelegramMethodDeleteMessage)))
@@ -1391,7 +1391,7 @@ func TestJoinRequestCaptchaSuccessHandoffSkipsPublicCaptchaWithoutViaJoinRequest
 				testJSONType:      telegramChatTypePrivate,
 				testJSONFirstName: testFirstNameNeo,
 			}
-		case "approveChatJoinRequest":
+		case testTelegramMethodApproveJoinRequest:
 			return true
 		case testTelegramMethodSendMessage:
 			return recorder.nextSendMessageResult()
@@ -1464,7 +1464,7 @@ func TestManualJoinRequestApprovalSkipsPublicCaptchaAndSendsOnlyGreeting(t *test
 		recorder.record(t, method, r)
 
 		switch method {
-		case "getChat":
+		case testTelegramMethodGetChat:
 			return map[string]any{"id": groupChat.ID, testJSONType: testChatTypeSupergroup, "permissions": map[string]any{"can_send_messages": true}}
 		case testTelegramMethodSendMessage:
 			return recorder.nextSendMessageResult()
@@ -1542,7 +1542,7 @@ func TestDirectJoinCaptchaIncludesGreetingImmediatelyAndBackfillsJoinMessageID(t
 		recorder.record(t, method, r)
 
 		switch method {
-		case "getChat":
+		case testTelegramMethodGetChat:
 			return map[string]any{"id": groupChat.ID, testJSONType: testChatTypeSupergroup, "permissions": map[string]any{"can_send_messages": true}}
 		case testTelegramMethodSendMessage:
 			return recorder.nextSendMessageResult()
@@ -1933,8 +1933,8 @@ func TestProcessExpiredJoinRequestChallengesCleanupWithoutApproval(t *testing.T)
 			if len(recorder.byMethod(testTelegramMethodDeleteMessage)) != 1 {
 				t.Fatalf("expected one DM challenge cleanup, got %d", len(recorder.byMethod(testTelegramMethodDeleteMessage)))
 			}
-			if len(recorder.byMethod("approveChatJoinRequest")) != 0 {
-				t.Fatalf("expected no join request approvals, got %d", len(recorder.byMethod("approveChatJoinRequest")))
+			if len(recorder.byMethod(testTelegramMethodApproveJoinRequest)) != 0 {
+				t.Fatalf("expected no join request approvals, got %d", len(recorder.byMethod(testTelegramMethodApproveJoinRequest)))
 			}
 			if len(recorder.byMethod("declineChatJoinRequest")) != 0 {
 				t.Fatalf("expected no join request declines, got %d", len(recorder.byMethod("declineChatJoinRequest")))
@@ -2172,8 +2172,8 @@ func TestProcessExpiredJoinRequestDMFallbackChallengeRejects(t *testing.T) {
 			}
 		case testTelegramMethodGetChatMember:
 			return map[string]any{
-				"status": testMemberStatusLeft,
-				"user": map[string]any{
+				logFieldStatus: testMemberStatusLeft,
+				logFieldUser: map[string]any{
 					"id":              42,
 					testJSONIsBot:     false,
 					testJSONFirstName: testFirstNameNeo,
@@ -2587,8 +2587,8 @@ func TestFallbackClaimedWebAppChallengeRetriesWhenTargetChatUnavailable(t *testi
 			}
 		case testTelegramMethodGetChatMember:
 			return map[string]any{
-				"status": testMemberStatusLeft,
-				"user":   map[string]any{"id": 42, testJSONIsBot: false, testJSONFirstName: testFirstNameNeo},
+				logFieldStatus: testMemberStatusLeft,
+				logFieldUser:   map[string]any{"id": 42, testJSONIsBot: false, testJSONFirstName: testFirstNameNeo},
 			}
 		case testTelegramMethodJoinRequestQuery, testTelegramMethodBanChatMember:
 			return true
@@ -2664,8 +2664,8 @@ func TestDMFallbackForbiddenDeclinesWithoutDurableRetry(t *testing.T) {
 			return &testBotAPIError{code: http.StatusForbidden, description: "Forbidden: bot can't initiate conversation with a user"}
 		case testTelegramMethodGetChatMember:
 			return map[string]any{
-				"status": testMemberStatusLeft,
-				"user":   map[string]any{"id": 42, testJSONIsBot: false, testJSONFirstName: testFirstNameNeo},
+				logFieldStatus: testMemberStatusLeft,
+				logFieldUser:   map[string]any{"id": 42, testJSONIsBot: false, testJSONFirstName: testFirstNameNeo},
 			}
 		case testTelegramMethodJoinRequestQuery, testTelegramMethodBanChatMember:
 			return true

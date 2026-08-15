@@ -66,17 +66,17 @@ func TestMuteUserPersistsCapturedPermissionsBeforeTelegram(t *testing.T) {
 	var restrictions []api.ChatPermissions
 	botAPI := newModerationTestBotAPI(t, func(method string, r *http.Request) any {
 		switch method {
-		case "getChatMember":
+		case moderationTestTelegramMethodGetChatMember:
 			return map[string]any{
-				"user":   map[string]any{"id": 200, "is_bot": false, "first_name": "User"},
-				"status": "member",
+				moderationTestJSONUser:   map[string]any{"id": 200, moderationTestJSONIsBot: false, moderationTestJSONFirstName: moderationTestFirstNameUser},
+				moderationTestJSONStatus: moderationTestMemberStatusMember,
 			}
-		case "getChat":
+		case moderationTestTelegramMethodGetChat:
 			return map[string]any{
-				"id": -100, "type": "supergroup",
-				"permissions": map[string]any{"can_send_messages": true, "can_send_photos": true},
+				"id": -100, moderationTestJSONType: moderationTestSupergroup,
+				moderationTestJSONPermissions: map[string]any{moderationTestJSONPermissionCanSendMessages: true, "can_send_photos": true},
 			}
-		case "restrictChatMember":
+		case moderationTestTelegramMethodRestrictChatMember:
 			if err := r.ParseForm(); err != nil {
 				t.Fatalf("parse form: %v", err)
 			}
@@ -128,7 +128,7 @@ func TestUnmuteUserRestoresCapturedRestrictivePermissions(t *testing.T) {
 
 	var permissions api.ChatPermissions
 	botAPI := newModerationTestBotAPI(t, func(method string, r *http.Request) any {
-		if method != "restrictChatMember" {
+		if method != moderationTestTelegramMethodRestrictChatMember {
 			t.Fatalf("unexpected bot method: %s", method)
 		}
 		if err := r.ParseForm(); err != nil {
@@ -186,11 +186,11 @@ func TestMuteUserUsesVotingDeadlineAndSnapshotSurvivesExpiry(t *testing.T) {
 	var untilDate int64
 	botAPI := newModerationTestBotAPI(t, func(method string, r *http.Request) any {
 		switch method {
-		case "getChatMember":
-			return map[string]any{"user": map[string]any{"id": 200, "is_bot": false, "first_name": "User"}, "status": "member"}
-		case "getChat":
-			return map[string]any{"id": -100, "type": "supergroup", "permissions": map[string]any{"can_send_messages": true, "can_send_photos": false}}
-		case "restrictChatMember":
+		case moderationTestTelegramMethodGetChatMember:
+			return map[string]any{moderationTestJSONUser: map[string]any{"id": 200, moderationTestJSONIsBot: false, moderationTestJSONFirstName: moderationTestFirstNameUser}, moderationTestJSONStatus: moderationTestMemberStatusMember}
+		case moderationTestTelegramMethodGetChat:
+			return map[string]any{"id": -100, moderationTestJSONType: moderationTestSupergroup, moderationTestJSONPermissions: map[string]any{moderationTestJSONPermissionCanSendMessages: true, "can_send_photos": false}}
+		case moderationTestTelegramMethodRestrictChatMember:
 			if err := r.ParseForm(); err != nil {
 				t.Fatal(err)
 			}
@@ -249,18 +249,18 @@ func TestModerationAvailabilityCachesRightsAndExplicitFailureWins(t *testing.T) 
 
 	getChatMemberCalls := 0
 	botAPI := newModerationTestBotAPI(t, func(method string, _ *http.Request) any {
-		if method != "getChatMember" {
+		if method != moderationTestTelegramMethodGetChatMember {
 			t.Fatalf("unexpected bot method: %s", method)
 		}
 		getChatMemberCalls++
 		return map[string]any{
-			"user": map[string]any{
-				"id":         1,
-				"is_bot":     true,
-				"first_name": "Test",
+			moderationTestJSONUser: map[string]any{
+				"id":                        1,
+				moderationTestJSONIsBot:     true,
+				moderationTestJSONFirstName: moderationTestFirstNameBot,
 			},
-			"status":               "administrator",
-			"can_restrict_members": true,
+			moderationTestJSONStatus: "administrator",
+			"can_restrict_members":   true,
 		}
 	})
 
@@ -290,16 +290,16 @@ func TestMutePrivilegeFailureImmediatelyDisablesModeration(t *testing.T) {
 
 	botAPI := newModerationRetryTestBotAPI(t, func(method string, _ *http.Request) testAPIResponse {
 		switch method {
-		case "getChatMember":
+		case moderationTestTelegramMethodGetChatMember:
 			return testAPIResponse{OK: true, Result: map[string]any{
-				"user":   map[string]any{"id": 200, "is_bot": false, "first_name": "User"},
-				"status": "member",
+				moderationTestJSONUser:   map[string]any{"id": 200, moderationTestJSONIsBot: false, moderationTestJSONFirstName: moderationTestFirstNameUser},
+				moderationTestJSONStatus: moderationTestMemberStatusMember,
 			}}
-		case "getChat":
+		case moderationTestTelegramMethodGetChat:
 			return testAPIResponse{OK: true, Result: map[string]any{
-				"id": -100, "type": "supergroup", "permissions": map[string]any{"can_send_messages": true},
+				"id": -100, moderationTestJSONType: moderationTestSupergroup, moderationTestJSONPermissions: map[string]any{moderationTestJSONPermissionCanSendMessages: true},
 			}}
-		case "restrictChatMember":
+		case moderationTestTelegramMethodRestrictChatMember:
 			return testAPIResponse{OK: false, Description: "Bad Request: CHAT_ADMIN_REQUIRED"}
 		default:
 			t.Fatalf("unexpected bot method: %s", method)

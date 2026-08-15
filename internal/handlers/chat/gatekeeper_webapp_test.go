@@ -518,7 +518,7 @@ func TestCaptchaRevalidationDoesNotCallProviderWithoutModerationRights(t *testin
 	checker := &testGatekeeperBanChecker{moderationUnavailable: true, banned: true}
 	gatekeeper := &Gatekeeper{store: newGatekeeperFlowStore(), banChecker: checker}
 	challenge := newWebAppChallenge(time.Now().Add(time.Minute))
-	banned, err := gatekeeper.revalidateChallengeIdentity(t.Context(), challenge, "candidate")
+	banned, err := gatekeeper.revalidateChallengeIdentity(t.Context(), challenge, testCandidateValue)
 	if err != nil || banned {
 		t.Fatalf("revalidate no-rights = banned %t err %v", banned, err)
 	}
@@ -533,7 +533,7 @@ func TestCaptchaRevalidationCachedBanIsTerminalWithoutModerationRights(t *testin
 	challenge := newWebAppChallenge(time.Now().Add(time.Minute))
 	checker := &testGatekeeperBanChecker{moderationUnavailable: true, knownBanned: map[int64]bool{challenge.UserID: true}}
 	gatekeeper := &Gatekeeper{store: newGatekeeperFlowStore(), banChecker: checker}
-	banned, err := gatekeeper.revalidateChallengeIdentity(t.Context(), challenge, "candidate")
+	banned, err := gatekeeper.revalidateChallengeIdentity(t.Context(), challenge, testCandidateValue)
 	if err != nil || !banned {
 		t.Fatalf("revalidate cached ban = banned %t err %v", banned, err)
 	}
@@ -666,7 +666,7 @@ func TestHandleJoinCaptchaAnswerReportsProcessingAfterLostApprovalResponse(t *te
 	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if response["done"] != true || response["state"] != "processing" {
+	if response["done"] != true || response["state"] != joinCaptchaStateProcessing {
 		t.Fatalf("expected processing replay response, got %#v", response)
 	}
 }
@@ -1338,8 +1338,8 @@ func TestJoinCaptchaAnswerBlocksAfterTooManyWrongChoices(t *testing.T) {
 		switch method {
 		case testTelegramMethodGetChatMember:
 			return map[string]any{
-				"status": testMemberStatusLeft,
-				"user":   map[string]any{"id": 42, testJSONIsBot: false, testJSONFirstName: testFirstNameNeo},
+				logFieldStatus: testMemberStatusLeft,
+				logFieldUser:   map[string]any{"id": 42, testJSONIsBot: false, testJSONFirstName: testFirstNameNeo},
 			}
 		case testTelegramMethodJoinRequestQuery, testTelegramMethodBanChatMember:
 			return true
@@ -1404,8 +1404,8 @@ func TestJoinCaptchaAnswerReportsExpiredChallengeWithoutPunishment(t *testing.T)
 		switch method {
 		case testTelegramMethodGetChatMember:
 			return map[string]any{
-				"status": testMemberStatusLeft,
-				"user":   map[string]any{"id": 42, testJSONIsBot: false, testJSONFirstName: testFirstNameNeo},
+				logFieldStatus: testMemberStatusLeft,
+				logFieldUser:   map[string]any{"id": 42, testJSONIsBot: false, testJSONFirstName: testFirstNameNeo},
 			}
 		case testTelegramMethodJoinRequestQuery, testTelegramMethodBanChatMember:
 			return true
@@ -1448,7 +1448,7 @@ func TestJoinCaptchaAnswerReportsExpiredChallengeWithoutPunishment(t *testing.T)
 	if body["ok"] != false || body["done"] != true {
 		t.Fatalf("expected terminal expired response, got %#v", body)
 	}
-	if body["state"] != "expired" {
+	if body["state"] != joinCaptchaStateExpired {
 		t.Fatalf("expected expired state, got %#v", body)
 	}
 	if len(recorder.requests) != 0 {
@@ -1654,11 +1654,11 @@ func TestJoinCaptchaStatusReportsDurableStatesWithoutRepeatingActions(t *testing
 		wantState  string
 		wantOK     bool
 	}{
-		{name: "pending", status: db.ChallengeStatusPending, expiresAt: time.Now().Add(time.Minute), wantStatus: http.StatusOK, wantState: "pending"},
-		{name: "approval in progress", status: db.ChallengeStatusApproveQueryPending, expiresAt: time.Now().Add(time.Minute), wantStatus: http.StatusAccepted, wantState: "processing", wantOK: true},
+		{name: joinCaptchaStatePending, status: db.ChallengeStatusPending, expiresAt: time.Now().Add(time.Minute), wantStatus: http.StatusOK, wantState: joinCaptchaStatePending},
+		{name: "approval in progress", status: db.ChallengeStatusApproveQueryPending, expiresAt: time.Now().Add(time.Minute), wantStatus: http.StatusAccepted, wantState: joinCaptchaStateProcessing, wantOK: true},
 		{name: "passed", status: db.ChallengeStatusPassedWaitingMemberJoin, expiresAt: time.Now().Add(time.Minute), wantStatus: http.StatusOK, wantState: "passed", wantOK: true},
 		{name: "rejected", status: db.ChallengeStatusRejectPending, expiresAt: time.Now().Add(time.Minute), wantStatus: http.StatusForbidden, wantState: "rejected"},
-		{name: "expired", status: db.ChallengeStatusPending, expiresAt: time.Now().Add(-time.Minute), wantStatus: http.StatusGone, wantState: "expired"},
+		{name: joinCaptchaStateExpired, status: db.ChallengeStatusPending, expiresAt: time.Now().Add(-time.Minute), wantStatus: http.StatusGone, wantState: joinCaptchaStateExpired},
 	}
 
 	for _, tt := range tests {
@@ -1746,7 +1746,7 @@ func TestHandleJoinCaptchaAnswerPersistsApprovalRetryWhenApproveFails(t *testing
 	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if body["done"] != true || body["state"] != "processing" {
+	if body["done"] != true || body["state"] != joinCaptchaStateProcessing {
 		t.Fatalf("expected durable processing response, got %#v", body)
 	}
 	if len(store.challenges) != 0 {
@@ -1763,8 +1763,8 @@ func TestHandleJoinCaptchaAnswerDeclinesKnownBannedUser(t *testing.T) {
 		switch method {
 		case testTelegramMethodGetChatMember:
 			return map[string]any{
-				"status": testMemberStatusLeft,
-				"user":   map[string]any{"id": 42, testJSONIsBot: false, testJSONFirstName: testFirstNameNeo},
+				logFieldStatus: testMemberStatusLeft,
+				logFieldUser:   map[string]any{"id": 42, testJSONIsBot: false, testJSONFirstName: testFirstNameNeo},
 			}
 		case testTelegramMethodJoinRequestQuery, testTelegramMethodBanChatMember:
 			return true

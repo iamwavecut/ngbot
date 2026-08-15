@@ -52,8 +52,8 @@ func TestTelegramUpdateInboxAdmissionBoundsPendingRowsAndBytes(t *testing.T) {
 	})
 
 	for _, update := range []*db.TelegramUpdate{
-		{UpdateID: 1, DispatchKey: "chat:1", Payload: []byte("1234"), ReceivedAt: time.Now()},
-		{UpdateID: 2, DispatchKey: "chat:1", Payload: []byte("5678"), ReceivedAt: time.Now()},
+		{UpdateID: 1, DispatchKey: testDispatchKeyChatOne, Payload: []byte("1234"), ReceivedAt: time.Now()},
+		{UpdateID: 2, DispatchKey: testDispatchKeyChatOne, Payload: []byte("5678"), ReceivedAt: time.Now()},
 	} {
 		inserted, enqueueErr := client.EnqueueTelegramUpdate(t.Context(), update)
 		if enqueueErr != nil || !inserted {
@@ -62,7 +62,7 @@ func TestTelegramUpdateInboxAdmissionBoundsPendingRowsAndBytes(t *testing.T) {
 	}
 
 	inserted, err := client.EnqueueTelegramUpdate(t.Context(), &db.TelegramUpdate{
-		UpdateID: 3, DispatchKey: "chat:1", Payload: []byte("security"), SecurityRelevant: true, ReceivedAt: time.Now(),
+		UpdateID: 3, DispatchKey: testDispatchKeyChatOne, Payload: []byte("security"), SecurityRelevant: true, ReceivedAt: time.Now(),
 	})
 	if inserted || !errors.Is(err, db.ErrTelegramUpdateInboxCapacity) {
 		t.Fatalf("per-key overload = inserted=%t err=%v, want capacity backpressure", inserted, err)
@@ -137,7 +137,7 @@ func TestTelegramUpdateInboxDeduplicatesAndPreservesOriginalPayload(t *testing.T
 	receivedAt := time.Date(2026, time.August, 13, 12, 0, 0, 0, time.UTC)
 	inserted, err := client.EnqueueTelegramUpdate(t.Context(), &db.TelegramUpdate{
 		UpdateID:         100,
-		DispatchKey:      "chat:-10",
+		DispatchKey:      testDispatchKeyChatMinus10,
 		Payload:          []byte(`{"update_id":100,"message":{"text":"first"}}`),
 		SecurityRelevant: true,
 		ReceivedAt:       receivedAt,
@@ -162,7 +162,7 @@ func TestTelegramUpdateInboxDeduplicatesAndPreservesOriginalPayload(t *testing.T
 	if len(updates) != 1 {
 		t.Fatalf("runnable update count = %d, want 1", len(updates))
 	}
-	if updates[0].DispatchKey != "chat:-10" || !bytes.Contains(updates[0].Payload, []byte(`"first"`)) || !updates[0].SecurityRelevant {
+	if updates[0].DispatchKey != testDispatchKeyChatMinus10 || !bytes.Contains(updates[0].Payload, []byte(`"first"`)) || !updates[0].SecurityRelevant {
 		t.Fatalf("duplicate changed original update: %#v", updates[0])
 	}
 }
@@ -180,7 +180,7 @@ func TestTelegramUpdateInboxBlocksLaterChatUpdateThroughRetry(t *testing.T) {
 	for _, updateID := range []int{10, 11} {
 		inserted, enqueueErr := client.EnqueueTelegramUpdate(t.Context(), &db.TelegramUpdate{
 			UpdateID:    updateID,
-			DispatchKey: "chat:-10",
+			DispatchKey: testDispatchKeyChatMinus10,
 			Payload:     []byte(`{"update_id":10}`),
 			ReceivedAt:  now,
 		})

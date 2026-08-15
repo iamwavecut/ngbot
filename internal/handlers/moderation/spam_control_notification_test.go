@@ -216,7 +216,7 @@ func TestVotingSurfaceFallbackPrecedesDestructiveModeration(t *testing.T) {
 				MessageID: 40,
 				Chat:      api.Chat{ID: -100, Type: moderationTestSupergroup},
 				From:      &api.User{ID: 200, FirstName: moderationTestTargetName},
-				Text:      "candidate",
+				Text:      moderationTestCandidateText,
 			}
 
 			_, err := sc.ProcessSpamMessage(context.Background(), msg, &msg.Chat, "en")
@@ -274,7 +274,7 @@ func TestVotingPermissionFailureClosesCaseWithoutDeletingOriginalMessage(t *test
 		MessageID: 40,
 		Chat:      api.Chat{ID: -100, Type: moderationTestSupergroup},
 		From:      &api.User{ID: 200, FirstName: moderationTestTargetName},
-		Text:      "candidate",
+		Text:      moderationTestCandidateText,
 	}
 
 	result, err := sc.ProcessSpamMessage(context.Background(), msg, &msg.Chat, "en")
@@ -421,7 +421,7 @@ func TestVotingSurfacePersistenceFailureCompensatesBeforeModeration(t *testing.T
 		MessageID: 40,
 		Chat:      api.Chat{ID: -100, Type: moderationTestSupergroup},
 		From:      &api.User{ID: 200, FirstName: moderationTestTargetName},
-		Text:      "candidate",
+		Text:      moderationTestCandidateText,
 	}
 
 	if _, err := sc.ProcessSpamMessage(context.Background(), msg, &msg.Chat, "en"); err == nil {
@@ -457,7 +457,7 @@ func newModerationRetryTestBotAPI(t *testing.T, handler func(method string, r *h
 			response.Result = map[string]any{
 				"id":                        1,
 				moderationTestJSONIsBot:     true,
-				moderationTestJSONFirstName: "Test",
+				moderationTestJSONFirstName: moderationTestFirstNameBot,
 				"username":                  "testbot",
 			}
 		default:

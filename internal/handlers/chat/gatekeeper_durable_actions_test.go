@@ -138,7 +138,7 @@ func TestPublicChallengePersistsRestrictionActionBeforeTelegram(t *testing.T) {
 		store:      client,
 		config:     &config.Config{},
 		banChecker: &testGatekeeperBanChecker{},
-		Variants:   map[string]map[string]string{"en": {"A": "apple", "B": "paper", "C": "vehicle"}},
+		Variants:   map[string]map[string]string{"en": {"A": captchaFallbackWord, "B": "paper", "C": "vehicle"}},
 	}
 	chat := api.Chat{ID: settings.ID, Title: testGroupTitle, Type: testChatTypeSupergroup}
 	user := api.User{ID: 2001, FirstName: testFirstNameUser}
@@ -251,7 +251,7 @@ func TestTransientFallbackGetChatFailureRetriesWithoutDecline(t *testing.T) {
 		ChatID:             -1003,
 		Status:             db.ChallengeStatusWebAppFallbackPending,
 		WebAppToken:        "token",
-		JoinRequestQueryID: "query",
+		JoinRequestQueryID: testJoinRequestQuery,
 		CreatedAt:          now,
 		ExpiresAt:          now.Add(time.Minute),
 		NextAttemptAt:      sql.NullTime{Time: now, Valid: true},
@@ -396,7 +396,7 @@ func TestTerminalMemberApprovalErrorCompletesLeasedAction(t *testing.T) {
 	t.Cleanup(func() { _ = client.Close() })
 	botAPI := newTestBotAPI(t, func(method string, _ *http.Request) any {
 		switch method {
-		case "approveChatJoinRequest":
+		case testTelegramMethodApproveJoinRequest:
 			return &testBotAPIError{code: http.StatusBadRequest, description: "USER_ALREADY_PARTICIPANT"}
 		default:
 			return true
@@ -527,7 +527,7 @@ func TestLegacyQueuedJoinRequestTransitionsProtectedBoundaryToDMCaptcha(t *testi
 		}
 	})
 	settings := webAppSettings()
-	gatekeeper := &Gatekeeper{bot: botAPI, s: &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI}, settings: settings}, store: client, config: &config.Config{}, banChecker: &testGatekeeperBanChecker{}, Variants: map[string]map[string]string{"en": {"A": "apple", "B": testCaptchaBook, "C": testCaptchaCar}}}
+	gatekeeper := &Gatekeeper{bot: botAPI, s: &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI}, settings: settings}, store: client, config: &config.Config{}, banChecker: &testGatekeeperBanChecker{}, Variants: map[string]map[string]string{"en": {"A": captchaFallbackWord, "B": testCaptchaBook, "C": testCaptchaCar}}}
 	request := &api.ChatJoinRequest{Chat: api.Chat{ID: -7001, Title: testGroupTitle}, From: api.User{ID: 7001, FirstName: "N", LanguageCode: "en"}, UserChatID: 7001, QueryID: "legacy-query"}
 	if err := gatekeeper.handleChatJoinRequest(t.Context(), &api.Update{ChatJoinRequest: request}, settings); err != nil {
 		t.Fatal(err)
@@ -724,7 +724,7 @@ func TestLegacyJoinTransportLogsNeverExposeSecretURL(t *testing.T) {
 			var output bytes.Buffer
 			logger := log.New()
 			logger.SetOutput(&output)
-			gatekeeper := &Gatekeeper{bot: botAPI, s: &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI}, settings: settings}, store: store, config: &config.Config{}, banChecker: &testGatekeeperBanChecker{moderationUnavailable: true}, logger: log.NewEntry(logger), Variants: map[string]map[string]string{"en": {"A": "apple", "B": testCaptchaBook, "C": testCaptchaCar}}}
+			gatekeeper := &Gatekeeper{bot: botAPI, s: &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI}, settings: settings}, store: store, config: &config.Config{}, banChecker: &testGatekeeperBanChecker{moderationUnavailable: true}, logger: log.NewEntry(logger), Variants: map[string]map[string]string{"en": {"A": captchaFallbackWord, "B": testCaptchaBook, "C": testCaptchaCar}}}
 			_ = test.run(gatekeeper, settings)
 			if strings.Contains(output.String(), "SECRET") || strings.Contains(output.String(), "api.telegram.org") || strings.Contains(output.String(), "query-secret") {
 				t.Fatalf("transport secret leaked in log: %s", output.String())
@@ -836,7 +836,7 @@ func TestAcceptedChallengeMessageBindFailureMovesToReconciliation(t *testing.T) 
 		bot:   botAPI,
 		s:     &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI, language: "en"}, settings: settings},
 		store: store, config: &config.Config{}, banChecker: &testGatekeeperBanChecker{},
-		Variants: map[string]map[string]string{"en": {"A": "apple", "B": "paper", "C": "vehicle"}},
+		Variants: map[string]map[string]string{"en": {"A": captchaFallbackWord, "B": "paper", "C": "vehicle"}},
 	}
 	chat := &api.Chat{ID: settings.ID, Title: testGroupTitle, Type: testChatTypeSupergroup}
 	user := &api.User{ID: 3001, FirstName: testFirstNameUser}
@@ -867,7 +867,7 @@ func TestWebAppCannotApproveWhileProviderBanCheckIsBlocked(t *testing.T) {
 		s:     &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI}, settings: settings},
 		store: client, config: &config.Config{GatekeeperWebApp: config.GatekeeperWebApp{PublicURL: testWebAppURL}}, banChecker: checker,
 	}
-	request := &api.ChatJoinRequest{Chat: api.Chat{ID: -2002}, From: api.User{ID: 3002}, UserChatID: 3002, QueryID: "query"}
+	request := &api.ChatJoinRequest{Chat: api.Chat{ID: -2002}, From: api.User{ID: 3002}, UserChatID: 3002, QueryID: testJoinRequestQuery}
 	done := make(chan error, 1)
 	go func() {
 		done <- gatekeeper.handleChatJoinRequest(t.Context(), &api.Update{ChatJoinRequest: request}, settings)
@@ -908,7 +908,7 @@ func TestPendingRequesterMissingDuringBanIsNotTreatedAsBanned(t *testing.T) {
 	botAPI := newTestBotAPI(t, func(method string, _ *http.Request) any {
 		switch method {
 		case testTelegramMethodGetChatMember:
-			return map[string]any{"status": "left", "user": map[string]any{"id": 3003, "is_bot": false, "first_name": "N"}}
+			return map[string]any{logFieldStatus: testMemberStatusLeft, logFieldUser: map[string]any{"id": 3003, "is_bot": false, "first_name": "N"}}
 		case testTelegramMethodBanChatMember:
 			return &testBotAPIError{code: http.StatusBadRequest, description: "USER_NOT_PARTICIPANT"}
 		case testTelegramMethodDeclineJoinRequest:
@@ -968,7 +968,7 @@ func TestKnownBannedCleanupCannotDeleteBlockedLeasedActions(t *testing.T) {
 				case testTelegramMethodGetChat:
 					return map[string]any{"id": test.commID, testJSONType: telegramChatTypePrivate, testJSONFirstName: "N"}
 				case testTelegramMethodGetChatMember:
-					return map[string]any{"status": "left", "user": map[string]any{"id": test.commID, "is_bot": false, "first_name": "N"}}
+					return map[string]any{logFieldStatus: testMemberStatusLeft, logFieldUser: map[string]any{"id": test.commID, "is_bot": false, "first_name": "N"}}
 				case testTelegramMethodDeclineJoinRequest, testTelegramMethodDeleteMessage:
 					return true
 				default:
@@ -978,11 +978,11 @@ func TestKnownBannedCleanupCannotDeleteBlockedLeasedActions(t *testing.T) {
 			now := time.Now()
 			challenge := &db.Challenge{CommChatID: test.commID, UserID: test.commID, ChatID: -test.commID, Status: test.status, CreatedAt: now, ExpiresAt: now.Add(time.Minute), NextAttemptAt: sql.NullTime{Time: now, Valid: true}}
 			if test.status == db.ChallengeStatusApproveQueryPending {
-				challenge.JoinRequestQueryID = "query"
+				challenge.JoinRequestQueryID = testJoinRequestQuery
 			}
 			if test.status == db.ChallengeStatusWebAppFallbackPending {
 				challenge.WebAppToken = "token"
-				challenge.JoinRequestQueryID = "query"
+				challenge.JoinRequestQueryID = testJoinRequestQuery
 			}
 			if _, err := client.CreateChallenge(t.Context(), challenge); err != nil {
 				t.Fatal(err)

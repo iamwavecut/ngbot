@@ -302,13 +302,13 @@ func TestRecordVoteRejectsDepartedVoterEvenWhenMembershipCacheSaysMember(t *test
 	t.Parallel()
 
 	botAPI := newModerationTestBotAPI(t, func(method string, _ *http.Request) any {
-		if method != "getChatMember" {
+		if method != moderationTestTelegramMethodGetChatMember {
 			t.Fatalf("unexpected method %q", method)
 		}
 		return map[string]any{
-			"user":      map[string]any{"id": 300, "is_bot": false, "first_name": "Voter"},
-			"status":    "left",
-			"is_member": false,
+			moderationTestJSONUser:   map[string]any{"id": 300, moderationTestJSONIsBot: false, moderationTestJSONFirstName: "Voter"},
+			moderationTestJSONStatus: "left",
+			"is_member":              false,
 		}
 	})
 	spamCase := &db.SpamCase{ID: 1, ChatID: -100, UserID: 200, Status: db.SpamCaseStatusPending}
@@ -330,13 +330,13 @@ func TestRecordVoteRejectsFreshlyBanlistedVoter(t *testing.T) {
 	t.Parallel()
 
 	botAPI := newModerationTestBotAPI(t, func(method string, _ *http.Request) any {
-		if method != "getChatMember" {
+		if method != moderationTestTelegramMethodGetChatMember {
 			t.Fatalf("unexpected method %q", method)
 		}
 		return map[string]any{
-			"user":      map[string]any{"id": 300, "is_bot": false, "first_name": "Voter"},
-			"status":    "member",
-			"is_member": true,
+			moderationTestJSONUser:   map[string]any{"id": 300, moderationTestJSONIsBot: false, moderationTestJSONFirstName: "Voter"},
+			moderationTestJSONStatus: moderationTestMemberStatusMember,
+			"is_member":              true,
 		}
 	})
 	spamCase := &db.SpamCase{ID: 1, ChatID: -100, UserID: 200, Status: db.SpamCaseStatusPending}
@@ -508,7 +508,7 @@ func newModerationTestBotAPI(t *testing.T, handler func(method string, r *http.R
 			result = map[string]any{
 				"id":                        1,
 				moderationTestJSONIsBot:     true,
-				moderationTestJSONFirstName: "Test",
+				moderationTestJSONFirstName: moderationTestFirstNameBot,
 				"username":                  "testbot",
 			}
 		default:
@@ -981,10 +981,10 @@ func TestRecordVoteRejectsLogChannelOutsider(t *testing.T) {
 
 	botAPI := newModerationTestBotAPI(t, func(method string, _ *http.Request) any {
 		switch method {
-		case "getChatMember":
+		case moderationTestTelegramMethodGetChatMember:
 			return map[string]any{
-				"status":               "left",
-				moderationTestJSONUser: map[string]any{"id": 300, moderationTestJSONIsBot: false, moderationTestJSONFirstName: "Outsider"},
+				moderationTestJSONStatus: "left",
+				moderationTestJSONUser:   map[string]any{"id": 300, moderationTestJSONIsBot: false, moderationTestJSONFirstName: "Outsider"},
 			}
 		default:
 			t.Fatalf("unexpected bot method: %s", method)
