@@ -229,7 +229,7 @@ func TestBanlistGuardAllowsManuallyAllowlistedUser(t *testing.T) {
 	banService := &testBanService{knownBanned: true}
 	guard := NewBanlistGuard(botAPI, &testNotSpammerStore{isNotSpammer: true}, banService)
 	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
-	user := &api.User{ID: 200, UserName: "allowlisted"}
+	user := &api.User{ID: 200, UserName: testAllowlistedUser}
 	message := &api.Message{MessageID: 42, Chat: *chat, From: user, Text: "/settings"}
 
 	proceed, err := guard.Handle(context.Background(), &api.Update{Message: message}, chat, user)
@@ -257,7 +257,7 @@ func TestBanlistGuardAllowlistLookupFailureContinuesBan(t *testing.T) {
 	store := &testNotSpammerStore{notSpammerErr: errors.New("database unavailable")}
 	guard := NewBanlistGuard(botAPI, store, banService)
 	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
-	user := &api.User{ID: 200, UserName: "candidate"}
+	user := &api.User{ID: 200, UserName: testCandidateValue}
 	message := &api.Message{MessageID: 42, Chat: *chat, From: user, Text: "message"}
 
 	proceed, err := guard.Handle(context.Background(), &api.Update{Message: message}, chat, user)

@@ -217,7 +217,7 @@ func TestCreateCaptchaButtonsSupportsSmallVariantSet(t *testing.T) {
 	gk := &Gatekeeper{
 		Variants: map[string]map[string]string{
 			"en": {
-				"🍎": "apple",
+				"🍎": captchaFallbackWord,
 				"🐶": "dog",
 				"🚗": "car",
 				"🌟": "star",

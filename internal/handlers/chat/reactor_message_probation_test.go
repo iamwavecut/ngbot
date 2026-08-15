@@ -64,7 +64,7 @@ func TestMessageProbationSafeExitRejectsDuplicateAndStaysPerChat(t *testing.T) {
 	otherChat := &api.Chat{ID: -101, Type: testChatTypeSupergroup}
 	user := &api.User{ID: 200, FirstName: testFirstNameUser}
 	settings := &db.Settings{LLMFirstMessageEnabled: true, CommunityVotingEnabled: true}
-	first := &api.Message{MessageID: 1, Chat: *chat, From: user, Text: "safe first message"}
+	first := &api.Message{MessageID: 1, Chat: *chat, From: user, Text: testSafeFirstMessage}
 
 	if err := reactor.handleMessage(t.Context(), first, chat, user, settings); err != nil {
 		t.Fatalf("handle first message: %v", err)
@@ -246,7 +246,7 @@ func TestMessageProbationChecksRichMessagePostsAndEdits(t *testing.T) {
 		Chat:      *chat,
 		From:      user,
 		RichMessage: &api.RichMessage{Blocks: []api.RichBlock{
-			api.RichBlockParagraph{Type: "paragraph", Text: "safe rich post"},
+			api.RichBlockParagraph{Type: testRichBlockParagraph, Text: "safe rich post"},
 		}},
 	}
 	if _, err := reactor.Handle(t.Context(), &api.Update{Message: post}, chat, user); err != nil {
@@ -258,7 +258,7 @@ func TestMessageProbationChecksRichMessagePostsAndEdits(t *testing.T) {
 	edit := *post
 	edit.EditDate = now.Unix()
 	edit.RichMessage = &api.RichMessage{Blocks: []api.RichBlock{
-		api.RichBlockParagraph{Type: "paragraph", Text: "spam rich edit"},
+		api.RichBlockParagraph{Type: testRichBlockParagraph, Text: "spam rich edit"},
 	}}
 	if _, err := reactor.Handle(t.Context(), &api.Update{EditedMessage: &edit}, chat, user); err != nil {
 		t.Fatalf("handle rich edit: %v", err)
@@ -272,7 +272,7 @@ func TestMessageProbationChecksRichMessagePostsAndEdits(t *testing.T) {
 	release := *post
 	release.MessageID = 2
 	release.RichMessage = &api.RichMessage{Blocks: []api.RichBlock{
-		api.RichBlockParagraph{Type: "paragraph", Text: "safe rich release"},
+		api.RichBlockParagraph{Type: testRichBlockParagraph, Text: "safe rich release"},
 	}}
 	if _, err := reactor.Handle(t.Context(), &api.Update{Message: &release}, chat, user); err != nil {
 		t.Fatalf("handle rich release: %v", err)
@@ -314,7 +314,7 @@ func TestCommandsAndMentionsStartProbationWithoutClassification(t *testing.T) {
 		Chat:      *chat,
 		From:      mentionUser,
 		Text:      "@ngbot",
-		Entities:  []api.MessageEntity{{Type: "mention", Offset: 0, Length: 6}},
+		Entities:  []api.MessageEntity{{Type: testEntityMention, Offset: 0, Length: 6}},
 	}
 	if _, err := reactor.Handle(t.Context(), &api.Update{Message: mention}, chat, mentionUser); err != nil {
 		t.Fatalf("handle mention: %v", err)

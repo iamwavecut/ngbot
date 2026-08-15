@@ -39,7 +39,7 @@ func TestReactionProfilePolicyFailureReturnsRetryableFailure(t *testing.T) {
 func TestReactionMalformedClassificationReturnsRetryableFailure(t *testing.T) {
 	t.Parallel()
 
-	actorChat := &api.Chat{ID: -100999, Type: testChatTypeChannel, Title: "candidate"}
+	actorChat := &api.Chat{ID: -100999, Type: testChatTypeChannel, Title: testCandidateValue}
 	botAPI := newTestBotAPI(t, func(method string, _ *http.Request) any {
 		if method != testTelegramMethodGetChat {
 			t.Fatalf("unexpected bot method: %s", method)
@@ -447,7 +447,7 @@ func TestHandleMessageReactionAllowlistedUserBypassesBanlist(t *testing.T) {
 		banService:   banService,
 	}
 	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
-	user := &api.User{ID: 200, UserName: "allowlisted"}
+	user := &api.User{ID: 200, UserName: testAllowlistedUser}
 	reaction := &api.MessageReactionUpdated{Chat: *chat, MessageID: 42, User: user}
 
 	if err := reactor.moderateReactionUser(context.Background(), reaction, chat, user, reactor.getLogEntry()); err != nil {
