@@ -50,6 +50,7 @@ const (
 	testWrongChoice        = "wrong-choice"
 	testWebAppFormToken    = "token"
 	testMessageText        = "hello there"
+	testSpamMessageText    = "spam"
 	testCaptchaBook        = "book"
 	testCaptchaCar         = "car"
 )

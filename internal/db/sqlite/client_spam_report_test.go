@@ -25,7 +25,7 @@ func TestSetSpamCasePreVoteRestrictedOnlyUpdatesPendingCase(t *testing.T) {
 		ChatID:            -100,
 		UserID:            200,
 		MessageID:         40,
-		MessageText:       "candidate",
+		MessageText:       testCandidateMessage,
 		CreatedAt:         now,
 		ResolveAt:         &resolveAt,
 		Status:            db.SpamCaseStatusPending,
@@ -192,7 +192,7 @@ func TestSpamVoteAndTimeoutRaceHasOneResolutionAndOneStat(t *testing.T) {
 		ChatID:      -100,
 		UserID:      200,
 		MessageID:   40,
-		MessageText: "candidate",
+		MessageText: testCandidateMessage,
 		CreatedAt:   now,
 		ResolveAt:   &resolveAt,
 		Status:      db.SpamCaseStatusPending,
@@ -296,7 +296,7 @@ func TestSpamResolutionAndReportQueueSurviveReopen(t *testing.T) {
 	spamCase, err := client.CreateSpamCase(ctx, &db.SpamCase{
 		ChatID:      -100,
 		UserID:      200,
-		MessageText: "candidate",
+		MessageText: testCandidateMessage,
 		CreatedAt:   now,
 		ResolveAt:   &resolveAt,
 		Status:      db.SpamCaseStatusPending,
@@ -539,7 +539,7 @@ func TestAddRestrictionRefreshesPersistedState(t *testing.T) {
 		UserID:       userID,
 		RestrictedAt: now,
 		ExpiresAt:    now.Add(time.Hour),
-		Reason:       "first",
+		Reason:       testFirstValue,
 	}
 	if err := client.AddRestriction(ctx, first); err != nil {
 		t.Fatalf("add first restriction: %v", err)

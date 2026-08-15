@@ -133,7 +133,7 @@ func TestBanlistGuardNoRightsStopsWithoutTelegramRetry(t *testing.T) {
 	guard := NewBanlistGuard(botAPI, &testNotSpammerStore{}, banService)
 	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
 	user := &api.User{ID: 200}
-	message := &api.Message{MessageID: 42, Chat: *chat, From: user, Text: "spam"}
+	message := &api.Message{MessageID: 42, Chat: *chat, From: user, Text: testSpamMessageText}
 
 	proceed, err := guard.Handle(context.Background(), &api.Update{Message: message}, chat, user)
 	if err != nil {
@@ -154,7 +154,7 @@ func TestBanlistGuardCapabilityUnknownReturnsRetryableFailure(t *testing.T) {
 	guard := NewBanlistGuard(&api.BotAPI{}, &testNotSpammerStore{}, banService)
 	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
 	user := &api.User{ID: 200}
-	message := &api.Message{MessageID: 42, Chat: *chat, From: user, Text: "spam"}
+	message := &api.Message{MessageID: 42, Chat: *chat, From: user, Text: testSpamMessageText}
 
 	proceed, err := guard.Handle(t.Context(), &api.Update{Message: message}, chat, user)
 	if proceed {
@@ -289,7 +289,7 @@ func TestBanlistGuardDoesNotRepeatAmbiguousBanAfterCrash(t *testing.T) {
 	guard := NewBanlistGuard(botAPI, store, banService)
 	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
 	user := &api.User{ID: 200}
-	message := &api.Message{MessageID: 42, Chat: *chat, From: user, Text: "spam"}
+	message := &api.Message{MessageID: 42, Chat: *chat, From: user, Text: testSpamMessageText}
 	update := &api.Update{UpdateID: 900, Message: message}
 
 	if _, err := guard.Handle(t.Context(), update, chat, user); err == nil {

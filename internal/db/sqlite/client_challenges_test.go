@@ -29,7 +29,7 @@ func TestChallengeGenerationRejectsStaleOperations(t *testing.T) {
 		UserID:      2,
 		ChatID:      3,
 		Status:      db.ChallengeStatusPending,
-		SuccessUUID: "first",
+		SuccessUUID: testFirstValue,
 		CreatedAt:   now,
 		ExpiresAt:   now.Add(time.Minute),
 	}
@@ -623,7 +623,7 @@ func TestBanCheckBoundaryCannotBeOverwritten(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = client.Close() })
 	now := time.Now()
-	first := &db.Challenge{CommChatID: 11, UserID: 12, ChatID: -13, Status: db.ChallengeStatusBanCheckPending, JoinRequestQueryID: "first", CreatedAt: now, ExpiresAt: now.Add(time.Minute)}
+	first := &db.Challenge{CommChatID: 11, UserID: 12, ChatID: -13, Status: db.ChallengeStatusBanCheckPending, JoinRequestQueryID: testFirstValue, CreatedAt: now, ExpiresAt: now.Add(time.Minute)}
 	if _, err := client.CreateChallenge(t.Context(), first); err != nil {
 		t.Fatal(err)
 	}
@@ -632,7 +632,7 @@ func TestBanCheckBoundaryCannotBeOverwritten(t *testing.T) {
 		t.Fatalf("duplicate boundary overwrite error=%v", err)
 	}
 	stored, err := client.GetChallengeByChatUser(t.Context(), first.ChatID, first.UserID)
-	if err != nil || stored == nil || stored.JoinRequestQueryID != "first" {
+	if err != nil || stored == nil || stored.JoinRequestQueryID != testFirstValue {
 		t.Fatalf("boundary overwritten: %#v err=%v", stored, err)
 	}
 }

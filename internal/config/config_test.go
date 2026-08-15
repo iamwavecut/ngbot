@@ -6,10 +6,16 @@ import (
 	"time"
 )
 
+const (
+	testGatekeeperHandler = "gatekeeper"
+	testGeminiAPIKey      = "gemini-key"
+	testOpenAIAPIKey      = "openai-key"
+)
+
 func TestLoadUsesProviderSpecificCredential(t *testing.T) {
 	t.Setenv("NG_TOKEN", "telegram-token")
 	t.Setenv("NG_HANDLERS", "reactor")
-	t.Setenv("NG_LLM_API_TYPE", "gemini")
+	t.Setenv("NG_LLM_API_TYPE", LLMProviderGemini)
 	t.Setenv("NG_LLM_GEMINI_API_KEY", "gemini-specific")
 	t.Setenv("NG_LLM_OPENAI_API_KEY", "openai-unused")
 	t.Setenv("NG_LLM_API_KEY", "legacy-unused")
@@ -32,7 +38,7 @@ func TestLoadUsesProviderSpecificCredential(t *testing.T) {
 func TestLoadUsesBoundedTelegramInboxDefaults(t *testing.T) {
 	t.Setenv("NG_TOKEN", "telegram-token")
 	t.Setenv("NG_HANDLERS", "reactor")
-	t.Setenv("NG_LLM_API_TYPE", "gemini")
+	t.Setenv("NG_LLM_API_TYPE", LLMProviderGemini)
 	t.Setenv("NG_LLM_GEMINI_API_KEY", "gemini-specific")
 	t.Setenv("NG_DOT_PATH", t.TempDir())
 
@@ -55,7 +61,7 @@ func TestLoadDefaultsNativeWebAppToLoopback(t *testing.T) {
 	t.Setenv("NG_TOKEN", "telegram-token")
 	t.Setenv("NG_HANDLERS", "admin,gatekeeper")
 	t.Setenv("NG_LLM_API_TYPE", LLMProviderGemini)
-	t.Setenv("NG_LLM_GEMINI_API_KEY", "gemini-key")
+	t.Setenv("NG_LLM_GEMINI_API_KEY", testGeminiAPIKey)
 	t.Setenv("NG_DOT_PATH", t.TempDir())
 	t.Setenv("NG_TELEGRAM_POLL_TIMEOUT", "60s")
 	t.Setenv("NG_TELEGRAM_REQUEST_TIMEOUT", "75s")
@@ -103,7 +109,7 @@ func TestValidateConfigRejectsInvalidWebAppAdmissionLimits(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			cfg := validConfigForLLM()
-			cfg.EnabledHandlers = []string{"admin", "gatekeeper"}
+			cfg.EnabledHandlers = []string{"admin", testGatekeeperHandler}
 			cfg.GatekeeperWebApp = tt.webApp
 			err := validateConfig(&cfg)
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
@@ -116,7 +122,7 @@ func TestValidateConfigRejectsInvalidWebAppAdmissionLimits(t *testing.T) {
 func TestValidateConfigRejectsTelegramTimeoutAtOrBeyondActionLease(t *testing.T) {
 	t.Parallel()
 	cfg := Config{
-		EnabledHandlers: []string{"gatekeeper"},
+		EnabledHandlers: []string{testGatekeeperHandler},
 		Telegram:        Telegram{PollTimeout: time.Minute, RequestTimeout: 2 * time.Minute, RecoveryWindow: 10 * time.Minute},
 		SpamControl:     SpamControl{MessageProbationDuration: time.Hour},
 	}
@@ -263,7 +269,7 @@ func TestValidateConfig(t *testing.T) {
 				EnabledHandlers: []string{"reactor"},
 				LLM: LLM{
 					APIKey: "legacy-key",
-					Type:   "gemini",
+					Type:   LLMProviderGemini,
 				},
 				SpamControl: SpamControl{MessageProbationDuration: 3 * time.Hour},
 				Telegram: Telegram{
@@ -295,7 +301,7 @@ func TestValidateConfig(t *testing.T) {
 			tt.cfg.GatekeeperWebApp.RequestsPerMinute = 120
 			if tt.cfg.LLM.Type == "" {
 				tt.cfg.LLM.Type = LLMProviderGemini
-				tt.cfg.LLM.GeminiAPIKey = "gemini-key"
+				tt.cfg.LLM.GeminiAPIKey = testGeminiAPIKey
 			}
 
 			err := validateConfig(&tt.cfg)
@@ -323,13 +329,13 @@ func TestValidateConfigNormalizesProviderConfiguration(t *testing.T) {
 	if err := validateConfig(&cfg); err != nil {
 		t.Fatalf("validateConfig returned error: %v", err)
 	}
-	if cfg.LLM.Type != "gemini" {
+	if cfg.LLM.Type != LLMProviderGemini {
 		t.Fatalf("provider = %q, want gemini", cfg.LLM.Type)
 	}
 	if cfg.LLM.Model != "gemini-2.5-flash-lite" {
 		t.Fatalf("model = %q", cfg.LLM.Model)
 	}
-	if cfg.LLM.GeminiAPIKey != "gemini-key" {
+	if cfg.LLM.GeminiAPIKey != testGeminiAPIKey {
 		t.Fatalf("gemini key was not normalized")
 	}
 	if cfg.LLM.BaseURL != "https://api.openai.com/v1" {
@@ -347,34 +353,34 @@ func TestValidateConfigRequiresOnlySelectedProviderCredential(t *testing.T) {
 	}{
 		{
 			name: "Gemini provider-specific credential",
-			llm:  LLM{Type: "gemini", GeminiAPIKey: "gemini-key", RequestTimeout: 45 * time.Second},
+			llm:  LLM{Type: LLMProviderGemini, GeminiAPIKey: testGeminiAPIKey, RequestTimeout: 45 * time.Second},
 		},
 		{
 			name: "OpenAI provider-specific credential",
-			llm:  LLM{Type: "openai", OpenAIAPIKey: "openai-key", BaseURL: "https://api.openai.com/v1", RequestTimeout: 45 * time.Second},
+			llm:  LLM{Type: "openai", OpenAIAPIKey: testOpenAIAPIKey, BaseURL: "https://api.openai.com/v1", RequestTimeout: 45 * time.Second},
 		},
 		{
 			name: "legacy Gemini credential fallback",
-			llm:  LLM{Type: "gemini", APIKey: "legacy-key", RequestTimeout: 45 * time.Second},
+			llm:  LLM{Type: LLMProviderGemini, APIKey: "legacy-key", RequestTimeout: 45 * time.Second},
 		},
 		{
 			name:    "selected credential missing",
-			llm:     LLM{Type: "gemini", OpenAIAPIKey: "wrong-provider-key", RequestTimeout: 45 * time.Second},
+			llm:     LLM{Type: LLMProviderGemini, OpenAIAPIKey: "wrong-provider-key", RequestTimeout: 45 * time.Second},
 			wantErr: true,
 		},
 		{
 			name:    "unsupported provider is not inferred from available key",
-			llm:     LLM{Type: "other", GeminiAPIKey: "gemini-key", OpenAIAPIKey: "openai-key", RequestTimeout: 45 * time.Second},
+			llm:     LLM{Type: "other", GeminiAPIKey: testGeminiAPIKey, OpenAIAPIKey: testOpenAIAPIKey, RequestTimeout: 45 * time.Second},
 			wantErr: true,
 		},
 		{
 			name:    "OpenAI endpoint must use HTTPS",
-			llm:     LLM{Type: "openai", OpenAIAPIKey: "openai-key", BaseURL: "http://api.openai.com/v1", RequestTimeout: 45 * time.Second},
+			llm:     LLM{Type: "openai", OpenAIAPIKey: testOpenAIAPIKey, BaseURL: "http://api.openai.com/v1", RequestTimeout: 45 * time.Second},
 			wantErr: true,
 		},
 		{
 			name:    "model must be one identifier",
-			llm:     LLM{Type: "gemini", GeminiAPIKey: "gemini-key", Model: "two models", RequestTimeout: 45 * time.Second},
+			llm:     LLM{Type: LLMProviderGemini, GeminiAPIKey: testGeminiAPIKey, Model: "two models", RequestTimeout: 45 * time.Second},
 			wantErr: true,
 		},
 	}
@@ -399,7 +405,7 @@ func TestValidateConfigRequiresLLMForMandatoryModeration(t *testing.T) {
 	t.Parallel()
 
 	cfg := validConfigForLLM()
-	cfg.EnabledHandlers = []string{"admin", "gatekeeper"}
+	cfg.EnabledHandlers = []string{"admin", testGatekeeperHandler}
 	cfg.LLM = LLM{}
 	if err := validateConfig(&cfg); err == nil {
 		t.Fatal("mandatory moderation accepted an empty LLM configuration")
@@ -407,7 +413,7 @@ func TestValidateConfigRequiresLLMForMandatoryModeration(t *testing.T) {
 
 	cfg.LLM = LLM{
 		Type:           LLMProviderOpenAI,
-		OpenAIAPIKey:   "openai-key",
+		OpenAIAPIKey:   testOpenAIAPIKey,
 		BaseURL:        "http://api.example.test/v1",
 		RequestTimeout: 45 * time.Second,
 	}
@@ -421,7 +427,7 @@ func validConfigForLLM() Config {
 		EnabledHandlers: []string{"reactor"},
 		LLM: LLM{
 			Type:           LLMProviderGemini,
-			GeminiAPIKey:   "gemini-key",
+			GeminiAPIKey:   testGeminiAPIKey,
 			RequestTimeout: 45 * time.Second,
 		},
 		SpamControl: SpamControl{MessageProbationDuration: 3 * time.Hour},

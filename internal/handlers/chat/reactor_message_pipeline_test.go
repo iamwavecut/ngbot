@@ -359,7 +359,7 @@ func TestDetectedSpamActionFailurePropagates(t *testing.T) {
 	}
 	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
 	user := &api.User{ID: 200}
-	message := &api.Message{MessageID: 4, Chat: *chat, From: user, Text: "spam"}
+	message := &api.Message{MessageID: 4, Chat: *chat, From: user, Text: testSpamMessageText}
 	err := reactor.handleMessage(t.Context(), message, chat, user, &db.Settings{LLMFirstMessageEnabled: true, CommunityVotingEnabled: true})
 	if !errors.Is(err, actionErr) {
 		t.Fatalf("action error = %v, want %v", err, actionErr)
@@ -606,7 +606,7 @@ func TestSenderChatIsAuthoritativeWithFromOnNewAndEditedMessages(t *testing.T) {
 	settings := &db.Settings{LLMFirstMessageEnabled: true, CommunityVotingEnabled: true}
 
 	for _, edited := range []bool{false, true} {
-		message := &api.Message{MessageID: 600 + detector.calls, Chat: *chat, From: from, SenderChat: senderChat, Text: "spam"}
+		message := &api.Message{MessageID: 600 + detector.calls, Chat: *chat, From: from, SenderChat: senderChat, Text: testSpamMessageText}
 		var err error
 		if edited {
 			err = reactor.handleEditedMessage(t.Context(), message, chat, from, settings)
@@ -976,7 +976,7 @@ func TestSpamVoteCallbackUsesSpamCaseChatSettings(t *testing.T) {
 	spamCase, err := dbClient.CreateSpamCase(ctx, &db.SpamCase{
 		ChatID:                -100,
 		UserID:                200,
-		MessageText:           "spam",
+		MessageText:           testSpamMessageText,
 		CreatedAt:             time.Now(),
 		ChannelUsername:       "log_channel",
 		ChannelPostID:         400,
@@ -1099,7 +1099,7 @@ func TestSpamVoteHandlerChainConsumesBanlistPrecheck(t *testing.T) {
 				t.Fatalf("set settings: %v", err)
 			}
 			spamCase, err := dbClient.CreateSpamCase(ctx, &db.SpamCase{
-				ChatID: tt.targetChatID, UserID: 200, MessageID: 40, MessageText: "spam", CreatedAt: time.Now(), Status: db.SpamCaseStatusPending,
+				ChatID: tt.targetChatID, UserID: 200, MessageID: 40, MessageText: testSpamMessageText, CreatedAt: time.Now(), Status: db.SpamCaseStatusPending,
 			})
 			if err != nil {
 				t.Fatalf("create spam case: %v", err)
