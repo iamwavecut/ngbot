@@ -45,6 +45,7 @@ jobs:
           test "$(docker run --rm --entrypoint ./ngbot ngbot:ci --version)" = "ngbot version=ci revision=$GITHUB_SHA build_date=1970-01-01T00:00:00Z"
           docker volume create ngbot-ci-data >/dev/null
           trap 'docker volume rm ngbot-ci-data >/dev/null' EXIT
+          docker run --rm --mount source=ngbot-ci-data,target=/data alpine:3.22.1@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1 chown 65532:65532 /data
           for pass in 1 2; do
             docker run --rm --mount source=ngbot-ci-data,target=/data \
               --env NG_TOKEN=validation-token \
