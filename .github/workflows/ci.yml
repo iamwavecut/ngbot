@@ -41,7 +41,7 @@ jobs:
       - name: Verify container identity and persistent migrations
         run: |
           set -eu
-          test "$(docker image inspect ngbot:ci --format '{{ index .Config.Labels \"org.opencontainers.image.revision\" }}')" = "$GITHUB_SHA"
+          test "$(docker image inspect ngbot:ci --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')" = "$GITHUB_SHA"
           test "$(docker run --rm --entrypoint ./ngbot ngbot:ci --version)" = "ngbot version=ci revision=$GITHUB_SHA build_date=1970-01-01T00:00:00Z"
           docker volume create ngbot-ci-data >/dev/null
           trap 'docker volume rm ngbot-ci-data >/dev/null' EXIT
