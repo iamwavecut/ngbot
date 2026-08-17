@@ -256,6 +256,9 @@ func (g *BanlistGuard) handleJoinedMembers(ctx context.Context, u *api.Update, m
 
 func moderationUpdateUser(u *api.Update, fallback *api.User) *api.User {
 	if u.ChatMember != nil {
+		if !isChatMemberJoinTransition(u.ChatMember) {
+			return nil
+		}
 		return u.ChatMember.NewChatMember.User
 	}
 	if u.MyChatMember != nil {

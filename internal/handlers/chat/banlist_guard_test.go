@@ -343,6 +343,7 @@ func TestBanlistGuardModeratesMemberUpdateSubjectInsteadOfAdministratorActor(t *
 	update := &api.Update{ChatMember: &api.ChatMemberUpdated{
 		Chat:          *chat,
 		From:          *actor,
+		OldChatMember: api.ChatMember{User: subject, Status: testMemberStatusLeft},
 		NewChatMember: api.ChatMember{User: subject, Status: telegramMemberStatus},
 	}}
 
@@ -355,5 +356,36 @@ func TestBanlistGuardModeratesMemberUpdateSubjectInsteadOfAdministratorActor(t *
 	}
 	if len(banService.bans) != 1 || banService.bans[0].userID != subject.ID {
 		t.Fatalf("member update bans = %#v", banService.bans)
+	}
+}
+
+func TestBanlistGuardIgnoresNonJoinMemberUpdates(t *testing.T) {
+	t.Parallel()
+
+	for _, oldStatus := range []string{"kicked", testMemberStatusLeft} {
+		t.Run(oldStatus+"_to_kicked", func(t *testing.T) {
+			banService := &testBanService{knownBanned: true}
+			guard := NewBanlistGuard(&api.BotAPI{}, &testNotSpammerStore{}, banService)
+			chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
+			actor := &api.User{ID: 200, UserName: "admin"}
+			subject := &api.User{ID: 300, UserName: "already_banned"}
+			update := &api.Update{ChatMember: &api.ChatMemberUpdated{
+				Chat:          *chat,
+				From:          *actor,
+				OldChatMember: api.ChatMember{User: subject, Status: oldStatus},
+				NewChatMember: api.ChatMember{User: subject, Status: "kicked"},
+			}}
+
+			proceed, err := guard.Handle(t.Context(), update, chat, actor)
+			if err != nil {
+				t.Fatalf("handle ban-generated member update: %v", err)
+			}
+			if !proceed {
+				t.Fatal("ban-generated member update was treated as a new join")
+			}
+			if banService.checkBanCalls != 0 || len(banService.bans) != 0 {
+				t.Fatalf("ban-generated member update triggered banlist enforcement: checks=%d bans=%#v", banService.checkBanCalls, banService.bans)
+			}
+		})
 	}
 }
