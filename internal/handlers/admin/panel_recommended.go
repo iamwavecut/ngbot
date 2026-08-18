@@ -53,6 +53,7 @@ func hasCustomizedSettings(state *panelState) bool {
 		state.Features.GatekeeperGreetingEnabled != defaultSettings.GatekeeperGreetingEnabled ||
 		state.GatekeeperCaptchaOptionsCount != defaultSettings.GatekeeperCaptchaOptionsCount ||
 		state.GatekeeperGreetingText != defaultSettings.GatekeeperGreetingText ||
+		state.LLMModerationProfile != defaultSettings.LLMModerationProfile ||
 		state.Features.LLMFirstMessageEnabled != defaultSettings.LLMFirstMessageEnabled ||
 		state.Features.ReactionProfileCheckEnabled != defaultSettings.ReactionProfileCheckEnabled ||
 		state.Features.CommunityVotingEnabled != defaultSettings.CommunityVotingEnabled ||

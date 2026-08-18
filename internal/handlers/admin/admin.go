@@ -57,8 +57,8 @@ type adminStore interface {
 
 	CreateChatSpamExample(ctx context.Context, example *db.ChatSpamExample) (*db.ChatSpamExample, error)
 	GetChatSpamExample(ctx context.Context, id int64) (*db.ChatSpamExample, error)
-	ListChatSpamExamples(ctx context.Context, chatID int64, limit int, offset int) ([]*db.ChatSpamExample, error)
-	CountChatSpamExamples(ctx context.Context, chatID int64) (int, error)
+	ListChatSpamExamples(ctx context.Context, chatID int64, classification int, limit int, offset int) ([]*db.ChatSpamExample, error)
+	CountChatSpamExamples(ctx context.Context, chatID int64, classification int) (int, error)
 	DeleteChatSpamExample(ctx context.Context, id int64) error
 
 	CreateChatNotSpammerOverride(ctx context.Context, override *db.ChatNotSpammerOverride) (*db.ChatNotSpammerOverride, error)

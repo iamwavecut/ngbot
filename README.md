@@ -17,7 +17,7 @@
    - **Manual allowlist ("Indulgence") override**
    - **Known spammers lookup** from local imports and online checks against LoLs bot and CAS/Combot
    - **External quote heuristic** for obvious cross-chat spam patterns
-   - **LLM-powered binary classification** with built-in and chat-specific spam examples
+   - **LLM-powered binary classification** with a general or Jobs & HR profile plus chat-specific allowed and spam examples
 2. If the message is considered spam, the user is either immediately banned or sent into community voting, depending on chat settings.
 3. Chat users can report missed spam with `/voteban` or by mentioning the bot in reply to the message. Reports are rechecked by the LLM first, then either moderated immediately or sent to community voting without pre-deleting the original message.
 4. Clean messages before the deadline remain bound for future edit checks. A distinct clean message after the deadline durably completes probation; commands and media without text start the clock but cannot complete it.
@@ -25,7 +25,7 @@
 ## Admin panel
 1. Run `/settings` in a group where the bot is an admin.
 2. The bot sends a deep-link that opens a private admin panel for that chat.
-3. From there you can configure gatekeeper, new-user message probation, community voting, spam examples, language, and manual not-spammer overrides.
+3. From there you can configure gatekeeper, new-user message probation, community voting, the LLM moderation profile, allowed/spam examples, language, and manual not-spammer overrides.
 4. The home screen includes a one-tap `Recommended Protection` preset and a compact 7-day protection summary.
 
 ## Installation
@@ -202,7 +202,7 @@ Don't hesitate to contact me
 ## Notes
 
 - Gemini requests can reuse server-side explicit caching for the static moderation prefix when the provider supports it.
-- Chat-specific settings, spam examples, and the private settings UI are already implemented.
+- Chat-specific settings, moderation profiles, labeled examples, and the private settings UI are already implemented.
 
 ## Acknowledgements
 

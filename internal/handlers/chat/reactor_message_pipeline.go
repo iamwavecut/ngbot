@@ -75,7 +75,7 @@ func (r *Reactor) handleMessageChallenge(ctx context.Context, msg *api.Message, 
 		return nil
 	}
 	if msg.SenderChat != nil {
-		return r.handleSenderChatContent(ctx, msg, chat, result, entry)
+		return r.handleSenderChatContent(ctx, msg, chat, settings, result, entry)
 	}
 
 	if user == nil {
@@ -244,7 +244,7 @@ func (r *Reactor) handleMessageChallenge(ctx context.Context, msg *api.Message, 
 		return nil
 	}
 
-	isSpam, err := r.checkMessageForSpam(ctx, chat.ID, content)
+	isSpam, err := r.checkMessageForSpam(ctx, settings, content)
 	if err != nil {
 		result.Skipped = true
 		result.SkipReason = messageSkipReasonLLMUnavailable
@@ -316,7 +316,7 @@ func (r *Reactor) handleMessageChallenge(ctx context.Context, msg *api.Message, 
 	return nil
 }
 
-func (r *Reactor) handleSenderChatContent(ctx context.Context, msg *api.Message, chat *api.Chat, result *MessageProcessingResult, entry *log.Entry) error {
+func (r *Reactor) handleSenderChatContent(ctx context.Context, msg *api.Message, chat *api.Chat, settings *db.Settings, result *MessageProcessingResult, entry *log.Entry) error {
 	available, err := r.moderationAvailable(ctx, chat.ID)
 	if err != nil {
 		result.Skipped = true
@@ -335,7 +335,7 @@ func (r *Reactor) handleSenderChatContent(ctx context.Context, msg *api.Message,
 		return nil
 	}
 	result.Stage = StageSpamCheck
-	isSpam, err := r.checkMessageForSpam(ctx, chat.ID, content)
+	isSpam, err := r.checkMessageForSpam(ctx, settings, content)
 	if err != nil {
 		result.Skipped = true
 		result.SkipReason = messageSkipReasonLLMUnavailable
@@ -563,7 +563,7 @@ func (r *Reactor) processDetectedSpam(ctx context.Context, msg *api.Message, cha
 	return r.processSpam(ctx, msg, chat, language)
 }
 
-func (r *Reactor) checkMessageForSpam(ctx context.Context, chatID int64, content string) (*bool, error) {
+func (r *Reactor) checkMessageForSpam(ctx context.Context, settings *db.Settings, content string) (*bool, error) {
 	words := strings.Fields(content)
 	for i, word := range words {
 		if hasCyrillics(word) {
@@ -572,17 +572,17 @@ func (r *Reactor) checkMessageForSpam(ctx context.Context, chatID int64, content
 	}
 	contentAltered := strings.Join(words, " ")
 
-	examples := r.loadSpamExamples(ctx, chatID)
-	isSpam, err := r.spamDetector.IsSpam(ctx, contentAltered, examples)
+	classificationContext := r.loadClassificationContext(ctx, settings)
+	isSpam, err := r.spamDetector.IsSpam(ctx, contentAltered, classificationContext)
 	if err == nil {
-		if statErr := handlersbase.IncrementDailyStat(ctx, r.stats, chatID, handlersbase.StatLLMChecked); statErr != nil {
+		if statErr := handlersbase.IncrementDailyStat(ctx, r.stats, settings.ID, handlersbase.StatLLMChecked); statErr != nil {
 			r.getLogEntry().WithField(logFieldError, statErr.Error()).Warn("failed to increment LLM checked stat")
 		}
 	}
 	return isSpam, err
 }
 
-func (r *Reactor) checkReportedMessageForSpam(ctx context.Context, chatID int64, content string) (*bool, error) {
+func (r *Reactor) checkReportedMessageForSpam(ctx context.Context, settings *db.Settings, content string) (*bool, error) {
 	if r.spamDetector == nil {
 		return nil, nil
 	}
@@ -594,34 +594,43 @@ func (r *Reactor) checkReportedMessageForSpam(ctx context.Context, chatID int64,
 	}
 	contentAltered := strings.Join(words, " ")
 
-	var examples []string
-	if r.store != nil {
-		examples = r.loadSpamExamples(ctx, chatID)
-	}
-	isSpam, err := r.spamDetector.IsReportedSpam(ctx, contentAltered, examples)
+	classificationContext := r.loadClassificationContext(ctx, settings)
+	isSpam, err := r.spamDetector.IsReportedSpam(ctx, contentAltered, classificationContext)
 	if err == nil {
-		if statErr := handlersbase.IncrementDailyStat(ctx, r.stats, chatID, handlersbase.StatLLMChecked); statErr != nil {
+		if statErr := handlersbase.IncrementDailyStat(ctx, r.stats, settings.ID, handlersbase.StatLLMChecked); statErr != nil {
 			r.getLogEntry().WithField(logFieldError, statErr.Error()).Warn("failed to increment reported LLM checked stat")
 		}
 	}
 	return isSpam, err
 }
 
-func (r *Reactor) loadSpamExamples(ctx context.Context, chatID int64) []string {
-	examples, err := r.store.ListChatSpamExamples(ctx, chatID, maxSpamExamples, 0)
-	if err != nil {
-		r.getLogEntry().WithField(logFieldError, err.Error()).Error("failed to load spam examples")
-		return nil
+func (r *Reactor) loadClassificationContext(ctx context.Context, settings *db.Settings) moderation.ClassificationContext {
+	classificationContext := moderation.ClassificationContext{Profile: db.LLMModerationProfileGeneral}
+	if settings == nil {
+		return classificationContext
 	}
-	texts := make([]string, 0, len(examples))
-	for _, example := range examples {
-		text := strings.TrimSpace(example.Text)
-		if text == "" {
+	classificationContext.Profile = settings.LLMModerationProfile
+	if r.store == nil {
+		return classificationContext
+	}
+	for _, classification := range []int{db.SpamClassificationAllowed, db.SpamClassificationSpam} {
+		examples, err := r.store.ListChatSpamExamples(ctx, settings.ID, classification, maxSpamExamples, 0)
+		if err != nil {
+			r.getLogEntry().WithField(logFieldError, err.Error()).WithField("classification", classification).Error("failed to load moderation examples")
 			continue
 		}
-		texts = append(texts, text)
+		for _, example := range examples {
+			text := strings.TrimSpace(example.Text)
+			if text == "" {
+				continue
+			}
+			classificationContext.Examples = append(classificationContext.Examples, moderation.ClassificationExample{
+				Message:        text,
+				Classification: classification,
+			})
+		}
 	}
-	return texts
+	return classificationContext
 }
 
 func (r *Reactor) rememberAuthorIfPossible(ctx context.Context, chat *api.Chat, user *api.User, entry *log.Entry) (bool, error) {

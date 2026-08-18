@@ -44,3 +44,12 @@ func TestDefaultSettingsEnableGatekeeperCaptcha(t *testing.T) {
 		t.Fatalf("expected gatekeeper captcha to be enabled by default: %#v", settings)
 	}
 }
+
+func TestDefaultSettingsUseGeneralLLMModerationProfile(t *testing.T) {
+	t.Parallel()
+
+	settings := DefaultSettings(42)
+	if settings.LLMModerationProfile != LLMModerationProfileGeneral {
+		t.Fatalf("default LLM moderation profile = %q, want %q", settings.LLMModerationProfile, LLMModerationProfileGeneral)
+	}
+}

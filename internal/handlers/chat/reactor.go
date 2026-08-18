@@ -21,8 +21,8 @@ import (
 )
 
 type SpamDetectorInterface interface {
-	IsSpam(ctx context.Context, message string, examples []string) (*bool, error)
-	IsReportedSpam(ctx context.Context, message string, examples []string) (*bool, error)
+	IsSpam(ctx context.Context, message string, classificationContext moderation.ClassificationContext) (*bool, error)
+	IsReportedSpam(ctx context.Context, message string, classificationContext moderation.ClassificationContext) (*bool, error)
 }
 
 type Config struct {
@@ -81,7 +81,7 @@ type Reactor struct {
 }
 
 type reactorStore interface {
-	ListChatSpamExamples(ctx context.Context, chatID int64, limit int, offset int) ([]*db.ChatSpamExample, error)
+	ListChatSpamExamples(ctx context.Context, chatID int64, classification int, limit int, offset int) ([]*db.ChatSpamExample, error)
 	IsChatNotSpammer(ctx context.Context, chatID int64, userID int64, username string) (bool, error)
 	RecordChallengedMessage(ctx context.Context, chatID int64, userID int64, messageID int) (bool, error)
 	IsChallengedMessage(ctx context.Context, chatID int64, userID int64, messageID int) (bool, error)

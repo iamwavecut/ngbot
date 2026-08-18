@@ -34,12 +34,19 @@ func normalizeVotingOverrideInt64(value int64) int64 {
 	return value
 }
 
+func normalizeLLMModerationProfile(profile string) string {
+	if profile == db.LLMModerationProfileJobsHR {
+		return profile
+	}
+	return db.LLMModerationProfileGeneral
+}
+
 func (c *sqliteClient) GetSettings(ctx context.Context, chatID int64) (*db.Settings, error) {
 	c.mutex.RLock()
 	defer c.mutex.RUnlock()
 
 	res := &db.Settings{}
-	query := "SELECT id, settings_revision, language, enabled, gatekeeper_enabled, gatekeeper_captcha_enabled, gatekeeper_greeting_enabled, gatekeeper_captcha_options_count, gatekeeper_greeting_text, llm_first_message_enabled, reaction_profile_check_enabled, community_voting_enabled, community_voting_timeout_override_ns, community_voting_min_voters_override, community_voting_max_voters_override, community_voting_min_voters_percent_override, challenge_timeout, reject_timeout FROM chats WHERE id = ?"
+	query := "SELECT id, settings_revision, language, enabled, gatekeeper_enabled, gatekeeper_captcha_enabled, gatekeeper_greeting_enabled, gatekeeper_captcha_options_count, gatekeeper_greeting_text, llm_first_message_enabled, llm_moderation_profile, reaction_profile_check_enabled, community_voting_enabled, community_voting_timeout_override_ns, community_voting_min_voters_override, community_voting_max_voters_override, community_voting_min_voters_percent_override, challenge_timeout, reject_timeout FROM chats WHERE id = ?"
 	err := c.db.QueryRowxContext(ctx, query, chatID).StructScan(res)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -59,7 +66,7 @@ func (c *sqliteClient) GetAllSettings(ctx context.Context) (map[int64]*db.Settin
 	c.mutex.RLock()
 	defer c.mutex.RUnlock()
 
-	query := "SELECT id, settings_revision, language, enabled, gatekeeper_enabled, gatekeeper_captcha_enabled, gatekeeper_greeting_enabled, gatekeeper_captcha_options_count, gatekeeper_greeting_text, llm_first_message_enabled, reaction_profile_check_enabled, community_voting_enabled, community_voting_timeout_override_ns, community_voting_min_voters_override, community_voting_max_voters_override, community_voting_min_voters_percent_override, challenge_timeout, reject_timeout FROM chats"
+	query := "SELECT id, settings_revision, language, enabled, gatekeeper_enabled, gatekeeper_captcha_enabled, gatekeeper_greeting_enabled, gatekeeper_captcha_options_count, gatekeeper_greeting_text, llm_first_message_enabled, llm_moderation_profile, reaction_profile_check_enabled, community_voting_enabled, community_voting_timeout_override_ns, community_voting_min_voters_override, community_voting_max_voters_override, community_voting_min_voters_percent_override, challenge_timeout, reject_timeout FROM chats"
 	rows, err := c.db.QueryxContext(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query all settings: %w", err)
@@ -97,14 +104,15 @@ func (c *sqliteClient) CommitSettings(ctx context.Context, settings *db.Settings
 	normalized := *settings
 	normalized.Enabled = normalized.GatekeeperEnabled
 	normalized.GatekeeperCaptchaOptionsCount = normalizeGatekeeperCaptchaOptionsCount(normalized.GatekeeperCaptchaOptionsCount)
+	normalized.LLMModerationProfile = normalizeLLMModerationProfile(normalized.LLMModerationProfile)
 	normalized.CommunityVotingTimeoutOverrideNS = normalizeVotingOverrideInt64(normalized.CommunityVotingTimeoutOverrideNS)
 	normalized.CommunityVotingMinVotersOverride = normalizeVotingOverrideInt(normalized.CommunityVotingMinVotersOverride)
 	normalized.CommunityVotingMaxVotersOverride = normalizeVotingOverrideInt(normalized.CommunityVotingMaxVotersOverride)
 	normalized.CommunityVotingMinVotersPercentOverride = normalizeVotingOverrideInt(normalized.CommunityVotingMinVotersPercentOverride)
 
 	query := `
-		INSERT INTO chats (id, settings_revision, language, enabled, gatekeeper_enabled, gatekeeper_captcha_enabled, gatekeeper_greeting_enabled, gatekeeper_captcha_options_count, gatekeeper_greeting_text, llm_first_message_enabled, reaction_profile_check_enabled, community_voting_enabled, community_voting_timeout_override_ns, community_voting_min_voters_override, community_voting_max_voters_override, community_voting_min_voters_percent_override, challenge_timeout, reject_timeout)
-		VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO chats (id, settings_revision, language, enabled, gatekeeper_enabled, gatekeeper_captcha_enabled, gatekeeper_greeting_enabled, gatekeeper_captcha_options_count, gatekeeper_greeting_text, llm_first_message_enabled, llm_moderation_profile, reaction_profile_check_enabled, community_voting_enabled, community_voting_timeout_override_ns, community_voting_min_voters_override, community_voting_max_voters_override, community_voting_min_voters_percent_override, challenge_timeout, reject_timeout)
+		VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 		settings_revision = chats.settings_revision + 1,
 		language = excluded.language,
@@ -115,6 +123,7 @@ func (c *sqliteClient) CommitSettings(ctx context.Context, settings *db.Settings
 		gatekeeper_captcha_options_count = excluded.gatekeeper_captcha_options_count,
 		gatekeeper_greeting_text = excluded.gatekeeper_greeting_text,
 		llm_first_message_enabled = excluded.llm_first_message_enabled,
+		llm_moderation_profile = excluded.llm_moderation_profile,
 		reaction_profile_check_enabled = excluded.reaction_profile_check_enabled,
 		community_voting_enabled = excluded.community_voting_enabled,
 		community_voting_timeout_override_ns = excluded.community_voting_timeout_override_ns,
@@ -126,7 +135,7 @@ func (c *sqliteClient) CommitSettings(ctx context.Context, settings *db.Settings
 		RETURNING id, settings_revision, language, enabled, gatekeeper_enabled,
 			gatekeeper_captcha_enabled, gatekeeper_greeting_enabled,
 			gatekeeper_captcha_options_count, gatekeeper_greeting_text,
-			llm_first_message_enabled, reaction_profile_check_enabled,
+			llm_first_message_enabled, llm_moderation_profile, reaction_profile_check_enabled,
 			community_voting_enabled, community_voting_timeout_override_ns,
 			community_voting_min_voters_override, community_voting_max_voters_override,
 			community_voting_min_voters_percent_override, challenge_timeout, reject_timeout
@@ -143,6 +152,7 @@ func (c *sqliteClient) CommitSettings(ctx context.Context, settings *db.Settings
 		normalized.GatekeeperCaptchaOptionsCount,
 		normalized.GatekeeperGreetingText,
 		normalized.LLMFirstMessageEnabled,
+		normalized.LLMModerationProfile,
 		normalized.ReactionProfileCheckEnabled,
 		normalized.CommunityVotingEnabled,
 		normalized.CommunityVotingTimeoutOverrideNS,

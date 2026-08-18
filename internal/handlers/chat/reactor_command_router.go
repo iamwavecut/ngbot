@@ -26,7 +26,7 @@ func (r *Reactor) handleCommand(ctx context.Context, msg *api.Message, chat *api
 		if !r.diagnosticCommandAllowed(ctx, chat, user) {
 			return r.rejectDiagnosticCommand(ctx, msg)
 		}
-		return r.testSpamCommand(ctx, msg, chat)
+		return r.testSpamCommand(ctx, msg, chat, settings)
 	case "skipreason":
 		if !r.diagnosticCommandAllowed(ctx, chat, user) {
 			return r.rejectDiagnosticCommand(ctx, msg)
@@ -134,10 +134,10 @@ func entityText(text string, entity api.MessageEntity) string {
 	return string(utf16.Decode(encoded[entity.Offset:end]))
 }
 
-func (r *Reactor) testSpamCommand(ctx context.Context, msg *api.Message, chat *api.Chat) error {
+func (r *Reactor) testSpamCommand(ctx context.Context, msg *api.Message, chat *api.Chat, settings *db.Settings) error {
 	content := msg.CommandArguments()
 
-	isSpam, err := r.checkMessageForSpam(ctx, chat.ID, content)
+	isSpam, err := r.checkMessageForSpam(ctx, settings, content)
 	if err != nil {
 		return errors.Wrap(err, "failed to check message for spam")
 	}
@@ -248,7 +248,7 @@ func (r *Reactor) voteBanCommand(ctx context.Context, msg *api.Message, chat *ap
 			return nil
 		}
 	}
-	isReportedSpam, err := r.checkReportedMessageForSpam(ctx, chat.ID, bot.ExtractContentFromMessage(target))
+	isReportedSpam, err := r.checkReportedMessageForSpam(ctx, settings, bot.ExtractContentFromMessage(target))
 	if err != nil {
 		entry.WithFields(classificationFailureLogFields(err, "report", "report_flow")).Warn("reported spam LLM check failed; falling back to report flow")
 	}

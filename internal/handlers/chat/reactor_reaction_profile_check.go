@@ -10,6 +10,7 @@ import (
 	"github.com/iamwavecut/ngbot/internal/adapters/llm"
 	"github.com/iamwavecut/ngbot/internal/bot"
 	"github.com/iamwavecut/ngbot/internal/db"
+	moderation "github.com/iamwavecut/ngbot/internal/handlers/moderation"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -118,7 +119,7 @@ func (r *Reactor) moderateReactionUser(ctx context.Context, reaction *api.Messag
 		return nil
 	}
 
-	isSpam, err := r.spamDetector.IsSpam(ctx, profileText, nil)
+	isSpam, err := r.spamDetector.IsSpam(ctx, profileText, moderation.ClassificationContext{Profile: db.LLMModerationProfileGeneral})
 	if err != nil {
 		entry.WithFields(classificationFailureLogFields(err, "reaction_user_profile", "durable_retry")).Warn("reaction user profile LLM classification scheduled for retry")
 		return bot.NewRetryableUpdateFailure(bot.UpdateFailureLLM, string(llm.FailureKindOf(err)), err)
@@ -160,7 +161,7 @@ func (r *Reactor) moderateReactionActorChat(ctx context.Context, chat *api.Chat,
 		return nil
 	}
 
-	isSpam, err := r.spamDetector.IsSpam(ctx, profileText, nil)
+	isSpam, err := r.spamDetector.IsSpam(ctx, profileText, moderation.ClassificationContext{Profile: db.LLMModerationProfileGeneral})
 	if err != nil {
 		entry.WithFields(classificationFailureLogFields(err, "reaction_actor_profile", "durable_retry")).Warn("reaction actor profile LLM classification scheduled for retry")
 		return bot.NewRetryableUpdateFailure(bot.UpdateFailureLLM, string(llm.FailureKindOf(err)), err)

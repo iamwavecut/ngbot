@@ -313,10 +313,10 @@ func (c *sqliteClient) CreateChatSpamExample(ctx context.Context, example *db.Ch
 	}
 
 	query := `
-		INSERT INTO chat_spam_examples (chat_id, text, created_by_user_id, created_at)
-		VALUES (?, ?, ?, ?)
+		INSERT INTO chat_spam_examples (chat_id, text, classification, created_by_user_id, created_at)
+		VALUES (?, ?, ?, ?, ?)
 	`
-	result, err := c.db.ExecContext(ctx, query, example.ChatID, example.Text, example.CreatedByUserID, example.CreatedAt)
+	result, err := c.db.ExecContext(ctx, query, example.ChatID, example.Text, example.Classification, example.CreatedByUserID, example.CreatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create chat spam example: %w", err)
 	}
@@ -339,7 +339,7 @@ func (c *sqliteClient) GetChatSpamExample(ctx context.Context, id int64) (*db.Ch
 	c.mutex.RLock()
 	defer c.mutex.RUnlock()
 
-	query := `SELECT id, chat_id, text, created_by_user_id, created_at FROM chat_spam_examples WHERE id = ?`
+	query := `SELECT id, chat_id, text, classification, created_by_user_id, created_at FROM chat_spam_examples WHERE id = ?`
 	example := &db.ChatSpamExample{}
 	if err := c.db.QueryRowxContext(ctx, query, id).StructScan(example); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -350,18 +350,18 @@ func (c *sqliteClient) GetChatSpamExample(ctx context.Context, id int64) (*db.Ch
 	return example, nil
 }
 
-func (c *sqliteClient) ListChatSpamExamples(ctx context.Context, chatID int64, limit int, offset int) ([]*db.ChatSpamExample, error) {
+func (c *sqliteClient) ListChatSpamExamples(ctx context.Context, chatID int64, classification int, limit int, offset int) ([]*db.ChatSpamExample, error) {
 	c.mutex.RLock()
 	defer c.mutex.RUnlock()
 
 	query := `
-		SELECT id, chat_id, text, created_by_user_id, created_at
+		SELECT id, chat_id, text, classification, created_by_user_id, created_at
 		FROM chat_spam_examples
-		WHERE chat_id = ?
+		WHERE chat_id = ? AND classification = ?
 		ORDER BY created_at DESC
 		LIMIT ? OFFSET ?
 	`
-	rows, err := c.db.QueryxContext(ctx, query, chatID, limit, offset)
+	rows, err := c.db.QueryxContext(ctx, query, chatID, classification, limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list chat spam examples: %w", err)
 	}
@@ -381,13 +381,13 @@ func (c *sqliteClient) ListChatSpamExamples(ctx context.Context, chatID int64, l
 	return examples, nil
 }
 
-func (c *sqliteClient) CountChatSpamExamples(ctx context.Context, chatID int64) (int, error) {
+func (c *sqliteClient) CountChatSpamExamples(ctx context.Context, chatID int64, classification int) (int, error) {
 	c.mutex.RLock()
 	defer c.mutex.RUnlock()
 
-	query := `SELECT COUNT(*) FROM chat_spam_examples WHERE chat_id = ?`
+	query := `SELECT COUNT(*) FROM chat_spam_examples WHERE chat_id = ? AND classification = ?`
 	var count int
-	if err := c.db.QueryRowxContext(ctx, query, chatID).Scan(&count); err != nil {
+	if err := c.db.QueryRowxContext(ctx, query, chatID, classification).Scan(&count); err != nil {
 		return 0, fmt.Errorf("failed to count chat spam examples: %w", err)
 	}
 	return count, nil
