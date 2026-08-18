@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/iamwavecut/ngbot/internal/adapters/llm"
+	"github.com/iamwavecut/ngbot/internal/db"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -38,7 +39,7 @@ func TestSpamDetectorFramesJobsHRProfileAndLabeledChatExamples(t *testing.T) {
 	spamExample := "custom spam example"
 	allowedExample := "detailed recruiter vacancy"
 	classificationContext := ClassificationContext{
-		Profile: "jobs_hr",
+		Profile: db.LLMModerationProfileJobsHR,
 		Examples: []ClassificationExample{
 			{Message: spamExample, Classification: 1},
 			{Message: allowedExample, Classification: 0},
@@ -72,8 +73,8 @@ func TestSpamDetectorFramesJobsHRProfileAndLabeledChatExamples(t *testing.T) {
 		t.Fatalf("expected candidate message at tail, got %#v", tail)
 	}
 	request := decodeClassificationRequest(t, tail.Content)
-	if request.PolicyProfile != "jobs_hr" {
-		t.Fatalf("policy profile = %q, want jobs_hr", request.PolicyProfile)
+	if request.PolicyProfile != db.LLMModerationProfileJobsHR {
+		t.Fatalf("policy profile = %q, want %q", request.PolicyProfile, db.LLMModerationProfileJobsHR)
 	}
 	if request.Candidate.Message != candidate || request.Candidate.MessageBytes != len([]byte(candidate)) {
 		t.Fatalf("unexpected framed candidate: %#v", request.Candidate)
@@ -192,7 +193,7 @@ func TestSpamDetectorPromptsRequireExplicitSpamEvidence(t *testing.T) {
 				"контакт рекрутера",
 				"полноценная вакансия",
 				"igaming",
-				"jobs_hr",
+				db.LLMModerationProfileJobsHR,
 			} {
 				if !strings.Contains(strings.ToLower(prompt), required) {
 					t.Fatalf("prompt does not enforce %q boundary: %q", required, prompt)
