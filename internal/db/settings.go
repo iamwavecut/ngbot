@@ -19,6 +19,7 @@ func DefaultSettings(chatID int64) *Settings {
 		GatekeeperCaptchaOptionsCount:           5,
 		GatekeeperGreetingText:                  "",
 		LLMFirstMessageEnabled:                  true,
+		LLMModerationProfile:                    LLMModerationProfileGeneral,
 		ReactionProfileCheckEnabled:             true,
 		CommunityVotingEnabled:                  true,
 		CommunityVotingTimeoutOverrideNS:        int64(SettingsOverrideInherit),

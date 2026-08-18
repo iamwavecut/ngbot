@@ -70,10 +70,26 @@ func (a *Admin) applyPanelCommand(ctx context.Context, session *db.AdminPanelSes
 		}
 	case panelActionOpenLLM:
 		state.Page = panelPageLLM
+	case panelActionOpenLLMModerationProfile:
+		state.Page = panelPageLLMModerationProfile
+	case panelActionSetLLMModerationProfile:
+		if err := a.setLLMModerationProfile(ctx, session, state, command.Value); err != nil {
+			return err
+		}
 	case panelActionOpenReactionProfileCheck:
 		state.Page = panelPageReactionProfileCheck
 	case panelActionOpenExamples:
 		state.Page = panelPageExamplesList
+		state.ExampleKind = panelExampleKindSpam
+		state.ListPage = 0
+	case panelActionOpenSpamExamples:
+		state.Page = panelPageExamplesList
+		state.ExampleKind = panelExampleKindSpam
+		state.ListPage = 0
+	case panelActionOpenAllowedExamples:
+		state.Page = panelPageExamplesList
+		state.ExampleKind = panelExampleKindAllowed
+		state.ListPage = 0
 	case panelActionOpenIndulgence:
 		state.Page = panelPageIndulgenceList
 		state.ListPage = 0
@@ -184,6 +200,8 @@ func (a *Admin) applyPanelCommand(ctx context.Context, session *db.AdminPanelSes
 			state.Page = panelPageGatekeeperGreeting
 		case panelPageLLM:
 			state.Page = panelPageHome
+		case panelPageLLMModerationProfile:
+			state.Page = panelPageLLM
 		case panelPageReactionProfileCheck:
 			state.Page = panelPageHome
 		case panelPageExamplesList:
@@ -468,6 +486,7 @@ func syncPanelStateFromSettings(state *panelState, settings *db.Settings) {
 	}
 	state.GatekeeperCaptchaOptionsCount = settings.GatekeeperCaptchaOptionsCount
 	state.GatekeeperGreetingText = settings.GatekeeperGreetingText
+	state.LLMModerationProfile = settings.LLMModerationProfile
 	state.CommunityVotingTimeoutOverrideNS = settings.CommunityVotingTimeoutOverrideNS
 	state.CommunityVotingMinVotersOverride = settings.CommunityVotingMinVotersOverride
 	state.CommunityVotingMaxVotersOverride = settings.CommunityVotingMaxVotersOverride
@@ -475,6 +494,22 @@ func syncPanelStateFromSettings(state *panelState, settings *db.Settings) {
 	state.ChallengeTimeout = settings.ChallengeTimeout
 	state.RejectTimeout = settings.RejectTimeout
 	state.Language = settings.Language
+}
+
+func (a *Admin) setLLMModerationProfile(ctx context.Context, session *db.AdminPanelSession, state *panelState, profile string) error {
+	if profile != db.LLMModerationProfileGeneral && profile != db.LLMModerationProfileJobsHR {
+		return nil
+	}
+	settings, err := a.s.GetSettings(ctx, session.ChatID)
+	if err != nil {
+		return err
+	}
+	settings.LLMModerationProfile = profile
+	if err := a.saveChatSettings(ctx, settings); err != nil {
+		return err
+	}
+	syncPanelStateFromSettings(state, settings)
+	return nil
 }
 
 func containsDuration(candidates []time.Duration, value time.Duration) bool {

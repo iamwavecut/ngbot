@@ -55,6 +55,7 @@ func (a *Admin) renderPanel(ctx context.Context, session *db.AdminPanelSession, 
 	state.Language = settings.Language
 	state.GatekeeperCaptchaOptionsCount = settings.GatekeeperCaptchaOptionsCount
 	state.GatekeeperGreetingText = settings.GatekeeperGreetingText
+	state.LLMModerationProfile = settings.LLMModerationProfile
 	state.CommunityVotingTimeoutOverrideNS = settings.CommunityVotingTimeoutOverrideNS
 	state.CommunityVotingMinVotersOverride = settings.CommunityVotingMinVotersOverride
 	state.CommunityVotingMaxVotersOverride = settings.CommunityVotingMaxVotersOverride
@@ -85,6 +86,8 @@ func (a *Admin) renderPanel(ctx context.Context, session *db.AdminPanelSession, 
 		return a.renderGatekeeperGreetingPrompt(ctx, session, state)
 	case panelPageLLM:
 		return a.renderLLM(ctx, session, state)
+	case panelPageLLMModerationProfile:
+		return a.renderLLMModerationProfile(ctx, session, state)
 	case panelPageReactionProfileCheck:
 		return a.renderReactionProfileCheck(ctx, session, state)
 	case panelPageExamplesList:

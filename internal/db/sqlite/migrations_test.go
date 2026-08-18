@@ -1407,3 +1407,56 @@ func migrationsBefore(t *testing.T, target string) int {
 	t.Fatalf("migration %q not found", target)
 	return 0
 }
+
+func TestContextAwareModerationMigrationDefaultsExistingRows(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	dbPath := filepath.Join(t.TempDir(), "context-aware-moderation.db")
+	sqlDB, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
+
+	source := &migrate.EmbedFileSystemMigrationSource{FileSystem: resources.FS, Root: migrationsRoot}
+	const migration = "20260818000000-add-context-aware-moderation.sql"
+	if _, err := migrate.ExecMax(sqlDB, "sqlite3", source, migrate.Up, migrationsBefore(t, migration)); err != nil {
+		t.Fatalf("execute migrations before context-aware moderation: %v", err)
+	}
+	if _, err := sqlDB.ExecContext(ctx, `
+		INSERT INTO chats (id) VALUES (-100);
+		INSERT INTO chat_spam_examples (chat_id, text, created_by_user_id, created_at)
+		VALUES (-100, 'legacy spam example', 1, CURRENT_TIMESTAMP);
+	`); err != nil {
+		t.Fatalf("seed legacy moderation rows: %v", err)
+	}
+	if _, err := migrate.ExecMax(sqlDB, "sqlite3", source, migrate.Up, 1); err != nil {
+		t.Fatalf("execute context-aware moderation migration: %v", err)
+	}
+
+	var profile string
+	if err := sqlDB.QueryRowContext(ctx, `SELECT llm_moderation_profile FROM chats WHERE id = -100`).Scan(&profile); err != nil {
+		t.Fatalf("read migrated profile: %v", err)
+	}
+	if profile != "general" {
+		t.Fatalf("migrated profile = %q, want general", profile)
+	}
+	var classification int
+	if err := sqlDB.QueryRowContext(ctx, `SELECT classification FROM chat_spam_examples WHERE chat_id = -100`).Scan(&classification); err != nil {
+		t.Fatalf("read migrated classification: %v", err)
+	}
+	if classification != 1 {
+		t.Fatalf("legacy example classification = %d, want spam classification 1", classification)
+	}
+
+	if _, err := migrate.ExecMax(sqlDB, "sqlite3", source, migrate.Down, 1); err != nil {
+		t.Fatalf("roll back context-aware moderation migration: %v", err)
+	}
+	if _, err := sqlDB.ExecContext(ctx, `SELECT llm_moderation_profile FROM chats`); err == nil {
+		t.Fatal("rollback retained llm_moderation_profile column")
+	}
+	if _, err := sqlDB.ExecContext(ctx, `SELECT classification FROM chat_spam_examples`); err == nil {
+		t.Fatal("rollback retained classification column")
+	}
+}

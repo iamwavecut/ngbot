@@ -21,6 +21,7 @@ type (
 		GatekeeperCaptchaOptionsCount           int    `db:"gatekeeper_captcha_options_count"`
 		GatekeeperGreetingText                  string `db:"gatekeeper_greeting_text"`
 		LLMFirstMessageEnabled                  bool   `db:"llm_first_message_enabled"`
+		LLMModerationProfile                    string `db:"llm_moderation_profile"`
 		ReactionProfileCheckEnabled             bool   `db:"reaction_profile_check_enabled"`
 		CommunityVotingEnabled                  bool   `db:"community_voting_enabled"`
 		CommunityVotingTimeoutOverrideNS        int64  `db:"community_voting_timeout_override_ns"`
@@ -172,6 +173,7 @@ type (
 		ID              int64     `db:"id"`
 		ChatID          int64     `db:"chat_id"`
 		Text            string    `db:"text"`
+		Classification  int       `db:"classification"`
 		CreatedByUserID int64     `db:"created_by_user_id"`
 		CreatedAt       time.Time `db:"created_at"`
 	}
@@ -277,6 +279,10 @@ const (
 	SpamCaseStatusSpam                     = "spam"
 	SpamCaseStatusFalsePositive            = "false_positive"
 	SpamCaseStatusNotEnforced              = "not_enforced"
+	LLMModerationProfileGeneral            = "general"
+	LLMModerationProfileJobsHR             = "jobs_hr"
+	SpamClassificationAllowed              = 0
+	SpamClassificationSpam                 = 1
 	TelegramUpdateStatusPending            = "pending"
 	TelegramUpdateStatusProcessing         = "processing"
 	TelegramUpdateStatusRetry              = "retry"

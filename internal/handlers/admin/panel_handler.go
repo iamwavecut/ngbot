@@ -335,6 +335,7 @@ func (a *Admin) handlePanelInput(ctx context.Context, msg *api.Message, chat *ap
 		_, err = a.store.CreateChatSpamExample(ctx, &db.ChatSpamExample{
 			ChatID:          session.ChatID,
 			Text:            text,
+			Classification:  state.exampleClassification(),
 			CreatedByUserID: user.ID,
 			CreatedAt:       time.Now(),
 		})

@@ -13,6 +13,7 @@ const (
 	panelPageGatekeeperGreeting         panelPage = "GatekeeperGreeting"
 	panelPageGatekeeperGreetingPrompt   panelPage = "GatekeeperGreetingPrompt"
 	panelPageLLM                        panelPage = "LLM"
+	panelPageLLMModerationProfile       panelPage = "LLMModerationProfile"
 	panelPageReactionProfileCheck       panelPage = "ReactionProfileCheck"
 	panelPageExamplesList               panelPage = "ExamplesList"
 	panelPageExampleDetail              panelPage = "ExampleDetail"
@@ -63,6 +64,10 @@ const (
 	panelActionLanguagePagePrev               = "language_page_prev"
 	panelActionSelectLanguage                 = "select_language"
 	panelActionOpenExamples                   = "open_examples"
+	panelActionOpenSpamExamples               = "open_spam_examples"
+	panelActionOpenAllowedExamples            = "open_allowed_examples"
+	panelActionOpenLLMModerationProfile       = "open_llm_moderation_profile"
+	panelActionSetLLMModerationProfile        = "set_llm_moderation_profile"
 	panelActionExamplesPageNext               = "examples_page_next"
 	panelActionExamplesPagePrev               = "examples_page_prev"
 	panelActionAddExample                     = "add_example"
@@ -81,6 +86,11 @@ const (
 	panelActionCloseConfirm                   = "close_confirm"
 	panelActionBack                           = "back"
 	panelActionClose                          = "close"
+)
+
+const (
+	panelExampleKindSpam    = "spam"
+	panelExampleKindAllowed = "allowed"
 )
 
 const (
@@ -110,6 +120,7 @@ type panelState struct {
 	Features                                panelFeatureFlags `json:"features"`
 	GatekeeperCaptchaOptionsCount           int               `json:"gatekeeper_captcha_options_count"`
 	GatekeeperGreetingText                  string            `json:"gatekeeper_greeting_text"`
+	LLMModerationProfile                    string            `json:"llm_moderation_profile"`
 	CommunityVotingTimeoutOverrideNS        int64             `json:"community_voting_timeout_override_ns"`
 	CommunityVotingMinVotersOverride        int               `json:"community_voting_min_voters_override"`
 	CommunityVotingMaxVotersOverride        int               `json:"community_voting_max_voters_override"`
@@ -119,8 +130,16 @@ type panelState struct {
 	ListPage                                int               `json:"list_page"`
 	LanguagePage                            int               `json:"language_page"`
 	SelectedExampleID                       int64             `json:"selected_example_id,omitempty"`
+	ExampleKind                             string            `json:"example_kind,omitempty"`
 	SelectedIndulgenceID                    int64             `json:"selected_indulgence_id,omitempty"`
 	PromptError                             string            `json:"prompt_error,omitempty"`
+}
+
+func (s *panelState) exampleClassification() int {
+	if s != nil && s.ExampleKind == panelExampleKindAllowed {
+		return 0
+	}
+	return 1
 }
 
 type panelCommand struct {

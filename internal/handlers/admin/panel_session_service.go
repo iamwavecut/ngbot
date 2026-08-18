@@ -34,6 +34,7 @@ func newPanelState(userID int64, chatID int64, chatTitle string, settings *db.Se
 		Language:                                settings.Language,
 		GatekeeperCaptchaOptionsCount:           settings.GatekeeperCaptchaOptionsCount,
 		GatekeeperGreetingText:                  settings.GatekeeperGreetingText,
+		LLMModerationProfile:                    settings.LLMModerationProfile,
 		CommunityVotingTimeoutOverrideNS:        settings.CommunityVotingTimeoutOverrideNS,
 		CommunityVotingMinVotersOverride:        settings.CommunityVotingMinVotersOverride,
 		CommunityVotingMaxVotersOverride:        settings.CommunityVotingMaxVotersOverride,
@@ -42,6 +43,7 @@ func newPanelState(userID int64, chatID int64, chatTitle string, settings *db.Se
 		RejectTimeout:                           settings.RejectTimeout,
 		ListPage:                                0,
 		LanguagePage:                            0,
+		ExampleKind:                             panelExampleKindSpam,
 		Features: panelFeatureFlags{
 			GatekeeperEnabled:           settings.GatekeeperEnabled,
 			GatekeeperCaptchaEnabled:    settings.GatekeeperCaptchaEnabled,

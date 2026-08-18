@@ -81,6 +81,7 @@ type testReactorStore struct {
 	probationError error
 	graduateError  error
 	upsertError    error
+	examples       []*db.ChatSpamExample
 }
 
 type messageProbationKey struct {
@@ -88,8 +89,21 @@ type messageProbationKey struct {
 	userID int64
 }
 
-func (s *testReactorStore) ListChatSpamExamples(context.Context, int64, int, int) ([]*db.ChatSpamExample, error) {
-	return nil, nil
+func (s *testReactorStore) ListChatSpamExamples(_ context.Context, chatID int64, classification int, limit int, offset int) ([]*db.ChatSpamExample, error) {
+	filtered := make([]*db.ChatSpamExample, 0, len(s.examples))
+	for _, example := range s.examples {
+		if example.ChatID == chatID && example.Classification == classification {
+			filtered = append(filtered, example)
+		}
+	}
+	if offset >= len(filtered) {
+		return nil, nil
+	}
+	filtered = filtered[offset:]
+	if len(filtered) > limit {
+		filtered = filtered[:limit]
+	}
+	return filtered, nil
 }
 
 func (s *testReactorStore) IsChatNotSpammer(context.Context, int64, int64, string) (bool, error) {
@@ -229,6 +243,8 @@ type testSpamDetector struct {
 	result           *bool
 	reportedResult   *bool
 	err              error
+	contexts         []moderation.ClassificationContext
+	reportedContexts []moderation.ClassificationContext
 }
 
 func TestCheckMessageForSpamDoesNotMirrorRawContent(t *testing.T) {
@@ -249,7 +265,7 @@ func TestCheckMessageForSpamDoesNotMirrorRawContent(t *testing.T) {
 		}},
 	}
 
-	_, _ = reactor.checkMessageForSpam(t.Context(), 1, "private-message-content")
+	_, _ = reactor.checkMessageForSpam(t.Context(), db.DefaultSettings(1), "private-message-content")
 	if telegramCalls != 0 {
 		t.Fatalf("classification diagnostics made %d Telegram calls", telegramCalls)
 	}
@@ -311,7 +327,7 @@ func TestSenderChatCapabilityLookupFailureReturnsRetryableFailure(t *testing.T) 
 	}
 	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
 	message := &api.Message{MessageID: 2, Chat: *chat, SenderChat: &api.Chat{ID: -200, Type: testChatTypeChannel}, Text: testCandidateValue}
-	err := reactor.handleSenderChatContent(t.Context(), message, chat, &MessageProcessingResult{}, reactor.getLogEntry())
+	err := reactor.handleSenderChatContent(t.Context(), message, chat, db.DefaultSettings(chat.ID), &MessageProcessingResult{}, reactor.getLogEntry())
 	failure := botservice.ClassifyUpdateFailure(err)
 	if failure.Source != botservice.UpdateFailureCapability || failure.Disposition != botservice.UpdateFailureRetryable {
 		t.Fatalf("capability failure = %#v", failure)
@@ -329,7 +345,7 @@ func TestSenderChatMalformedClassificationReturnsRetryableFailure(t *testing.T) 
 	}
 	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
 	message := &api.Message{MessageID: 3, Chat: *chat, SenderChat: &api.Chat{ID: -200, Type: testChatTypeChannel}, Text: testCandidateValue}
-	err := reactor.handleSenderChatContent(t.Context(), message, chat, &MessageProcessingResult{}, reactor.getLogEntry())
+	err := reactor.handleSenderChatContent(t.Context(), message, chat, db.DefaultSettings(chat.ID), &MessageProcessingResult{}, reactor.getLogEntry())
 	failure := botservice.ClassifyUpdateFailure(err)
 	if failure.Source != botservice.UpdateFailureLLM || failure.Disposition != botservice.UpdateFailureRetryable {
 		t.Fatalf("classification failure = %#v", failure)
@@ -441,15 +457,17 @@ func TestClassificationFailureLogFieldsAreStructuredAndContentFree(t *testing.T)
 	}
 }
 
-func (d *testSpamDetector) IsSpam(_ context.Context, message string, _ []string) (*bool, error) {
+func (d *testSpamDetector) IsSpam(_ context.Context, message string, classificationContext moderation.ClassificationContext) (*bool, error) {
 	d.calls++
 	d.messages = append(d.messages, message)
+	d.contexts = append(d.contexts, classificationContext)
 	return d.result, d.err
 }
 
-func (d *testSpamDetector) IsReportedSpam(_ context.Context, message string, _ []string) (*bool, error) {
+func (d *testSpamDetector) IsReportedSpam(_ context.Context, message string, classificationContext moderation.ClassificationContext) (*bool, error) {
 	d.reportedCalls++
 	d.reportedMessages = append(d.reportedMessages, message)
+	d.reportedContexts = append(d.reportedContexts, classificationContext)
 	if d.reportedResult != nil {
 		return d.reportedResult, nil
 	}
@@ -457,6 +475,45 @@ func (d *testSpamDetector) IsReportedSpam(_ context.Context, message string, _ [
 		return nil, d.err
 	}
 	return d.result, nil
+}
+
+func TestCheckMessageForSpamPassesProfileAndBothExampleLabels(t *testing.T) {
+	t.Parallel()
+
+	settings := db.DefaultSettings(-100)
+	settings.LLMModerationProfile = db.LLMModerationProfileJobsHR
+	detector := &testSpamDetector{result: boolPtr(false)}
+	store := &testReactorStore{examples: []*db.ChatSpamExample{
+		{ChatID: settings.ID, Text: "Detailed recruiter vacancy", Classification: db.SpamClassificationAllowed},
+		{ChatID: settings.ID, Text: "Vague remote income offer", Classification: db.SpamClassificationSpam},
+	}}
+	reactor := &Reactor{store: store, spamDetector: detector}
+
+	if _, err := reactor.checkMessageForSpam(t.Context(), settings, "candidate"); err != nil {
+		t.Fatalf("check message for spam: %v", err)
+	}
+	if len(detector.contexts) != 1 {
+		t.Fatalf("classification contexts = %d, want 1", len(detector.contexts))
+	}
+	classificationContext := detector.contexts[0]
+	if classificationContext.Profile != db.LLMModerationProfileJobsHR {
+		t.Fatalf("profile = %q, want %q", classificationContext.Profile, db.LLMModerationProfileJobsHR)
+	}
+	want := map[string]int{
+		"Detailed recruiter vacancy": db.SpamClassificationAllowed,
+		"Vague remote income offer":  db.SpamClassificationSpam,
+	}
+	for _, example := range classificationContext.Examples {
+		if classification, ok := want[example.Message]; ok {
+			if example.Classification != classification {
+				t.Fatalf("example %q classification = %d, want %d", example.Message, example.Classification, classification)
+			}
+			delete(want, example.Message)
+		}
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing classification examples: %#v", want)
+	}
 }
 
 type testBanService struct {

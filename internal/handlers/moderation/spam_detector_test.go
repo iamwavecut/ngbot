@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/iamwavecut/ngbot/internal/adapters/llm"
+	"github.com/iamwavecut/ngbot/internal/db"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -22,7 +23,7 @@ func (s *spamDetectorTestLLM) ChatCompletion(_ context.Context, messages []llm.C
 	return s.response, nil
 }
 
-func TestSpamDetectorIncludesExtraExamplesInPrompt(t *testing.T) {
+func TestSpamDetectorFramesJobsHRProfileAndLabeledChatExamples(t *testing.T) {
 	t.Parallel()
 
 	llmStub := &spamDetectorTestLLM{
@@ -35,8 +36,17 @@ func TestSpamDetectorIncludesExtraExamplesInPrompt(t *testing.T) {
 	detector := NewSpamDetector(llmStub, log.New().WithField("test", "spam_detector"), time.Minute)
 
 	candidate := "candidate message"
-	extra := "custom spam example"
-	result, err := detector.IsSpam(context.Background(), candidate, []string{extra, " ", ""})
+	spamExample := "custom spam example"
+	allowedExample := "detailed recruiter vacancy"
+	classificationContext := ClassificationContext{
+		Profile: db.LLMModerationProfileJobsHR,
+		Examples: []ClassificationExample{
+			{Message: spamExample, Classification: 1},
+			{Message: allowedExample, Classification: 0},
+			{Message: " ", Classification: 1},
+		},
+	}
+	result, err := detector.IsSpam(context.Background(), candidate, classificationContext)
 	if err != nil {
 		t.Fatalf("IsSpam returned error: %v", err)
 	}
@@ -55,7 +65,7 @@ func TestSpamDetectorIncludesExtraExamplesInPrompt(t *testing.T) {
 			t.Fatalf("classification prompt must not contain prefilled assistant turns: %#v", message)
 		}
 	}
-	if strings.Contains(llmStub.lastMessages[0].Content, extra) {
+	if strings.Contains(llmStub.lastMessages[0].Content, spamExample) || strings.Contains(llmStub.lastMessages[0].Content, allowedExample) {
 		t.Fatal("custom spam example remained in the privileged system instruction")
 	}
 	tail := llmStub.lastMessages[len(llmStub.lastMessages)-1]
@@ -63,11 +73,19 @@ func TestSpamDetectorIncludesExtraExamplesInPrompt(t *testing.T) {
 		t.Fatalf("expected candidate message at tail, got %#v", tail)
 	}
 	request := decodeClassificationRequest(t, tail.Content)
+	if request.PolicyProfile != db.LLMModerationProfileJobsHR {
+		t.Fatalf("policy profile = %q, want %q", request.PolicyProfile, db.LLMModerationProfileJobsHR)
+	}
 	if request.Candidate.Message != candidate || request.Candidate.MessageBytes != len([]byte(candidate)) {
 		t.Fatalf("unexpected framed candidate: %#v", request.Candidate)
 	}
-	if got := request.Examples[len(request.Examples)-1]; got.Message != extra || got.MessageBytes != len([]byte(extra)) || got.Classification != 1 {
-		t.Fatalf("unexpected framed custom example: %#v", got)
+	gotSpam := request.Examples[len(request.Examples)-2]
+	if gotSpam.Message != spamExample || gotSpam.MessageBytes != len([]byte(spamExample)) || gotSpam.Classification != 1 {
+		t.Fatalf("unexpected framed spam example: %#v", gotSpam)
+	}
+	gotAllowed := request.Examples[len(request.Examples)-1]
+	if gotAllowed.Message != allowedExample || gotAllowed.MessageBytes != len([]byte(allowedExample)) || gotAllowed.Classification != 0 {
+		t.Fatalf("unexpected framed allowed example: %#v", gotAllowed)
 	}
 	if tail.Cacheable {
 		t.Fatalf("expected candidate message to stay live")
@@ -86,7 +104,7 @@ func TestSpamDetectorIncludesBenignConversationBoundaryExamples(t *testing.T) {
 		},
 	}
 	detector := NewSpamDetector(llmStub, log.New().WithField("test", "spam_detector"), time.Minute)
-	result, err := detector.IsSpam(t.Context(), candidate, nil)
+	result, err := detector.IsSpam(t.Context(), candidate, ClassificationContext{})
 	if err != nil {
 		t.Fatalf("IsSpam returned error: %v", err)
 	}
@@ -108,6 +126,8 @@ func TestSpamDetectorIncludesBenignConversationBoundaryExamples(t *testing.T) {
 		"Надеюсь, следующая версия модели будет быстрее":                                                      0,
 		"Waiting for a faster Qwen 3.8 27B release":                                                           0,
 		"Ждём ускоренный Qwen 3.8 27B! А пока предлагаю удалённую работу с доходом 500 $ в день, пишите в ЛС": 1,
+		"Middle Project Manager в TrafficConnect: задачи, требования, условия, удалённая работа. Для отклика напишите «Привет» @recruiter": 0,
+		"Retention Manager в iGaming: CRM-задачи, требования, условия и контакт рекрутера":                                                 0,
 	}
 	for _, example := range request.Examples {
 		if classification, ok := want[example.Message]; ok {
@@ -132,13 +152,13 @@ func TestSpamDetectorPromptsRequireExplicitSpamEvidence(t *testing.T) {
 		{
 			name: "initial classification",
 			check: func(detector *spamDetector) (*bool, error) {
-				return detector.IsSpam(t.Context(), "candidate", nil)
+				return detector.IsSpam(t.Context(), "candidate", ClassificationContext{})
 			},
 		},
 		{
 			name: "reported classification",
 			check: func(detector *spamDetector) (*bool, error) {
-				return detector.IsReportedSpam(t.Context(), "candidate", nil)
+				return detector.IsReportedSpam(t.Context(), "candidate", ClassificationContext{})
 			},
 		},
 	}
@@ -170,6 +190,10 @@ func TestSpamDetectorPromptsRequireExplicitSpamEvidence(t *testing.T) {
 				"эмодзи сами по себе",
 				"сами по себе не являются признаками спама",
 				"если нет ни одного признака спама",
+				"контакт рекрутера",
+				"полноценная вакансия",
+				"igaming",
+				db.LLMModerationProfileJobsHR,
 			} {
 				if !strings.Contains(strings.ToLower(prompt), required) {
 					t.Fatalf("prompt does not enforce %q boundary: %q", required, prompt)
@@ -197,7 +221,7 @@ func TestSpamDetectorFramesMaliciousAdminExamplesAsUntrustedData(t *testing.T) {
 
 			llmStub := &spamDetectorTestLLM{response: llm.ChatCompletionResponse{Choices: []llm.ChatCompletionChoice{{Message: llm.ChatCompletionMessage{Content: "0"}}}}}
 			detector := NewSpamDetector(llmStub, log.New().WithField("test", "spam_detector"), time.Minute)
-			if _, err := detector.IsSpam(t.Context(), "candidate", []string{tt.example}); err != nil {
+			if _, err := detector.IsSpam(t.Context(), "candidate", ClassificationContext{Examples: []ClassificationExample{{Message: tt.example, Classification: 1}}}); err != nil {
 				t.Fatalf("IsSpam returned error: %v", err)
 			}
 
@@ -217,8 +241,9 @@ func TestSpamDetectorFramesMaliciousAdminExamplesAsUntrustedData(t *testing.T) {
 }
 
 type decodedClassificationRequest struct {
-	Examples  []decodedClassificationExample `json:"examples"`
-	Candidate decodedClassificationText      `json:"candidate"`
+	PolicyProfile string                         `json:"policy_profile"`
+	Examples      []decodedClassificationExample `json:"examples"`
+	Candidate     decodedClassificationText      `json:"candidate"`
 }
 
 type decodedClassificationExample struct {
@@ -257,7 +282,7 @@ func TestSpamDetectorRejectsMalformedOutputWithoutLeakingIt(t *testing.T) {
 		},
 	}, log.NewEntry(logger), time.Minute)
 
-	result, err := detector.IsSpam(t.Context(), "candidate", nil)
+	result, err := detector.IsSpam(t.Context(), "candidate", ClassificationContext{})
 	if err == nil {
 		t.Fatal("expected malformed model output to fail closed")
 	}
@@ -283,7 +308,7 @@ func TestSpamDetectorAcceptsTrimmedBinaryOutput(t *testing.T) {
 		},
 	}, log.New().WithField("test", "spam_detector"), time.Minute)
 
-	result, err := detector.IsSpam(t.Context(), "candidate", nil)
+	result, err := detector.IsSpam(t.Context(), "candidate", ClassificationContext{})
 	if err != nil {
 		t.Fatalf("IsSpam returned error: %v", err)
 	}
@@ -305,7 +330,7 @@ func TestSpamDetectorUsesReportedPromptForReportedSpam(t *testing.T) {
 	detector := NewSpamDetector(llmStub, log.New().WithField("test", "spam_detector"), time.Minute)
 
 	candidate := "reported message"
-	result, err := detector.IsReportedSpam(context.Background(), candidate, nil)
+	result, err := detector.IsReportedSpam(context.Background(), candidate, ClassificationContext{})
 	if err != nil {
 		t.Fatalf("IsReportedSpam returned error: %v", err)
 	}

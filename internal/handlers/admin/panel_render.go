@@ -431,6 +431,14 @@ func (a *Admin) renderLLM(ctx context.Context, session *db.AdminPanelSession, st
 	if err != nil {
 		return "", nil, err
 	}
+	allowedExamplesBtn, err := a.commandButton(ctx, session.ID, i18n.Get("Allowed Examples", lang), panelCommand{Action: panelActionOpenAllowedExamples})
+	if err != nil {
+		return "", nil, err
+	}
+	profileBtn, err := a.commandButton(ctx, session.ID, fmt.Sprintf("%s: %s", i18n.Get("Moderation Profile", lang), moderationProfileLabel(state.LLMModerationProfile, lang)), panelCommand{Action: panelActionOpenLLMModerationProfile})
+	if err != nil {
+		return "", nil, err
+	}
 	backBtn, err := a.commandButton(ctx, session.ID, "↩️", panelCommand{Action: panelActionBack})
 	if err != nil {
 		return "", nil, err
@@ -438,10 +446,98 @@ func (a *Admin) renderLLM(ctx context.Context, session *db.AdminPanelSession, st
 
 	keyboard := api.NewInlineKeyboardMarkup(
 		api.NewInlineKeyboardRow(toggleBtn),
-		api.NewInlineKeyboardRow(examplesBtn),
+		api.NewInlineKeyboardRow(profileBtn),
+		api.NewInlineKeyboardRow(examplesBtn, allowedExamplesBtn),
 		api.NewInlineKeyboardRow(backBtn),
 	)
 	return text, &keyboard, nil
+}
+
+func (a *Admin) renderLLMModerationProfile(ctx context.Context, session *db.AdminPanelSession, state *panelState) (string, *api.InlineKeyboardMarkup, error) {
+	lang := state.Language
+	text := fmt.Sprintf("%s\n\n%s", i18n.Get("Moderation Profile", lang), moderationProfileLabel(state.LLMModerationProfile, lang))
+
+	generalBtn, err := a.commandButton(ctx, session.ID, panelSelectLabel(state.LLMModerationProfile == db.LLMModerationProfileGeneral, i18n.Get("General", lang)), panelCommand{Action: panelActionSetLLMModerationProfile, Value: db.LLMModerationProfileGeneral})
+	if err != nil {
+		return "", nil, err
+	}
+	jobsHRBtn, err := a.commandButton(ctx, session.ID, panelSelectLabel(state.LLMModerationProfile == db.LLMModerationProfileJobsHR, i18n.Get("Jobs & HR", lang)), panelCommand{Action: panelActionSetLLMModerationProfile, Value: db.LLMModerationProfileJobsHR})
+	if err != nil {
+		return "", nil, err
+	}
+	backBtn, err := a.commandButton(ctx, session.ID, "↩️", panelCommand{Action: panelActionBack})
+	if err != nil {
+		return "", nil, err
+	}
+	keyboard := api.NewInlineKeyboardMarkup(
+		api.NewInlineKeyboardRow(generalBtn),
+		api.NewInlineKeyboardRow(jobsHRBtn),
+		api.NewInlineKeyboardRow(backBtn),
+	)
+	return text, &keyboard, nil
+}
+
+func moderationProfileLabel(profile string, lang string) string {
+	if profile == db.LLMModerationProfileJobsHR {
+		return i18n.Get("Jobs & HR", lang)
+	}
+	return i18n.Get("General", lang)
+}
+
+func exampleListTitle(classification int, lang string) string {
+	if classification == db.SpamClassificationAllowed {
+		return i18n.Get("Allowed Examples", lang)
+	}
+	return i18n.Get("Spam Examples", lang)
+}
+
+func exampleEmptyLabel(classification int, lang string) string {
+	if classification == db.SpamClassificationAllowed {
+		return i18n.Get("No allowed examples yet", lang)
+	}
+	return i18n.Get("No spam examples yet", lang)
+}
+
+func exampleListHelp(classification int, lang string) string {
+	if classification == db.SpamClassificationAllowed {
+		return i18n.Get("Allowed Examples", lang)
+	}
+	return i18n.Get("What this is: list of spam examples used by LLM classifier. Where used: prompt context for new-user message probation. Value meaning: each example improves signal for spam patterns in this chat.", lang)
+}
+
+func exampleDetailTitle(classification int, lang string) string {
+	if classification == db.SpamClassificationAllowed {
+		return i18n.Get("Allowed Example", lang)
+	}
+	return i18n.Get("Spam Example", lang)
+}
+
+func exampleDetailHelp(classification int, lang string) string {
+	if classification == db.SpamClassificationAllowed {
+		return i18n.Get("Allowed Example", lang)
+	}
+	return i18n.Get("What this is: one saved spam example entry. Where used: spam examples list and delete flow. Value meaning: text is used as a labeled spam sample for moderation.", lang)
+}
+
+func exampleAddTitle(classification int, lang string) string {
+	if classification == db.SpamClassificationAllowed {
+		return i18n.Get("Add Example", lang)
+	}
+	return i18n.Get("Add Spam Example", lang)
+}
+
+func examplePromptLabel(classification int, lang string) string {
+	if classification == db.SpamClassificationAllowed {
+		return i18n.Get("Send the allowed example text", lang)
+	}
+	return i18n.Get("Send the spam example text", lang)
+}
+
+func examplePromptHelp(classification int, lang string) string {
+	if classification == db.SpamClassificationAllowed {
+		return i18n.Get("Allowed Examples", lang)
+	}
+	return i18n.Get("What this is: input mode for adding a new spam example. Where used: admin prompt waiting for message text. Value meaning: next received text is stored as spam example.", lang)
 }
 
 func (a *Admin) renderReactionProfileCheck(ctx context.Context, session *db.AdminPanelSession, state *panelState) (string, *api.InlineKeyboardMarkup, error) {
@@ -472,7 +568,8 @@ func (a *Admin) renderReactionProfileCheck(ctx context.Context, session *db.Admi
 
 func (a *Admin) renderExamplesList(ctx context.Context, session *db.AdminPanelSession, state *panelState) (string, *api.InlineKeyboardMarkup, error) {
 	lang := state.Language
-	totalCount, err := a.store.CountChatSpamExamples(ctx, session.ChatID)
+	classification := state.exampleClassification()
+	totalCount, err := a.store.CountChatSpamExamples(ctx, session.ChatID, classification)
 	if err != nil {
 		return "", nil, err
 	}
@@ -480,16 +577,16 @@ func (a *Admin) renderExamplesList(ctx context.Context, session *db.AdminPanelSe
 	state.ListPage = clampPage(state.ListPage, totalPages)
 
 	offset := state.ListPage * panelExamplesPageSize
-	examples, err := a.store.ListChatSpamExamples(ctx, session.ChatID, panelExamplesPageSize, offset)
+	examples, err := a.store.ListChatSpamExamples(ctx, session.ChatID, classification, panelExamplesPageSize, offset)
 	if err != nil {
 		return "", nil, err
 	}
 
 	builder := strings.Builder{}
-	builder.WriteString(i18n.Get("Spam Examples", lang))
+	builder.WriteString(exampleListTitle(classification, lang))
 	builder.WriteString("\n\n")
 	if len(examples) == 0 {
-		builder.WriteString(i18n.Get("No spam examples yet", lang))
+		builder.WriteString(exampleEmptyLabel(classification, lang))
 	} else {
 		for i, example := range examples {
 			preview := makePreview(example.Text, panelPreviewMaxLen)
@@ -499,7 +596,7 @@ func (a *Admin) renderExamplesList(ctx context.Context, session *db.AdminPanelSe
 		}
 	}
 	builder.WriteString("\n\n")
-	builder.WriteString(panelHelpBlock(lang, i18n.Get("What this is: list of spam examples used by LLM classifier. Where used: prompt context for new-user message probation. Value meaning: each example improves signal for spam patterns in this chat.", lang)))
+	builder.WriteString(panelHelpBlock(lang, exampleListHelp(classification, lang)))
 
 	addBtn, err := a.commandButton(ctx, session.ID, i18n.Get("Add Example", lang), panelCommand{Action: panelActionAddExample})
 	if err != nil {
@@ -538,9 +635,13 @@ func (a *Admin) renderExampleDetail(ctx context.Context, session *db.AdminPanelS
 		state.Page = panelPageExamplesList
 		return a.renderExamplesList(ctx, session, state)
 	}
+	if example.ChatID != session.ChatID || example.Classification != state.exampleClassification() {
+		state.Page = panelPageExamplesList
+		return a.renderExamplesList(ctx, session, state)
+	}
 
-	text := fmt.Sprintf("%s\n\n%s", i18n.Get("Spam Example", lang), example.Text)
-	text = appendPanelHelp(text, lang, i18n.Get("What this is: one saved spam example entry. Where used: spam examples list and delete flow. Value meaning: text is used as a labeled spam sample for moderation.", lang))
+	text := fmt.Sprintf("%s\n\n%s", exampleDetailTitle(example.Classification, lang), example.Text)
+	text = appendPanelHelp(text, lang, exampleDetailHelp(example.Classification, lang))
 	deleteBtn, err := a.commandButton(ctx, session.ID, i18n.Get("Delete", lang), panelCommand{Action: panelActionOpenDelete})
 	if err != nil {
 		return "", nil, err
@@ -556,15 +657,16 @@ func (a *Admin) renderExampleDetail(ctx context.Context, session *db.AdminPanelS
 func (a *Admin) renderExamplePrompt(ctx context.Context, session *db.AdminPanelSession, state *panelState) (string, *api.InlineKeyboardMarkup, error) {
 	lang := state.Language
 	builder := strings.Builder{}
-	builder.WriteString(i18n.Get("Add Spam Example", lang))
+	classification := state.exampleClassification()
+	builder.WriteString(exampleAddTitle(classification, lang))
 	builder.WriteString("\n\n")
 	if state.PromptError != "" {
 		builder.WriteString(state.PromptError)
 		builder.WriteString("\n\n")
 	}
-	builder.WriteString(i18n.Get("Send the spam example text", lang))
+	builder.WriteString(examplePromptLabel(classification, lang))
 	builder.WriteString("\n\n")
-	builder.WriteString(panelHelpBlock(lang, i18n.Get("What this is: input mode for adding a new spam example. Where used: admin prompt waiting for message text. Value meaning: next received text is stored as spam example.", lang)))
+	builder.WriteString(panelHelpBlock(lang, examplePromptHelp(classification, lang)))
 
 	backBtn, err := a.commandButton(ctx, session.ID, "↩️", panelCommand{Action: panelActionBack})
 	if err != nil {
