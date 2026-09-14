@@ -9,6 +9,8 @@ import (
 	"github.com/iamwavecut/ngbot/internal/db"
 )
 
+const testUnknownAuthorKind = "unknown"
+
 func TestAuthorTrustCountsOnlyDistinctEligibleMessagesAndRenewsAfterExpiry(t *testing.T) {
 	t.Parallel()
 
@@ -235,7 +237,7 @@ func TestAuthorTrustRejectsInvalidAuthorsWithoutPersisting(t *testing.T) {
 	t.Parallel()
 
 	client := newAuthorTrustClient(t)
-	for _, author := range []db.MessageAuthor{{}, {Kind: "unknown", ID: 300}, {Kind: "user", ID: -300}, {Kind: "sender_chat", ID: 300}} {
+	for _, author := range []db.MessageAuthor{{}, {Kind: testUnknownAuthorKind, ID: 300}, {Kind: "user", ID: -300}, {Kind: "sender_chat", ID: 300}} {
 		if _, err := client.EnsureMessageTrust(t.Context(), -100, author); err == nil {
 			t.Errorf("EnsureMessageTrust accepted %+v", author)
 		}

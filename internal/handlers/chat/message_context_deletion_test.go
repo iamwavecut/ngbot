@@ -14,6 +14,8 @@ import (
 	"github.com/iamwavecut/ngbot/internal/db/sqlite"
 )
 
+const testTelegramErrorBadGateway = "Bad Gateway"
+
 type retryAuthorContextStore struct {
 	gatekeeperStore
 	fail bool
@@ -49,7 +51,7 @@ func TestExplicitDeletionRetriesContextAfterTelegramAlreadyDeleted(t *testing.T)
 	}
 	calls := 0
 	botAPI := newTestBotAPI(t, func(method string, _ *http.Request) any {
-		if method != "deleteMessage" {
+		if method != testTelegramMethodDeleteMessage {
 			t.Fatalf("unexpected method: %s", method)
 		}
 		calls++
@@ -87,9 +89,9 @@ func TestReactionUserRevokeClearsHistoryOnlyAfterSuccessfulBan(t *testing.T) {
 				switch method {
 				case "deleteAllMessageReactions":
 					return true
-				case "banChatMember":
+				case testTelegramMethodBanChatMember:
 					if !succeeds {
-						return &testBotAPIError{code: 500, description: "Bad Gateway"}
+						return &testBotAPIError{code: 500, description: testTelegramErrorBadGateway}
 					}
 					return true
 				default:
@@ -131,7 +133,7 @@ func TestCAPTCHARevokeContextRetryDoesNotRepeatBan(t *testing.T) {
 	}
 	bans := 0
 	botAPI := newTestBotAPI(t, func(method string, _ *http.Request) any {
-		if method != "banChatMember" {
+		if method != testTelegramMethodBanChatMember {
 			t.Fatalf("unexpected method: %s", method)
 		}
 		bans++
@@ -202,7 +204,7 @@ func TestCAPTCHADeactivatedUserDoesNotImplyRevokedHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	botAPI := newTestBotAPI(t, func(method string, _ *http.Request) any {
-		if method != "banChatMember" {
+		if method != testTelegramMethodBanChatMember {
 			t.Fatalf("unexpected method: %s", method)
 		}
 		return &testBotAPIError{code: 400, description: "USER IS DEACTIVATED"}
@@ -242,7 +244,7 @@ func TestLegacyCAPTCHABanDoneDoesNotPurgeUndeletedHistory(t *testing.T) {
 			}
 			botAPI := newTestBotAPI(t, func(method string, _ *http.Request) any {
 				switch method {
-				case "sendMessage":
+				case testTelegramMethodSendMessage:
 					return api.Message{MessageID: 90, Chat: api.Chat{ID: -100}}
 				case "declineChatJoinRequest":
 					return true
@@ -268,7 +270,7 @@ func TestLegacyCAPTCHABanDoneDoesNotPurgeUndeletedHistory(t *testing.T) {
 
 func TestExplicitDeletionContextFollowsTelegramOutcome(t *testing.T) {
 	t.Parallel()
-	for _, message := range []string{"", "Bad Request: message to delete not found", "Bad Request: MESSAGE_ID_INVALID", "Bad Gateway"} {
+	for _, message := range []string{"", "Bad Request: message to delete not found", "Bad Request: MESSAGE_ID_INVALID", testTelegramErrorBadGateway} {
 		t.Run(message, func(t *testing.T) {
 			client, err := sqlite.NewSQLiteClient(t.Context(), t.TempDir(), "context.db")
 			if err != nil {
@@ -284,7 +286,7 @@ func TestExplicitDeletionContextFollowsTelegramOutcome(t *testing.T) {
 				t.Fatal(err)
 			}
 			botAPI := newTestBotAPI(t, func(method string, _ *http.Request) any {
-				if method != "deleteMessage" {
+				if method != testTelegramMethodDeleteMessage {
 					t.Fatalf("unexpected method: %s", method)
 				}
 				if message != "" {
@@ -293,7 +295,7 @@ func TestExplicitDeletionContextFollowsTelegramOutcome(t *testing.T) {
 				return true
 			})
 			err = bot.DeleteChatMessageAndContext(t.Context(), botAPI, client, -100, 10)
-			failed := message == "Bad Gateway"
+			failed := message == testTelegramErrorBadGateway
 			if (err != nil) != failed {
 				t.Fatalf("delete outcome error=%v failed=%v", err, failed)
 			}
@@ -336,7 +338,7 @@ func TestDeletedCAPTCHAReplySnapshotCannotReturnAsContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	botAPI := newTestBotAPI(t, func(method string, _ *http.Request) any {
-		if method != "deleteMessage" {
+		if method != testTelegramMethodDeleteMessage {
 			t.Fatalf("unexpected method: %s", method)
 		}
 		return true
@@ -358,7 +360,7 @@ func TestRestrictedAuthorMembershipBookkeepingUsesIsMember(t *testing.T) {
 		t.Run(map[bool]string{false: "departed", true: "current"}[isMember], func(t *testing.T) {
 			f := newTrustFixture(t)
 			f.reactor.bot = newTestBotAPI(t, func(method string, _ *http.Request) any {
-				if method != "getChatMember" {
+				if method != testTelegramMethodGetChatMember {
 					t.Fatalf("unexpected method: %s", method)
 				}
 				return api.ChatMember{User: f.user, Status: "restricted", IsMember: isMember}

@@ -9,11 +9,13 @@ import (
 	"github.com/iamwavecut/ngbot/internal/db"
 )
 
+const testSpamCaseVoteResolution = "vote"
+
 func TestConfirmedSpamClaimResetsTrustAtomically(t *testing.T) {
 	t.Parallel()
 
 	for _, knownSpam := range []bool{false, true} {
-		t.Run(map[bool]string{false: "vote", true: "known_spam"}[knownSpam], func(t *testing.T) {
+		t.Run(map[bool]string{false: testSpamCaseVoteResolution, true: "known_spam"}[knownSpam], func(t *testing.T) {
 			client := newAuthorTrustClient(t)
 			author := db.MessageAuthor{Kind: db.MessageAuthorUser, ID: 200}
 			now := time.Now().UTC()
@@ -94,7 +96,7 @@ func TestSpamCaseAuthorQueriesPreserveLegacyAndRecoverChannels(t *testing.T) {
 	if got, err := client.GetActiveAuthorSpamCase(t.Context(), -101, author); err != nil || got != nil {
 		t.Fatalf("typed lookup crossed chat: case=%+v err=%v", got, err)
 	}
-	for _, invalid := range []db.MessageAuthor{{Kind: "unknown", ID: 200}, {Kind: db.MessageAuthorUser, ID: -300}, {Kind: db.MessageAuthorSenderChat, ID: 200}} {
+	for _, invalid := range []db.MessageAuthor{{Kind: testUnknownAuthorKind, ID: 200}, {Kind: db.MessageAuthorUser, ID: -300}, {Kind: db.MessageAuthorSenderChat, ID: 200}} {
 		if _, err := client.GetActiveAuthorSpamCase(t.Context(), -100, invalid); err == nil {
 			t.Fatalf("accepted invalid author lookup: %+v", invalid)
 		}
@@ -145,7 +147,7 @@ func TestActiveAuthorSpamCasesIncludeResolvingWhileLegacyRemainsPendingOnly(t *t
 func TestSpamCaseTrustResetRollsBackWithCaseAndStats(t *testing.T) {
 	t.Parallel()
 
-	for _, stage := range []string{"known", "vote", "recovered"} {
+	for _, stage := range []string{"known", testSpamCaseVoteResolution, "recovered"} {
 		t.Run(stage, func(t *testing.T) {
 			client := newAuthorTrustClient(t)
 			author := db.MessageAuthor{Kind: db.MessageAuthorSenderChat, ID: -300}
@@ -172,7 +174,7 @@ func TestSpamCaseTrustResetRollsBackWithCaseAndStats(t *testing.T) {
 				case "known":
 					_, changed, err := client.ClaimKnownSpamCase(t.Context(), spamCase.ID, now)
 					return changed, err
-				case "vote":
+				case testSpamCaseVoteResolution:
 					_, changed, err := client.ClaimSpamCaseResolution(t.Context(), spamCase.ID, 1, false, now)
 					return changed, err
 				default:

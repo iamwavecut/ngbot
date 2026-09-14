@@ -314,7 +314,7 @@ func TestRecordVoteRejectsDepartedVoterEvenWhenMembershipCacheSaysMember(t *test
 		}
 		return map[string]any{
 			moderationTestJSONUser:   map[string]any{"id": 300, moderationTestJSONIsBot: false, moderationTestJSONFirstName: "Voter"},
-			moderationTestJSONStatus: "left",
+			moderationTestJSONStatus: moderationTestMemberStatusLeft,
 			"is_member":              false,
 		}
 	})
@@ -990,7 +990,7 @@ func TestRecordVoteRejectsLogChannelOutsider(t *testing.T) {
 		switch method {
 		case moderationTestTelegramMethodGetChatMember:
 			return map[string]any{
-				moderationTestJSONStatus: "left",
+				moderationTestJSONStatus: moderationTestMemberStatusLeft,
 				moderationTestJSONUser:   map[string]any{"id": 300, moderationTestJSONIsBot: false, moderationTestJSONFirstName: "Outsider"},
 			}
 		default:

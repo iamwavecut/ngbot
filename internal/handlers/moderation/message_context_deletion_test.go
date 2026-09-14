@@ -32,7 +32,7 @@ func TestUserRevokeContextIsRemovedBeforeRestrictionPersistenceFailure(t *testin
 		t.Fatal(err)
 	}
 	botAPI := newModerationTestBotAPI(t, func(method string, _ *http.Request) any {
-		if method != "banChatMember" {
+		if method != testTelegramMethodBanChatMember {
 			t.Fatalf("unexpected method: %s", method)
 		}
 		return true
@@ -71,15 +71,15 @@ func TestFailedUserRevokeAndSuccessfulChannelBanPreserveOtherHistory(t *testing.
 			}
 			botAPI := newModerationRetryTestBotAPI(t, func(method string, _ *http.Request) testAPIResponse {
 				if channel {
-					if method != "banChatSenderChat" && method != "deleteMessage" {
+					if method != testTelegramMethodBanChatSenderChat && method != testTelegramMethodDeleteMessage {
 						t.Fatalf("unexpected channel method: %s", method)
 					}
 					return testAPIResponse{OK: true, Result: true}
 				}
-				if method != "banChatMember" {
+				if method != testTelegramMethodBanChatMember {
 					t.Fatalf("unexpected failed revoke method: %s", method)
 				}
-				return testAPIResponse{OK: false, Description: "Bad Gateway"}
+				return testAPIResponse{OK: false, Description: moderationTestErrorBadGateway}
 			})
 			if path == "banlist_failure" {
 				service := &defaultBanService{bot: botAPI, db: client}
@@ -122,9 +122,9 @@ func TestNoOpUserBanOnlyDeletesExplicitCandidateContext(t *testing.T) {
 			deletions := 0
 			botAPI := newModerationRetryTestBotAPI(t, func(method string, r *http.Request) testAPIResponse {
 				switch method {
-				case "banChatMember":
+				case testTelegramMethodBanChatMember:
 					return testAPIResponse{OK: false, Description: marker}
-				case "deleteMessage":
+				case testTelegramMethodDeleteMessage:
 					deletions++
 					if err := r.ParseForm(); err != nil {
 						t.Fatal(err)
@@ -182,7 +182,7 @@ func TestSuccessfulUserRevokeRemovesOtherSavedMessages(t *testing.T) {
 				t.Fatal(err)
 			}
 			botAPI := newModerationTestBotAPI(t, func(method string, r *http.Request) any {
-				if method != "banChatMember" {
+				if method != testTelegramMethodBanChatMember {
 					t.Fatalf("unexpected method: %s", method)
 				}
 				if err := r.ParseForm(); err != nil {

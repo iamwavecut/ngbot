@@ -107,7 +107,7 @@ func TestAuthorTrustMigrationPreservesEffectiveTrustAndExcludesUntrustedAuthors(
 			t.Fatalf("false positive lost migrated trust: trust=%+v err=%v", trust, err)
 		}
 	}
-	for _, table := range []string{"spam_cases", "chat_challenged_messages"} {
+	for _, table := range []string{testTableSpamCases, testTableChallengedMessages} {
 		var invalidKinds int
 		if err := sqlDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+table+` WHERE author_kind != 'user'`).Scan(&invalidKinds); err != nil {
 			t.Fatalf("read legacy %s kinds: %v", table, err)
@@ -123,9 +123,9 @@ func TestAuthorTrustMigrationPreservesEffectiveTrustAndExcludesUntrustedAuthors(
 		table string
 		want  int
 	}{
-		{table: "spam_cases", want: 4},
+		{table: testTableSpamCases, want: 4},
 		{table: "spam_votes", want: 1},
-		{table: "chat_challenged_messages", want: 1},
+		{table: testTableChallengedMessages, want: 1},
 		{table: "chat_message_probations", want: 3},
 	} {
 		var count int
@@ -151,7 +151,7 @@ func TestAuthorTrustMigrationRejectsLossyRollback(t *testing.T) {
 	if _, err := migrate.ExecMax(client.db.DB, "sqlite3", source, migrate.Down, 1); err == nil {
 		t.Fatal("rollback would reinterpret sender chat moderation as user moderation")
 	}
-	for _, table := range []string{"spam_cases", "chat_challenged_messages"} {
+	for _, table := range []string{testTableSpamCases, testTableChallengedMessages} {
 		var kind string
 		if err := client.db.GetContext(t.Context(), &kind, `SELECT author_kind FROM `+table); err != nil || kind != "sender_chat" {
 			t.Fatalf("rejected rollback changed %s identity=%q err=%v", table, kind, err)

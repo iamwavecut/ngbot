@@ -11,6 +11,7 @@ import (
 )
 
 func TestMessageContextStoresLatestEditWithoutExtendingOriginalAge(t *testing.T) {
+	const newestEdit = "newest edit"
 	t.Parallel()
 
 	client := newAuthorTrustClient(t)
@@ -31,10 +32,10 @@ func TestMessageContextStoresLatestEditWithoutExtendingOriginalAge(t *testing.T)
 		delta  time.Duration
 		wanted string
 	}{
-		{text: "newest edit", delta: 2 * time.Hour, wanted: "newest edit"},
-		{text: "stale edit", delta: time.Hour, wanted: "newest edit"},
-		{text: "replayed original", wanted: "newest edit"},
-		{text: "same version", delta: 2 * time.Hour, wanted: "newest edit"},
+		{text: newestEdit, delta: 2 * time.Hour, wanted: newestEdit},
+		{text: "stale edit", delta: time.Hour, wanted: newestEdit},
+		{text: "replayed original", wanted: newestEdit},
+		{text: "same version", delta: 2 * time.Hour, wanted: newestEdit},
 		{delta: 3 * time.Hour},
 	} {
 		edit := original
@@ -189,5 +190,5 @@ func TestCheckedBindingsSurviveRetentionRegardlessOfAssociatedCaseKind(t *testin
 	if _, err := client.CleanupRetention(t.Context(), now, 10); err != nil {
 		t.Fatalf("cleanup bindings: %v", err)
 	}
-	assertIDs(t, client, "chat_challenged_messages", "message_id", []int64{1, 2})
+	assertIDs(t, client, testTableChallengedMessages, "message_id", []int64{1, 2})
 }

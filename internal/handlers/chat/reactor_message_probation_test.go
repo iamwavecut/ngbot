@@ -27,7 +27,7 @@ type trustFixture struct {
 
 func newTrustFixture(t *testing.T) *trustFixture {
 	t.Helper()
-	f := &trustFixture{now: time.Now().UTC().Truncate(time.Second), chat: &api.Chat{ID: -100, Type: "group"}, user: &api.User{ID: 200, FirstName: "User"}, detector: &testSpamDetector{result: boolPtr(false)}}
+	f := &trustFixture{now: time.Now().UTC().Truncate(time.Second), chat: &api.Chat{ID: -100, Type: testChatTypeGroup}, user: &api.User{ID: 200, FirstName: "User"}, detector: &testSpamDetector{result: boolPtr(false)}}
 	client, err := sqlite.NewSQLiteClient(t.Context(), t.TempDir(), "trust.db")
 	if err != nil {
 		t.Fatal(err)
@@ -40,12 +40,12 @@ func newTrustFixture(t *testing.T) *trustFixture {
 	}
 	botAPI := newTestBotAPI(t, func(method string, _ *http.Request) any {
 		switch method {
-		case "getChatMember":
+		case testTelegramMethodGetChatMember:
 			return testChatMemberResponse(telegramMemberStatus, false, false, false)
-		case "getChat":
-			return map[string]any{"id": -100, "type": "supergroup", "linked_chat_id": -999}
-		case "sendMessage":
-			return map[string]any{"message_id": 900, "date": f.now.Unix(), "chat": map[string]any{"id": -100, "type": "group"}}
+		case testTelegramMethodGetChat:
+			return map[string]any{"id": -100, testJSONType: testChatTypeSupergroup, testJSONLinkedChatID: -999}
+		case testTelegramMethodSendMessage:
+			return map[string]any{"message_id": 900, "date": f.now.Unix(), "chat": map[string]any{"id": -100, testJSONType: testChatTypeGroup}}
 		default:
 			t.Fatalf("unexpected method %s", method)
 			return nil
@@ -195,10 +195,10 @@ func TestAdmissionCommandsMentionsAndEmptyMediaNeverAdvanceOrRenew(t *testing.T)
 	f := newTrustFixture(t)
 	f.reactor.bot.Self = api.User{ID: 999, UserName: "ngbot"}
 	excluded := []*api.Message{f.message(10), f.message(11), f.message(12)}
-	excluded[0].Text = "/noop"
-	excluded[0].Entities = []api.MessageEntity{{Type: "bot_command", Length: 5}}
+	excluded[0].Text = testNoOpCommand
+	excluded[0].Entities = []api.MessageEntity{{Type: testEntityBotCommand, Length: 5}}
 	excluded[1].Text = "@ngbot"
-	excluded[1].Entities = []api.MessageEntity{{Type: "mention", Length: 6}}
+	excluded[1].Entities = []api.MessageEntity{{Type: testEntityMention, Length: 6}}
 	excluded[2].Text = ""
 	excluded[2].Photo = []api.PhotoSize{{FileID: "photo"}}
 	for _, msg := range excluded {

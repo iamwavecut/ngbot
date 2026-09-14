@@ -13,12 +13,12 @@ func TestMessageAuthorRejectsAmbiguousIdentity(t *testing.T) {
 		author MessageAuthor
 		valid  bool
 	}{
-		{author: MessageAuthor{Kind: "user", ID: 12}, valid: true},
-		{author: MessageAuthor{Kind: "sender_chat", ID: -12}, valid: true},
-		{author: MessageAuthor{Kind: "user", ID: -12}},
-		{author: MessageAuthor{Kind: "sender_chat", ID: 12}},
-		{author: MessageAuthor{Kind: "user"}},
-		{author: MessageAuthor{Kind: "sender_chat"}},
+		{author: MessageAuthor{Kind: MessageAuthorUser, ID: 12}, valid: true},
+		{author: MessageAuthor{Kind: MessageAuthorSenderChat, ID: -12}, valid: true},
+		{author: MessageAuthor{Kind: MessageAuthorUser, ID: -12}},
+		{author: MessageAuthor{Kind: MessageAuthorSenderChat, ID: 12}},
+		{author: MessageAuthor{Kind: MessageAuthorUser}},
+		{author: MessageAuthor{Kind: MessageAuthorSenderChat}},
 		{author: MessageAuthor{Kind: "legacy", ID: 12}},
 		{author: MessageAuthor{ID: 12}},
 	} {

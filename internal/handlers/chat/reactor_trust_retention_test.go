@@ -6,11 +6,12 @@ import (
 	"time"
 
 	api "github.com/OvyFlash/telegram-bot-api"
+	"github.com/iamwavecut/ngbot/internal/db"
 )
 
 func TestCheckedEditsRemainProtectedAcrossRetentionAndTrustRenewal(t *testing.T) {
 	t.Parallel()
-	for _, kind := range []string{"user", "sender_chat"} {
+	for _, kind := range []string{db.MessageAuthorUser, db.MessageAuthorSenderChat} {
 		for _, renew := range []bool{false, true} {
 			phase := map[bool]string{false: "initial", true: "renewal"}[renew]
 			t.Run(kind+"/"+phase, func(t *testing.T) {
@@ -18,8 +19,8 @@ func TestCheckedEditsRemainProtectedAcrossRetentionAndTrustRenewal(t *testing.T)
 				start := f.now
 				message := func(id int) *api.Message {
 					msg := f.message(id)
-					if kind == "sender_chat" {
-						msg.SenderChat = &api.Chat{ID: -300, Type: "channel"}
+					if kind == db.MessageAuthorSenderChat {
+						msg.SenderChat = &api.Chat{ID: -300, Type: testChatTypeChannel}
 					}
 					return msg
 				}

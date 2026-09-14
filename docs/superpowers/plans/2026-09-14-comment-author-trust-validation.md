@@ -12,7 +12,7 @@ This checkpoint records validation on 2026-09-14 with Go 1.25.13, from base `b56
 - Deletion regressions distinguish successful user revokes from accepted no-op errors, preserve channel history unless explicitly deleted, resume CAPTCHA context cleanup across SQLite reopen without repeating bans, and preserve terminal permission-denied banlist fences on replay.
 - Russian contextual-reply and spam fixtures verify classifier input and untrusted-history framing with deterministic LLM doubles. They do not measure a live model's classification accuracy.
 
-## Final checks
+## Initial checks
 
 | Check | Result |
 |---|---|
@@ -20,7 +20,7 @@ This checkpoint records validation on 2026-09-14 with Go 1.25.13, from base `b56
 | `go test -race ./...` | 730 test cases passed across 19 packages |
 | `go test -shuffle=on ./...` | 730 test cases passed across 19 packages |
 | `go vet ./...` | Passed |
-| `go tool golangci-lint run --enable=unused --enable=unparam --enable=ineffassign --enable=goconst ./...` | 0 issues |
+| `go tool golangci-lint run --enable=unused --enable=unparam --enable=ineffassign --enable=goconst ./...` | Incomplete evidence: inherited local configuration excluded test `goconst` checks |
 | `go tool gofumpt -l .` | No files reported |
 | `go mod tidy -diff` | No changes |
 | `git diff --check` | Clean |
@@ -33,6 +33,10 @@ This checkpoint records validation on 2026-09-14 with Go 1.25.13, from base `b56
 | Independent review | No remaining findings after regression-backed corrections |
 
 All Go commands used `GOTOOLCHAIN=go1.25.13`. An earlier concurrent normal run hit the existing one-second timeout in `TestWebAppCannotApproveWhileProviderBanCheckIsBlocked`; ten isolated repetitions and the final sequential whole-suite runs passed without modifying that test.
+
+Release integration exposed an untracked parent `.golangci.yml` that excluded `goconst` for test files. CI correctly reported repeated test literals. The canonical command in CI and `AGENTS.md` now uses `--no-config` so local and hosted runs use the same checks; release requires a clean run of that explicit command and the complete GitHub checks.
+
+After the fixture corrections, the uncapped Go 1.26.8 linter with `--no-config` reported zero issues, and all 577 affected test cases passed across five packages. The complete suite had already passed 730 cases in normal, race and shuffled runs on Go 1.26.8; hosted checks are repeated for the corrected commit before release.
 
 ## Container artifact
 

@@ -67,7 +67,7 @@ func TestResolveStatusFromVotes(t *testing.T) {
 			},
 			required:    2,
 			timedOut:    false,
-			wantStatus:  "spam",
+			wantStatus:  db.SpamCaseStatusSpam,
 			wantResolve: true,
 		},
 		{

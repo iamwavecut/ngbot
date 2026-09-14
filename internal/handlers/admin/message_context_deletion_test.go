@@ -25,7 +25,7 @@ func TestDeletedGroupCommandCannotReturnAsReplyContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	botAPI := newAdminTestBotAPI(t, func(method string, _ *http.Request) any {
-		if method != "deleteMessage" {
+		if method != adminTestMethodDeleteMessage {
 			t.Fatalf("unexpected method: %s", method)
 		}
 		return true

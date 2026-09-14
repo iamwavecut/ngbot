@@ -15,7 +15,10 @@ import (
 	handlersbase "github.com/iamwavecut/ngbot/internal/handlers/base"
 )
 
-const testTelegramMethodBanChatSenderChat = "banChatSenderChat"
+const (
+	testTelegramMethodBanChatSenderChat = "banChatSenderChat"
+	moderationTestChannelTitle          = "Channel"
+)
 
 func TestSenderChatSuspicionDeletesWithoutMutingAndSuspendsTrust(t *testing.T) {
 	t.Parallel()
@@ -35,7 +38,7 @@ func TestSenderChatSuspicionDeletesWithoutMutingAndSuspendsTrust(t *testing.T) {
 			if _, _, err := client.RecordSafeAuthorMessage(t.Context(), -100, author, 10, now, 1, time.Hour, true); err != nil {
 				t.Fatal(err)
 			}
-			contextRecord := &db.MessageContext{ChatID: -100, MessageID: 40, AuthorKind: author.Kind, AuthorID: author.ID, Text: "candidate", SentAt: now, UpdatedAt: now}
+			contextRecord := &db.MessageContext{ChatID: -100, MessageID: 40, AuthorKind: author.Kind, AuthorID: author.ID, Text: moderationTestCandidateText, SentAt: now, UpdatedAt: now}
 			if err := client.UpsertMessageContext(t.Context(), contextRecord); err != nil {
 				t.Fatal(err)
 			}
@@ -61,7 +64,7 @@ func TestSenderChatSuspicionDeletesWithoutMutingAndSuspendsTrust(t *testing.T) {
 			})
 			banService := &testModerationBanService{}
 			control := &SpamControl{s: &testModerationService{}, bot: botAPI, store: client, banService: banService, config: config.SpamControl{VotingTimeoutMinutes: time.Hour}}
-			message := &api.Message{MessageID: 40, Chat: api.Chat{ID: -100, Type: moderationTestSupergroup}, SenderChat: &api.Chat{ID: -300, Title: "Channel title", Type: "channel"}, From: fakeUser, Text: "candidate"}
+			message := &api.Message{MessageID: 40, Chat: api.Chat{ID: -100, Type: moderationTestSupergroup}, SenderChat: &api.Chat{ID: -300, Title: "Channel title", Type: "channel"}, From: fakeUser, Text: moderationTestCandidateText}
 			result, err := control.ProcessSpamMessage(t.Context(), message, &message.Chat, "en")
 			if err != nil {
 				t.Fatal(err)
@@ -110,7 +113,7 @@ func TestSenderChatReportRequiresMemberVoteAndBansOnlyChannel(t *testing.T) {
 		}
 	}
 	var methods, deleted []string
-	memberStatus := "left"
+	memberStatus := moderationTestMemberStatusLeft
 	botAPI := newModerationTestBotAPI(t, func(method string, r *http.Request) any {
 		if err := r.ParseForm(); err != nil {
 			t.Fatal(err)
@@ -139,7 +142,7 @@ func TestSenderChatReportRequiresMemberVoteAndBansOnlyChannel(t *testing.T) {
 	})
 	banService := &testModerationBanService{}
 	control := &SpamControl{s: &testModerationService{}, bot: botAPI, store: client, banService: banService, config: config.SpamControl{MinVoters: 1}}
-	target := &api.Message{MessageID: 40, Chat: api.Chat{ID: -100, Type: moderationTestSupergroup}, SenderChat: &api.Chat{ID: -300, Title: "Channel"}, Text: "reported candidate"}
+	target := &api.Message{MessageID: 40, Chat: api.Chat{ID: -100, Type: moderationTestSupergroup}, SenderChat: &api.Chat{ID: -300, Title: moderationTestChannelTitle}, Text: "reported candidate"}
 	report := &api.Message{MessageID: 50, Chat: target.Chat, From: &api.User{ID: 777000}, Text: "/spam"}
 	for range 2 {
 		if _, err := control.ProcessReportedMessage(t.Context(), target, report, &target.Chat, "en"); err != nil {
@@ -205,7 +208,7 @@ func TestSenderChatKnownSpamEnforcesWithoutVote(t *testing.T) {
 	})
 	banService := &testModerationBanService{}
 	control := &SpamControl{s: &testModerationService{}, bot: botAPI, store: client, banService: banService, config: config.SpamControl{SuspectNotificationTimeout: time.Hour}, runtimeCtx: t.Context()}
-	message := &api.Message{MessageID: 40, Chat: api.Chat{ID: -100, Type: moderationTestSupergroup}, SenderChat: &api.Chat{ID: -300, Title: "Channel"}, From: &api.User{ID: 777000}, Text: "candidate"}
+	message := &api.Message{MessageID: 40, Chat: api.Chat{ID: -100, Type: moderationTestSupergroup}, SenderChat: &api.Chat{ID: -300, Title: moderationTestChannelTitle}, From: &api.User{ID: 777000}, Text: moderationTestCandidateText}
 	result, err := control.ProcessBannedMessage(t.Context(), message, &message.Chat, "en")
 	if err != nil || !result.MessageDeleted || !result.UserBanned || banService.muteCalls != 0 || !slices.Equal(methods, []string{testTelegramMethodSendMessage, testTelegramMethodBanChatSenderChat, testTelegramMethodDeleteMessage}) {
 		t.Fatalf("immediate channel enforcement failed: result=%+v methods=%v err=%v", result, methods, err)
@@ -267,7 +270,7 @@ func TestSenderChatResolutionRecoversPendingCaseAndTransientBanAfterRestart(t *t
 						t.Errorf("recovered ban changed target: %v", r.Form)
 					}
 					if banAttempts == 1 {
-						return testAPIResponse{OK: false, Description: "Bad Gateway"}
+						return testAPIResponse{OK: false, Description: moderationTestErrorBadGateway}
 					}
 				case testTelegramMethodDeleteMessage:
 					if r.Form.Get("message_id") != "40" {
@@ -342,7 +345,7 @@ func TestResolvingSenderChatForegroundReplayRetainsOneCaseAndVotingSurface(t *te
 			return testAPIResponse{OK: true, Result: api.Message{MessageID: 700, Chat: api.Chat{ID: -100, Type: moderationTestSupergroup}}}
 		case testTelegramMethodBanChatSenderChat:
 			if !allowBan {
-				return testAPIResponse{OK: false, Description: "Bad Gateway"}
+				return testAPIResponse{OK: false, Description: moderationTestErrorBadGateway}
 			}
 		case testTelegramMethodDeleteMessage:
 		default:
@@ -351,7 +354,7 @@ func TestResolvingSenderChatForegroundReplayRetainsOneCaseAndVotingSurface(t *te
 		return testAPIResponse{OK: true, Result: true}
 	})
 	control := &SpamControl{s: &testModerationService{}, bot: botAPI, store: client, banService: &testModerationBanService{}, runtimeCtx: t.Context(), config: config.SpamControl{SuspectNotificationTimeout: time.Hour}}
-	message := &api.Message{MessageID: 40, Chat: api.Chat{ID: -100, Type: moderationTestSupergroup}, SenderChat: &api.Chat{ID: -300, Title: "Channel"}, Text: "candidate"}
+	message := &api.Message{MessageID: 40, Chat: api.Chat{ID: -100, Type: moderationTestSupergroup}, SenderChat: &api.Chat{ID: -300, Title: moderationTestChannelTitle}, Text: moderationTestCandidateText}
 	if _, err := control.ProcessBannedMessage(t.Context(), message, &message.Chat, "en"); err == nil {
 		t.Fatal("expected initial transient ban failure")
 	}

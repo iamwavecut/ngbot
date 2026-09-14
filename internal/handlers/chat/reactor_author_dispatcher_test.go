@@ -32,7 +32,7 @@ func TestSenderChatLLMExhaustionRemainsInDurableFailureQueue(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = dispatcher.Stop(context.Background()) })
 	message := f.message(1)
-	message.SenderChat = &api.Chat{ID: -300, Type: "channel"}
+	message.SenderChat = &api.Chat{ID: -300, Type: testChatTypeChannel}
 	update := api.Update{UpdateID: 123, Message: message}
 	if err := dispatcher.Persist(t.Context(), update); err != nil {
 		t.Fatal(err)

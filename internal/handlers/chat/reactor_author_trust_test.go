@@ -16,9 +16,9 @@ import (
 
 func TestAuthorTrustChecksThreeOfHundredMessagesAndRenewsAfterThirtyDays(t *testing.T) {
 	for _, senderChat := range []bool{false, true} {
-		name := "user"
+		name := db.MessageAuthorUser
 		if senderChat {
-			name = "sender_chat"
+			name = db.MessageAuthorSenderChat
 		}
 		t.Run(name, func(t *testing.T) {
 			now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
@@ -34,11 +34,11 @@ func TestAuthorTrustChecksThreeOfHundredMessagesAndRenewsAfterThirtyDays(t *test
 			memberLookups := 0
 			botAPI := newTestBotAPI(t, func(method string, _ *http.Request) any {
 				switch method {
-				case "getChatMember":
+				case testTelegramMethodGetChatMember:
 					memberLookups++
 					return testChatMemberResponse("left", false, false, false)
-				case "getChat":
-					return map[string]any{"id": -100, "type": "supergroup", "linked_chat_id": -999}
+				case testTelegramMethodGetChat:
+					return map[string]any{"id": -100, testJSONType: testChatTypeSupergroup, testJSONLinkedChatID: -999}
 				default:
 					t.Fatalf("unexpected method %s", method)
 					return nil
@@ -49,11 +49,11 @@ func TestAuthorTrustChecksThreeOfHundredMessagesAndRenewsAfterThirtyDays(t *test
 				s: &testBotService{botAPI: botAPI, settings: settings}, bot: botAPI, store: client, stats: client,
 				spamDetector: detector, banService: &testBanService{}, now: func() time.Time { return now },
 			}
-			chat := &api.Chat{ID: -100, Type: "supergroup"}
+			chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
 			user := &api.User{ID: 200, FirstName: "Commenter"}
 			message := &api.Message{Chat: *chat, From: user, Text: "A safe contribution to the discussion"}
 			if senderChat {
-				message.SenderChat = &api.Chat{ID: -200, Type: "channel", Title: "Commenting channel"}
+				message.SenderChat = &api.Chat{ID: -200, Type: testChatTypeChannel, Title: "Commenting channel"}
 			}
 			for id := 1; id <= 100; id++ {
 				message.MessageID = id
@@ -93,7 +93,7 @@ func TestExhaustedSenderChatFailureNeverQuarantinesTechnicalUser(t *testing.T) {
 	t.Parallel()
 	f := newTrustFixture(t)
 	message := f.message(1)
-	message.SenderChat = &api.Chat{ID: -200, Type: "channel"}
+	message.SenderChat = &api.Chat{ID: -200, Type: testChatTypeChannel}
 	failure := botservice.ClassifyUpdateFailure(botservice.NewRetryableUpdateFailure(botservice.UpdateFailureLLM, "provider", errors.New("unavailable")))
 	if err := f.reactor.HandleExhaustedUpdateFailure(t.Context(), &api.Update{Message: message}, f.chat, f.user, failure); err != nil {
 		t.Fatal(err)
@@ -110,8 +110,8 @@ func TestCaptionCommandsCannotGrantTrust(t *testing.T) {
 	for id := 1; id <= 3; id++ {
 		message := f.message(id)
 		message.Text = ""
-		message.Caption = "/noop"
-		message.CaptionEntities = []api.MessageEntity{{Type: "bot_command", Offset: 0, Length: 5}}
+		message.Caption = testNoOpCommand
+		message.CaptionEntities = []api.MessageEntity{{Type: testEntityBotCommand, Offset: 0, Length: 5}}
 		f.handle(t, message, false)
 	}
 	if trust := f.trust(t); trust.Trusted(f.now) || trust.SafeMessages != 0 {
@@ -126,8 +126,8 @@ func TestRichCommandsAndBotMentionsNeverAdvanceOrRenewTrust(t *testing.T) {
 		name string
 		text api.RichText
 	}{
-		{"command", api.RichTextBotCommand{Type: "bot_command", BotCommand: "/noop"}},
-		{"mention", api.RichTextMention{Type: "mention", Username: "NgBot"}},
+		{"command", api.RichTextBotCommand{Type: testEntityBotCommand, BotCommand: testNoOpCommand}},
+		{testEntityMention, api.RichTextMention{Type: testEntityMention, Username: "NgBot"}},
 		{"text mention", api.RichTextTextMention{Type: "text_mention", Text: "bot", User: self}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

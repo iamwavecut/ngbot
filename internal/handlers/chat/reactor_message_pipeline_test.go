@@ -283,7 +283,7 @@ func TestSenderChatMalformedClassificationReturnsRetryableFailure(t *testing.T) 
 	t.Parallel()
 
 	botAPI := newTestBotAPI(t, func(string, *http.Request) any {
-		return map[string]any{"id": -100, "type": "supergroup", "linked_chat_id": -999}
+		return map[string]any{"id": -100, testJSONType: testChatTypeSupergroup, testJSONLinkedChatID: -999}
 	})
 	reactor := &Reactor{
 		bot:          botAPI,
@@ -562,7 +562,7 @@ func TestSenderChatUsesSharedWorkflowWithAuthoritativeIdentity(t *testing.T) {
 			}
 			for _, edited := range []bool{false, true} {
 				msg := f.message(10 + calls)
-				msg.SenderChat = &api.Chat{ID: -200, Type: "channel"}
+				msg.SenderChat = &api.Chat{ID: -200, Type: testChatTypeChannel}
 				f.handle(t, msg, edited)
 			}
 			if calls != 2 || f.detector.calls != 2 {
@@ -884,7 +884,7 @@ func TestSpamVoteCallbackUsesSpamCaseChatSettings(t *testing.T) {
 	var edits int
 	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
 		switch method {
-		case "getChatMember":
+		case testTelegramMethodGetChatMember:
 			return map[string]any{
 				logFieldStatus: telegramMemberStatus,
 				logFieldUser:   map[string]any{"id": 300, testJSONIsBot: false, testJSONFirstName: testFirstNameVoter},

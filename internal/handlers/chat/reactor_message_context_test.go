@@ -74,7 +74,7 @@ func TestUnknownDiscussionUsesOnlyReplyChainAndPlainGroupUsesRecentFive(t *testi
 		}
 	}
 	candidate := f.message(10)
-	candidate.Chat.Type = "supergroup"
+	candidate.Chat.Type = testChatTypeSupergroup
 	candidate.ReplyToMessage = &api.Message{MessageID: 3, Chat: candidate.Chat}
 	history, err := f.reactor.messageConversation(t.Context(), candidate, &candidate.Chat)
 	if err != nil {
@@ -83,7 +83,7 @@ func TestUnknownDiscussionUsesOnlyReplyChainAndPlainGroupUsesRecentFive(t *testi
 	if len(history) != 3 {
 		t.Fatalf("unknown linked discussion included unrelated messages: %#v", history)
 	}
-	candidate.Chat.Type = "group"
+	candidate.Chat.Type = testChatTypeGroup
 	candidate.ReplyToMessage = nil
 	history, err = f.reactor.messageConversation(t.Context(), candidate, &candidate.Chat)
 	if err != nil {
@@ -183,7 +183,7 @@ func TestReplyEstablishesDiscussionRootAndOldRootIsOmitted(t *testing.T) {
 	f := newTrustFixture(t)
 	root := f.message(10)
 	root.IsAutomaticForward = true
-	root.SenderChat = &api.Chat{ID: -999, Type: "channel"}
+	root.SenderChat = &api.Chat{ID: -999, Type: testChatTypeChannel}
 	root.Text = "source post"
 	comment := f.message(11)
 	comment.ReplyToMessage = root
@@ -214,6 +214,10 @@ func TestReplyEstablishesDiscussionRootAndOldRootIsOmitted(t *testing.T) {
 }
 
 func TestSameSecondEditsReplaceAndClearContextWithoutReplay(t *testing.T) {
+	const (
+		originalText    = "original"
+		replacementText = "replacement"
+	)
 	t.Parallel()
 	f := newTrustFixture(t)
 	msg := f.message(1)
@@ -222,11 +226,11 @@ func TestSameSecondEditsReplaceAndClearContextWithoutReplay(t *testing.T) {
 		edit       bool
 		text, want string
 	}{
-		{100, false, "original", "original"},
-		{101, true, "replacement", "replacement"},
+		{100, false, originalText, originalText},
+		{101, true, replacementText, replacementText},
 		{102, true, "", ""},
-		{101, true, "replacement", ""},
-		{100, false, "original", ""},
+		{101, true, replacementText, ""},
+		{100, false, originalText, ""},
 	} {
 		msg.Text = tt.text
 		update := &api.Update{UpdateID: tt.updateID, Message: msg}

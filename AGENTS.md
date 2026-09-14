@@ -205,7 +205,7 @@ For detailed architecture, see [docs/CODEBASE_MAP.md](docs/CODEBASE_MAP.md).
 ## 🧹 Code Quality & Hygiene
 
 ### Linting & Static Analysis
-- **Full Lint** 🔍: `go tool golangci-lint run --enable=unused --enable=unparam --enable=ineffassign --enable=goconst ./...`
+- **Full Lint** 🔍: `go tool golangci-lint run --no-config --enable=unused --enable=unparam --enable=ineffassign --enable=goconst ./...`. The repository has no tracked linter configuration; `--no-config` prevents parent or home configuration from silently weakening local checks compared with CI.
 - **Quick Check** ⚡: `go vet ./...` (Do not use `go build` for validation).
 - **Compliance** ✅: **Never ignore lint warnings and fix them right away.**
 
