@@ -63,31 +63,38 @@ type messageResultKey struct {
 }
 
 type Reactor struct {
-	s               bot.Service
-	bot             *api.BotAPI
-	store           reactorStore
-	stats           handlersbase.StatsStore
-	config          Config
-	spamDetector    SpamDetectorInterface
-	banService      moderation.BanService
-	spamControl     *moderation.SpamControl
-	processSpam     func(ctx context.Context, msg *api.Message, chat *api.Chat, lang string) (*moderation.ProcessingResult, error)
-	processBanned   func(ctx context.Context, msg *api.Message, chat *api.Chat, lang string) (*moderation.ProcessingResult, error)
-	processReported func(ctx context.Context, targetMsg *api.Message, reportMsg *api.Message, chat *api.Chat, lang string) (*moderation.ProcessingResult, error)
-	lastResults     map[messageResultKey]*MessageProcessingResult
-	resultOrder     []messageResultKey
-	resultMutex     sync.Mutex
-	now             func() time.Time
+	s                bot.Service
+	bot              *api.BotAPI
+	store            reactorStore
+	stats            handlersbase.StatsStore
+	config           Config
+	spamDetector     SpamDetectorInterface
+	banService       moderation.BanService
+	spamControl      *moderation.SpamControl
+	processSpam      func(ctx context.Context, msg *api.Message, chat *api.Chat, lang string) (*moderation.ProcessingResult, error)
+	processBanned    func(ctx context.Context, msg *api.Message, chat *api.Chat, lang string) (*moderation.ProcessingResult, error)
+	processReported  func(ctx context.Context, targetMsg *api.Message, reportMsg *api.Message, chat *api.Chat, lang string) (*moderation.ProcessingResult, error)
+	lastResults      map[messageResultKey]*MessageProcessingResult
+	resultOrder      []messageResultKey
+	resultMutex      sync.Mutex
+	contextChatMutex sync.Mutex
+	contextChats     map[int64]contextChatInfo
+	now              func() time.Time
 }
 
 type reactorStore interface {
 	ListChatSpamExamples(ctx context.Context, chatID int64, classification int, limit int, offset int) ([]*db.ChatSpamExample, error)
 	IsChatNotSpammer(ctx context.Context, chatID int64, userID int64, username string) (bool, error)
-	RecordChallengedMessage(ctx context.Context, chatID int64, userID int64, messageID int) (bool, error)
-	IsChallengedMessage(ctx context.Context, chatID int64, userID int64, messageID int) (bool, error)
-	MessageProbation(ctx context.Context, chatID int64, userID int64) (*db.MessageProbation, error)
-	GetOrCreateMessageProbation(ctx context.Context, chatID int64, userID int64, startedAt time.Time, eligibleAt time.Time) (*db.MessageProbation, bool, error)
-	MarkMessageProbationGraduated(ctx context.Context, chatID int64, userID int64, graduatedAt time.Time) error
+	MessageTrust(ctx context.Context, chatID int64, author db.MessageAuthor) (*db.MessageTrust, error)
+	EnsureMessageTrust(ctx context.Context, chatID int64, author db.MessageAuthor) (*db.MessageTrust, error)
+	RecordSafeAuthorMessage(ctx context.Context, chatID int64, author db.MessageAuthor, messageID int, now time.Time, requiredMessages int, trustDuration time.Duration, eligible bool) (*db.MessageTrust, bool, error)
+	IsCheckedAuthorMessage(ctx context.Context, chatID int64, author db.MessageAuthor, messageID int) (bool, error)
+	ResetMessageTrust(ctx context.Context, chatID int64, author db.MessageAuthor) error
+	UpsertMessageContext(ctx context.Context, record *db.MessageContext) error
+	MessageContext(ctx context.Context, chatID int64, messageID int) (*db.MessageContext, error)
+	RecentMessageContext(ctx context.Context, chatID int64, threadID int, beforeMessageID int, after time.Time, limit int) ([]db.MessageContext, error)
+	DeleteMessageContext(ctx context.Context, chatID int64, messageID int) error
+	DeleteAuthorMessageContext(ctx context.Context, chatID int64, author db.MessageAuthor) error
 	IsChatKnownNonMember(ctx context.Context, chatID int64, userID int64) (bool, error)
 	UpsertChatKnownNonMember(ctx context.Context, record *db.ChatKnownNonMember) error
 	DeleteChatKnownNonMember(ctx context.Context, chatID int64, userID int64) error
@@ -115,6 +122,7 @@ func NewReactor(s bot.Service, botAPI *api.BotAPI, store reactorStore, stats han
 }
 
 func (r *Reactor) Handle(ctx context.Context, u *api.Update, chat *api.Chat, user *api.User) (bool, error) {
+	ctx = withMessageContextUpdate(ctx, u)
 	entry := r.getLogEntry().WithFields(log.Fields{logFieldMethod: "Handle"})
 	select {
 	case <-ctx.Done():
@@ -197,43 +205,34 @@ func (r *Reactor) Handle(ctx context.Context, u *api.Update, chat *api.Chat, use
 }
 
 func (r *Reactor) handleEditedMessage(ctx context.Context, msg *api.Message, chat *api.Chat, user *api.User, settings *db.Settings) error {
-	if msg == nil || chat == nil {
+	if msg == nil || chat == nil || (settings != nil && !settings.LLMFirstMessageEnabled) {
 		return nil
 	}
-	if msg.SenderChat != nil {
-		return r.handleMessageChallenge(ctx, msg, chat, user, settings, true, false)
-	}
-	if user == nil {
+	author, identified := bot.MessageAuthor(msg)
+	if !identified {
 		return nil
 	}
-	if settings != nil && !settings.LLMFirstMessageEnabled {
-		return nil
-	}
-	moderationAvailable, err := r.moderationAvailable(ctx, chat.ID)
+	available, err := r.moderationAvailable(ctx, chat.ID)
 	if err != nil {
 		return bot.NewRetryableUpdateFailure(bot.UpdateFailureCapability, "capability_unknown", err)
 	}
-	if !moderationAvailable {
+	if !available {
 		return nil
 	}
-	probation, err := r.store.MessageProbation(ctx, chat.ID, user.ID)
-	if err != nil {
-		return fmt.Errorf("get edited message probation: %w", err)
+	if err := r.rememberMessageContext(ctx, msg, chat, settings); err != nil {
+		return err
 	}
-	challenged, err := r.store.IsChallengedMessage(ctx, chat.ID, user.ID, msg.MessageID)
+	trust, err := r.store.MessageTrust(ctx, chat.ID, author)
 	if err != nil {
-		return fmt.Errorf("check edited challenged message: %w", err)
+		return fmt.Errorf("get edited message trust: %w", err)
 	}
-	activeProbation := probation != nil && !probation.GraduatedAt.Valid
-	if !activeProbation && !challenged {
+	checked, err := r.store.IsCheckedAuthorMessage(ctx, chat.ID, author, msg.MessageID)
+	if err != nil {
+		return fmt.Errorf("check edited message binding: %w", err)
+	}
+	if !checked && trust != nil && trust.Trusted(r.currentTime()) {
 		return nil
 	}
-	r.getLogEntry().WithFields(log.Fields{
-		logFieldChatID:     chat.ID,
-		logFieldUserID:     user.ID,
-		logFieldMessageID:  msg.MessageID,
-		"active_probation": activeProbation,
-	}).Debug("rechecking edited probation message")
 	return r.handleMessageChallenge(ctx, msg, chat, user, settings, true, false)
 }
 
@@ -249,11 +248,18 @@ func (r *Reactor) currentTime() time.Time {
 	return r.now().UTC()
 }
 
-func (r *Reactor) messageProbationDuration() time.Duration {
-	if r.config.SpamControl.MessageProbationDuration > 0 {
-		return r.config.SpamControl.MessageProbationDuration
+func (r *Reactor) safeMessagesRequired() int {
+	if r.config.SpamControl.SafeMessagesRequired > 0 {
+		return r.config.SpamControl.SafeMessagesRequired
 	}
-	return 3 * time.Hour
+	return 3
+}
+
+func (r *Reactor) authorTrustDuration() time.Duration {
+	if r.config.SpamControl.AuthorTrustDuration > 0 {
+		return r.config.SpamControl.AuthorTrustDuration
+	}
+	return 30 * 24 * time.Hour
 }
 
 func (r *Reactor) handleCallbackQuery(ctx context.Context, u *api.Update, chat *api.Chat, user *api.User) (bool, error) {

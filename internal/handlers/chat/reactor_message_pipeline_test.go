@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -77,16 +76,10 @@ type testReactorStore struct {
 	deleted        [][2]int64
 	challenged     map[messageResultKey]int64
 	recordError    error
-	probations     map[messageProbationKey]db.MessageProbation
-	probationError error
-	graduateError  error
+	trusts         map[authorTrustKey]db.MessageTrust
+	trustError     error
 	upsertError    error
 	examples       []*db.ChatSpamExample
-}
-
-type messageProbationKey struct {
-	chatID int64
-	userID int64
 }
 
 func (s *testReactorStore) ListChatSpamExamples(_ context.Context, chatID int64, classification int, limit int, offset int) ([]*db.ChatSpamExample, error) {
@@ -164,54 +157,6 @@ func (s *testReactorStore) IsChallengedMessage(_ context.Context, chatID int64, 
 	defer s.mutex.Unlock()
 	storedUserID, ok := s.challenged[messageResultKey{ChatID: chatID, MessageID: messageID}]
 	return ok && storedUserID == userID, nil
-}
-
-func (s *testReactorStore) MessageProbation(_ context.Context, chatID int64, userID int64) (*db.MessageProbation, error) {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
-	if s.probationError != nil {
-		return nil, s.probationError
-	}
-	probation, ok := s.probations[messageProbationKey{chatID: chatID, userID: userID}]
-	if !ok {
-		return nil, nil
-	}
-	return &probation, nil
-}
-
-func (s *testReactorStore) GetOrCreateMessageProbation(_ context.Context, chatID int64, userID int64, startedAt time.Time, eligibleAt time.Time) (*db.MessageProbation, bool, error) {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
-	if s.probationError != nil {
-		return nil, false, s.probationError
-	}
-	if s.probations == nil {
-		s.probations = make(map[messageProbationKey]db.MessageProbation)
-	}
-	key := messageProbationKey{chatID: chatID, userID: userID}
-	probation, ok := s.probations[key]
-	if !ok {
-		probation = db.MessageProbation{ChatID: chatID, UserID: userID, StartedAt: startedAt, EligibleAt: eligibleAt}
-		s.probations[key] = probation
-	}
-	return &probation, !ok, nil
-}
-
-func (s *testReactorStore) MarkMessageProbationGraduated(_ context.Context, chatID int64, userID int64, graduatedAt time.Time) error {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
-	if s.graduateError != nil {
-		return s.graduateError
-	}
-	key := messageProbationKey{chatID: chatID, userID: userID}
-	probation, ok := s.probations[key]
-	if !ok {
-		return errors.New("probation not found")
-	}
-	probation.GraduatedAt.Time = graduatedAt
-	probation.GraduatedAt.Valid = true
-	s.probations[key] = probation
-	return nil
 }
 
 func (s *testReactorStore) IsChatKnownNonMember(context.Context, int64, int64) (bool, error) {
@@ -327,7 +272,7 @@ func TestSenderChatCapabilityLookupFailureReturnsRetryableFailure(t *testing.T) 
 	}
 	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
 	message := &api.Message{MessageID: 2, Chat: *chat, SenderChat: &api.Chat{ID: -200, Type: testChatTypeChannel}, Text: testCandidateValue}
-	err := reactor.handleSenderChatContent(t.Context(), message, chat, db.DefaultSettings(chat.ID), &MessageProcessingResult{}, reactor.getLogEntry())
+	err := reactor.handleMessage(t.Context(), message, chat, nil, db.DefaultSettings(chat.ID))
 	failure := botservice.ClassifyUpdateFailure(err)
 	if failure.Source != botservice.UpdateFailureCapability || failure.Disposition != botservice.UpdateFailureRetryable {
 		t.Fatalf("capability failure = %#v", failure)
@@ -337,7 +282,11 @@ func TestSenderChatCapabilityLookupFailureReturnsRetryableFailure(t *testing.T) 
 func TestSenderChatMalformedClassificationReturnsRetryableFailure(t *testing.T) {
 	t.Parallel()
 
+	botAPI := newTestBotAPI(t, func(string, *http.Request) any {
+		return map[string]any{"id": -100, "type": "supergroup", "linked_chat_id": -999}
+	})
 	reactor := &Reactor{
+		bot:          botAPI,
 		store:        &testReactorStore{},
 		spamDetector: &testSpamDetector{err: llm.NewFailure(llm.FailureMalformedOutput, errors.New("empty"))},
 		banService:   &testBanService{},
@@ -345,7 +294,7 @@ func TestSenderChatMalformedClassificationReturnsRetryableFailure(t *testing.T) 
 	}
 	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
 	message := &api.Message{MessageID: 3, Chat: *chat, SenderChat: &api.Chat{ID: -200, Type: testChatTypeChannel}, Text: testCandidateValue}
-	err := reactor.handleSenderChatContent(t.Context(), message, chat, db.DefaultSettings(chat.ID), &MessageProcessingResult{}, reactor.getLogEntry())
+	err := reactor.handleMessage(t.Context(), message, chat, nil, db.DefaultSettings(chat.ID))
 	failure := botservice.ClassifyUpdateFailure(err)
 	if failure.Source != botservice.UpdateFailureLLM || failure.Disposition != botservice.UpdateFailureRetryable {
 		t.Fatalf("classification failure = %#v", failure)
@@ -583,105 +532,47 @@ func boolPtr(value bool) *bool {
 	return &value
 }
 
-func TestUntrustedSenderChatSpamIsDeletedAndSenderChatBanned(t *testing.T) {
+func TestSenderChatUsesSharedWorkflowWithAuthoritativeIdentity(t *testing.T) {
 	t.Parallel()
-
-	var methods []string
-	botAPI := newTestBotAPI(t, func(method string, _ *http.Request) any {
-		methods = append(methods, method)
-		switch method {
-		case testTelegramMethodGetChat:
-			return map[string]any{"id": -100, testJSONType: testChatTypeSupergroup, testJSONLinkedChatID: -999}
-		case testTelegramMethodDeleteMessage, "banChatSenderChat":
-			return true
-		default:
-			t.Fatalf("unexpected method %q", method)
-			return nil
-		}
-	})
-	detector := &testSpamDetector{result: boolPtr(true)}
-	reactor := &Reactor{
-		s:            &testBotService{botAPI: botAPI},
-		bot:          botAPI,
-		store:        &testReactorStore{},
-		spamDetector: detector,
-		banService:   &testBanService{},
-		lastResults:  make(map[messageResultKey]*MessageProcessingResult),
-	}
-	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
-	message := &api.Message{
-		MessageID: 501,
-		Chat:      *chat,
-		SenderChat: &api.Chat{
-			ID:       -200,
-			Type:     testChatTypeChannel,
-			Title:    "Untrusted channel",
-			UserName: "untrusted",
-		},
-		Text: "adversarial sender chat payload",
-	}
-
-	if err := reactor.handleMessage(t.Context(), message, chat, nil, &db.Settings{LLMFirstMessageEnabled: true}); err != nil {
-		t.Fatalf("handle sender chat: %v", err)
-	}
-	if detector.calls != 1 {
-		t.Fatalf("sender chat classification calls = %d, want 1", detector.calls)
-	}
-	if !slices.Contains(methods, testTelegramMethodDeleteMessage) || !slices.Contains(methods, "banChatSenderChat") {
-		t.Fatalf("sender chat enforcement methods = %#v", methods)
-	}
-}
-
-func TestSenderChatIsAuthoritativeWithFromOnNewAndEditedMessages(t *testing.T) {
-	t.Parallel()
-
-	methods := make([]string, 0, 4)
-	botAPI := newTestBotAPI(t, func(method string, _ *http.Request) any {
-		methods = append(methods, method)
-		switch method {
-		case testTelegramMethodGetChat:
-			return map[string]any{"id": -100, testJSONType: testChatTypeSupergroup, testJSONLinkedChatID: -999}
-		case testTelegramMethodDeleteMessage, testTelegramMethodBanChatSenderChat:
-			return true
-		default:
-			t.Fatalf("unexpected method %q", method)
-			return nil
-		}
-	})
-	detector := &testSpamDetector{result: boolPtr(true)}
-	reactor := &Reactor{
-		s:            &testBotService{botAPI: botAPI},
-		bot:          botAPI,
-		store:        &testReactorStore{},
-		spamDetector: detector,
-		banService:   &testBanService{},
-		lastResults:  make(map[messageResultKey]*MessageProcessingResult),
-	}
-	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
-	from := &api.User{ID: 200, FirstName: testFirstNameForwarder}
-	senderChat := &api.Chat{ID: -200, Type: testChatTypeChannel, Title: "Untrusted"}
-	settings := &db.Settings{LLMFirstMessageEnabled: true, CommunityVotingEnabled: true}
-
-	for _, edited := range []bool{false, true} {
-		message := &api.Message{MessageID: 600 + detector.calls, Chat: *chat, From: from, SenderChat: senderChat, Text: testSpamMessageText}
-		var err error
-		if edited {
-			err = reactor.handleEditedMessage(t.Context(), message, chat, from, settings)
-		} else {
-			err = reactor.handleMessage(t.Context(), message, chat, from, settings)
-		}
-		if err != nil {
-			t.Fatalf("edited=%t: %v", edited, err)
-		}
-	}
-	banCalls := 0
-	for _, method := range methods {
-		if method == testTelegramMethodBanChatSenderChat {
-			banCalls++
-		}
-	}
-	if detector.calls != 2 || banCalls != 2 {
-		t.Fatalf("calls=%d methods=%#v", detector.calls, methods)
+	for _, voting := range []bool{false, true} {
+		t.Run(fmt.Sprint(voting), func(t *testing.T) {
+			f := newTrustFixture(t)
+			f.settings.CommunityVotingEnabled = voting
+			f.detector.result = boolPtr(true)
+			calls := 0
+			process := func(msg *api.Message) *moderation.ProcessingResult {
+				calls++
+				author, ok := botservice.MessageAuthor(msg)
+				if !ok || author.Kind != db.MessageAuthorSenderChat || author.ID != -200 {
+					t.Fatalf("wrong author: %#v", author)
+				}
+				return &moderation.ProcessingResult{MessageDeleted: true, UserBanned: !voting}
+			}
+			f.reactor.processSpam = func(ctx context.Context, msg *api.Message, chat *api.Chat, lang string) (*moderation.ProcessingResult, error) {
+				if !voting {
+					t.Fatal("voting disabled but used vote workflow")
+				}
+				return process(msg), nil
+			}
+			f.reactor.processBanned = func(ctx context.Context, msg *api.Message, chat *api.Chat, lang string) (*moderation.ProcessingResult, error) {
+				if voting {
+					t.Fatal("voting enabled but used immediate ban")
+				}
+				return process(msg), nil
+			}
+			for _, edited := range []bool{false, true} {
+				msg := f.message(10 + calls)
+				msg.SenderChat = &api.Chat{ID: -200, Type: "channel"}
+				f.handle(t, msg, edited)
+			}
+			if calls != 2 || f.detector.calls != 2 {
+				t.Fatalf("workflow=%d LLM=%d", calls, f.detector.calls)
+			}
+			banService := f.reactor.banService.(*testBanService)
+			if banService.checkBanCalls != 0 || banService.muteCalls != 0 || len(banService.bans) != 0 {
+				t.Fatal("technical user reached user enforcement")
+			}
+		})
 	}
 }
 
@@ -740,12 +631,12 @@ func TestSafeRoutedCommandIsBoundForPostGraduationEdit(t *testing.T) {
 	if err := reactor.handleMessageChallenge(t.Context(), command, chat, user, settings, false, true); err != nil {
 		t.Fatalf("moderate command: %v", err)
 	}
-	probation, _ := store.MessageProbation(t.Context(), chat.ID, user.ID)
-	if probation == nil || probation.GraduatedAt.Valid {
+	probation, _ := store.MessageTrust(t.Context(), chat.ID, db.MessageAuthor{Kind: db.MessageAuthorUser, ID: user.ID})
+	if probation == nil || probation.TrustedUntil.Valid {
 		t.Fatalf("routed probation = %#v", probation)
 	}
-	store.probations[messageProbationKey{chatID: chat.ID, userID: user.ID}] = db.MessageProbation{
-		ChatID: chat.ID, UserID: user.ID, StartedAt: now, EligibleAt: now, GraduatedAt: sql.NullTime{Time: now, Valid: true},
+	store.trusts[authorTrustKey{chatID: chat.ID, author: db.MessageAuthor{Kind: db.MessageAuthorUser, ID: user.ID}}] = db.MessageTrust{
+		ChatID: chat.ID, AuthorKind: db.MessageAuthorUser, AuthorID: user.ID, SafeMessages: 3, TrustedUntil: sql.NullTime{Time: now.Add(30 * 24 * time.Hour), Valid: true},
 	}
 	detector.result = boolPtr(true)
 	command.Text = "/settings edited spam"
@@ -804,8 +695,8 @@ func TestCommandRunsProbationContentPolicyBeforeFeatureRouting(t *testing.T) {
 	if processedSpam != 1 {
 		t.Fatalf("spam command processing calls = %d, want 1", processedSpam)
 	}
-	probation, err := store.MessageProbation(t.Context(), chat.ID, user.ID)
-	if err != nil || probation == nil || probation.GraduatedAt.Valid {
+	probation, err := store.MessageTrust(t.Context(), chat.ID, db.MessageAuthor{Kind: db.MessageAuthorUser, ID: user.ID})
+	if err != nil || probation == nil || probation.TrustedUntil.Valid {
 		t.Fatalf("command probation = %#v, err=%v", probation, err)
 	}
 }
@@ -1190,11 +1081,14 @@ func TestSpamVoteHandlerChainConsumesBanlistPrecheck(t *testing.T) {
 	}
 }
 
-func TestHandleMessageExternalQuoteHeuristic(t *testing.T) {
+func TestExternalReplyUsesLLMAndCanBeSafe(t *testing.T) {
 	t.Parallel()
 
-	service := &testBotService{language: "ru"}
-	detector := &testSpamDetector{}
+	botAPI := newTestBotAPI(t, func(string, *http.Request) any {
+		return testChatMemberResponse(telegramMemberStatus, false, false, false)
+	})
+	service := &testBotService{language: "ru", botAPI: botAPI}
+	detector := &testSpamDetector{result: boolPtr(false)}
 	processSpamCalls := 0
 	r := &Reactor{
 		s:            service,
@@ -1232,10 +1126,10 @@ func TestHandleMessageExternalQuoteHeuristic(t *testing.T) {
 		t.Fatalf("handleMessage returned error: %v", err)
 	}
 
-	if detector.calls != 0 {
+	if detector.calls != 1 {
 		t.Fatalf("expected LLM detector not to be called, got %d calls", detector.calls)
 	}
-	if processSpamCalls != 1 {
+	if processSpamCalls != 0 {
 		t.Fatalf("expected processSpam to be called once, got %d", processSpamCalls)
 	}
 
@@ -1243,10 +1137,10 @@ func TestHandleMessageExternalQuoteHeuristic(t *testing.T) {
 	if result == nil {
 		t.Fatal("expected processing result")
 	}
-	if result.IsSpam == nil || !*result.IsSpam {
+	if result.IsSpam == nil || *result.IsSpam {
 		t.Fatalf("expected spam result, got %#v", result.IsSpam)
 	}
-	if result.SkipReason != messageSkipReasonExternalQuote {
+	if result.SkipReason != "" {
 		t.Fatalf("unexpected skip reason: %q", result.SkipReason)
 	}
 }
@@ -1301,6 +1195,7 @@ func TestHandleMessageCleanLeftUserRememberedAsKnownNonMember(t *testing.T) {
 	if err := r.handleMessage(context.Background(), msg, chat, user, settings); err != nil {
 		t.Fatalf("handleMessage returned error: %v", err)
 	}
+
 	if len(store.upserted) != 0 {
 		t.Fatalf("first safe message ended probation: upserted=%d", len(store.upserted))
 	}
@@ -1311,7 +1206,13 @@ func TestHandleMessageCleanLeftUserRememberedAsKnownNonMember(t *testing.T) {
 		t.Fatalf("handle second message: %v", err)
 	}
 
-	if detector.calls != 2 {
+	third := second
+	third.MessageID++
+	if err := r.handleMessage(t.Context(), &third, chat, user, settings); err != nil {
+		t.Fatal(err)
+	}
+
+	if detector.calls != 3 {
 		t.Fatalf("expected LLM detector to be called twice, got %d", detector.calls)
 	}
 	if service.insertedMember != 0 {
@@ -1480,7 +1381,7 @@ func TestHandleMessageWithoutModerationRightsSkipsAllSpamChecks(t *testing.T) {
 	if detector.calls != 0 || banService.checkBanCalls != 0 || processSpamCalls != 0 {
 		t.Fatalf("no-rights chat reached spam checks: llm=%d ban=%d moderation=%d", detector.calls, banService.checkBanCalls, processSpamCalls)
 	}
-	probation, err := reactor.store.MessageProbation(t.Context(), chat.ID, user.ID)
+	probation, err := reactor.store.MessageTrust(t.Context(), chat.ID, db.MessageAuthor{Kind: db.MessageAuthorUser, ID: user.ID})
 	if err != nil || probation != nil {
 		t.Fatalf("no-rights message created probation: probation=%#v err=%v", probation, err)
 	}
@@ -1630,8 +1531,8 @@ func TestHandleMessageLinkedChannelSenderBypassesSpamPipeline(t *testing.T) {
 		}
 	}
 
-	if getChatCalls != 2 {
-		t.Fatalf("expected two getChat calls, got %d", getChatCalls)
+	if getChatCalls != 1 {
+		t.Fatalf("expected one cached getChat lookup, got %d", getChatCalls)
 	}
 	if detector.calls != 0 {
 		t.Fatalf("expected LLM detector not to be called, got %d calls", detector.calls)
@@ -1735,10 +1636,10 @@ func TestHandleMessageKnownNonMemberDoesNotBypassMessageProbation(t *testing.T) 
 		t.Fatalf("handleMessage returned error: %v", err)
 	}
 
-	if detector.calls != 0 {
+	if detector.calls != 1 {
 		t.Fatalf("expected LLM detector not to be called, got %d calls", detector.calls)
 	}
-	if processSpamCalls != 1 {
+	if processSpamCalls != 0 {
 		t.Fatalf("known non-member bypassed spam processing: got %d calls", processSpamCalls)
 	}
 	if banService.checkBanCalls != 1 {
@@ -1749,10 +1650,10 @@ func TestHandleMessageKnownNonMemberDoesNotBypassMessageProbation(t *testing.T) 
 	if result == nil {
 		t.Fatal("expected processing result")
 	}
-	if result.SkipReason != messageSkipReasonExternalQuote {
+	if result.SkipReason != "" {
 		t.Fatalf("unexpected skip reason: %q", result.SkipReason)
 	}
-	probation, err := store.MessageProbation(t.Context(), chat.ID, user.ID)
+	probation, err := store.MessageTrust(t.Context(), chat.ID, db.MessageAuthor{Kind: db.MessageAuthorUser, ID: user.ID})
 	if err != nil || probation == nil {
 		t.Fatalf("known non-member probation: probation=%#v err=%v", probation, err)
 	}
@@ -1789,62 +1690,6 @@ func TestHandleMessageWithoutUserOrSenderChatSkipsSafely(t *testing.T) {
 	result := r.GetLastProcessingResult(chat.ID, msg.MessageID)
 	if result == nil || !result.Skipped || result.SkipReason != messageSkipReasonAnonymousSender {
 		t.Fatalf("expected safe anonymous sender skip, got %#v", result)
-	}
-}
-
-func TestHandleMessageExternalQuoteHeuristicDoesNotTriggerForNonFirstMessage(t *testing.T) {
-	t.Parallel()
-
-	service := &testBotService{isMember: true}
-	detector := &testSpamDetector{}
-	processSpamCalls := 0
-	r := &Reactor{
-		s:            service,
-		bot:          service.GetBot(),
-		store:        &testReactorStore{},
-		spamDetector: detector,
-		banService:   &testBanService{},
-		processSpam: func(context.Context, *api.Message, *api.Chat, string) (*moderation.ProcessingResult, error) {
-			processSpamCalls++
-			return nil, nil
-		},
-		processBanned: func(context.Context, *api.Message, *api.Chat, string) (*moderation.ProcessingResult, error) {
-			return nil, nil
-		},
-		lastResults: make(map[messageResultKey]*MessageProcessingResult),
-	}
-
-	chat := &api.Chat{ID: 100, Type: testChatTypeSupergroup}
-	user := &api.User{ID: 200}
-	msg := &api.Message{
-		MessageID: 2,
-		Chat:      *chat,
-		From:      user,
-		Text:      "попробуйте работает",
-		ExternalReply: &api.ExternalReplyInfo{
-			Origin: api.MessageOrigin{Type: api.MessageOriginChannel},
-			Chat:   &api.Chat{ID: 999, Type: testChatTypeChannel},
-		},
-	}
-	settings := &db.Settings{LLMFirstMessageEnabled: true, CommunityVotingEnabled: true}
-
-	if err := r.handleMessage(context.Background(), msg, chat, user, settings); err != nil {
-		t.Fatalf("handleMessage returned error: %v", err)
-	}
-
-	if detector.calls != 0 {
-		t.Fatalf("expected LLM detector not to be called, got %d calls", detector.calls)
-	}
-	if processSpamCalls != 0 {
-		t.Fatalf("expected processSpam not to be called, got %d", processSpamCalls)
-	}
-
-	result := r.GetLastProcessingResult(msg.Chat.ID, msg.MessageID)
-	if result == nil {
-		t.Fatal("expected processing result")
-	}
-	if result.SkipReason != "User is already a member" {
-		t.Fatalf("unexpected skip reason: %q", result.SkipReason)
 	}
 }
 
@@ -1963,6 +1808,12 @@ func TestHandleMessageCleanMemberInsertsMemberInsteadOfKnownNonMember(t *testing
 		t.Fatalf("handle second message: %v", err)
 	}
 
+	third := second
+	third.MessageID++
+	if err := r.handleMessage(t.Context(), &third, chat, user, settings); err != nil {
+		t.Fatal(err)
+	}
+
 	if service.insertedMember != 1 {
 		t.Fatalf("expected member insertion, got %d", service.insertedMember)
 	}
@@ -1971,7 +1822,7 @@ func TestHandleMessageCleanMemberInsertsMemberInsteadOfKnownNonMember(t *testing
 	}
 }
 
-func TestHandleMessageExternalQuoteHeuristicFallbacks(t *testing.T) {
+func TestReplyAndForwardFormsUseLLM(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -2016,8 +1867,11 @@ func TestHandleMessageExternalQuoteHeuristicFallbacks(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			service := &testBotService{}
-			detector := &testSpamDetector{}
+			botAPI := newTestBotAPI(t, func(string, *http.Request) any {
+				return testChatMemberResponse(telegramMemberStatus, false, false, false)
+			})
+			service := &testBotService{botAPI: botAPI}
+			detector := &testSpamDetector{result: boolPtr(false)}
 			processSpamCalls := 0
 			r := &Reactor{
 				s:            service,
@@ -2053,37 +1907,5 @@ func TestHandleMessageExternalQuoteHeuristicFallbacks(t *testing.T) {
 				t.Fatalf("expected processSpam not to be called, got %d", processSpamCalls)
 			}
 		})
-	}
-}
-
-func TestDetectFirstMessageExternalQuoteHeuristic(t *testing.T) {
-	t.Parallel()
-
-	msg := &api.Message{
-		Chat: api.Chat{ID: 100, Type: testChatTypeSupergroup},
-		ExternalReply: &api.ExternalReplyInfo{
-			Origin: api.MessageOrigin{Type: api.MessageOriginChannel},
-			Chat:   &api.Chat{ID: 999, Type: testChatTypeChannel},
-		},
-		Quote:         &api.TextQuote{Text: "quote"},
-		ForwardOrigin: &api.MessageOrigin{Type: api.MessageOriginChannel},
-		ViaBot:        &api.User{ID: 55, IsBot: true},
-	}
-
-	result := detectFirstMessageExternalQuoteHeuristic(msg)
-	if !result.Triggered {
-		t.Fatal("expected heuristic to trigger")
-	}
-	if !result.HasExternalReply || !result.HasQuote || !result.HasForwardOrigin || !result.HasViaBot {
-		t.Fatalf("unexpected heuristic flags: %#v", result)
-	}
-	if result.OriginType != api.MessageOriginChannel {
-		t.Fatalf("unexpected origin type: %q", result.OriginType)
-	}
-	if result.OriginChatID != 999 {
-		t.Fatalf("unexpected origin chat id: %d", result.OriginChatID)
-	}
-	if result.ViaBotID != 55 {
-		t.Fatalf("unexpected via bot id: %d", result.ViaBotID)
 	}
 }

@@ -7,10 +7,11 @@ import (
 	"time"
 
 	"github.com/iamwavecut/ngbot/internal/db"
+	"github.com/jmoiron/sqlx"
 )
 
 const spamCaseColumns = `
-	id, chat_id, user_id, message_id, message_text, created_at,
+	id, chat_id, user_id, author_kind, message_id, message_text, created_at,
 	channel_username, channel_post_id, notification_message_id,
 	pre_vote_restricted, status, resolved_at, resolve_at,
 	next_attempt_at, attempt_count, last_error
@@ -71,18 +72,23 @@ func (s *sqliteClient) RemoveRestriction(ctx context.Context, chatID int64, user
 }
 
 func (s *sqliteClient) CreateSpamCase(ctx context.Context, sc *db.SpamCase) (*db.SpamCase, error) {
+	author := sc.Author()
+	if err := author.Validate(); err != nil {
+		return nil, err
+	}
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
 	query := `
-		INSERT INTO spam_cases (chat_id, user_id, message_id, message_text, created_at, channel_username, channel_post_id,
+		INSERT INTO spam_cases (chat_id, user_id, author_kind, message_id, message_text, created_at, channel_username, channel_post_id,
 			notification_message_id, pre_vote_restricted, status, resolved_at, resolve_at, next_attempt_at, attempt_count, last_error)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 	result, err := s.db.ExecContext(
 		ctx, query,
 		sc.ChatID,
 		sc.UserID,
+		author.Kind,
 		sc.MessageID,
 		sc.MessageText,
 		sc.CreatedAt,
@@ -109,6 +115,7 @@ func (s *sqliteClient) CreateSpamCase(ctx context.Context, sc *db.SpamCase) (*db
 		return nil, err
 	}
 	sc.ID = id
+	sc.AuthorKind = author.Kind
 	return sc, nil
 }
 
@@ -222,45 +229,47 @@ func (s *sqliteClient) GetSpamCase(ctx context.Context, id int64) (*db.SpamCase,
 }
 
 func (s *sqliteClient) GetActiveSpamCase(ctx context.Context, chatID, userID int64) (*db.SpamCase, error) {
-	s.mutex.RLock()
-	defer s.mutex.RUnlock()
+	return s.activeAuthorSpamCase(ctx, chatID, db.MessageAuthor{Kind: db.MessageAuthorUser, ID: userID}, nil, true)
+}
 
-	var sc db.SpamCase
-	err := s.db.GetContext(ctx, &sc, `
-		SELECT `+spamCaseColumns+` FROM spam_cases
-		WHERE chat_id = ?
-		AND user_id = ?
-		AND status = 'pending'
-		AND resolved_at IS NULL
-		ORDER BY created_at DESC
-		LIMIT 1
-	`, chatID, userID)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, nil
-		}
-		return nil, err
-	}
-	return &sc, nil
+func (s *sqliteClient) GetActiveAuthorSpamCase(ctx context.Context, chatID int64, author db.MessageAuthor) (*db.SpamCase, error) {
+	return s.activeAuthorSpamCase(ctx, chatID, author, nil, false)
 }
 
 func (s *sqliteClient) GetActiveSpamCaseByMessage(ctx context.Context, chatID, userID int64, messageID int) (*db.SpamCase, error) {
+	return s.activeAuthorSpamCase(ctx, chatID, db.MessageAuthor{Kind: db.MessageAuthorUser, ID: userID}, &messageID, true)
+}
+
+func (s *sqliteClient) GetActiveAuthorSpamCaseByMessage(ctx context.Context, chatID int64, author db.MessageAuthor, messageID int) (*db.SpamCase, error) {
+	return s.activeAuthorSpamCase(ctx, chatID, author, &messageID, false)
+}
+
+func (s *sqliteClient) activeAuthorSpamCase(ctx context.Context, chatID int64, author db.MessageAuthor, messageID *int, pendingOnly bool) (*db.SpamCase, error) {
+	if err := author.Validate(); err != nil {
+		return nil, err
+	}
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
 
+	query := `
+		SELECT ` + spamCaseColumns + ` FROM spam_cases
+		WHERE chat_id = ? AND user_id = ? AND author_kind = ? AND resolved_at IS NULL
+	`
+	args := []any{chatID, author.ID, author.Kind}
+	if messageID != nil {
+		query += ` AND message_id = ?`
+		args = append(args, *messageID)
+	}
+	if pendingOnly {
+		query += ` AND status = 'pending'`
+	} else {
+		query += ` AND status IN ('pending', 'resolving_spam', 'resolving_false_positive')`
+	}
+	query += ` ORDER BY created_at DESC, id DESC LIMIT 1`
 	var sc db.SpamCase
-	err := s.db.GetContext(ctx, &sc, `
-		SELECT `+spamCaseColumns+` FROM spam_cases
-		WHERE chat_id = ?
-		AND user_id = ?
-		AND message_id = ?
-		AND status = 'pending'
-		AND resolved_at IS NULL
-		ORDER BY created_at DESC
-		LIMIT 1
-	`, chatID, userID, messageID)
+	err := s.db.GetContext(ctx, &sc, query, args...)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, err
@@ -500,6 +509,9 @@ func (s *sqliteClient) ClaimKnownSpamCase(ctx context.Context, caseID int64, now
 	if affected != 1 {
 		return nil, false, nil
 	}
+	if err := resetSpamCaseTrust(ctx, tx, caseID); err != nil {
+		return nil, false, err
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, false, err
 	}
@@ -574,6 +586,11 @@ func (s *sqliteClient) ClaimSpamCaseResolution(
 	if affected != 1 {
 		return nil, false, nil
 	}
+	if nextStatus == db.SpamCaseStatusResolvingSpam {
+		if err := resetSpamCaseTrust(ctx, tx, caseID); err != nil {
+			return nil, false, err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, false, err
 	}
@@ -611,6 +628,11 @@ func (s *sqliteClient) FinalizeSpamCaseResolution(
 	if affected != 1 {
 		return false, nil
 	}
+	if expectedStatus == db.SpamCaseStatusResolvingSpam || terminalStatus == db.SpamCaseStatusSpam {
+		if err := resetSpamCaseTrust(ctx, tx, caseID); err != nil {
+			return false, err
+		}
+	}
 	if statsKey != "" {
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO kv_store (key, value, updated_at)
@@ -626,6 +648,16 @@ func (s *sqliteClient) FinalizeSpamCaseResolution(
 		return false, err
 	}
 	return true, nil
+}
+
+func resetSpamCaseTrust(ctx context.Context, tx *sqlx.Tx, caseID int64) error {
+	_, err := tx.ExecContext(ctx, `
+		UPDATE chat_author_trust SET safe_messages = 0, trusted_until = NULL
+		WHERE (chat_id, author_kind, author_id) = (
+			SELECT chat_id, author_kind, user_id FROM spam_cases WHERE id = ?
+		)
+	`, caseID)
+	return err
 }
 
 func (s *sqliteClient) ScheduleSpamCaseRetry(
@@ -717,6 +749,7 @@ func (s *sqliteClient) RemoveExpiredRestrictions(ctx context.Context) error {
 						FROM spam_cases
 						WHERE spam_cases.chat_id = user_restrictions.chat_id
 							AND spam_cases.user_id = user_restrictions.user_id
+							AND spam_cases.author_kind = 'user'
 							AND spam_cases.pre_vote_restricted = TRUE
 							AND spam_cases.status NOT IN (?, ?, ?)
 					)

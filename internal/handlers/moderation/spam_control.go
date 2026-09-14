@@ -64,8 +64,10 @@ type spamStore interface {
 	GetPendingSpamCases(ctx context.Context) ([]*db.SpamCase, error)
 	GetDueSpamCases(ctx context.Context, now time.Time) ([]*db.SpamCase, error)
 	GetPrivilegeBlockedSpamCases(ctx context.Context) ([]*db.SpamCase, error)
-	GetActiveSpamCase(ctx context.Context, chatID int64, userID int64) (*db.SpamCase, error)
-	GetActiveSpamCaseByMessage(ctx context.Context, chatID int64, userID int64, messageID int) (*db.SpamCase, error)
+	GetActiveAuthorSpamCase(ctx context.Context, chatID int64, author db.MessageAuthor) (*db.SpamCase, error)
+	GetActiveAuthorSpamCaseByMessage(ctx context.Context, chatID int64, author db.MessageAuthor, messageID int) (*db.SpamCase, error)
+	DeleteMessageContext(ctx context.Context, chatID int64, messageID int) error
+	DeleteAuthorMessageContext(ctx context.Context, chatID int64, author db.MessageAuthor) error
 	AddSpamCaseReportMessage(ctx context.Context, message *db.SpamCaseReportMessage) error
 	GetDueSpamCaseReportMessages(ctx context.Context, before time.Time) ([]*db.SpamCaseReportMessage, error)
 	DeleteSpamCaseReportMessage(ctx context.Context, caseID, chatID int64, messageID int) error
@@ -140,28 +142,32 @@ func (sc *SpamControl) ProcessSuspectMessage(ctx context.Context, msg *api.Messa
 	return err
 }
 
-func (sc *SpamControl) getSpamCase(ctx context.Context, msg *api.Message, preVoteRestricted bool) (*db.SpamCase, error) {
-	spamCase, err := sc.store.GetActiveSpamCase(ctx, msg.Chat.ID, msg.From.ID)
+func (sc *SpamControl) getSpamCase(ctx context.Context, msg *api.Message, voting bool) (*db.SpamCase, error) {
+	author, valid := bot.MessageAuthor(msg)
+	if !valid {
+		return nil, errors.New("invalid spam case author")
+	}
+	spamCase, err := sc.store.GetActiveAuthorSpamCase(ctx, msg.Chat.ID, author)
 	if err != nil {
-		log.WithField("error", err.Error()).Debug("failed to get active spam case")
+		return nil, fmt.Errorf("get active spam case: %w", err)
 	}
 	if spamCase != nil && spamCase.MessageID != 0 && spamCase.MessageID != msg.MessageID {
-		spamCase, err = sc.store.GetActiveSpamCaseByMessage(ctx, msg.Chat.ID, msg.From.ID, msg.MessageID)
+		spamCase, err = sc.store.GetActiveAuthorSpamCaseByMessage(ctx, msg.Chat.ID, author, msg.MessageID)
 		if err != nil {
-			log.WithField("error", err.Error()).Debug("failed to get active message-bound spam case")
-			spamCase = nil
+			return nil, fmt.Errorf("get active message-bound spam case: %w", err)
 		}
 	}
 	if spamCase == nil {
 		now := time.Now()
 		var resolveAt *time.Time
-		if preVoteRestricted {
+		if voting {
 			value := now.Add(sc.effectiveVotingPolicy(ctx, msg.Chat.ID).Timeout)
 			resolveAt = &value
 		}
 		spamCase, err = sc.store.CreateSpamCase(ctx, &db.SpamCase{
 			ChatID:            msg.Chat.ID,
-			UserID:            msg.From.ID,
+			UserID:            author.ID,
+			AuthorKind:        author.Kind,
 			MessageID:         msg.MessageID,
 			MessageText:       bot.ExtractContentFromMessage(msg),
 			CreatedAt:         now,
@@ -184,16 +190,21 @@ type ProcessingResult struct {
 }
 
 func (sc *SpamControl) getReportedSpamCase(ctx context.Context, targetMsg *api.Message) (*db.SpamCase, error) {
-	spamCase, err := sc.store.GetActiveSpamCaseByMessage(ctx, targetMsg.Chat.ID, targetMsg.From.ID, targetMsg.MessageID)
+	author, valid := bot.MessageAuthor(targetMsg)
+	if !valid {
+		return nil, errors.New("invalid reported message author")
+	}
+	spamCase, err := sc.store.GetActiveAuthorSpamCaseByMessage(ctx, targetMsg.Chat.ID, author, targetMsg.MessageID)
 	if err != nil {
-		log.WithField("error", err.Error()).Debug("failed to get active message-bound spam case")
+		return nil, fmt.Errorf("get reported spam case: %w", err)
 	}
 	if spamCase == nil {
 		now := time.Now()
 		resolveAt := now.Add(sc.effectiveVotingPolicy(ctx, targetMsg.Chat.ID).Timeout)
 		spamCase, err = sc.store.CreateSpamCase(ctx, &db.SpamCase{
 			ChatID:            targetMsg.Chat.ID,
-			UserID:            targetMsg.From.ID,
+			UserID:            author.ID,
+			AuthorKind:        author.Kind,
 			MessageID:         targetMsg.MessageID,
 			MessageText:       bot.ExtractContentFromMessage(targetMsg),
 			CreatedAt:         now,
@@ -211,7 +222,7 @@ func (sc *SpamControl) getReportedSpamCase(ctx context.Context, targetMsg *api.M
 
 func (sc *SpamControl) ProcessReportedMessage(ctx context.Context, targetMsg *api.Message, reportMsg *api.Message, chat *api.Chat, lang string) (*ProcessingResult, error) {
 	result := &ProcessingResult{}
-	if targetMsg == nil || reportMsg == nil || chat == nil || targetMsg.From == nil {
+	if _, valid := bot.MessageAuthor(targetMsg); !valid || reportMsg == nil || chat == nil {
 		return result, nil
 	}
 	available, err := sc.banService.ModerationAvailable(ctx, chat.ID)
@@ -235,6 +246,9 @@ func (sc *SpamControl) ProcessReportedMessage(ctx context.Context, targetMsg *ap
 	}); err != nil {
 		log.WithField("error", err.Error()).Error("failed to record report message")
 	}
+	if spamCase.Status != db.SpamCaseStatusPending {
+		return result, nil
+	}
 
 	if spamCase.NotificationMessageID == 0 && spamCase.ChannelPostID == 0 {
 		notifMsg := sc.createInChatNotification(targetMsg, spamCase.ID, lang, true)
@@ -257,7 +271,8 @@ func (sc *SpamControl) ProcessReportedMessage(ctx context.Context, targetMsg *ap
 func (sc *SpamControl) preprocessMessage(ctx context.Context, msg *api.Message, chat *api.Chat, lang string, voting bool) (*ProcessingResult, error) {
 	result := &ProcessingResult{}
 	var persistenceErr error
-	if msg == nil || chat == nil || msg.From == nil {
+	author, valid := bot.MessageAuthor(msg)
+	if !valid || chat == nil {
 		return result, nil
 	}
 	available, err := sc.banService.ModerationAvailable(ctx, chat.ID)
@@ -271,6 +286,9 @@ func (sc *SpamControl) preprocessMessage(ctx context.Context, msg *api.Message, 
 	spamCase, err := sc.getSpamCase(ctx, msg, voting)
 	if err != nil {
 		return result, err
+	}
+	if spamCase.Status != db.SpamCaseStatusPending {
+		return result, nil
 	}
 
 	shouldNotify := spamCase.NotificationMessageID == 0 && spamCase.ChannelPostID == 0
@@ -311,7 +329,7 @@ func (sc *SpamControl) preprocessMessage(ctx context.Context, msg *api.Message, 
 							return
 						default:
 						}
-						if _, err := sc.bot.RequestWithContext(runCtx, api.NewDeleteMessage(msg.Chat.ID, notification.MessageID)); err != nil {
+						if err := sc.deleteMessage(runCtx, msg.Chat.ID, notification.MessageID); err != nil {
 							log.WithField("error", err.Error()).Error("failed to delete notification")
 						}
 					})
@@ -330,12 +348,12 @@ func (sc *SpamControl) preprocessMessage(ctx context.Context, msg *api.Message, 
 		return result, errors.New("no voting surface is available")
 	}
 
-	if voting {
+	if voting && author.Kind == db.MessageAuthorUser {
 		muteUntil := time.Now().Add(sc.effectiveVotingPolicy(ctx, chat.ID).Timeout)
 		if spamCase.ResolveAt != nil {
 			muteUntil = *spamCase.ResolveAt
 		}
-		if err := sc.banService.MuteUser(ctx, chat.ID, msg.From.ID, muteUntil); err != nil {
+		if err := sc.banService.MuteUser(ctx, chat.ID, author.ID, muteUntil); err != nil {
 			if isTelegramPrivilegeError(err) {
 				sc.banService.MarkModerationUnavailable(chat.ID)
 				result.Error = errChatAdminRequired
@@ -348,18 +366,23 @@ func (sc *SpamControl) preprocessMessage(ctx context.Context, msg *api.Message, 
 			}
 		} else {
 			if err := sc.store.SetSpamCasePreVoteRestricted(ctx, spamCase.ID, true); err != nil {
-				compensationErr := sc.banService.UnmuteUser(ctx, chat.ID, msg.From.ID)
+				compensationErr := sc.banService.UnmuteUser(ctx, chat.ID, author.ID)
 				return result, errors.Join(fmt.Errorf("record pre-vote restriction: %w", err), compensationErr)
 			}
 			spamCase.PreVoteRestricted = true
 			result.UserBanned = true
-			if err := bot.DeleteChatMessage(ctx, sc.bot, chat.ID, msg.MessageID); err != nil {
+			if err := sc.deleteMessage(ctx, chat.ID, msg.MessageID); err != nil {
 				result.Error = err.Error()
 				return result, fmt.Errorf("delete detected spam message: %w", err)
 			} else {
 				result.MessageDeleted = true
 			}
 		}
+	} else if voting {
+		if err := sc.deleteMessage(ctx, chat.ID, msg.MessageID); err != nil {
+			return result, fmt.Errorf("delete detected sender chat spam: %w", err)
+		}
+		result.MessageDeleted = true
 	} else {
 		claimedCase, claimed, err := sc.store.ClaimKnownSpamCase(ctx, spamCase.ID, time.Now())
 		if err != nil {
@@ -384,7 +407,11 @@ func (sc *SpamControl) preprocessMessage(ctx context.Context, msg *api.Message, 
 	}
 
 	if result.Error == errChatAdminRequired {
-		unsuccessReply := api.NewMessage(chat.ID, "I don't have enough rights to ban this user")
+		failureText := "I don't have enough rights to ban this user"
+		if author.Kind == db.MessageAuthorSenderChat {
+			failureText = "I don't have enough rights to ban this channel"
+		}
+		unsuccessReply := api.NewMessage(chat.ID, failureText)
 		unsuccessReply.ReplyParameters = api.ReplyParameters{
 			ChatID:                   chat.ID,
 			MessageID:                msg.MessageID,
@@ -403,7 +430,7 @@ func (sc *SpamControl) preprocessMessage(ctx context.Context, msg *api.Message, 
 					return
 				default:
 				}
-				if _, err := sc.bot.RequestWithContext(runCtx, api.NewDeleteMessage(chat.ID, apiResult.MessageID)); err != nil {
+				if err := sc.deleteMessage(runCtx, chat.ID, apiResult.MessageID); err != nil {
 					log.WithField("error", err.Error()).Error("failed to delete unsuccess reply")
 				}
 			})
@@ -426,6 +453,9 @@ func (sc *SpamControl) SendChannelPost(ctx context.Context, msg *api.Message, la
 	if err != nil {
 		return nil, fmt.Errorf("failed to get spam case: %w", err)
 	}
+	if spamCase.Status != db.SpamCaseStatusPending {
+		return nil, nil
+	}
 	channelMsg := sc.createChannelPost(msg, spamCase.ID, lang, voting)
 	sent, err := bot.Send(ctx, sc.bot, channelMsg)
 	if err != nil {
@@ -441,7 +471,7 @@ func (sc *SpamControl) SendChannelPost(ctx context.Context, msg *api.Message, la
 func (sc *SpamControl) createInChatNotification(msg *api.Message, caseID int64, lang string, voting bool) api.Chattable {
 	text := fmt.Sprintf(
 		i18n.Get("⚠️ Potential spam message from %s\n\nMessage: %s\n\nPlease vote:", lang),
-		bot.GetUN(msg.From),
+		messageAuthorName(msg),
 		bot.ExtractContentFromMessage(msg),
 	)
 
@@ -464,7 +494,7 @@ func (sc *SpamControl) createInChatNotification(msg *api.Message, caseID int64, 
 }
 
 func (sc *SpamControl) createChannelPost(msg *api.Message, caseID int64, lang string, voting bool) api.Chattable {
-	from := bot.GetUN(msg.From)
+	from := messageAuthorName(msg)
 	textSlice := strings.Split(bot.ExtractContentFromMessage(msg), "\n")
 	for i, line := range textSlice {
 		line = strings.ReplaceAll(line, "http", "_ttp")
@@ -496,7 +526,10 @@ func (sc *SpamControl) createChannelPost(msg *api.Message, caseID int64, lang st
 }
 
 func (sc *SpamControl) createChannelNotification(msg *api.Message, channelPostLink string, lang string) api.Chattable {
-	from := bot.GetUN(msg.From)
+	from := messageAuthorName(msg)
+	if msg.SenderChat != nil {
+		from = api.EscapeText(api.ModeMarkdown, from)
+	}
 	text := fmt.Sprintf(i18n.Get("Message from %s is being reviewed for spam\n\nAppeal here: [link](%s)", lang), from, channelPostLink)
 	notificationMsg := api.NewMessage(msg.Chat.ID, text)
 	notificationMsg.ParseMode = api.ModeMarkdown
@@ -506,6 +539,19 @@ func (sc *SpamControl) createChannelNotification(msg *api.Message, channelPostLi
 	notificationMsg.LinkPreviewOptions.IsDisabled = true
 
 	return notificationMsg
+}
+
+func messageAuthorName(msg *api.Message) string {
+	if msg.SenderChat != nil {
+		if msg.SenderChat.Title != "" {
+			return msg.SenderChat.Title
+		}
+		if msg.SenderChat.UserName != "" {
+			return "@" + msg.SenderChat.UserName
+		}
+		return fmt.Sprintf("Channel %d", msg.SenderChat.ID)
+	}
+	return bot.GetUN(msg.From)
 }
 
 func (sc *SpamControl) sendNotificationWithQuoteFallback(ctx context.Context, notifMsg api.Chattable) (api.Message, error) {
@@ -576,7 +622,7 @@ func (sc *SpamControl) DeleteMessageAfter(chatID int64, messageID int, delay tim
 		return
 	}
 	sc.scheduleAfter(delay, func(runCtx context.Context) {
-		if err := bot.DeleteChatMessage(runCtx, sc.bot, chatID, messageID); err != nil {
+		if err := sc.deleteMessage(runCtx, chatID, messageID); err != nil {
 			log.WithField("error", err.Error()).WithField("chat_id", chatID).WithField("message_id", messageID).Error("failed to delete scheduled message")
 		}
 	})
@@ -594,7 +640,7 @@ func (sc *SpamControl) cleanupRecentJoinMessage(ctx context.Context, chatID, use
 			continue
 		}
 		if joiner.JoinMessageID != 0 {
-			if err := bot.DeleteChatMessage(ctx, sc.bot, chatID, joiner.JoinMessageID); err != nil {
+			if err := sc.deleteMessage(ctx, chatID, joiner.JoinMessageID); err != nil {
 				log.WithField("error", err.Error()).WithField("chat_id", chatID).WithField("user_id", userID).WithField("message_id", joiner.JoinMessageID).Error("failed to delete recent join message")
 			}
 		}
@@ -603,6 +649,13 @@ func (sc *SpamControl) cleanupRecentJoinMessage(ctx context.Context, chatID, use
 		}
 		return
 	}
+}
+
+func (sc *SpamControl) deleteMessage(ctx context.Context, chatID int64, messageID int) error {
+	if messageID == 0 {
+		return nil
+	}
+	return bot.DeleteChatMessageAndContext(ctx, sc.bot, sc.store, chatID, messageID)
 }
 
 func (sc *SpamControl) getLogEntry() *log.Entry {

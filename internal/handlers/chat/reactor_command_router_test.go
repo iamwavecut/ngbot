@@ -203,6 +203,7 @@ func TestVoteBanCommandRoutesByRestrictPermissionAfterReportCheck(t *testing.T) 
 					language: "en",
 				},
 				bot:          botAPI,
+				store:        &testReactorStore{},
 				spamDetector: detector,
 				processBanned: func(_ context.Context, gotMsg *api.Message, gotChat *api.Chat, lang string) (*moderation.ProcessingResult, error) {
 					bannedCalls++
@@ -442,6 +443,7 @@ func TestVoteBanCommandLLMSpamBansImmediatelyAndDeletesReportMessage(t *testing.
 			language: "en",
 		},
 		bot:          botAPI,
+		store:        &testReactorStore{},
 		spamDetector: &testSpamDetector{reportedResult: boolPtr(true)},
 		processBanned: func(_ context.Context, gotMsg *api.Message, gotChat *api.Chat, lang string) (*moderation.ProcessingResult, error) {
 			bannedCalls++

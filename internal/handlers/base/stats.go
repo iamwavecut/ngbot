@@ -16,13 +16,20 @@ type StatsStore interface {
 }
 
 type ChatStatsSummary struct {
-	ChallengeStarted int
-	ChallengePassed  int
-	ChallengeFailed  int
-	LLMChecked       int
-	HeuristicSpam    int
-	SpamConfirmed    int
-	FalsePositive    int
+	ChallengeStarted   int
+	ChallengePassed    int
+	ChallengeFailed    int
+	LLMChecked         int
+	HeuristicSpam      int
+	SpamConfirmed      int
+	FalsePositive      int
+	AuthorTrustSkipped int
+	AuthorTrustGranted int
+	AuthorCheckInitial int
+	AuthorCheckRenewal int
+	AuthorCheckEdit    int
+	AuthorCheckPending int
+	AuthorCheckReport  int
 }
 
 const (
@@ -86,6 +93,24 @@ func LoadStatsSummary(ctx context.Context, store StatsStore, chatID int64, now t
 		if err != nil {
 			return summary, err
 		}
+		for _, metric := range []struct {
+			name  string
+			total *int
+		}{
+			{"author_trust_skipped", &summary.AuthorTrustSkipped},
+			{"author_trust_granted", &summary.AuthorTrustGranted},
+			{"author_check_initial", &summary.AuthorCheckInitial},
+			{"author_check_renewal", &summary.AuthorCheckRenewal},
+			{"author_check_edit", &summary.AuthorCheckEdit},
+			{"author_check_pending_case", &summary.AuthorCheckPending},
+			{"author_check_report", &summary.AuthorCheckReport},
+		} {
+			*metric.total, err = loadStatValue(ctx, store, StatsKey(chatID, day, metric.name), *metric.total)
+			if err != nil {
+				return summary, err
+			}
+		}
+
 	}
 
 	return summary, nil
@@ -96,6 +121,7 @@ func FormatStatsSummary(lang string, summary ChatStatsSummary) string {
 		i18n.Get("Last 7 days", lang),
 		fmt.Sprintf(i18n.Get("Challenges: %d started, %d passed, %d failed", lang), summary.ChallengeStarted, summary.ChallengePassed, summary.ChallengeFailed),
 		fmt.Sprintf(i18n.Get("Spam checks: %d LLM, %d heuristic", lang), summary.LLMChecked, summary.HeuristicSpam),
+		fmt.Sprintf(i18n.Get("Trusted messages skipped: %d", lang), summary.AuthorTrustSkipped),
 		fmt.Sprintf(i18n.Get("Outcomes: %d spam, %d false positive", lang), summary.SpamConfirmed, summary.FalsePositive),
 	}, "\n")
 }

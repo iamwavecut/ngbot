@@ -36,6 +36,7 @@ type (
 		ID                    int64        `db:"id"`
 		ChatID                int64        `db:"chat_id"`
 		UserID                int64        `db:"user_id"`
+		AuthorKind            string       `db:"author_kind"`
 		MessageID             int          `db:"message_id"`
 		MessageText           string       `db:"message_text"`
 		CreatedAt             time.Time    `db:"created_at"`
@@ -249,6 +250,14 @@ type (
 	}
 )
 
+func (sc *SpamCase) Author() MessageAuthor {
+	kind := sc.AuthorKind
+	if kind == "" {
+		kind = MessageAuthorUser
+	}
+	return MessageAuthor{Kind: kind, ID: sc.UserID}
+}
+
 func (e *TelegramUpdateInboxCapacityError) Error() string {
 	return fmt.Sprintf("%s: %s", ErrTelegramUpdateInboxCapacity, e.Limit)
 }
@@ -312,6 +321,7 @@ const (
 	ChallengePhaseNoticeMessageDone      = "notice_message_done"
 	ChallengePhaseRejectProbeDone        = "reject_probe_done"
 	ChallengePhaseRejectBanStarted       = "reject_ban_started"
+	ChallengePhaseRejectContextPending   = "reject_context_pending"
 	ChallengePhaseRejectBanDone          = "reject_ban_done"
 	ChallengePhaseRejectDeclineStarted   = "reject_decline_started"
 	ChallengePhaseRejectDeclineDone      = "reject_decline_done"

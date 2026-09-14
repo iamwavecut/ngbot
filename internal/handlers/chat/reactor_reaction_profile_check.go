@@ -188,6 +188,9 @@ func (r *Reactor) moderateReactionActorChat(ctx context.Context, chat *api.Chat,
 		r.markModerationUnavailableOnPrivilege(chat.ID, err)
 		return fmt.Errorf("ban reaction sender chat: %w", err)
 	}
+	if err := r.store.ResetMessageTrust(ctx, chat.ID, db.MessageAuthor{Kind: db.MessageAuthorSenderChat, ID: actorChat.ID}); err != nil {
+		return fmt.Errorf("reset reaction sender chat trust: %w", err)
+	}
 	entry.Info("Successfully banned reaction sender chat")
 	return nil
 }
@@ -203,6 +206,12 @@ func (r *Reactor) punishReactionUser(ctx context.Context, chatID int64, messageI
 	if err := bot.BanUserFromChat(ctx, r.bot, userID, chatID, 0); err != nil {
 		r.markModerationUnavailableOnPrivilege(chatID, err)
 		return fmt.Errorf("ban reaction user: %w", err)
+	}
+	if err := r.store.DeleteAuthorMessageContext(ctx, chatID, db.MessageAuthor{Kind: db.MessageAuthorUser, ID: userID}); err != nil {
+		return fmt.Errorf("delete revoked reaction user context: %w", err)
+	}
+	if err := r.store.ResetMessageTrust(ctx, chatID, db.MessageAuthor{Kind: db.MessageAuthorUser, ID: userID}); err != nil {
+		return fmt.Errorf("reset reaction user trust: %w", err)
 	}
 	entry.WithField("messageID", messageID).Info("Successfully banned reaction user")
 	return nil

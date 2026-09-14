@@ -61,7 +61,9 @@ type (
 		MaxVoters                int           `env:"SPAM_MAX_VOTERS,default=10"`
 		MinVotersPercentage      float64       `env:"SPAM_MIN_VOTERS_PERCENTAGE,default=5"`
 		Verbose                  bool          `env:"SPAM_VERBOSE,default=false"`
-		MessageProbationDuration time.Duration `env:"SPAM_MESSAGE_PROBATION_DURATION,default=3h"`
+		MessageProbationDuration time.Duration `env:"SPAM_MESSAGE_PROBATION_DURATION"`
+		SafeMessagesRequired     int           `env:"SPAM_SAFE_MESSAGES_REQUIRED,default=3"`
+		AuthorTrustDuration      time.Duration `env:"SPAM_AUTHOR_TRUST_DURATION,default=720h"`
 
 		VotingTimeoutMinutes       time.Duration `env:"SPAM_VOTING_TIMEOUT,default=5m"`
 		SuspectNotificationTimeout time.Duration `env:"SPAM_SUSPECT_NOTIFICATION_TIMEOUT,default=2m"`
@@ -93,6 +95,9 @@ func Load() (Config, error) {
 	}
 	if err := validateConfig(cfg); err != nil {
 		return Config{}, err
+	}
+	if value := os.Getenv("NG_SPAM_MESSAGE_PROBATION_DURATION"); value != "" {
+		log.Warn("NG_SPAM_MESSAGE_PROBATION_DURATION is deprecated and ignored; use NG_SPAM_SAFE_MESSAGES_REQUIRED and NG_SPAM_AUTHOR_TRUST_DURATION")
 	}
 	log.Traceln("loaded config")
 	return *cfg, nil
@@ -126,8 +131,11 @@ func validateConfig(cfg *Config) error {
 	if err := validateLLMConfig(cfg.LLM); err != nil {
 		return err
 	}
-	if cfg.SpamControl.MessageProbationDuration <= 0 {
-		return fmt.Errorf("spam message probation duration must be positive")
+	if cfg.SpamControl.SafeMessagesRequired <= 0 {
+		return fmt.Errorf("spam safe messages required must be positive")
+	}
+	if cfg.SpamControl.AuthorTrustDuration <= 0 {
+		return fmt.Errorf("spam author trust duration must be positive")
 	}
 	if cfg.GatekeeperWebApp.PublicURL != "" {
 		parsed, err := url.Parse(cfg.GatekeeperWebApp.PublicURL)

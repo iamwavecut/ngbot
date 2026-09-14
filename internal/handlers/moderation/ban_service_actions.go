@@ -11,7 +11,10 @@ import (
 	"github.com/iamwavecut/ngbot/internal/db"
 )
 
-const restrictionRecoveryMargin = 5 * time.Minute
+const (
+	restrictionRecoveryMargin = 5 * time.Minute
+	telegramMemberRestricted  = "restricted"
+)
 
 func (s *defaultBanService) MuteUser(ctx context.Context, chatID, userID int64, until time.Time) error {
 	priorPermissions, priorUntilDate, err := s.effectiveMemberPermissions(ctx, chatID, userID)
@@ -118,6 +121,9 @@ func (s *defaultBanService) BanUserWithMessageUntil(ctx context.Context, chatID,
 		}
 		return withPrivilegeError(err, "ban")
 	}
+	if err := s.db.DeleteAuthorMessageContext(ctx, chatID, db.MessageAuthor{Kind: db.MessageAuthorUser, ID: userID}); err != nil {
+		return fmt.Errorf("delete revoked user context: %w", err)
+	}
 
 	restriction := &db.UserRestriction{
 		UserID:       userID,
@@ -166,7 +172,7 @@ func (s *defaultBanService) effectiveMemberPermissions(ctx context.Context, chat
 	if err != nil {
 		return nil, 0, err
 	}
-	if member.Status == "restricted" {
+	if member.Status == telegramMemberRestricted {
 		return chatMemberPermissions(member), member.UntilDate, nil
 	}
 	chat, err := bot.GetChat(ctx, s.bot, api.ChatInfoConfig{ChatConfig: api.ChatConfig{ChatID: chatID}})

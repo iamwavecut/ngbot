@@ -143,7 +143,7 @@ func TestValidateConfig(t *testing.T) {
 			name: "valid telegram timings",
 			cfg: Config{
 				LLM:         LLM{RequestTimeout: 45 * time.Second},
-				SpamControl: SpamControl{MessageProbationDuration: 3 * time.Hour},
+				SpamControl: SpamControl{SafeMessagesRequired: 3, AuthorTrustDuration: 720 * time.Hour},
 				Telegram: Telegram{
 					PollTimeout:    60 * time.Second,
 					RequestTimeout: 75 * time.Second,
@@ -155,7 +155,7 @@ func TestValidateConfig(t *testing.T) {
 			name: "request timeout must exceed poll timeout",
 			cfg: Config{
 				LLM:         LLM{RequestTimeout: 45 * time.Second},
-				SpamControl: SpamControl{MessageProbationDuration: 3 * time.Hour},
+				SpamControl: SpamControl{SafeMessagesRequired: 3, AuthorTrustDuration: 720 * time.Hour},
 				Telegram: Telegram{
 					PollTimeout:    60 * time.Second,
 					RequestTimeout: 60 * time.Second,
@@ -168,7 +168,7 @@ func TestValidateConfig(t *testing.T) {
 			name: "recovery window must exceed request timeout",
 			cfg: Config{
 				LLM:         LLM{RequestTimeout: 45 * time.Second},
-				SpamControl: SpamControl{MessageProbationDuration: 3 * time.Hour},
+				SpamControl: SpamControl{SafeMessagesRequired: 3, AuthorTrustDuration: 720 * time.Hour},
 				Telegram: Telegram{
 					PollTimeout:    60 * time.Second,
 					RequestTimeout: 75 * time.Second,
@@ -181,7 +181,7 @@ func TestValidateConfig(t *testing.T) {
 			name: "valid gatekeeper web app public url",
 			cfg: Config{
 				LLM:         LLM{RequestTimeout: 45 * time.Second},
-				SpamControl: SpamControl{MessageProbationDuration: 3 * time.Hour},
+				SpamControl: SpamControl{SafeMessagesRequired: 3, AuthorTrustDuration: 720 * time.Hour},
 				Telegram: Telegram{
 					PollTimeout:    60 * time.Second,
 					RequestTimeout: 75 * time.Second,
@@ -196,7 +196,7 @@ func TestValidateConfig(t *testing.T) {
 			name: "gatekeeper web app public url must be absolute",
 			cfg: Config{
 				LLM:         LLM{RequestTimeout: 45 * time.Second},
-				SpamControl: SpamControl{MessageProbationDuration: 3 * time.Hour},
+				SpamControl: SpamControl{SafeMessagesRequired: 3, AuthorTrustDuration: 720 * time.Hour},
 				Telegram: Telegram{
 					PollTimeout:    60 * time.Second,
 					RequestTimeout: 75 * time.Second,
@@ -212,7 +212,7 @@ func TestValidateConfig(t *testing.T) {
 			name: "gatekeeper web app public url must be origin only",
 			cfg: Config{
 				LLM:         LLM{RequestTimeout: 45 * time.Second},
-				SpamControl: SpamControl{MessageProbationDuration: 3 * time.Hour},
+				SpamControl: SpamControl{SafeMessagesRequired: 3, AuthorTrustDuration: 720 * time.Hour},
 				Telegram: Telegram{
 					PollTimeout:    60 * time.Second,
 					RequestTimeout: 75 * time.Second,
@@ -226,7 +226,7 @@ func TestValidateConfig(t *testing.T) {
 			name: "gatekeeper web app public url rejects user info",
 			cfg: Config{
 				LLM:         LLM{RequestTimeout: 45 * time.Second},
-				SpamControl: SpamControl{MessageProbationDuration: 3 * time.Hour},
+				SpamControl: SpamControl{SafeMessagesRequired: 3, AuthorTrustDuration: 720 * time.Hour},
 				Telegram: Telegram{
 					PollTimeout:    60 * time.Second,
 					RequestTimeout: 75 * time.Second,
@@ -240,7 +240,7 @@ func TestValidateConfig(t *testing.T) {
 			name: "public http web app url is rejected",
 			cfg: Config{
 				LLM:         LLM{RequestTimeout: 45 * time.Second},
-				SpamControl: SpamControl{MessageProbationDuration: 3 * time.Hour},
+				SpamControl: SpamControl{SafeMessagesRequired: 3, AuthorTrustDuration: 720 * time.Hour},
 				Telegram: Telegram{
 					PollTimeout:    60 * time.Second,
 					RequestTimeout: 75 * time.Second,
@@ -254,7 +254,7 @@ func TestValidateConfig(t *testing.T) {
 			name: "loopback http web app url is accepted",
 			cfg: Config{
 				LLM:         LLM{RequestTimeout: 45 * time.Second},
-				SpamControl: SpamControl{MessageProbationDuration: 3 * time.Hour},
+				SpamControl: SpamControl{SafeMessagesRequired: 3, AuthorTrustDuration: 720 * time.Hour},
 				Telegram: Telegram{
 					PollTimeout:    60 * time.Second,
 					RequestTimeout: 75 * time.Second,
@@ -271,7 +271,7 @@ func TestValidateConfig(t *testing.T) {
 					APIKey: "legacy-key",
 					Type:   LLMProviderGemini,
 				},
-				SpamControl: SpamControl{MessageProbationDuration: 3 * time.Hour},
+				SpamControl: SpamControl{SafeMessagesRequired: 3, AuthorTrustDuration: 720 * time.Hour},
 				Telegram: Telegram{
 					PollTimeout:    60 * time.Second,
 					RequestTimeout: 75 * time.Second,
@@ -281,7 +281,7 @@ func TestValidateConfig(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "message probation duration must be positive",
+			name: "author admission parameters must be positive",
 			cfg: Config{
 				LLM: LLM{RequestTimeout: 45 * time.Second},
 				Telegram: Telegram{
@@ -430,7 +430,7 @@ func validConfigForLLM() Config {
 			GeminiAPIKey:   testGeminiAPIKey,
 			RequestTimeout: 45 * time.Second,
 		},
-		SpamControl: SpamControl{MessageProbationDuration: 3 * time.Hour},
+		SpamControl: SpamControl{SafeMessagesRequired: 3, AuthorTrustDuration: 720 * time.Hour},
 		GatekeeperWebApp: GatekeeperWebApp{
 			MaxConcurrent:     32,
 			RequestsPerMinute: 120,
@@ -440,5 +440,29 @@ func validConfigForLLM() Config {
 			RequestTimeout: 75 * time.Second,
 			RecoveryWindow: 10 * time.Minute,
 		},
+	}
+}
+
+func TestAuthorTrustConfigIgnoresLegacyDuration(t *testing.T) {
+	t.Setenv("NG_TOKEN", "test-token")
+	t.Setenv("NG_LLM_API_TYPE", LLMProviderGemini)
+	t.Setenv("NG_LLM_GEMINI_API_KEY", testGeminiAPIKey)
+	t.Setenv("NG_DOT_PATH", t.TempDir())
+	t.Setenv("NG_SPAM_MESSAGE_PROBATION_DURATION", "1ns")
+	t.Setenv("NG_SPAM_SAFE_MESSAGES_REQUIRED", "5")
+	t.Setenv("NG_SPAM_AUTHOR_TRUST_DURATION", "240h")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SpamControl.SafeMessagesRequired != 5 || cfg.SpamControl.AuthorTrustDuration != 240*time.Hour {
+		t.Fatalf("legacy duration affected policy: %#v", cfg.SpamControl)
+	}
+	for _, change := range []func(*SpamControl){func(c *SpamControl) { c.SafeMessagesRequired = 0 }, func(c *SpamControl) { c.AuthorTrustDuration = -time.Second }} {
+		invalid := cfg
+		change(&invalid.SpamControl)
+		if err := validateConfig(&invalid); err == nil {
+			t.Fatal("invalid admission policy accepted")
+		}
 	}
 }

@@ -39,6 +39,7 @@ func (m *ModerationRouter) HandleExhaustedUpdateFailure(ctx context.Context, upd
 }
 
 func (m *ModerationRouter) Handle(ctx context.Context, update *api.Update, chat *api.Chat, user *api.User) (bool, error) {
+	ctx = withMessageContextUpdate(ctx, update)
 	moderationChat := chat
 	if m.features != nil && m.features.reactor != nil && m.features.reactor.spamControl != nil {
 		caseID, ok := spamVoteCaseID(update)

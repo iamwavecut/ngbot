@@ -270,6 +270,10 @@ func (s *gatekeeperFlowStore) ScheduleLeasedChallengeRetryVersion(_ context.Cont
 	clone.ActionOwner = ""
 	clone.ActionLeaseUntil = sql.NullTime{}
 	clone.ActionPhase = db.ChallengePhaseReady
+	switch expectedPhase {
+	case db.ChallengePhaseRejectContextPending, db.ChallengePhaseRejectBanDone, db.ChallengePhaseRejectDeclineDone:
+		clone.ActionPhase = expectedPhase
+	}
 	clone.ActionVersion++
 	clone.NextAttemptAt = sql.NullTime{Time: nextAttemptAt, Valid: true}
 	clone.AttemptCount++

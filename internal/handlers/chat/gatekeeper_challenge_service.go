@@ -264,7 +264,7 @@ func (g *Gatekeeper) cleanupChallengeWithoutPenalty(ctx context.Context, challen
 	b := g.bot
 
 	if challenge.ChallengeMessageID != 0 {
-		if err := bot.DeleteChatMessage(ctx, b, challenge.CommChatID, challenge.ChallengeMessageID); err != nil {
+		if err := bot.DeleteChatMessageAndContext(ctx, b, g.store, challenge.CommChatID, challenge.ChallengeMessageID); err != nil {
 			entry.WithField(logFieldError, err.Error()).Error("cant delete challenge message")
 		}
 	}
@@ -334,6 +334,13 @@ func safeGatekeeperError(err error) error {
 	return errors.New(db.SafeGatekeeperErrorCode(err))
 }
 
+func (g *Gatekeeper) completeRevokedChallengeContext(ctx context.Context, challenge *db.Challenge, owner string) error {
+	if err := g.store.DeleteAuthorMessageContext(ctx, challenge.ChatID, db.MessageAuthor{Kind: db.MessageAuthorUser, ID: challenge.UserID}); err != nil {
+		return err
+	}
+	return g.advanceChallengePhase(ctx, challenge, owner, db.ChallengePhaseRejectBanDone)
+}
+
 func (g *Gatekeeper) processChallengeActionWithStats(ctx context.Context, challenge *db.Challenge, recordStats bool) error {
 	if challenge == nil {
 		return nil
@@ -359,6 +366,11 @@ func (g *Gatekeeper) processChallengeActionWithStats(ctx context.Context, challe
 		challengeIDLogField: challenge.ChallengeID,
 		logFieldStatus:      challenge.Status,
 	})
+	if challenge.ActionPhase == db.ChallengePhaseRejectContextPending {
+		if err := g.completeRevokedChallengeContext(ctx, challenge, owner); err != nil {
+			return g.retryOrReconcileChallengeAction(ctx, challenge, owner, err, entry)
+		}
+	}
 	moderationAvailable := true
 	switch challenge.Status {
 	case db.ChallengeStatusRestrictPending,
@@ -537,7 +549,7 @@ func (g *Gatekeeper) processChallengeActionWithStats(ctx context.Context, challe
 					challenge.ActionPhase = db.ChallengePhasePublicMessageDone
 					completed, completeErr := g.store.CompleteLeasedChallengeActivationVersion(ctx, challenge.ChallengeID, owner, challenge.ActionVersion, challenge.ActionPhase, restricted, messageID, time.Now())
 					if completeErr != nil || !completed {
-						_ = bot.DeleteChatMessage(ctx, g.bot, challenge.CommChatID, messageID)
+						_ = bot.DeleteChatMessageAndContext(ctx, g.bot, g.store, challenge.CommChatID, messageID)
 						return completeErr
 					}
 					if recordStats {
@@ -676,8 +688,17 @@ func (g *Gatekeeper) processChallengeActionWithStats(ctx context.Context, challe
 			if banErr != nil && !isTelegramBanAlreadyApplied(banErr) {
 				return g.reconcileAmbiguousChallengeEffect(ctx, challenge, owner, 0, banErr)
 			}
-			if err := g.advanceChallengePhase(ctx, challenge, owner, db.ChallengePhaseRejectBanDone); err != nil {
+			nextPhase := db.ChallengePhaseRejectBanDone
+			if banErr == nil {
+				nextPhase = db.ChallengePhaseRejectContextPending
+			}
+			if err := g.advanceChallengePhase(ctx, challenge, owner, nextPhase); err != nil {
 				return g.reconcileAmbiguousChallengeEffect(ctx, challenge, owner, 0, err)
+			}
+			if nextPhase == db.ChallengePhaseRejectContextPending {
+				if err := g.completeRevokedChallengeContext(ctx, challenge, owner); err != nil {
+					return g.retryOrReconcileChallengeAction(ctx, challenge, owner, err, entry)
+				}
 			}
 		} else if !moderationAvailable && challenge.ActionPhase == db.ChallengePhaseRejectProbeDone {
 			if err := g.advanceChallengePhase(ctx, challenge, owner, db.ChallengePhaseRejectBanDone); err != nil {
@@ -906,7 +927,7 @@ func (g *Gatekeeper) cleanupNoPrivilegesNotice(ctx context.Context, challenge *d
 	}
 	g.deleteChallengePrompt(ctx, challenge)
 	if challenge.NoticeMessageID != 0 {
-		if err := bot.DeleteChatMessage(ctx, g.bot, challenge.ChatID, challenge.NoticeMessageID); err != nil && !isTelegramMessageAlreadyDeleted(err) {
+		if err := bot.DeleteChatMessageAndContext(ctx, g.bot, g.store, challenge.ChatID, challenge.NoticeMessageID); err != nil && !isTelegramMessageAlreadyDeleted(err) {
 			return err
 		}
 	}
@@ -918,7 +939,7 @@ func (g *Gatekeeper) deleteChallengeMessages(ctx context.Context, challenge *db.
 	g.deleteChallengePrompt(ctx, challenge)
 	entry := g.getLogEntry().WithField(challengeIDLogField, challenge.ChallengeID)
 	if challenge.JoinMessageID != 0 {
-		if err := bot.DeleteChatMessage(ctx, g.bot, challenge.ChatID, challenge.JoinMessageID); err != nil && !isTelegramMessageAlreadyDeleted(err) {
+		if err := bot.DeleteChatMessageAndContext(ctx, g.bot, g.store, challenge.ChatID, challenge.JoinMessageID); err != nil && !isTelegramMessageAlreadyDeleted(err) {
 			entry.WithField(logFieldErrorCode, db.SafeGatekeeperErrorCode(err)).Warn("failed to delete join message")
 		}
 	}
@@ -927,7 +948,7 @@ func (g *Gatekeeper) deleteChallengeMessages(ctx context.Context, challenge *db.
 func (g *Gatekeeper) deleteChallengePrompt(ctx context.Context, challenge *db.Challenge) {
 	entry := g.getLogEntry().WithField(challengeIDLogField, challenge.ChallengeID)
 	if challenge.ChallengeMessageID != 0 {
-		if err := bot.DeleteChatMessage(ctx, g.bot, challenge.CommChatID, challenge.ChallengeMessageID); err != nil && !isTelegramMessageAlreadyDeleted(err) {
+		if err := bot.DeleteChatMessageAndContext(ctx, g.bot, g.store, challenge.CommChatID, challenge.ChallengeMessageID); err != nil && !isTelegramMessageAlreadyDeleted(err) {
 			entry.WithField(logFieldErrorCode, db.SafeGatekeeperErrorCode(err)).Warn("failed to delete challenge message")
 		}
 	}

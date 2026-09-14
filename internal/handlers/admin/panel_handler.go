@@ -344,7 +344,7 @@ func (a *Admin) handlePanelInput(ctx context.Context, msg *api.Message, chat *ap
 		}
 
 		if session.MessageID != 0 {
-			_ = bot.DeleteChatMessage(ctx, a.bot, user.ID, session.MessageID)
+			_ = bot.DeleteChatMessageAndContext(ctx, a.bot, a.store, user.ID, session.MessageID)
 		}
 
 		state.Page = panelPageExamplesList
@@ -389,7 +389,7 @@ func (a *Admin) handlePanelInput(ctx context.Context, msg *api.Message, chat *ap
 		}
 
 		if session.MessageID != 0 {
-			_ = bot.DeleteChatMessage(ctx, a.bot, user.ID, session.MessageID)
+			_ = bot.DeleteChatMessageAndContext(ctx, a.bot, a.store, user.ID, session.MessageID)
 		}
 
 		state.Page = panelPageIndulgenceList

@@ -36,6 +36,7 @@ type Admin struct {
 }
 
 type adminStore interface {
+	DeleteMessageContext(ctx context.Context, chatID int64, messageID int) error
 	GetKV(ctx context.Context, key string) (string, error)
 	SetKV(ctx context.Context, key string, value string) error
 	SetChatBotMembership(ctx context.Context, membership *db.ChatBotMembership) error
