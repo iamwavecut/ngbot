@@ -1,6 +1,6 @@
-# Comment author trust: local validation
+# Comment author trust: pre-release local validation
 
-Validated on 2026-09-14 with Go 1.25.13, from base `b564d78` in branch `comment-author-trust`. Changes are uncommitted in the isolated worktree. The original checkout remains clean.
+This checkpoint records validation on 2026-09-14 with Go 1.25.13, from base `b564d78` in branch `comment-author-trust`, before committing or publishing. Subsequent release integration retains the Go 1.26.8 security update from current `master` (`77f0bda`); its CI and production evidence are separate from this initial checkpoint.
 
 ## Behavior covered
 
@@ -45,4 +45,4 @@ All Go commands used `GOTOOLCHAIN=go1.25.13`. An earlier concurrent normal run h
 
 ## Boundaries
 
-No commits, push, PR, deployment, production mutation or paid live LLM calls were performed. The generated codebase map was not edited. Live Telegram behavior, real-model quality, token savings and the cause of the reported production incident remain unverified. The accepted tradeoff remains: three harmless messages can earn 30 days of automatic trust. Text context expires after 24 hours; text-free checked-message bindings remain until chat deletion to preserve future edit checks.
+At this checkpoint, no commits, push, PR, deployment, production mutation or paid live LLM calls had been performed. The user subsequently authorized commits and production deployment. The generated codebase map was not edited. These local checks do not prove live Telegram behavior, real-model quality, token savings or the cause of the reported production incident. The accepted tradeoff remains: three harmless messages can earn 30 days of automatic trust. Text context expires after 24 hours; text-free checked-message bindings remain until chat deletion to preserve future edit checks.

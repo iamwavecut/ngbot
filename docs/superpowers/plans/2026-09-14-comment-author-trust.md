@@ -4,8 +4,8 @@ User-approved specification: all chats use three safe distinct new messages to g
 
 ## Constraints
 
-- Go 1.25.13, current SQLite/Telegram/LLM adapters; no new dependencies.
-- No commits, pushes, PRs, deploys, production mutations, or edits to docs/CODEBASE_MAP.md.
+- Preserve the repository-pinned Go toolchain and current SQLite/Telegram/LLM adapters. Implementation was validated on Go 1.25.13; release integration retains the Go 1.26.8 security update already merged in `77f0bda` and repeats verification on that toolchain. This feature adds no dependencies.
+- The user authorized commits and production deployment after local implementation. Publish through the existing PR/CI and `scripts/release.sh` flow; preserve backups and verify the exact running revision. Do not edit docs/CODEBASE_MAP.md.
 - User and sender_chat are distinct author kinds. SenderChat wins over technical From everywhere.
 - History: same chat/thread only, five preceding messages from 24 hours, direct reply and root post first, 2000 runes per persisted text, 8000 runes total extra context. Keep context separate from trust and out of logs.
 - Pending spam cases suspend trust. Confirmed spam resets it; false positives restore any remaining earlier expiry. Channel cases respect the chat voting setting; delete suspected messages without trying to mute a channel before a vote. Ban channels only after confirmation, immediately if voting is disabled.

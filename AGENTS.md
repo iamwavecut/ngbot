@@ -43,7 +43,7 @@ This document serves as the **single source of truth** for all development rules
 
 **ngbot** is a Telegram gatekeeper bot with CAPTCHA verification, LLM-powered spam detection, and community voting moderation.
 
-**Stack**: Go 1.25, SQLite, Telegram Bot API, OpenAI/Gemini LLMs
+**Stack**: Go 1.26.8, SQLite, Telegram Bot API, OpenAI/Gemini LLMs
 
 **Structure**:
 - `cmd/ngbot/` - Entry point, runtime wiring
@@ -116,7 +116,7 @@ For detailed architecture, see [docs/CODEBASE_MAP.md](docs/CODEBASE_MAP.md).
 - **Architecture first** 🏛️: Audit before coding: scan repo, read related packages, plan all changes.
 
 ### Go Version & Documentation
-- **Go Version** 🔢: 1.25 (Latest features where applicable). Ref: [Go Release Notes](https://go.dev/doc/devel/release)
+- **Go Version** 🔢: 1.26.8, as pinned in `go.mod` and `Dockerfile`. Ref: [Go Release Notes](https://go.dev/doc/devel/release)
 - **Documentation Strategy** 📚: Use `go doc`, `go tool`, `go list` for Go packages.
 - **English Only** 🇺🇸: Code and technical reasoning in English.
 
