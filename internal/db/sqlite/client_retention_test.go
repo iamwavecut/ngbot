@@ -9,6 +9,11 @@ import (
 	"github.com/iamwavecut/ngbot/internal/db"
 )
 
+const (
+	testTableChallengedMessages = "chat_challenged_messages"
+	testTableSpamCases          = "spam_cases"
+)
+
 func TestCleanupRetentionHonorsCutoffsReferencesAndBatchLimit(t *testing.T) {
 	t.Parallel()
 
@@ -20,7 +25,7 @@ func TestCleanupRetentionHonorsCutoffsReferencesAndBatchLimit(t *testing.T) {
 	t.Cleanup(func() { _ = client.Close() })
 
 	now := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
-	challengedCutoff := now.Add(-challengedMessageRetention)
+	challengedCutoff := now.Add(-30 * 24 * time.Hour)
 	recentJoinerCutoff := now.Add(-processedRecentJoinerRetention)
 	spamCaseCutoff := now.Add(-terminalSpamCaseRetention)
 	if err := client.SetSettings(ctx, db.DefaultSettings(-100)); err != nil {
@@ -80,23 +85,23 @@ func TestCleanupRetentionHonorsCutoffsReferencesAndBatchLimit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first cleanup: %v", err)
 	}
-	if first.ChallengedMessages != 1 || first.ProcessedRecentJoiners != 1 || first.TerminalSpamCases != 1 {
+	if first.ProcessedRecentJoiners != 1 || first.TerminalSpamCases != 1 {
 		t.Fatalf("first cleanup exceeded or missed per-table limit: %+v", first)
 	}
 	second, err := client.CleanupRetention(ctx, now, 10)
 	if err != nil {
 		t.Fatalf("second cleanup: %v", err)
 	}
-	if second.ChallengedMessages != 1 || second.ProcessedRecentJoiners != 1 || second.TerminalSpamCases != 1 {
+	if second.ProcessedRecentJoiners != 1 || second.TerminalSpamCases != 1 {
 		t.Fatalf("second cleanup did not honor inclusive cutoff: %+v", second)
 	}
 
-	assertIDs(t, client, "chat_challenged_messages", "message_id", []int64{1, 4})
+	assertIDs(t, client, testTableChallengedMessages, "message_id", []int64{1, 2, 3, 4})
 	assertIDs(t, client, "recent_joiners", "id", []int64{203, 204})
-	assertIDs(t, client, "spam_cases", "id", []int64{101, 104, 105, 106})
+	assertIDs(t, client, testTableSpamCases, "id", []int64{101, 104, 105, 106})
 }
 
-func TestCleanupRetentionPreservesChallengedBindingsNeededBySpamCases(t *testing.T) {
+func TestCleanupRetentionPreservesBindingsBeyondCaseRetention(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
@@ -107,7 +112,7 @@ func TestCleanupRetentionPreservesChallengedBindingsNeededBySpamCases(t *testing
 	t.Cleanup(func() { _ = client.Close() })
 
 	now := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
-	challengedAt := now.Add(-challengedMessageRetention - time.Hour)
+	challengedAt := now.Add(-31 * 24 * time.Hour)
 	auditCutoff := now.Add(-terminalSpamCaseRetention)
 	if err := client.SetSettings(ctx, db.DefaultSettings(-100)); err != nil {
 		t.Fatalf("create chat: %v", err)
@@ -155,11 +160,11 @@ func TestCleanupRetentionPreservesChallengedBindingsNeededBySpamCases(t *testing
 	if err != nil {
 		t.Fatalf("cleanup retention: %v", err)
 	}
-	if result.ChallengedMessages != 3 || result.TerminalSpamCases != 2 {
-		t.Fatalf("cleanup result = %+v, want 3 challenged messages and 2 terminal cases", result)
+	if result.TerminalSpamCases != 2 {
+		t.Fatalf("cleanup result = %+v, want 2 terminal cases and preserved checked bindings", result)
 	}
-	assertIDs(t, client, "chat_challenged_messages", "message_id", []int64{2, 3, 5})
-	assertIDs(t, client, "spam_cases", "id", []int64{102, 103, 105})
+	assertIDs(t, client, testTableChallengedMessages, "message_id", []int64{1, 2, 3, 4, 5, 6})
+	assertIDs(t, client, testTableSpamCases, "id", []int64{102, 103, 105})
 }
 
 func TestRetentionCleanupRunsAfterCrashRestart(t *testing.T) {
@@ -200,7 +205,8 @@ func TestRetentionCleanupRunsAfterCrashRestart(t *testing.T) {
 	if err := reopened.CleanupRetainedRecords(ctx, time.Now().UTC(), retentionCleanupBatchSize); err != nil {
 		t.Fatalf("run startup retention cleanup: %v", err)
 	}
-	for _, table := range []string{"chat_challenged_messages", "recent_joiners", "spam_cases"} {
+	assertIDs(t, reopened, testTableChallengedMessages, "message_id", []int64{1})
+	for _, table := range []string{"recent_joiners", testTableSpamCases} {
 		var count int
 		if err := reopened.db.GetContext(ctx, &count, `SELECT COUNT(*) FROM `+table); err != nil {
 			t.Fatalf("count %s after restart: %v", table, err)

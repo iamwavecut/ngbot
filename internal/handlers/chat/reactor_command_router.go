@@ -88,6 +88,22 @@ func commandTargetsCurrentBot(msg *api.Message, botUserName string) bool {
 	return strings.EqualFold(after, botUserName)
 }
 
+func messageIsCommand(msg *api.Message) bool {
+	if msg == nil {
+		return false
+	}
+	if msg.IsCommand() {
+		return true
+	}
+	for _, entity := range msg.CaptionEntities {
+		if entity.Type == telegramEntityBotCommand && entity.Offset == 0 {
+			return true
+		}
+	}
+	command, _ := richMessageControls(msg.RichMessage, api.User{})
+	return command
+}
+
 func messageMentionsCurrentBot(msg *api.Message, self api.User) bool {
 	if msg == nil {
 		return false
@@ -98,7 +114,11 @@ func messageMentionsCurrentBot(msg *api.Message, self api.User) bool {
 	if messageEntitiesMentionCurrentBot(msg.Text, msg.Entities, self) {
 		return true
 	}
-	return messageEntitiesMentionCurrentBot(msg.Caption, msg.CaptionEntities, self)
+	if messageEntitiesMentionCurrentBot(msg.Caption, msg.CaptionEntities, self) {
+		return true
+	}
+	_, mention := richMessageControls(msg.RichMessage, self)
+	return mention
 }
 
 func messageEntitiesMentionCurrentBot(text string, entities []api.MessageEntity, self api.User) bool {
@@ -192,6 +212,9 @@ func (r *Reactor) skipReasonCommand(ctx context.Context, msg *api.Message, chat 
 }
 
 func (r *Reactor) voteBanCommand(ctx context.Context, msg *api.Message, chat *api.Chat, user *api.User, settings *db.Settings) error {
+	if msg.SenderChat != nil || user == nil {
+		return nil
+	}
 	entry := r.getLogEntry().WithFields(log.Fields{
 		logFieldMethod: "voteBanCommand",
 		"chatID":       chat.ID,
@@ -211,14 +234,20 @@ func (r *Reactor) voteBanCommand(ctx context.Context, msg *api.Message, chat *ap
 		return nil
 	}
 
-	if msg.ReplyToMessage == nil || msg.ReplyToMessage.From == nil {
+	author, identified := bot.MessageAuthor(msg.ReplyToMessage)
+	if !identified {
 		_ = r.sendTemporaryReply(ctx, msg, i18n.Get("Use /voteban or mention me in reply to a spam message to start a vote.", r.s.GetLanguage(ctx, chat.ID, user)))
 		return nil
 	}
 
 	language := r.s.GetLanguage(ctx, chat.ID, user)
 	target := msg.ReplyToMessage
-	if r.banService != nil {
+	if _, trusted, err := r.trustedSenderChat(ctx, target, chat, entry); err != nil {
+		return bot.NewRetryableUpdateFailure(bot.UpdateFailureTelegram, "reported_sender_chat_lookup_failed", err)
+	} else if trusted {
+		return nil
+	}
+	if r.banService != nil && author.Kind == db.MessageAuthorUser {
 		isNotSpammer, overrideErr := r.store.IsChatNotSpammer(ctx, chat.ID, target.From.ID, target.From.UserName)
 		if overrideErr != nil {
 			entry.WithError(overrideErr).Error("failed to check reported user manual not-spammer override; continuing moderation")
@@ -234,13 +263,25 @@ func (r *Reactor) voteBanCommand(ctx context.Context, msg *api.Message, chat *ap
 			}
 		}
 		if isBanlisted {
-			outcome := enforceBanlistedMessage(ctx, r.bot, r.banService, target, chat, target.From)
+			outcome := enforceBanlistedMessage(ctx, r.bot, r.store, r.banService, target, chat, target.From)
+			if outcome.userBanned {
+				if err := r.store.ResetMessageTrust(ctx, chat.ID, author); err != nil {
+					return err
+				}
+			}
+			if outcome.messageDeleted {
+				if err := r.store.DeleteMessageContext(ctx, chat.ID, target.MessageID); err != nil {
+					return err
+				}
+			}
 			if outcome.err != nil {
 				entry.WithError(outcome.err).Error("failed to enforce terminal banlist action for reported user")
 			}
 			if outcome.userBanned {
-				if err := r.s.DeleteMember(ctx, chat.ID, target.From.ID); err != nil {
-					entry.WithError(err).Error("failed to forget directly banned member")
+				if author.Kind == db.MessageAuthorUser {
+					if err := r.s.DeleteMember(ctx, chat.ID, author.ID); err != nil {
+						entry.WithError(err).Error("failed to forget directly banned member")
+					}
 				}
 				_ = r.sendTemporaryReply(ctx, msg, i18n.Get("Reported message was confirmed as spam. The user was banned.", language))
 			}
@@ -248,20 +289,39 @@ func (r *Reactor) voteBanCommand(ctx context.Context, msg *api.Message, chat *ap
 			return nil
 		}
 	}
-	isReportedSpam, err := r.checkReportedMessageForSpam(ctx, settings, bot.ExtractContentFromMessage(target))
+	if err := r.rememberMessageContext(context.WithValue(ctx, messageContextUpdateKey{}, 0), target, chat, settings); err != nil {
+		return err
+	}
+	conversation, err := r.messageConversation(ctx, target, chat)
+	if err != nil {
+		return fmt.Errorf("load reported message context: %w", err)
+	}
+	r.recordMessageTrustStat(ctx, chat.ID, "author_check_report", entry)
+	isReportedSpam, err := r.checkReportedMessageForSpam(ctx, settings, bot.ExtractContentFromMessage(target), conversation...)
 	if err != nil {
 		entry.WithFields(classificationFailureLogFields(err, "report", "report_flow")).Warn("reported spam LLM check failed; falling back to report flow")
 	}
 	if isReportedSpam != nil && *isReportedSpam {
-		result, err := r.processBanned(ctx, target, chat, language)
+		process := r.processBanned
+		if author.Kind == db.MessageAuthorSenderChat && (settings == nil || settings.CommunityVotingEnabled) {
+			process = r.processSpam
+		}
+		result, err := process(ctx, target, chat, language)
 		if err != nil {
 			entry.WithError(err).Error("Failed to process spam message")
 			return errors.Wrap(err, "failed to process spam message")
 		}
-		if err := r.s.DeleteMember(ctx, chat.ID, target.From.ID); err != nil {
-			entry.WithError(err).Error("Failed to delete member")
+		if author.Kind == db.MessageAuthorUser {
+			if err := r.s.DeleteMember(ctx, chat.ID, author.ID); err != nil {
+				entry.WithError(err).Error("Failed to delete member")
+			}
 		}
-		if result != nil && result.UserBanned {
+		if result != nil && result.MessageDeleted && r.store != nil {
+			if err := r.store.DeleteMessageContext(ctx, chat.ID, target.MessageID); err != nil {
+				return err
+			}
+		}
+		if result != nil && result.UserBanned && author.Kind == db.MessageAuthorUser {
 			_ = r.sendTemporaryReply(ctx, msg, i18n.Get("Reported message was confirmed as spam. The user was banned.", language))
 		}
 		r.deleteReportMessage(ctx, msg)
@@ -278,8 +338,10 @@ func (r *Reactor) voteBanCommand(ctx context.Context, msg *api.Message, chat *ap
 			entry.WithError(err).Error("Failed to process spam message")
 			return errors.Wrap(err, "failed to process spam message")
 		}
-		if err := r.s.DeleteMember(ctx, chat.ID, target.From.ID); err != nil {
-			entry.WithError(err).Error("Failed to delete member")
+		if author.Kind == db.MessageAuthorUser {
+			if err := r.s.DeleteMember(ctx, chat.ID, author.ID); err != nil {
+				entry.WithError(err).Error("Failed to delete member")
+			}
 		}
 		r.deleteReportMessage(ctx, msg)
 		return nil
@@ -335,7 +397,7 @@ func (r *Reactor) deleteReportMessage(ctx context.Context, msg *api.Message) {
 	if msg == nil {
 		return
 	}
-	if err := bot.DeleteChatMessage(ctx, r.bot, msg.Chat.ID, msg.MessageID); err != nil {
+	if err := bot.DeleteChatMessageAndContext(ctx, r.bot, r.store, msg.Chat.ID, msg.MessageID); err != nil {
 		r.getLogEntry().WithError(err).WithField("chatID", msg.Chat.ID).WithField("messageID", msg.MessageID).Debug("failed to delete report message")
 	}
 }

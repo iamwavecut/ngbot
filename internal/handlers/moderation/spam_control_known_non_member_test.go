@@ -128,21 +128,28 @@ func (s *testModerationStore) GetPrivilegeBlockedSpamCases(context.Context) ([]*
 	return nil, nil
 }
 
-func (s *testModerationStore) GetActiveSpamCase(context.Context, int64, int64) (*db.SpamCase, error) {
-	if s.spamCase == nil || s.spamCase.Status != spamCaseStatusPending {
+func (s *testModerationStore) GetActiveAuthorSpamCase(_ context.Context, chatID int64, author db.MessageAuthor) (*db.SpamCase, error) {
+	if s.spamCase == nil || s.spamCase.ChatID != chatID || s.spamCase.Author() != author || s.spamCase.ResolvedAt != nil {
 		return nil, nil
 	}
-	return s.spamCase, nil
+	switch s.spamCase.Status {
+	case db.SpamCaseStatusPending, db.SpamCaseStatusResolvingSpam, db.SpamCaseStatusResolvingFalsePositive:
+		return s.spamCase, nil
+	default:
+		return nil, nil
+	}
 }
 
-func (s *testModerationStore) GetActiveSpamCaseByMessage(_ context.Context, chatID int64, userID int64, messageID int) (*db.SpamCase, error) {
-	if s.spamCase == nil || s.spamCase.Status != spamCaseStatusPending {
-		return nil, nil
+func (s *testModerationStore) GetActiveAuthorSpamCaseByMessage(ctx context.Context, chatID int64, author db.MessageAuthor, messageID int) (*db.SpamCase, error) {
+	spamCase, err := s.GetActiveAuthorSpamCase(ctx, chatID, author)
+	if err != nil || spamCase == nil || spamCase.MessageID != messageID {
+		return nil, err
 	}
-	if s.spamCase.ChatID != chatID || s.spamCase.UserID != userID || s.spamCase.MessageID != messageID {
-		return nil, nil
-	}
-	return s.spamCase, nil
+	return spamCase, nil
+}
+
+func (s *testModerationStore) DeleteMessageContext(context.Context, int64, int) error {
+	return nil
 }
 
 func (s *testModerationStore) AddSpamVote(context.Context, *db.SpamVote) error {
@@ -307,7 +314,7 @@ func TestRecordVoteRejectsDepartedVoterEvenWhenMembershipCacheSaysMember(t *test
 		}
 		return map[string]any{
 			moderationTestJSONUser:   map[string]any{"id": 300, moderationTestJSONIsBot: false, moderationTestJSONFirstName: "Voter"},
-			moderationTestJSONStatus: "left",
+			moderationTestJSONStatus: moderationTestMemberStatusLeft,
 			"is_member":              false,
 		}
 	})
@@ -983,7 +990,7 @@ func TestRecordVoteRejectsLogChannelOutsider(t *testing.T) {
 		switch method {
 		case moderationTestTelegramMethodGetChatMember:
 			return map[string]any{
-				moderationTestJSONStatus: "left",
+				moderationTestJSONStatus: moderationTestMemberStatusLeft,
 				moderationTestJSONUser:   map[string]any{"id": 300, moderationTestJSONIsBot: false, moderationTestJSONFirstName: "Outsider"},
 			}
 		default:

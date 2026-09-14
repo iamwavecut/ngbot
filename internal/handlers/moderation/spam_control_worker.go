@@ -6,7 +6,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/iamwavecut/ngbot/internal/bot"
 	"github.com/iamwavecut/ngbot/internal/db"
 )
 
@@ -104,8 +103,8 @@ func (sc *SpamControl) cleanupDueReportMessages(ctx context.Context, before time
 		return
 	}
 	for _, message := range messages {
-		err := bot.DeleteChatMessage(ctx, sc.bot, message.ChatID, message.MessageID)
-		if err != nil && !isSpamTelegramEffectAlreadyApplied(err) {
+		err := sc.deleteMessage(ctx, message.ChatID, message.MessageID)
+		if err != nil {
 			sc.getLogEntry().WithField("error", err.Error()).WithField("case_id", message.CaseID).Error("failed to delete report message")
 			continue
 		}

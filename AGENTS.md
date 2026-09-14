@@ -43,7 +43,7 @@ This document serves as the **single source of truth** for all development rules
 
 **ngbot** is a Telegram gatekeeper bot with CAPTCHA verification, LLM-powered spam detection, and community voting moderation.
 
-**Stack**: Go 1.25, SQLite, Telegram Bot API, OpenAI/Gemini LLMs
+**Stack**: Go 1.26.8, SQLite, Telegram Bot API, OpenAI/Gemini LLMs
 
 **Structure**:
 - `cmd/ngbot/` - Entry point, runtime wiring
@@ -96,7 +96,9 @@ For detailed architecture, see [docs/CODEBASE_MAP.md](docs/CODEBASE_MAP.md).
 - **Join-Captcha WebApp** 🔒: The gatekeeper join-captcha WebApp server speaks plain HTTP and **MUST** run behind a TLS-terminating reverse proxy. Its listen address is configured via `GatekeeperWebApp.ListenAddr`. In the Docker deployment it binds `0.0.0.0:8080` inside the container (mapped to `127.0.0.1:18080` on the host); the default **must NOT** be changed to loopback or the container port mapping breaks.
 - **No-Rights Mode** 🛡️: Before banlist, LLM, reaction, or voting moderation, check the bot's restrict-member capability. A confirmed Telegram privilege error is terminal and must not be retried. Public CAPTCHA may still run without restricting the user: success deletes the CAPTCHA; failure leaves a durable 30-minute notice.
 - **Manual Allowlist Priority** ✅: A matching per-chat `chat_not_spammer_overrides` row is the only exemption checked before cached or provider-backed banlist enforcement. For every non-allowlisted user, effective banlist membership remains an unconditional deny decision before remembered membership, admin status, commands, voting, or LLM. The always-on cached guard precedes the configured `admin → gatekeeper → reactor` chain, and join updates are checked even when Gatekeeper is disabled. Enforcement directly bans and deletes the available join/current-message artifact without creating a spam case. The guard may inspect the in-memory effective set to short-circuit routing, but it must verify moderation capability before Telegram I/O and must not perform online provider checks in no-rights mode. Allowlist lookup failures fail closed and continue normal moderation.
-- **Durable Message Probation** ✏️: A previously untrusted author gets a per-chat durable probation on the first message. Check every new text, caption, or visible `RichMessage` text for the configured minimum duration, then require a distinct safe new message to graduate; commands and empty media start the clock but cannot graduate it. Persist every safe message as `{chat_id, message_id, user_id}` for later edit checks. While probation is active, every authored edit with semantic text is rechecked even without an existing binding, never extends the deadline, and never graduates the author; after graduation, bound-message edits remain protected. Reactions and `chat_known_non_members` never grant message trust. Telegram Bot API has no deletion update for ordinary group messages (`deleted_business_messages` is business-only), so never claim immediate deletion detection. The cached banlist guard applies to all authored edits unless the author has a matching manual allowlist override.
+- **Durable Author Trust** ✏️: All chats use a typed `MessageAuthor` (`user` or `sender_chat`); `SenderChat` takes precedence over technical `From`. Three distinct safe new semantic messages grant 30 days of per-chat trust by default; one safe new message renews expired trust. SQLite atomically binds checked messages, increments the counter and grants trust. Membership bookkeeping is separate and best effort after persistence; reactions and `chat_known_non_members` never grant trust. Commands, bot mentions, empty media, reactions and edits never advance or renew admission. Before admission and after expiry all semantic edits are checked; during trust previously bound edits remain protected. Checked-message bindings are durable identity metadata: never expire them with context or trust, because renewal would otherwise make old checked edits unprotected; chat deletion may cascade them. Pending/resolving cases suspend trust; confirmed spam resets it, false positives retain any previous unexpired grant. Channels follow community voting without a mute or technical-user fallback. Keep user allowlist-before-banlist priority; user banlists never consume channel IDs. Preserve linked-channel and anonymous group-admin exemptions.
+- **Bounded Conversation Context** 💬: Persist message context separately from author trust in SQLite. Retain original send time, thread/reply links, edited text and Telegram update IDs for same-second edit ordering; snapshots cannot supersede newer authoritative edits. Use only same-chat/thread history younger than 24 hours, at most five earlier replies, 2,000 characters per saved text and 8,000 extra context characters. Prioritize direct reply/quote, source post, then nearby replies. Unknown discussion threads use reply chains, ordinary groups may use recent group history. Successful bot deletions leave short-lived tombstones. Successful user bans that revoke messages clear the matching user context; channel bans do not imply removal of previous channel messages. CAPTCHA context cleanup uses a distinct durable phase so a SQLite retry cannot repeat a completed ban. Ordinary user deletions are not reliably observable through Bot API. Pass history as untrusted structured evidence and classify only the candidate. Never log message texts. No external-reply automatic verdict.
+- **Author Trust Configuration** ⚙️: Global `NG_SPAM_SAFE_MESSAGES_REQUIRED` and `NG_SPAM_AUTHOR_TRUST_DURATION` default to `3` and `720h`. Keep the existing per-chat LLM switch. `NG_SPAM_MESSAGE_PROBATION_DURATION` is accepted as deprecated with a warning and has no effect. Migrate prior effective user trust for 30 days from migration, including suspended grants; active probations restart at zero and reaction-only records are excluded. Preserve cases, votes and durable actions.
 
 ### Admin Panel UX Rules
 - **Cascading Menus** 🧭: Admin settings must be structured as cascading category menus. Do not place many unrelated controls on a single page.
@@ -114,7 +116,7 @@ For detailed architecture, see [docs/CODEBASE_MAP.md](docs/CODEBASE_MAP.md).
 - **Architecture first** 🏛️: Audit before coding: scan repo, read related packages, plan all changes.
 
 ### Go Version & Documentation
-- **Go Version** 🔢: 1.25 (Latest features where applicable). Ref: [Go Release Notes](https://go.dev/doc/devel/release)
+- **Go Version** 🔢: 1.26.8, as pinned in `go.mod` and `Dockerfile`. Ref: [Go Release Notes](https://go.dev/doc/devel/release)
 - **Documentation Strategy** 📚: Use `go doc`, `go tool`, `go list` for Go packages.
 - **English Only** 🇺🇸: Code and technical reasoning in English.
 
@@ -203,7 +205,7 @@ For detailed architecture, see [docs/CODEBASE_MAP.md](docs/CODEBASE_MAP.md).
 ## 🧹 Code Quality & Hygiene
 
 ### Linting & Static Analysis
-- **Full Lint** 🔍: `go tool golangci-lint run --enable=unused --enable=unparam --enable=ineffassign --enable=goconst ./...`
+- **Full Lint** 🔍: `go tool golangci-lint run --no-config --enable=unused --enable=unparam --enable=ineffassign --enable=goconst ./...`. The repository has no tracked linter configuration; `--no-config` prevents parent or home configuration from silently weakening local checks compared with CI.
 - **Quick Check** ⚡: `go vet ./...` (Do not use `go build` for validation).
 - **Compliance** ✅: **Never ignore lint warnings and fix them right away.**
 

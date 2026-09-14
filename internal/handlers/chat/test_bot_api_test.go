@@ -12,6 +12,8 @@ import (
 )
 
 const (
+	testChatTypeGroup      = "group"
+	testNoOpCommand        = "/noop"
 	testFirstNameUser      = "User"
 	testFirstNameNeo       = "Neo"
 	testFirstNameAdmin     = "Admin"
@@ -105,7 +107,7 @@ func newTestBotAPIWithErrors(t *testing.T, handler func(method string, r *http.R
 				t.Fatalf("parse photo request: %v", err)
 			}
 			r.Form.Set("text", r.Form.Get("caption"))
-			handlerMethod = "sendMessage"
+			handlerMethod = testTelegramMethodSendMessage
 		}
 		result := handler(handlerMethod, r)
 

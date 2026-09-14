@@ -120,9 +120,9 @@ func TestSQLiteIntegrityMigrationUpDownPreservesDomainRows(t *testing.T) {
 		want  int
 	}{
 		{table: "chats", want: 1},
-		{table: "chat_challenged_messages", want: 1},
+		{table: testTableChallengedMessages, want: 1},
 		{table: "recent_joiners", want: 1},
-		{table: "spam_cases", want: 1},
+		{table: testTableSpamCases, want: 1},
 	} {
 		var count int
 		if err := sqlDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+check.table).Scan(&count); err != nil {

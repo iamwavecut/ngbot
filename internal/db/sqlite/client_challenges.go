@@ -397,6 +397,11 @@ func (c *sqliteClient) ScheduleLeasedChallengeRetryVersion(
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
+	nextPhase := db.ChallengePhaseReady
+	switch expectedPhase {
+	case db.ChallengePhaseRejectContextPending, db.ChallengePhaseRejectBanDone, db.ChallengePhaseRejectDeclineDone:
+		nextPhase = expectedPhase
+	}
 	result, err := c.db.ExecContext(ctx, `
 		UPDATE gatekeeper_challenges
 		SET next_attempt_at = ?, attempt_count = attempt_count + 1, last_error = ?,
@@ -404,7 +409,7 @@ func (c *sqliteClient) ScheduleLeasedChallengeRetryVersion(
 			action_version = action_version + 1
 		WHERE challenge_id = ? AND status = ? AND action_owner = ? AND action_version = ?
 			AND action_phase = ? AND action_lease_until > ? AND cancel_requested = FALSE
-	`, nextAttemptAt, db.SafeGatekeeperErrorText(lastError), db.ChallengePhaseReady, challengeID, expectedStatus, owner, expectedVersion, expectedPhase, now)
+	`, nextAttemptAt, db.SafeGatekeeperErrorText(lastError), nextPhase, challengeID, expectedStatus, owner, expectedVersion, expectedPhase, now)
 	if err != nil {
 		return false, err
 	}

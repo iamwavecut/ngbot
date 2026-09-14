@@ -270,6 +270,10 @@ func (s *gatekeeperFlowStore) ScheduleLeasedChallengeRetryVersion(_ context.Cont
 	clone.ActionOwner = ""
 	clone.ActionLeaseUntil = sql.NullTime{}
 	clone.ActionPhase = db.ChallengePhaseReady
+	switch expectedPhase {
+	case db.ChallengePhaseRejectContextPending, db.ChallengePhaseRejectBanDone, db.ChallengePhaseRejectDeclineDone:
+		clone.ActionPhase = expectedPhase
+	}
 	clone.ActionVersion++
 	clone.NextAttemptAt = sql.NullTime{Time: nextAttemptAt, Valid: true}
 	clone.AttemptCount++
@@ -1161,7 +1165,7 @@ func TestBannedBotNewChatMembersDeletesJoinMessageAndSkipsCaptcha(t *testing.T) 
 	t.Parallel()
 
 	recorder := &botRequestRecorder{}
-	groupChat := api.Chat{ID: -100123, Type: "group", Title: testGroupTitle}
+	groupChat := api.Chat{ID: -100123, Type: testChatTypeGroup, Title: testGroupTitle}
 	user := api.User{ID: 42, FirstName: "SpamBot", UserName: "spambot", IsBot: true}
 	store := newGatekeeperFlowStore()
 
@@ -1939,8 +1943,8 @@ func TestProcessExpiredJoinRequestChallengesCleanupWithoutApproval(t *testing.T)
 			if len(recorder.byMethod("declineChatJoinRequest")) != 0 {
 				t.Fatalf("expected no join request declines, got %d", len(recorder.byMethod("declineChatJoinRequest")))
 			}
-			if len(recorder.byMethod("banChatMember")) != 0 {
-				t.Fatalf("expected no bans, got %d", len(recorder.byMethod("banChatMember")))
+			if len(recorder.byMethod(testTelegramMethodBanChatMember)) != 0 {
+				t.Fatalf("expected no bans, got %d", len(recorder.byMethod(testTelegramMethodBanChatMember)))
 			}
 			if len(store.challenges) != 0 {
 				t.Fatalf("expected expired join-request challenge cleanup to remove the row, got %d", len(store.challenges))
@@ -2657,7 +2661,7 @@ func TestDMFallbackForbiddenDeclinesWithoutDurableRetry(t *testing.T) {
 			}
 			return map[string]any{
 				"id":         -100123,
-				testJSONType: "supergroup",
+				testJSONType: testChatTypeSupergroup,
 				"title":      "Test group",
 			}
 		case testTelegramMethodSendMessage:

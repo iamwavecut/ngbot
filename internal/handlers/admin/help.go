@@ -82,8 +82,8 @@ func (a *Admin) renderHelpMarkdown(lang string) string {
 	writeHelpBullet(&builder, i18n.Get("Checks known spammers with LoLs bot, CAS, Combot, and the local banlist.", lang))
 	builder.WriteString("\n")
 
-	writeHelpSection(&builder, i18n.Get("New-user message probation", lang)+" / "+i18n.Get("Reaction Profile Check", lang))
-	writeHelpBullet(&builder, i18n.Get("Runs new-user message probation and reaction profile checks when they are enabled.", lang))
+	writeHelpSection(&builder, i18n.Get("Message author trust", lang)+" / "+i18n.Get("Reaction Profile Check", lang))
+	writeHelpBullet(&builder, i18n.Get("LLM checks users and channels regardless of membership. By default, 3 safe new messages grant 30 days of trust; after expiry, one safe new message renews it. Commands and edits do not count.", lang))
 	builder.WriteString("\n")
 
 	writeHelpSection(&builder, i18n.Get("Community Voting", lang))
@@ -169,7 +169,7 @@ func (a *Admin) deleteMessageAfter(chatID int64, messageID int, delay time.Durat
 		return
 	}
 	a.scheduleAfter(delay, func(runCtx context.Context) {
-		if err := bot.DeleteChatMessage(runCtx, a.bot, chatID, messageID); err != nil {
+		if err := bot.DeleteChatMessageAndContext(runCtx, a.bot, a.store, chatID, messageID); err != nil {
 			log.WithField("error", err.Error()).WithField("chat_id", chatID).WithField("message_id", messageID).Error("failed to delete scheduled admin message")
 		}
 	})

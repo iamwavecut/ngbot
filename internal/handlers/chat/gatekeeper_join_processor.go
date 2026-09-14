@@ -593,7 +593,7 @@ func (g *Gatekeeper) startChallenge(ctx context.Context, u *api.Update, user *ap
 			err = errors.New("challenge instance changed before message binding")
 		}
 		entry.WithField(logFieldError, err.Error()).Error("failed to attach challenge message")
-		_ = bot.DeleteChatMessage(ctx, b, recipientChatID, sentMessageID)
+		_ = bot.DeleteChatMessageAndContext(ctx, b, g.store, recipientChatID, sentMessageID)
 		return stderrors.Join(err, g.compensateChallengeActivation(ctx, challenge, false))
 	}
 	challenge.ChallengeMessageID = sentMessageID
@@ -855,7 +855,7 @@ func (g *Gatekeeper) cleanupKnownBannedArtifacts(ctx context.Context, chatID, us
 		}
 
 		if challenge.ChallengeMessageID != 0 {
-			if err := bot.DeleteChatMessage(ctx, g.bot, challenge.CommChatID, challenge.ChallengeMessageID); err != nil {
+			if err := bot.DeleteChatMessageAndContext(ctx, g.bot, g.store, challenge.CommChatID, challenge.ChallengeMessageID); err != nil {
 				entry.WithFields(log.Fields{
 					logFieldUserID:    userID,
 					logFieldMessageID: challenge.ChallengeMessageID,
@@ -864,7 +864,7 @@ func (g *Gatekeeper) cleanupKnownBannedArtifacts(ctx context.Context, chatID, us
 			}
 		}
 		if challenge.JoinMessageID != 0 {
-			if err := bot.DeleteChatMessage(ctx, g.bot, challenge.ChatID, challenge.JoinMessageID); err != nil {
+			if err := bot.DeleteChatMessageAndContext(ctx, g.bot, g.store, challenge.ChatID, challenge.JoinMessageID); err != nil {
 				entry.WithFields(log.Fields{
 					logFieldUserID:    userID,
 					logFieldMessageID: challenge.JoinMessageID,
@@ -901,7 +901,7 @@ func (g *Gatekeeper) cleanupKnownBannedArtifacts(ctx context.Context, chatID, us
 
 	if joinMessageID != 0 {
 		if _, ok := deletedJoinMessages[joinMessageID]; !ok {
-			if err := bot.DeleteChatMessage(ctx, g.bot, chatID, joinMessageID); err != nil {
+			if err := bot.DeleteChatMessageAndContext(ctx, g.bot, g.store, chatID, joinMessageID); err != nil {
 				entry.WithFields(log.Fields{
 					logFieldUserID:    userID,
 					logFieldMessageID: joinMessageID,

@@ -14,7 +14,10 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-const logObjectBanlistGuard = "BanlistGuard"
+const (
+	logObjectBanlistGuard         = "BanlistGuard"
+	banlistActionPermissionDenied = "permission denied"
+)
 
 type BanlistGuard struct {
 	bot        *api.BotAPI
@@ -23,6 +26,8 @@ type BanlistGuard struct {
 }
 
 type banlistGuardStore interface {
+	ResetMessageTrust(ctx context.Context, chatID int64, author db.MessageAuthor) error
+	DeleteMessageContext(ctx context.Context, chatID int64, messageID int) error
 	IsChatNotSpammer(ctx context.Context, chatID int64, userID int64, username string) (bool, error)
 }
 
@@ -125,6 +130,12 @@ func (g *BanlistGuard) handleWithPrecheck(ctx context.Context, u *api.Update, ch
 	} else {
 		outcome = g.enforce(ctx, msg, chat, user)
 	}
+	if outcome.userBanned {
+		outcome.err = errors.Join(outcome.err, g.store.ResetMessageTrust(ctx, chat.ID, db.MessageAuthor{Kind: db.MessageAuthorUser, ID: user.ID}))
+	}
+	if outcome.messageDeleted && msg != nil {
+		outcome.err = errors.Join(outcome.err, g.store.DeleteMessageContext(ctx, chat.ID, msg.MessageID))
+	}
 	entry := log.WithFields(log.Fields{
 		logFieldObject: logObjectBanlistGuard,
 		logFieldChatID: chat.ID,
@@ -164,6 +175,9 @@ func (g *BanlistGuard) enforceDurableBanlistedMessage(ctx context.Context, store
 	outcome := banlistedMessageOutcome{moderationAvailable: true}
 	switch action.Status {
 	case db.ModerationActionCompleted:
+		if action.LastError == banlistActionPermissionDenied {
+			return banlistedMessageOutcome{}
+		}
 		outcome.userBanned = true
 		outcome.messageDeleted = action.MessageID != 0
 		return outcome
@@ -193,7 +207,7 @@ func (g *BanlistGuard) enforceDurableBanlistedMessage(ctx context.Context, store
 		if err != nil {
 			if moderation.IsTelegramPrivilegeError(err) {
 				g.banService.MarkModerationUnavailable(chat.ID)
-				_, advanceErr := store.AdvanceModerationAction(ctx, action.ActionKey, owner, db.ModerationActionStarted, db.ModerationActionCompleted, "permission denied", time.Now())
+				_, advanceErr := store.AdvanceModerationAction(ctx, action.ActionKey, owner, db.ModerationActionStarted, db.ModerationActionCompleted, banlistActionPermissionDenied, time.Now())
 				outcome.err = advanceErr
 				outcome.moderationAvailable = false
 				return outcome
@@ -217,7 +231,7 @@ func (g *BanlistGuard) enforceDurableBanlistedMessage(ctx context.Context, store
 		return outcome
 	}
 	if msgID != 0 {
-		if err := bot.DeleteChatMessage(ctx, g.bot, chat.ID, msgID); err != nil && !isTelegramMessageAlreadyDeleted(err) {
+		if err := bot.DeleteChatMessageAndContext(ctx, g.bot, g.store, chat.ID, msgID); err != nil {
 			outcome.err = err
 			return outcome
 		}
@@ -269,7 +283,7 @@ func moderationUpdateUser(u *api.Update, fallback *api.User) *api.User {
 
 func (g *BanlistGuard) enforce(ctx context.Context, msg *api.Message, chat *api.Chat, user *api.User) banlistedMessageOutcome {
 	if msg != nil {
-		return enforceBanlistedMessage(ctx, g.bot, g.banService, msg, chat, user)
+		return enforceBanlistedMessage(ctx, g.bot, g.store, g.banService, msg, chat, user)
 	}
 	if err := g.banService.BanUserWithMessage(ctx, chat.ID, user.ID, 0); err != nil {
 		return banlistedMessageOutcome{moderationAvailable: true, err: fmt.Errorf("ban user: %w", err)}
@@ -287,6 +301,7 @@ func messageID(msg *api.Message) int {
 func enforceBanlistedMessage(
 	ctx context.Context,
 	botAPI *api.BotAPI,
+	store banlistGuardStore,
 	banService moderation.BanService,
 	msg *api.Message,
 	chat *api.Chat,
@@ -311,7 +326,7 @@ func enforceBanlistedMessage(
 	}
 	outcome.userBanned = true
 
-	if err := bot.DeleteChatMessage(ctx, botAPI, chat.ID, msg.MessageID); err != nil && !isTelegramMessageAlreadyDeleted(err) {
+	if err := bot.DeleteChatMessageAndContext(ctx, botAPI, store, chat.ID, msg.MessageID); err != nil {
 		outcome.err = fmt.Errorf("delete message: %w", err)
 		return outcome
 	}

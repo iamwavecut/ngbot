@@ -107,7 +107,7 @@ func (a *Admin) handleBotMembershipError(ctx context.Context, chatID int64, err 
 }
 
 func (a *Admin) deleteGroupMessage(ctx context.Context, chatID int64, messageID int) error {
-	err := bot.DeleteChatMessage(ctx, a.bot, chatID, messageID)
+	err := bot.DeleteChatMessageAndContext(ctx, a.bot, a.store, chatID, messageID)
 	if isBotRemovedError(err) {
 		_ = a.store.SetChatBotMembership(ctx, &db.ChatBotMembership{
 			ChatID:    chatID,

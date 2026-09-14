@@ -65,6 +65,7 @@ type BanService interface {
 }
 
 type banStore interface {
+	DeleteAuthorMessageContext(ctx context.Context, chatID int64, author db.MessageAuthor) error
 	GetKV(ctx context.Context, key string) (string, error)
 	SetKV(ctx context.Context, key string, value string) error
 	ApplyBanlistSource(ctx context.Context, provider, feedType, generation string, userIDs []int64, seenAt time.Time, expiresAt *time.Time, replace bool) (added, removed []int64, err error)

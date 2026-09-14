@@ -45,7 +45,7 @@ func (a *Admin) renderHome(ctx context.Context, session *db.AdminPanelSession, s
 		return "", nil, err
 	}
 
-	llmLabel := fmt.Sprintf("%s %s", statusEmoji(state.Features.LLMFirstMessageEnabled), i18n.Get("New-user message probation", lang))
+	llmLabel := fmt.Sprintf("%s %s", statusEmoji(state.Features.LLMFirstMessageEnabled), i18n.Get("Message author trust", lang))
 	llmBtn, err := a.commandButton(ctx, session.ID, llmLabel, panelCommand{Action: panelActionOpenLLM})
 	if err != nil {
 		return "", nil, err
@@ -416,14 +416,14 @@ func (a *Admin) renderLLM(ctx context.Context, session *db.AdminPanelSession, st
 	lang := state.Language
 	text := fmt.Sprintf(
 		"%s\n\n%s %s\n\n%s",
-		i18n.Get("New-user message probation", lang),
+		i18n.Get("Message author trust", lang),
 		statusEmoji(state.Features.LLMFirstMessageEnabled),
-		i18n.Get("New-user message probation", lang),
+		i18n.Get("Message author trust", lang),
 		fmt.Sprintf(i18n.Get("Prompt examples cap: %d", lang), panelLLMExamplesCap),
 	)
-	text = appendPanelHelp(text, lang, i18n.Get("What this is: three-hour LLM probation for previously untrusted message authors. Where used: every new text or caption until the deadline and one safe message after it. Value meaning: Master Switch enables or disables this spam check.", lang))
+	text = appendPanelHelp(text, lang, i18n.Get("LLM checks users and channels regardless of membership. By default, 3 safe new messages grant 30 days of trust; after expiry, one safe new message renews it. Commands and edits do not count.", lang))
 
-	toggleBtn, err := a.commandButton(ctx, session.ID, fmt.Sprintf("%s %s", statusEmoji(state.Features.LLMFirstMessageEnabled), i18n.Get("New-user message probation", lang)), panelCommand{Action: panelActionToggleFeature, Feature: panelFeatureLLMFirst})
+	toggleBtn, err := a.commandButton(ctx, session.ID, fmt.Sprintf("%s %s", statusEmoji(state.Features.LLMFirstMessageEnabled), i18n.Get("Message author trust", lang)), panelCommand{Action: panelActionToggleFeature, Feature: panelFeatureLLMFirst})
 	if err != nil {
 		return "", nil, err
 	}
@@ -502,7 +502,7 @@ func exampleListHelp(classification int, lang string) string {
 	if classification == db.SpamClassificationAllowed {
 		return i18n.Get("Allowed Examples", lang)
 	}
-	return i18n.Get("What this is: list of spam examples used by LLM classifier. Where used: prompt context for new-user message probation. Value meaning: each example improves signal for spam patterns in this chat.", lang)
+	return i18n.Get("Spam examples help the LLM recognize spam in this chat.", lang)
 }
 
 func exampleDetailTitle(classification int, lang string) string {

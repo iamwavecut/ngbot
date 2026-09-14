@@ -23,6 +23,7 @@ import (
 )
 
 const (
+	adminTestMethodDeleteMessage = "deleteMessage"
 	adminTestUserName            = "User"
 	adminTestMethodSendMessage   = "sendMessage"
 	adminTestMethodGetChatMember = "getChatMember"
@@ -191,7 +192,7 @@ func TestGroupHelpSendsPrivateBridgeAndDeletesMessages(t *testing.T) {
 			result := sentMessageResult(form)
 			result["message_id"] = 700
 			return result
-		case "deleteMessage":
+		case adminTestMethodDeleteMessage:
 			return true
 		default:
 			t.Fatalf("unexpected telegram method: %s", method)
@@ -213,7 +214,7 @@ func TestGroupHelpSendsPrivateBridgeAndDeletesMessages(t *testing.T) {
 	eventually(t, time.Second, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
-		return countAdminCalls(calls, "deleteMessage") == 2
+		return countAdminCalls(calls, adminTestMethodDeleteMessage) == 2
 	})
 
 	mu.Lock()
@@ -228,7 +229,7 @@ func TestGroupHelpSendsPrivateBridgeAndDeletesMessages(t *testing.T) {
 
 	var deleted []string
 	for _, call := range calls {
-		if call.method == "deleteMessage" {
+		if call.method == adminTestMethodDeleteMessage {
 			deleted = append(deleted, call.form.Get("message_id"))
 		}
 	}

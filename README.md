@@ -13,19 +13,22 @@
 7. Optional greeting text can be shown immediately with the public CAPTCHA for direct joins, or after approval for join-request newcomers.
 
 ## Spam protection
-1. Every previously untrusted author enters a per-chat message probation. Each new text, caption, or visible rich-message text is checked for at least three hours, and the first safe new message after the deadline is required for release:
-   - **Manual allowlist ("Indulgence") override**
-   - **Known spammers lookup** from local imports and online checks against LoLs bot and CAS/Combot
-   - **External quote heuristic** for obvious cross-chat spam patterns
-   - **LLM-powered binary classification** with a general or Jobs & HR profile plus chat-specific allowed and spam examples
-2. If the message is considered spam, the user is either immediately banned or sent into community voting, depending on chat settings.
-3. Chat users can report missed spam with `/voteban` or by mentioning the bot in reply to the message. Reports are rechecked by the LLM first, then either moderated immediately or sent to community voting without pre-deleting the original message.
-4. Clean messages before the deadline remain bound for future edit checks. A distinct clean message after the deadline durably completes probation; commands and media without text start the clock but cannot complete it.
+1. Message authors are identified per chat as either a user or a sender channel. Channel identity takes precedence over Telegram's technical sender. Group membership and reaction history do not grant message trust.
+2. By default, three distinct safe new texts, captions, or visible rich-message texts grant 30 days of trust. After expiry, one safe new message renews it. Commands, bot mentions, edits, reactions, and media without meaningful text never advance or renew trust. Safe checks and their message bindings are committed atomically; duplicates cannot advance the count twice.
+3. Manual user allowlists precede user banlist enforcement. Automatic trust never bypasses banlists or reports. Linked-channel posts and anonymous group administrators keep their existing exemptions. Without moderation rights, no provider-backed checks or punitive actions run.
+4. The classifier receives the direct reply/quote, source post, and up to five recent replies from the same thread. Context is limited to 24 hours, 2,000 characters per saved message, and 8,000 additional characters per request. Unknown discussion threads use only the available reply chain; ordinary groups can use recent group messages. Conversation is untrusted evidence; only the current message is classified. External replies have no automatic spam verdict.
+5. Before admission and after expiry, semantic edits are checked. During trust, edits to previously checked messages remain protected. Trusted messages are retained for context, edits update it, and bot deletions remove it with replay protection. Telegram does not reliably notify bots when users delete ordinary messages.
+6. Automatic spam suspicions follow the chat's community-voting setting. Suspect messages are deleted; users may be muted while voting, but channels have no mute step. Channels are banned only after confirmation, immediately when voting is disabled. Open cases suspend admission; confirmed spam resets trust and its counter, while false positives restore any still-valid prior expiry. Voters must be actual chat members; channel owners are not inferred.
+7. Report missed spam with `/voteban` or by mentioning the bot in reply. Reports are checked independently of automatic trust. Confirmed user reports and administrator decisions keep their immediate moderation path; automatic channel suspicions follow community voting.
+
+On migration, previously effective member trust and completed probations receive 30 days from migration time. Active probations restart with zero safe messages; reaction-only non-member records grant no trust. Existing cases, votes, message bindings and pending actions are preserved. Downgrade is refused while channel cases/bindings or pending CAPTCHA context cleanup exist, to avoid losing author identity or unfinished work.
+
+The accepted tradeoff is that an attacker can earn trust with three harmless messages. Subsequent new messages are then exempt from automatic LLM checks until expiry, while reports, protected edits and user banlists remain active.
 
 ## Admin panel
 1. Run `/settings` in a group where the bot is an admin.
 2. The bot sends a deep-link that opens a private admin panel for that chat.
-3. From there you can configure gatekeeper, new-user message probation, community voting, the LLM moderation profile, allowed/spam examples, language, and manual not-spammer overrides.
+3. From there you can configure gatekeeper, message author trust, community voting, the LLM moderation profile, allowed/spam examples, language, and manual not-spammer overrides.
 4. The home screen includes a one-tap `Recommended Protection` preset and a compact 7-day protection summary.
 
 ## Installation
@@ -119,7 +122,9 @@ See [.env.example](.env.example) for a quick reference. `NGBOT_*` variables conf
 | | `NG_SPAM_LOG_CHANNEL_USERNAME` | Channel for spam logging | | Any valid channel username |
 | | `NG_SPAM_DEBUG_USER_ID` | User allowed to run diagnostics in private chat | `0` | Telegram user ID |
 | | `NG_SPAM_VERBOSE` | Verbose in-chat notifications | `false` | `true`, `false` |
-| | `NG_SPAM_MESSAGE_PROBATION_DURATION` | Minimum new-user message probation before a checked safe exit | `3h` | Any positive duration string |
+| | `NG_SPAM_SAFE_MESSAGES_REQUIRED` | Distinct safe new messages for initial admission | `3` | Positive integer |
+| | `NG_SPAM_AUTHOR_TRUST_DURATION` | Author trust lifetime and renewal period | `720h` | Positive duration |
+| | `NG_SPAM_MESSAGE_PROBATION_DURATION` | Deprecated, accepted with a warning and ignored | Empty | Legacy duration string |
 | | `NG_SPAM_VOTING_TIMEOUT` | Voting time limit | `5m` | Any valid duration string |
 | | `NG_SPAM_MIN_VOTERS` | Minimum required voters | `2` | Any positive integer |
 | | `NG_SPAM_MAX_VOTERS` | Maximum voters cap | `10` | Any positive integer |
@@ -214,3 +219,9 @@ This bot benefits from public anti-spam data shared with the community by:
 Thank you to both projects for maintaining and sharing these community safety resources.
 
 Feel free to add feature requests in issues.
+
+### Author moderation diagnostics
+
+Structured debug logs include `author_kind`, `author_id`, chat/message IDs, `trust_phase`, skip reason and classification outcome without message text. Existing provider usage logs retain token counts. Daily SQLite KV statistics use `stats:<chat_id>:<YYYY-MM-DD>:<metric>` keys: `author_check_initial`, `author_check_renewal`, `author_check_edit`, `author_check_pending_case`, `author_check_report`, `author_trust_granted`, and `author_trust_skipped`. Check counters include attempts; `llm_checked` counts successful message/report classifications, and existing `spam_confirmed` / `false_positive` counters record resolved cases. Compare equivalent traffic windows after rollout; local tests do not establish the cause or savings of a production incident.
+
+Context cleanup runs through the existing periodic bounded retention job. Checked-message bindings contain only identity and timing metadata, and remain until the chat is removed. They survive trust expiry, renewal, resets and context deletion so that an old checked message cannot lose edit protection during a later trust period.

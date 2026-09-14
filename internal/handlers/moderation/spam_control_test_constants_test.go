@@ -1,6 +1,8 @@
 package handlers
 
 const (
+	moderationTestMemberStatusLeft                 = "left"
+	moderationTestErrorBadGateway                  = "Bad Gateway"
 	moderationTestJSONIsBot                        = "is_bot"
 	moderationTestJSONFirstName                    = "first_name"
 	moderationTestJSONMessageID                    = "message_id"
