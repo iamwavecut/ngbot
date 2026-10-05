@@ -1,4 +1,5 @@
 .dockerignore
+.env*
 compose.yaml
 Dockerfile
 ngbot
