@@ -20,6 +20,7 @@ import (
 	"github.com/iamwavecut/ngbot/internal/adapters"
 	"github.com/iamwavecut/ngbot/internal/adapters/llm/gemini"
 	"github.com/iamwavecut/ngbot/internal/adapters/llm/openai"
+	"github.com/iamwavecut/ngbot/internal/adapters/llm/openrouter"
 	"github.com/iamwavecut/ngbot/internal/bot"
 	"github.com/iamwavecut/ngbot/internal/config"
 	"github.com/iamwavecut/ngbot/internal/db"
@@ -203,6 +204,7 @@ func main() {
 	config.RegisterSecret(cfg.LLM.APIKey)
 	config.RegisterSecret(cfg.LLM.GeminiAPIKey)
 	config.RegisterSecret(cfg.LLM.OpenAIAPIKey)
+	config.RegisterSecret(cfg.LLM.OpenRouterAPIKey)
 
 	log.SetFormatter(&config.NbFormatter{})
 	log.SetOutput(os.Stdout)
@@ -456,7 +458,12 @@ func buildRuntime(ctx context.Context, cfg *config.Config, errChan chan<- shutdo
 		errChan,
 	)
 
+	var llmComponent lifecycle.Component
+	if component, ok := llmAPI.(lifecycle.Component); ok {
+		llmComponent = component
+	}
 	runtime := lifecycle.NewRuntime(
+		llmComponent,
 		service,
 		banService,
 		spamControl,
@@ -546,12 +553,15 @@ func maskConfiguration(cfg *config.Config) *config.Config {
 	maskedConfig.LLM.APIKey = maskSecret(cfg.LLM.APIKey)
 	maskedConfig.LLM.GeminiAPIKey = maskSecret(cfg.LLM.GeminiAPIKey)
 	maskedConfig.LLM.OpenAIAPIKey = maskSecret(cfg.LLM.OpenAIAPIKey)
+	maskedConfig.LLM.OpenRouterAPIKey = maskSecret(cfg.LLM.OpenRouterAPIKey)
 	return &maskedConfig
 }
 
 func configureLLM(cfg *config.Config, logger *log.Entry) (adapters.LLM, error) {
 	apiKey := cfg.LLM.APIKeyForProvider()
 	switch cfg.LLM.Type {
+	case config.LLMProviderOpenRouter:
+		return openrouter.NewOpenRouter(apiKey, cfg.LLM.Model, logger)
 	case config.LLMProviderOpenAI:
 		return openai.NewOpenAI(
 			apiKey,

@@ -10,6 +10,7 @@ const (
 	testGatekeeperHandler = "gatekeeper"
 	testGeminiAPIKey      = "gemini-key"
 	testOpenAIAPIKey      = "openai-key"
+	testLegacyAPIKey      = "legacy-key"
 )
 
 func TestLoadUsesProviderSpecificCredential(t *testing.T) {
@@ -268,7 +269,7 @@ func TestValidateConfig(t *testing.T) {
 			cfg: Config{
 				EnabledHandlers: []string{"reactor"},
 				LLM: LLM{
-					APIKey: "legacy-key",
+					APIKey: testLegacyAPIKey,
 					Type:   LLMProviderGemini,
 				},
 				SpamControl: SpamControl{SafeMessagesRequired: 3, AuthorTrustDuration: 720 * time.Hour},
@@ -361,7 +362,7 @@ func TestValidateConfigRequiresOnlySelectedProviderCredential(t *testing.T) {
 		},
 		{
 			name: "legacy Gemini credential fallback",
-			llm:  LLM{Type: LLMProviderGemini, APIKey: "legacy-key", RequestTimeout: 45 * time.Second},
+			llm:  LLM{Type: LLMProviderGemini, APIKey: testLegacyAPIKey, RequestTimeout: 45 * time.Second},
 		},
 		{
 			name:    "selected credential missing",
@@ -464,5 +465,21 @@ func TestAuthorTrustConfigIgnoresLegacyDuration(t *testing.T) {
 		if err := validateConfig(&invalid); err == nil {
 			t.Fatal("invalid admission policy accepted")
 		}
+	}
+}
+
+func TestOpenRouterCredentialSelectionAndValidation(t *testing.T) {
+	t.Parallel()
+	cfg := validConfigForLLM()
+	cfg.LLM = LLM{Type: LLMProviderOpenRouter, OpenRouterAPIKey: "router-key", APIKey: testLegacyAPIKey, RequestTimeout: time.Minute}
+	if err := validateConfig(&cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LLM.APIKeyForProvider() != "router-key" {
+		t.Fatal("dedicated OpenRouter key was not selected")
+	}
+	cfg.LLM.OpenRouterAPIKey = ""
+	if cfg.LLM.APIKeyForProvider() != testLegacyAPIKey {
+		t.Fatal("legacy fallback was not preserved")
 	}
 }

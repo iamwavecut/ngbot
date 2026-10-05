@@ -113,11 +113,12 @@ See [.env.example](.env.example) for a quick reference. `NGBOT_*` variables conf
 | | `NG_GATEKEEPER_WEBAPP_MAX_CONCURRENT` | Maximum in-flight Mini App requests | `32` | Integer greater than zero; `0` is invalid |
 | | `NG_GATEKEEPER_WEBAPP_REQUESTS_PER_MINUTE` | Per-client Mini App request limit | `120` | Integer greater than zero; `0` is invalid |
 | | `NG_LLM_GEMINI_API_KEY` | Gemini credential; required when `reactor` uses Gemini | | Preferred over the legacy key |
+| | `NG_LLM_OPENROUTER_API_KEY` | OpenRouter credential; required when using OpenRouter | | Preferred over the legacy key |
 | | `NG_LLM_OPENAI_API_KEY` | OpenAI credential; required when `reactor` uses OpenAI | | Preferred over the legacy key |
 | | `NG_LLM_API_KEY` | Legacy credential fallback for the selected provider | | Used only when its dedicated key is empty |
-| | `NG_LLM_API_MODEL` | Optional LLM model override | Provider-specific | Any valid OpenAI or Gemini model |
+| | `NG_LLM_API_MODEL` | Optional LLM model override | Provider-specific | OpenAI/Gemini overrides; OpenRouter requires `deepseek/deepseek-v4.1-flash` |
 | | `NG_LLM_API_URL` | OpenAI-compatible API base URL | `https://api.openai.com/v1` | Used when `NG_LLM_API_TYPE=openai` |
-| | `NG_LLM_API_TYPE` | LLM provider | `openai` | `openai`, `gemini` |
+| | `NG_LLM_API_TYPE` | LLM provider | `openai` | `openai`, `gemini`, `openrouter` |
 | | `NG_LLM_REQUEST_TIMEOUT` | Maximum duration of one classification request | `45s` | Any positive duration string |
 | | `NG_SPAM_LOG_CHANNEL_USERNAME` | Channel for spam logging | | Any valid channel username |
 | | `NG_SPAM_DEBUG_USER_ID` | User allowed to run diagnostics in private chat | `0` | Telegram user ID |
@@ -225,3 +226,25 @@ Feel free to add feature requests in issues.
 Structured debug logs include `author_kind`, `author_id`, chat/message IDs, `trust_phase`, skip reason and classification outcome without message text. Existing provider usage logs retain token counts. Daily SQLite KV statistics use `stats:<chat_id>:<YYYY-MM-DD>:<metric>` keys: `author_check_initial`, `author_check_renewal`, `author_check_edit`, `author_check_pending_case`, `author_check_report`, `author_trust_granted`, and `author_trust_skipped`. Check counters include attempts; `llm_checked` counts successful message/report classifications, and existing `spam_confirmed` / `false_positive` counters record resolved cases. Compare equivalent traffic windows after rollout; local tests do not establish the cause or savings of a production incident.
 
 Context cleanup runs through the existing periodic bounded retention job. Checked-message bindings contain only identity and timing metadata, and remain until the chat is removed. They survive trust expiry, renewal, resets and context deletion so that an old checked message cannot lose edit protection during a later trust period.
+
+## Public comment classification and OpenRouter accounting
+
+The initial check and reported-message check share one policy. Public-channel subscribers do not have to join the discussion group. Spam requires promotional/referral redirection or an invitation to unspecified income/work. News sources, documentation, ordinary social profiles, detailed vacancies (including iGaming recruitment), contextual recommendations, criticism and jokes remain allowed. Telegram bot `start`/`startapp` payloads require scrutiny: unexplained personal or opaque referral-like codes are spam, while clearly contextual document/function links and technical examples are allowed. Quoting a scam to discuss or warn about it is allowed. Existing author trust, banlists, CAPTCHA, voting and per-chat settings remain separate.
+
+Select `NG_LLM_API_TYPE=openrouter`, set `NG_LLM_OPENROUTER_API_KEY`, and leave the model empty or set `deepseek/deepseek-v4.1-flash`. Each request permits only the official `deepseek` provider, disables provider fallbacks and requires parameter support. The OpenRouter endpoint is fixed to `https://openrouter.ai/api/v1`; the OpenAI base URL is unrelated. Requests use low reasoning effort with a 2,048-token completion budget, including reasoning. Truncated, refused, malformed or unexpected-provider responses cannot become spam verdicts. DeepSeek implicit prefix caching needs no cache-management calls. Stable policy and global examples precede changing context and candidate data.
+
+At log level `4` (info) or higher, `OpenRouter usage metadata` records normalized/native token counts, cached tokens, cache writes when reported, reasoning, cost and cost breakdowns, generation/request/upstream IDs, actual provider, finish reasons and timings. Numeric usage fields are preserved even when the SDK has no typed field. A background queue of at most 32 metadata lookups retries `/generation` for up to ten minutes, because OpenRouter publishes these records after a delay. Separate generation records join the initial usage record by generation ID; shutdown cancels pending lookups. Unavailable statistics do not invalidate a valid verdict. No prompt, completion text, reasoning text, credentials or external-user identity is logged. Missing cache/cost observations are distinguished from measured zeros. Cumulative ratios cover completed requests since process start; raw records remain subject to Compose log rotation (five 10 MiB files).
+
+Aggregate any retained time window without adding costs from usage and generation twice:
+
+```sh
+docker compose logs --no-log-prefix --since 24h ngbot | ./scripts/openrouter-stats.py
+```
+
+`cache_hit_request_rate` measures requests with any reported hit among cache-observed requests; `cached_input_token_rate` measures cached input tokens among cache-observed input tokens. Reasoning tokens are part of completion tokens and must not be added again. Reported cache discounts and actual billed costs are separate; no assumed list-price savings are substituted for observed billing. Generation IDs deduplicate repeated log records. Export metadata logs before rotation for longer reporting windows.
+
+The opt-in semantic regression uses the real pinned provider and incurs API charges:
+
+```sh
+NGBOT_RUN_LIVE_OPENROUTER_MODERATION=1 go test ./internal/handlers/moderation -run '^TestLiveOpenRouterPublicComments$' -count=1 -v
+```

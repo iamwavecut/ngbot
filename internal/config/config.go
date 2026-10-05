@@ -45,13 +45,14 @@ type (
 	}
 
 	LLM struct {
-		APIKey         string        `env:"LLM_API_KEY"`
-		GeminiAPIKey   string        `env:"LLM_GEMINI_API_KEY"`
-		OpenAIAPIKey   string        `env:"LLM_OPENAI_API_KEY"`
-		Model          string        `env:"LLM_API_MODEL"`
-		BaseURL        string        `env:"LLM_API_URL,default=https://api.openai.com/v1"`
-		Type           string        `env:"LLM_API_TYPE,default=openai"`
-		RequestTimeout time.Duration `env:"LLM_REQUEST_TIMEOUT,default=45s"`
+		APIKey           string        `env:"LLM_API_KEY"`
+		GeminiAPIKey     string        `env:"LLM_GEMINI_API_KEY"`
+		OpenRouterAPIKey string        `env:"LLM_OPENROUTER_API_KEY"`
+		OpenAIAPIKey     string        `env:"LLM_OPENAI_API_KEY"`
+		Model            string        `env:"LLM_API_MODEL"`
+		BaseURL          string        `env:"LLM_API_URL,default=https://api.openai.com/v1"`
+		Type             string        `env:"LLM_API_TYPE,default=openai"`
+		RequestTimeout   time.Duration `env:"LLM_REQUEST_TIMEOUT,default=45s"`
 	}
 
 	SpamControl struct {
@@ -73,6 +74,7 @@ type (
 const (
 	LLMProviderGemini             = "gemini"
 	LLMProviderOpenAI             = "openai"
+	LLMProviderOpenRouter         = "openrouter"
 	gatekeeperActionLeaseDuration = 2 * time.Minute
 )
 
@@ -162,6 +164,7 @@ func normalizeLLMConfig(cfg *LLM) {
 	cfg.APIKey = strings.TrimSpace(cfg.APIKey)
 	cfg.GeminiAPIKey = strings.TrimSpace(cfg.GeminiAPIKey)
 	cfg.OpenAIAPIKey = strings.TrimSpace(cfg.OpenAIAPIKey)
+	cfg.OpenRouterAPIKey = strings.TrimSpace(cfg.OpenRouterAPIKey)
 	cfg.Model = strings.TrimSpace(cfg.Model)
 	cfg.BaseURL = strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
 	cfg.Type = strings.ToLower(strings.TrimSpace(cfg.Type))
@@ -178,7 +181,7 @@ func validateLLMConfig(cfg LLM) error {
 		return fmt.Errorf("%s LLM API key is empty", cfg.Type)
 	}
 	switch cfg.Type {
-	case LLMProviderGemini:
+	case LLMProviderGemini, LLMProviderOpenRouter:
 		return nil
 	case LLMProviderOpenAI:
 		endpoint, err := url.Parse(cfg.BaseURL)
@@ -199,6 +202,10 @@ func (cfg LLM) APIKeyForProvider() string {
 	case LLMProviderGemini:
 		if cfg.GeminiAPIKey != "" {
 			return cfg.GeminiAPIKey
+		}
+	case LLMProviderOpenRouter:
+		if cfg.OpenRouterAPIKey != "" {
+			return cfg.OpenRouterAPIKey
 		}
 	case LLMProviderOpenAI:
 		if cfg.OpenAIAPIKey != "" {

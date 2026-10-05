@@ -91,6 +91,7 @@ For detailed architecture, see [docs/CODEBASE_MAP.md](docs/CODEBASE_MAP.md).
 
 ### External Services
 - Telegram Bot API.
+- **OpenRouter Classification**: The OpenRouter adapter uses `deepseek/deepseek-v4.1-flash` with request-level `provider.only=["deepseek"]`, disabled fallbacks and required parameter support. Preserve the shared public-comment spam policy, critical bot `start`/`startapp` handling, and valid `0`/`1`-only completed responses. Usage/generation telemetry must exclude message and reasoning texts and credentials; missing cache/cost fields are unknown, not measured zero. Keep native OpenAI/Gemini adapters available.
 - LLM APIs (OpenAI-compatible and Gemini).
 - Banlist API (lols.bot).
 - **Join-Captcha WebApp** 🔒: The gatekeeper join-captcha WebApp server speaks plain HTTP and **MUST** run behind a TLS-terminating reverse proxy. Its listen address is configured via `GatekeeperWebApp.ListenAddr`. In the Docker deployment it binds `0.0.0.0:8080` inside the container (mapped to `127.0.0.1:18080` on the host); the default **must NOT** be changed to loopback or the container port mapping breaks.
