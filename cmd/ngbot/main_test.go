@@ -19,6 +19,7 @@ import (
 	api "github.com/OvyFlash/telegram-bot-api"
 	"github.com/iamwavecut/ngbot/internal/adapters/llm/gemini"
 	"github.com/iamwavecut/ngbot/internal/adapters/llm/openai"
+	"github.com/iamwavecut/ngbot/internal/adapters/llm/openrouter"
 	"github.com/iamwavecut/ngbot/internal/bot"
 	"github.com/iamwavecut/ngbot/internal/config"
 	"github.com/iamwavecut/ngbot/internal/db"
@@ -166,9 +167,10 @@ func TestMaskConfigurationRedactsCredentialsCompletely(t *testing.T) {
 	cfg := &config.Config{
 		TelegramAPIToken: "telegram-prefix-secret-suffix",
 		LLM: config.LLM{
-			APIKey:       "llm-prefix-secret-suffix",
-			GeminiAPIKey: "gemini-prefix-secret-suffix",
-			OpenAIAPIKey: "openai-prefix-secret-suffix",
+			APIKey:           "llm-prefix-secret-suffix",
+			GeminiAPIKey:     "gemini-prefix-secret-suffix",
+			OpenAIAPIKey:     "openai-prefix-secret-suffix",
+			OpenRouterAPIKey: "router-prefix-secret-suffix",
 		},
 	}
 
@@ -185,6 +187,9 @@ func TestMaskConfigurationRedactsCredentialsCompletely(t *testing.T) {
 	if masked.LLM.OpenAIAPIKey != redactedConfigurationValue {
 		t.Fatalf("OpenAI key = %q", masked.LLM.OpenAIAPIKey)
 	}
+	if masked.LLM.OpenRouterAPIKey != redactedConfigurationValue {
+		t.Fatal("OpenRouter key was not redacted")
+	}
 }
 
 func TestConfigureLLMUsesSelectedProviderCredential(t *testing.T) {
@@ -199,6 +204,11 @@ func TestConfigureLLMUsesSelectedProviderCredential(t *testing.T) {
 			name: "Gemini",
 			llm:  config.LLM{Type: "gemini", GeminiAPIKey: "gemini-key"},
 			want: (*gemini.API)(nil),
+		},
+		{
+			name: "OpenRouter",
+			llm:  config.LLM{Type: "openrouter", OpenRouterAPIKey: "router-key"},
+			want: (*openrouter.API)(nil),
 		},
 		{
 			name: "OpenAI",
