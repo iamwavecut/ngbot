@@ -37,20 +37,22 @@ import (
 )
 
 const (
-	handlerAdmin                    = "admin"
-	handlerGatekeeper               = "gatekeeper"
-	handlerReactor                  = "reactor"
-	redactedConfigurationValue      = "[REDACTED]"
-	voteBanCommand                  = "voteban"
-	voteBanCommandDescription       = "Report spam with community voting"
-	privateHelpCommand              = "help"
-	privateHelpCommandDescription   = "Show bot help"
-	adminSettingsCommand            = "settings"
-	adminSettingsCommandDescription = "Bot settings"
-	databaseMaintenanceArgument     = "--database-maintenance"
-	gatekeeperReconcileArgument     = "--gatekeeper-reconcile="
-	healthcheckArgumentPrefix       = "--healthcheck="
-	versionArgument                 = "--version"
+	handlerAdmin                       = "admin"
+	handlerGatekeeper                  = "gatekeeper"
+	handlerReactor                     = "reactor"
+	redactedConfigurationValue         = "[REDACTED]"
+	voteBanCommand                     = "voteban"
+	voteBanCommandDescription          = "Report spam with community voting"
+	privateHelpCommand                 = "help"
+	privateHelpCommandDescription      = "Show bot help"
+	adminSettingsCommand               = "settings"
+	adminSettingsCommandDescription    = "Bot settings"
+	globalIndulgenceCommand            = "global_indulgence"
+	globalIndulgenceCommandDescription = "Manage global exceptions"
+	databaseMaintenanceArgument        = "--database-maintenance"
+	gatekeeperReconcileArgument        = "--gatekeeper-reconcile="
+	healthcheckArgumentPrefix          = "--healthcheck="
+	versionArgument                    = "--version"
 )
 
 var (
@@ -205,6 +207,7 @@ func main() {
 	config.RegisterSecret(cfg.LLM.GeminiAPIKey)
 	config.RegisterSecret(cfg.LLM.OpenAIAPIKey)
 	config.RegisterSecret(cfg.LLM.OpenRouterAPIKey)
+	config.RegisterSecret(cfg.CAS.APIKey)
 
 	log.SetFormatter(&config.NbFormatter{})
 	log.SetOutput(os.Stdout)
@@ -402,7 +405,7 @@ func buildRuntime(ctx context.Context, cfg *config.Config, errChan chan<- shutdo
 		return nil, fmt.Errorf("initialize bot API: %w", err)
 	}
 
-	if err := announceBotCommands(ctx, botAPI); err != nil {
+	if err := announceBotCommands(ctx, botAPI, cfg.OwnerUserID); err != nil {
 		log.WithError(err).Warn("failed to set bot commands")
 	}
 
@@ -419,12 +422,12 @@ func buildRuntime(ctx context.Context, cfg *config.Config, errChan chan<- shutdo
 	})
 
 	service := bot.NewService(ctx, botAPI, dbClient, cfg.DefaultLanguage, log.WithField("context", "service"))
-	banService := moderationHandlers.NewBanService(botAPI, dbClient)
+	banService := moderationHandlers.NewBanService(botAPI, dbClient, moderationHandlers.BanServiceOptions{CASAPIKey: cfg.CAS.APIKey})
 	spamControl := moderationHandlers.NewSpamControl(service, botAPI, dbClient, cfg.SpamControl, banService, cfg.SpamControl.Verbose)
 
 	gatekeeperHandler := chatHandlers.NewGatekeeper(service, botAPI, dbClient, dbClient, cfg, banService)
 	gatekeeperHandler.SetWebAppFatalErrorHandler(reportWebAppFatalError(errChan))
-	adminHandler := adminHandlers.NewAdmin(service, botAPI, dbClient, dbClient, banService)
+	adminHandler := adminHandlers.NewAdmin(service, botAPI, dbClient, dbClient, banService, cfg.OwnerUserID)
 	banlistGuard := chatHandlers.NewBanlistGuard(botAPI, dbClient, banService)
 
 	var spamDetector chatHandlers.SpamDetectorInterface
@@ -554,6 +557,7 @@ func maskConfiguration(cfg *config.Config) *config.Config {
 	maskedConfig.LLM.GeminiAPIKey = maskSecret(cfg.LLM.GeminiAPIKey)
 	maskedConfig.LLM.OpenAIAPIKey = maskSecret(cfg.LLM.OpenAIAPIKey)
 	maskedConfig.LLM.OpenRouterAPIKey = maskSecret(cfg.LLM.OpenRouterAPIKey)
+	maskedConfig.CAS.APIKey = maskSecret(cfg.CAS.APIKey)
 	return &maskedConfig
 }
 
@@ -612,7 +616,7 @@ func formatPollingShutdown(err error) string {
 	return fmt.Sprintf("Runtime error: %v", err)
 }
 
-func announceBotCommands(ctx context.Context, botAPI *api.BotAPI) error {
+func announceBotCommands(ctx context.Context, botAPI *api.BotAPI, ownerUserID int64) error {
 	if _, err := botAPI.RequestWithContext(ctx, api.NewDeleteMyCommands()); err != nil {
 		return fmt.Errorf("delete commands: %w", err)
 	}
@@ -662,6 +666,17 @@ func announceBotCommands(ctx context.Context, botAPI *api.BotAPI) error {
 	)
 	if _, err := botAPI.RequestWithContext(ctx, groupAdminCommandsSet); err != nil {
 		return fmt.Errorf("set group admin commands: %w", err)
+	}
+
+	if ownerUserID != 0 {
+		ownerCommands := append(slices.Clone(privateCommands), api.BotCommand{
+			Command:     globalIndulgenceCommand,
+			Description: globalIndulgenceCommandDescription,
+		})
+		ownerCommandsSet := api.NewSetMyCommandsWithScope(api.NewBotCommandScopeChat(ownerUserID), ownerCommands...)
+		if _, err := botAPI.RequestWithContext(ctx, ownerCommandsSet); err != nil {
+			log.WithError(err).Warn("failed to set owner commands")
+		}
 	}
 
 	return nil

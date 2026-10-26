@@ -1387,6 +1387,26 @@ func TestGatekeeperActionLeaseMigrationUpgradesAndRollsBack(t *testing.T) {
 	}
 }
 
+const authorTrustMigration = "20260914000000-add-comment-author-trust.sql"
+
+const normalizeGlobalOverridesMigration = "20261026010000-normalize-global-not-spammer-overrides.sql"
+
+func migrationsFrom(t *testing.T, target string) int {
+	t.Helper()
+
+	entries, err := resources.FS.ReadDir("migrations")
+	if err != nil {
+		t.Fatalf("read migrations: %v", err)
+	}
+	total := 0
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".sql") {
+			total++
+		}
+	}
+	return total - migrationsBefore(t, target)
+}
+
 func migrationsBefore(t *testing.T, target string) int {
 	t.Helper()
 

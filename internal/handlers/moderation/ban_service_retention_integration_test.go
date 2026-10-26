@@ -46,15 +46,12 @@ func TestBanServiceStartCleansRetentionAfterSQLiteReopen(t *testing.T) {
 		t.Fatalf("reopen sqlite client: %v", err)
 	}
 	t.Cleanup(func() { _ = reopened.Close() })
-	now := time.Now().UTC().Format(time.RFC3339)
-	if err := reopened.SetKV(ctx, kvKeyLastDailyFetch, now); err != nil {
-		t.Fatalf("seed daily fetch time: %v", err)
+	service, ok := NewBanService(nil, reopened, BanServiceOptions{}).(*defaultBanService)
+	if !ok {
+		t.Fatal("unexpected ban service type")
 	}
-	if err := reopened.SetKV(ctx, kvKeyLastHourlyFetch, now); err != nil {
-		t.Fatalf("seed hourly fetch time: %v", err)
-	}
-
-	service := NewBanService(nil, reopened)
+	service.sources = nil
+	service.onlineCheckers = nil
 	if err := service.Start(ctx); err != nil {
 		t.Fatalf("start ban service: %v", err)
 	}

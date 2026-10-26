@@ -20,17 +20,18 @@ import (
 )
 
 type Admin struct {
-	s          bot.Service
-	bot        *api.BotAPI
-	store      adminStore
-	stats      handlersbase.StatsStore
-	banService moderation.BanService
-	languages  []string
-	runCtx     context.Context
-	cancel     context.CancelFunc
-	wg         sync.WaitGroup
-	mu         sync.Mutex
-	started    bool
+	s           bot.Service
+	bot         *api.BotAPI
+	store       adminStore
+	stats       handlersbase.StatsStore
+	banService  moderation.BanService
+	ownerUserID int64
+	languages   []string
+	runCtx      context.Context
+	cancel      context.CancelFunc
+	wg          sync.WaitGroup
+	mu          sync.Mutex
+	started     bool
 
 	temporaryMessageTTL time.Duration
 }
@@ -63,6 +64,7 @@ type adminStore interface {
 	DeleteChatSpamExample(ctx context.Context, id int64) error
 
 	CreateChatNotSpammerOverride(ctx context.Context, override *db.ChatNotSpammerOverride) (*db.ChatNotSpammerOverride, error)
+	CreateGlobalNotSpammerOverride(ctx context.Context, override *db.ChatNotSpammerOverride) (*db.ChatNotSpammerOverride, error)
 	GetChatNotSpammerOverride(ctx context.Context, chatID int64, id int64) (*db.ChatNotSpammerOverride, error)
 	ListChatNotSpammerOverrides(ctx context.Context, chatID int64, limit int, offset int) ([]*db.ChatNotSpammerOverride, error)
 	CountChatNotSpammerOverrides(ctx context.Context, chatID int64) (int, error)
@@ -72,7 +74,7 @@ type adminStore interface {
 	UpdateSpamCase(ctx context.Context, sc *db.SpamCase) error
 }
 
-func NewAdmin(s bot.Service, botAPI *api.BotAPI, store adminStore, stats handlersbase.StatsStore, banService moderation.BanService) *Admin {
+func NewAdmin(s bot.Service, botAPI *api.BotAPI, store adminStore, stats handlersbase.StatsStore, banService moderation.BanService, ownerUserID int64) *Admin {
 	entry := log.WithField("object", "Admin").WithField("method", "NewAdmin")
 
 	a := &Admin{
@@ -81,6 +83,7 @@ func NewAdmin(s bot.Service, botAPI *api.BotAPI, store adminStore, stats handler
 		store:               store,
 		stats:               stats,
 		banService:          banService,
+		ownerUserID:         ownerUserID,
 		languages:           i18n.GetLanguagesList(),
 		temporaryMessageTTL: time.Minute,
 	}
@@ -186,6 +189,8 @@ func (a *Admin) Handle(ctx context.Context, u *api.Update, chat *api.Chat, user 
 			return false, a.handleHelpCommand(ctx, u.Message, chat, language)
 		case "settings":
 			return false, a.handleSettingsCommand(ctx, u.Message, chat, user)
+		case globalIndulgenceCommand:
+			return a.handleGlobalIndulgenceCommand(ctx, u.Message, chat, user, language)
 		case "start":
 			payload := strings.TrimSpace(u.Message.CommandArguments())
 			if strings.HasPrefix(payload, "settings_") {

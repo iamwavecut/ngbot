@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -19,28 +20,32 @@ type testBanStore struct {
 	addErr      error
 }
 
-func (s *testBanStore) GetKV(context.Context, string) (string, error) {
-	return "", nil
+func (s *testBanStore) BanlistSnapshots(context.Context) ([]db.BanlistSnapshot, error) {
+	return nil, nil
 }
 
-func (s *testBanStore) SetKV(context.Context, string, string) error {
+func (s *testBanStore) SaveBanlistSnapshot(context.Context, *db.BanlistSnapshot) error {
 	return nil
 }
 
-func (s *testBanStore) ApplyBanlistSource(context.Context, string, string, string, []int64, time.Time, *time.Time, bool) ([]int64, []int64, error) {
-	return nil, nil, nil
+func (s *testBanStore) TouchBanlistSnapshot(context.Context, string, sql.NullString, sql.NullString, time.Time) (bool, error) {
+	return false, nil
 }
 
-func (s *testBanStore) CleanupBanlistSources(context.Context) error {
+func (s *testBanStore) BanlistObservations(context.Context, time.Time) ([]db.BanlistObservation, error) {
+	return nil, nil
+}
+
+func (s *testBanStore) UpsertBanlistObservations(context.Context, []db.BanlistObservation) error {
 	return nil
+}
+
+func (s *testBanStore) DeleteExpiredBanlistObservations(context.Context, time.Time, int) (int64, error) {
+	return 0, nil
 }
 
 func (s *testBanStore) CleanupRetainedRecords(context.Context, time.Time, int) error {
 	return nil
-}
-
-func (s *testBanStore) GetBanlist(context.Context) (map[int64]struct{}, error) {
-	return nil, nil
 }
 
 func (s *testBanStore) AddRestriction(_ context.Context, restriction *db.UserRestriction) error {
@@ -264,7 +269,7 @@ func TestModerationAvailabilityCachesRightsAndExplicitFailureWins(t *testing.T) 
 		}
 	})
 
-	service := NewBanService(botAPI, &testBanStore{})
+	service := NewBanService(botAPI, &testBanStore{}, BanServiceOptions{})
 	for range 2 {
 		available, err := service.ModerationAvailable(context.Background(), -100)
 		if err != nil || !available {
@@ -306,7 +311,7 @@ func TestMutePrivilegeFailureImmediatelyDisablesModeration(t *testing.T) {
 			return testAPIResponse{OK: true}
 		}
 	})
-	service := NewBanService(botAPI, &testBanStore{})
+	service := NewBanService(botAPI, &testBanStore{}, BanServiceOptions{})
 
 	err := service.MuteUser(context.Background(), -100, 200, time.Time{})
 	if !errors.Is(err, ErrNoPrivileges) {

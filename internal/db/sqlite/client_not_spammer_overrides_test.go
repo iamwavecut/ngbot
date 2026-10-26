@@ -2,10 +2,14 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/iamwavecut/ngbot/internal/db"
+	"github.com/iamwavecut/ngbot/resources"
+	migrate "github.com/rubenv/sql-migrate"
 )
 
 func newTestSQLiteClient(t *testing.T) *sqliteClient {
@@ -216,5 +220,91 @@ func TestChatNotSpammerOverrideAdminQueriesExcludeGlobalRowsAndEnforceNormalized
 	}
 	if len(list) != 1 {
 		t.Fatalf("expected admin list to exclude global rows, got %d items", len(list))
+	}
+}
+
+func TestGlobalIndulgenceHonoredByLookup(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	client := newTestSQLiteClient(t)
+
+	if _, err := client.CreateChatNotSpammerOverride(ctx, &db.ChatNotSpammerOverride{
+		MatchType:       db.NotSpammerMatchTypeUserID,
+		MatchValue:      "4242",
+		CreatedByUserID: 1,
+		CreatedAt:       time.Now(),
+	}); err == nil {
+		t.Fatal("per-chat create accepted a global scope")
+	}
+	created, err := client.CreateGlobalNotSpammerOverride(ctx, &db.ChatNotSpammerOverride{
+		ChatID:          -100,
+		MatchType:       db.NotSpammerMatchTypeUserID,
+		MatchValue:      "4242",
+		CreatedByUserID: 1,
+		CreatedAt:       time.Now(),
+	})
+	if err != nil || created.ChatID != 0 {
+		t.Fatalf("CreateGlobalNotSpammerOverride = %+v, %v; want chat 0", created, err)
+	}
+	for _, chatID := range []int64{-100, -200} {
+		allowed, err := client.IsChatNotSpammer(ctx, chatID, 4242, "")
+		if err != nil || !allowed {
+			t.Fatalf("IsChatNotSpammer(%d) = %v, %v; want true", chatID, allowed, err)
+		}
+	}
+	listed, err := client.ListChatNotSpammerOverrides(ctx, 0, 10, 0)
+	if err != nil || len(listed) != 1 || listed[0].ID != created.ID {
+		t.Fatalf("global list = %+v, %v", listed, err)
+	}
+}
+
+func TestGlobalNotSpammerOverridesIncludeNullScopedRows(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	dir := t.TempDir()
+	sqlDB, err := sql.Open("sqlite", filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	source := &migrate.EmbedFileSystemMigrationSource{FileSystem: resources.FS, Root: migrationsRoot}
+	if _, err := migrate.ExecMax(sqlDB, "sqlite3", source, migrate.Up, migrationsBefore(t, normalizeGlobalOverridesMigration)); err != nil {
+		t.Fatalf("execute migrations before global override normalization: %v", err)
+	}
+	if _, err := sqlDB.ExecContext(ctx, `
+		INSERT INTO chat_not_spammer_overrides (chat_id, match_type, match_value, created_by_user_id, created_at)
+		VALUES (NULL, ?, '777', 1, CURRENT_TIMESTAMP)
+	`, db.NotSpammerMatchTypeUserID); err != nil {
+		t.Fatalf("seed NULL-scoped override: %v", err)
+	}
+	if err := sqlDB.Close(); err != nil {
+		t.Fatalf("close seeded database: %v", err)
+	}
+
+	client, err := NewSQLiteClient(ctx, dir, "test.db")
+	if err != nil {
+		t.Fatalf("new sqlite client: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+
+	listed, err := client.ListChatNotSpammerOverrides(ctx, 0, 10, 0)
+	if err != nil || len(listed) != 1 || listed[0].MatchValue != "777" {
+		t.Fatalf("global list = %+v, %v; want the NULL-scoped row", listed, err)
+	}
+	existing, err := client.CreateGlobalNotSpammerOverride(ctx, &db.ChatNotSpammerOverride{
+		MatchType:       db.NotSpammerMatchTypeUserID,
+		MatchValue:      "777",
+		CreatedByUserID: 2,
+		CreatedAt:       time.Now(),
+	})
+	if err != nil || existing.ID != listed[0].ID {
+		t.Fatalf("re-adding the NULL-scoped match = %+v, %v; want the existing row", existing, err)
+	}
+	if err := client.DeleteChatNotSpammerOverride(ctx, 0, listed[0].ID); err != nil {
+		t.Fatalf("delete global override: %v", err)
+	}
+	if matched, err := client.IsChatNotSpammer(ctx, -100, 777, ""); err != nil || matched {
+		t.Fatalf("deleted global override still matches: %v, %v", matched, err)
 	}
 }

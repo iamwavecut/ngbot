@@ -1,6 +1,6 @@
 module github.com/iamwavecut/ngbot
 
-go 1.26.8
+go 1.26.10
 
 require (
 	github.com/OvyFlash/telegram-bot-api v0.0.0-20260826195316-83c4eada97a1
@@ -237,7 +237,7 @@ require (
 	golang.org/x/crypto v0.57.0 // indirect
 	golang.org/x/exp/typeparams v0.0.0-20260209203927-2842357ff358 // indirect
 	golang.org/x/mod v0.41.0 // indirect
-	golang.org/x/net v0.59.0 // indirect
+	golang.org/x/net v0.60.0 // indirect
 	golang.org/x/telemetry v0.0.0-20260908163034-4bcc4b2ee518 // indirect
 	golang.org/x/text v0.42.0 // indirect
 	golang.org/x/tools v0.50.0 // indirect

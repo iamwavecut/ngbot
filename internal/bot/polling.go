@@ -2,7 +2,10 @@ package bot
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
+	"strings"
 	"time"
 
 	api "github.com/OvyFlash/telegram-bot-api"
@@ -12,6 +15,10 @@ import (
 const (
 	initialPollingBackoff = time.Second
 	maxPollingBackoff     = 30 * time.Second
+
+	pollingConflictLogMessage        = "another process is polling with this bot token"
+	pollingWebhookConflictLogMessage = "a webhook is set for this bot token; polling receives no updates until it is deleted"
+	pollingConflictLogInterval       = 5 * time.Minute
 )
 
 type PollingOptions struct {
@@ -60,6 +67,8 @@ func getUpdatesChansWithFetcher(ctx context.Context, buffer int, config api.Upda
 
 		lastHealthyPollAt := time.Now()
 		backoff := options.InitialBackoff
+		var conflicts int
+		var lastConflictLogAt time.Time
 
 		for {
 			if ctx.Err() != nil {
@@ -72,6 +81,22 @@ func getUpdatesChansWithFetcher(ctx context.Context, buffer int, config api.Upda
 			if err != nil {
 				if ctx.Err() != nil {
 					return
+				}
+
+				if description, conflict := pollingConflictDescription(err); conflict {
+					conflicts++
+					now := time.Now()
+					if lastConflictLogAt.IsZero() || now.Sub(lastConflictLogAt) >= pollingConflictLogInterval {
+						log.WithError(err).WithField("conflicts", conflicts).Error(pollingConflictMessage(description))
+						lastConflictLogAt = now
+						conflicts = 0
+					}
+					lastHealthyPollAt = now
+					if !waitPollingBackoff(ctx, backoff) {
+						return
+					}
+					backoff = nextPollingBackoff(backoff, options.MaxBackoff)
+					continue
 				}
 
 				sinceLastHealthy := time.Since(lastHealthyPollAt)
@@ -171,6 +196,23 @@ func normalizePollingOptions(options PollingOptions) PollingOptions {
 		options.MaxBackoff = options.InitialBackoff
 	}
 	return options
+}
+
+func pollingConflictDescription(err error) (string, bool) {
+	if apiErr, ok := errors.AsType[*api.Error](err); ok {
+		return apiErr.Message, apiErr.Code == http.StatusConflict
+	}
+	if apiErr, ok := errors.AsType[api.Error](err); ok {
+		return apiErr.Message, apiErr.Code == http.StatusConflict
+	}
+	return "", false
+}
+
+func pollingConflictMessage(description string) string {
+	if strings.Contains(strings.ToLower(description), "webhook") {
+		return pollingWebhookConflictLogMessage
+	}
+	return pollingConflictLogMessage
 }
 
 func sendPollingError(ch chan error, err error) {

@@ -18,7 +18,7 @@ func TestContextCleanupPendingPreventsIncompatibleMigrationRollback(t *testing.T
 		t.Fatal(err)
 	}
 	source := &migrate.EmbedFileSystemMigrationSource{FileSystem: resources.FS, Root: migrationsRoot}
-	if _, err := migrate.ExecMax(client.db.DB, "sqlite3", source, migrate.Down, 1); err == nil {
+	if _, err := migrate.ExecMax(client.db.DB, "sqlite3", source, migrate.Down, migrationsFrom(t, authorTrustMigration)); err == nil {
 		t.Fatal("rollback stranded pending context cleanup in old application")
 	}
 	stored, err := client.GetChallengeByChatUser(t.Context(), -100, 300)

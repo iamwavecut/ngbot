@@ -63,7 +63,7 @@ func TestPrivateHelpCommandsSendLocalizedMarkdownHelp(t *testing.T) {
 		}
 	})
 
-	admin := NewAdmin(testAdminService{db: client, bot: botAPI}, botAPI, client, client, nil)
+	admin := NewAdmin(testAdminService{db: client, bot: botAPI}, botAPI, client, client, nil, 0)
 	for _, text := range []string{"/help", "/start", "/start help", "/start unknown"} {
 		msg := adminCommandMessage(123, panelChatTypePrivate, 77, text)
 		proceed, err := admin.Handle(ctx, &api.Update{Message: msg}, &msg.Chat, msg.From)
@@ -153,7 +153,7 @@ func TestStartSettingsPayloadStillUsesSettingsFlow(t *testing.T) {
 		}
 	})
 
-	admin := NewAdmin(testAdminService{db: client, bot: botAPI}, botAPI, client, client, nil)
+	admin := NewAdmin(testAdminService{db: client, bot: botAPI}, botAPI, client, client, nil, 0)
 	msg := adminCommandMessage(7, panelChatTypePrivate, 88, "/start settings_"+encodeChatID(targetChatID))
 	proceed, err := admin.Handle(ctx, &api.Update{Message: msg}, &msg.Chat, msg.From)
 	if err != nil {
@@ -200,7 +200,7 @@ func TestGroupHelpSendsPrivateBridgeAndDeletesMessages(t *testing.T) {
 		}
 	})
 
-	admin := NewAdmin(testAdminService{db: client, bot: botAPI}, botAPI, client, client, nil)
+	admin := NewAdmin(testAdminService{db: client, bot: botAPI}, botAPI, client, client, nil, 0)
 	admin.temporaryMessageTTL = 10 * time.Millisecond
 	msg := adminCommandMessage(-100, panelChatTypeSupergroup, 44, "/help")
 	proceed, err := admin.Handle(ctx, &api.Update{Message: msg}, &msg.Chat, msg.From)
@@ -263,7 +263,7 @@ func TestPrivateLangIsAvailableWithoutAdminCheck(t *testing.T) {
 		}
 	})
 
-	admin := NewAdmin(testAdminService{db: client, bot: botAPI}, botAPI, client, client, nil)
+	admin := NewAdmin(testAdminService{db: client, bot: botAPI}, botAPI, client, client, nil, 0)
 	msg := adminCommandMessage(123, panelChatTypePrivate, 55, "/lang ru")
 	proceed, err := admin.Handle(ctx, &api.Update{Message: msg}, &msg.Chat, msg.From)
 	if err != nil {
@@ -315,7 +315,7 @@ func TestGroupLangRemainsAdminOnly(t *testing.T) {
 		}
 	})
 
-	admin := NewAdmin(testAdminService{db: client, bot: botAPI}, botAPI, client, client, nil)
+	admin := NewAdmin(testAdminService{db: client, bot: botAPI}, botAPI, client, client, nil, 0)
 	msg := adminCommandMessage(-100, "group", 56, "/lang ru")
 	proceed, err := admin.Handle(ctx, &api.Update{Message: msg}, &msg.Chat, msg.From)
 	if err != nil {

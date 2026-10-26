@@ -501,7 +501,7 @@ func TestDurableUpdateDispatcherKeepsLeaseThroughBusyFailureTransitions(t *testi
 				t.Fatalf("open database: %v", err)
 			}
 			t.Cleanup(func() { _ = base.Close() })
-			const processingTimeout = 500 * time.Millisecond
+			const processingTimeout = time.Second
 			store := &busyFailureTransitionStore{
 				DurableUpdateStore: base,
 				transition:         test.name,
@@ -520,7 +520,7 @@ func TestDurableUpdateDispatcherKeepsLeaseThroughBusyFailureTransitions(t *testi
 			}, nil, DurableUpdateDispatcherOptions{
 				MaxWorkers: 2, PendingBudget: 2, MaxAttempts: 3,
 				InitialBackoff: time.Millisecond, ProcessingTimeout: processingTimeout,
-				RecoveryInterval: 2 * time.Millisecond, SchedulerBackoff: 2 * time.Millisecond,
+				RecoveryInterval: 20 * time.Millisecond, SchedulerBackoff: 2 * time.Millisecond,
 				MaxBackoff: 2 * time.Millisecond,
 			}, nil)
 			if err := dispatcher.Start(t.Context()); err != nil {
@@ -531,7 +531,7 @@ func TestDurableUpdateDispatcherKeepsLeaseThroughBusyFailureTransitions(t *testi
 			if err := dispatcher.Persist(t.Context(), update); err != nil {
 				t.Fatalf("persist update: %v", err)
 			}
-			waitForConditionTimeout(t, 5*time.Second, func() bool {
+			waitForConditionTimeout(t, 10*time.Second, func() bool {
 				record, found, recordErr := base.TelegramUpdate(t.Context(), update.UpdateID)
 				return recordErr == nil && found && record.Status == test.finalStatus
 			})

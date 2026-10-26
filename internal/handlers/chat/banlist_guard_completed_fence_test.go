@@ -67,7 +67,7 @@ func TestCompletedBanlistFenceReplayPreservesDeniedAndSuccessfulOutcomes(t *test
 					return nil
 				}
 			})
-			service := &completedFenceBanService{BanService: moderation.NewBanService(botAPI, client), available: true}
+			service := &completedFenceBanService{BanService: moderation.NewBanService(botAPI, client, moderation.BanServiceOptions{}), available: true}
 			guard := NewBanlistGuard(botAPI, client, service)
 			message := &api.Message{MessageID: 40, Chat: *chat, From: user, Text: record.Text}
 			update := &api.Update{UpdateID: 900, Message: message}
@@ -85,7 +85,7 @@ func TestCompletedBanlistFenceReplayPreservesDeniedAndSuccessfulOutcomes(t *test
 			if err != nil {
 				t.Fatal(err)
 			}
-			service = &completedFenceBanService{BanService: moderation.NewBanService(botAPI, client), available: true}
+			service = &completedFenceBanService{BanService: moderation.NewBanService(botAPI, client, moderation.BanServiceOptions{}), available: true}
 			guard = NewBanlistGuard(botAPI, client, service)
 			outcome := guard.enforceDurableBanlistedMessage(t.Context(), client, update.UpdateID, message, chat, user)
 			if outcome.err != nil || outcome.moderationAvailable == denied || outcome.userBanned == denied || outcome.messageDeleted == denied {

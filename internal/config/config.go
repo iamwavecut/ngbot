@@ -20,10 +20,12 @@ type (
 		EnabledHandlers  []string `env:"HANDLERS,default=admin,gatekeeper,reactor"`
 		LogLevel         int      `env:"LOG_LEVEL,default=2"`
 		DotPath          string   `env:"DOT_PATH,default=~/.ngbot"`
+		OwnerUserID      int64    `env:"OWNER_USER_ID"`
 		Telegram         Telegram
 		GatekeeperWebApp GatekeeperWebApp
 		LLM              LLM
 		SpamControl      SpamControl
+		CAS              CAS
 	}
 
 	Telegram struct {
@@ -53,6 +55,10 @@ type (
 		BaseURL          string        `env:"LLM_API_URL,default=https://api.openai.com/v1"`
 		Type             string        `env:"LLM_API_TYPE,default=openai"`
 		RequestTimeout   time.Duration `env:"LLM_REQUEST_TIMEOUT,default=45s"`
+	}
+
+	CAS struct {
+		APIKey string `env:"CAS_API_KEY"`
 	}
 
 	SpamControl struct {

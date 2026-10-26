@@ -39,9 +39,6 @@ var errMigrationRollbackUnsupported = errors.New("application migration rollback
 type sqliteClient struct {
 	db                             *sqlx.DB
 	mutex                          sync.RWMutex
-	banlistImportMutex             sync.Mutex
-	banlistCleanupBatchLocked      func()
-	banlistCleanupBetweenBatches   func()
 	retentionCleanupBetweenBatches func()
 	telegramUpdateInboxLimits      db.TelegramUpdateInboxLimits
 	databaseFreeBytes              func() (uint64, error)
@@ -138,7 +135,6 @@ func NewSQLiteClient(ctx context.Context, dataDir string, dbPath string) (*sqlit
 	default:
 	}
 
-	closeOnError = false
 	client := &sqliteClient{
 		db:                        dbx,
 		telegramUpdateInboxLimits: normalizedTelegramUpdateInboxLimits(db.TelegramUpdateInboxLimits{}),
@@ -150,6 +146,10 @@ func NewSQLiteClient(ctx context.Context, dataDir string, dbPath string) (*sqlit
 		}
 		return stats.Bavail * uint64(stats.Bsize), nil
 	}
+	if err := client.convertLegacyBanlist(ctx); err != nil {
+		return nil, fmt.Errorf("convert legacy banlist: %w", err)
+	}
+	closeOnError = false
 	return client, nil
 }
 
