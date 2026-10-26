@@ -172,6 +172,7 @@ func TestMaskConfigurationRedactsCredentialsCompletely(t *testing.T) {
 			OpenAIAPIKey:     "openai-prefix-secret-suffix",
 			OpenRouterAPIKey: "router-prefix-secret-suffix",
 		},
+		CAS: config.CAS{APIKey: "cas-prefix-secret-suffix"},
 	}
 
 	masked := maskConfiguration(cfg)
@@ -189,6 +190,9 @@ func TestMaskConfigurationRedactsCredentialsCompletely(t *testing.T) {
 	}
 	if masked.LLM.OpenRouterAPIKey != redactedConfigurationValue {
 		t.Fatal("OpenRouter key was not redacted")
+	}
+	if masked.CAS.APIKey != redactedConfigurationValue {
+		t.Fatal("CAS key was not redacted")
 	}
 }
 
@@ -313,7 +317,62 @@ type commandRegistrationCall struct {
 }
 
 func TestAnnounceBotCommandsRegistersPrivateHelp(t *testing.T) {
-	var calls []commandRegistrationCall
+	botAPI, calls := newCommandRegistrationBot(t, "")
+
+	if err := announceBotCommands(context.Background(), botAPI, 0); err != nil {
+		t.Fatalf("announce bot commands: %v", err)
+	}
+
+	if len(*calls) != 4 {
+		t.Fatalf("registration calls = %#v, want delete + 3 set calls", *calls)
+	}
+
+	private := commandsForScope(t, *calls, "all_private_chats")
+	if !slices.Equal(private, []api.BotCommand{{Command: privateHelpCommand, Description: privateHelpCommandDescription}}) {
+		t.Fatalf("private commands = %#v", private)
+	}
+
+	group := commandsForScope(t, *calls, "all_group_chats")
+	if !slices.Equal(group, []api.BotCommand{{Command: voteBanCommand, Description: voteBanCommandDescription}}) {
+		t.Fatalf("group commands = %#v", group)
+	}
+
+	admin := commandsForScope(t, *calls, "all_chat_administrators")
+	wantAdmin := []api.BotCommand{
+		{Command: voteBanCommand, Description: voteBanCommandDescription},
+		{Command: adminSettingsCommand, Description: adminSettingsCommandDescription},
+	}
+	if !slices.Equal(admin, wantAdmin) {
+		t.Fatalf("admin commands = %#v", admin)
+	}
+}
+
+func TestAnnounceBotCommandsAddsOwnerScope(t *testing.T) {
+	botAPI, calls := newCommandRegistrationBot(t, "")
+	if err := announceBotCommands(context.Background(), botAPI, 42); err != nil {
+		t.Fatalf("announce bot commands: %v", err)
+	}
+	owner := commandsForScope(t, *calls, "chat")
+	wantOwner := []api.BotCommand{
+		{Command: privateHelpCommand, Description: privateHelpCommandDescription},
+		{Command: globalIndulgenceCommand, Description: globalIndulgenceCommandDescription},
+	}
+	if !slices.Equal(owner, wantOwner) {
+		t.Fatalf("owner commands = %#v", owner)
+	}
+
+	failingBotAPI, failingCalls := newCommandRegistrationBot(t, "chat")
+	if err := announceBotCommands(context.Background(), failingBotAPI, 42); err != nil {
+		t.Fatalf("owner scope failure stopped command registration: %v", err)
+	}
+	if len(*failingCalls) != 5 {
+		t.Fatalf("registration calls = %#v, want delete + 4 set calls", *failingCalls)
+	}
+}
+
+func newCommandRegistrationBot(t *testing.T, failScope string) (*api.BotAPI, *[]commandRegistrationCall) {
+	t.Helper()
+	calls := &[]commandRegistrationCall{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		method := path.Base(r.URL.Path)
 		switch method {
@@ -324,20 +383,23 @@ func TestAnnounceBotCommandsRegistersPrivateHelp(t *testing.T) {
 				"first_name": "Test",
 				"username":   "testbot",
 			})
-			return
 		case "deleteMyCommands":
-			calls = append(calls, commandRegistrationCall{method: method})
+			*calls = append(*calls, commandRegistrationCall{method: method})
 			writeTelegramResult(t, w, true)
-			return
 		case "setMyCommands":
 			form := parseRegistrationForm(t, r)
-			calls = append(calls, commandRegistrationCall{
+			call := commandRegistrationCall{
 				method:   method,
 				scope:    commandScopeType(t, form),
 				commands: commandList(t, form),
-			})
+			}
+			*calls = append(*calls, call)
+			if call.scope == failScope {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"ok":false,"error_code":400,"description":"Bad Request: chat not found"}`))
+				return
+			}
 			writeTelegramResult(t, w, true)
-			return
 		default:
 			t.Fatalf("unexpected telegram method: %s", method)
 		}
@@ -352,33 +414,7 @@ func TestAnnounceBotCommandsRegistersPrivateHelp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new bot api: %v", err)
 	}
-
-	if err := announceBotCommands(context.Background(), botAPI); err != nil {
-		t.Fatalf("announce bot commands: %v", err)
-	}
-
-	if len(calls) != 4 {
-		t.Fatalf("registration calls = %#v, want delete + 3 set calls", calls)
-	}
-
-	private := commandsForScope(t, calls, "all_private_chats")
-	if !slices.Equal(private, []api.BotCommand{{Command: privateHelpCommand, Description: privateHelpCommandDescription}}) {
-		t.Fatalf("private commands = %#v", private)
-	}
-
-	group := commandsForScope(t, calls, "all_group_chats")
-	if !slices.Equal(group, []api.BotCommand{{Command: voteBanCommand, Description: voteBanCommandDescription}}) {
-		t.Fatalf("group commands = %#v", group)
-	}
-
-	admin := commandsForScope(t, calls, "all_chat_administrators")
-	wantAdmin := []api.BotCommand{
-		{Command: voteBanCommand, Description: voteBanCommandDescription},
-		{Command: adminSettingsCommand, Description: adminSettingsCommandDescription},
-	}
-	if !slices.Equal(admin, wantAdmin) {
-		t.Fatalf("admin commands = %#v", admin)
-	}
+	return botAPI, calls
 }
 
 func TestNewTelegramBotAPIKeepsRawPayloadDebugDisabled(t *testing.T) {

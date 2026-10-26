@@ -20,7 +20,18 @@ func (c *sqliteClient) CreateChatNotSpammerOverride(ctx context.Context, overrid
 	if override.ChatID == 0 {
 		return nil, fmt.Errorf("invalid chat id")
 	}
+	return c.createNotSpammerOverride(ctx, override)
+}
 
+func (c *sqliteClient) CreateGlobalNotSpammerOverride(ctx context.Context, override *db.ChatNotSpammerOverride) (*db.ChatNotSpammerOverride, error) {
+	if override == nil {
+		return nil, fmt.Errorf("override is nil")
+	}
+	override.ChatID = 0
+	return c.createNotSpammerOverride(ctx, override)
+}
+
+func (c *sqliteClient) createNotSpammerOverride(ctx context.Context, override *db.ChatNotSpammerOverride) (*db.ChatNotSpammerOverride, error) {
 	matchType, matchValue, err := db.NormalizeChatNotSpammerMatch(override.MatchType, override.MatchValue)
 	if err != nil {
 		return nil, err

@@ -116,7 +116,7 @@ func TestAuthorTrustMigrationPreservesEffectiveTrustAndExcludesUntrustedAuthors(
 			t.Fatalf("legacy %s kinds changed", table)
 		}
 	}
-	if _, err := migrate.ExecMax(sqlDB, "sqlite3", source, migrate.Down, 1); err != nil {
+	if _, err := migrate.ExecMax(sqlDB, "sqlite3", source, migrate.Down, migrationsFrom(t, authorTrustMigration)); err != nil {
 		t.Fatalf("roll back author migration: %v", err)
 	}
 	for _, check := range []struct {
@@ -148,7 +148,7 @@ func TestAuthorTrustMigrationRejectsLossyRollback(t *testing.T) {
 		t.Fatalf("seed sender chat moderation: %v", err)
 	}
 	source := &migrate.EmbedFileSystemMigrationSource{FileSystem: resources.FS, Root: migrationsRoot}
-	if _, err := migrate.ExecMax(client.db.DB, "sqlite3", source, migrate.Down, 1); err == nil {
+	if _, err := migrate.ExecMax(client.db.DB, "sqlite3", source, migrate.Down, migrationsFrom(t, authorTrustMigration)); err == nil {
 		t.Fatal("rollback would reinterpret sender chat moderation as user moderation")
 	}
 	for _, table := range []string{testTableSpamCases, testTableChallengedMessages} {

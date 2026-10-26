@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,31 +24,38 @@ const (
 	banlistURL       = "https://lols.bot/spam/banlist.txt"
 	banlistURLHourly = "https://lols.bot/spam/banlist-1h.txt"
 	scammersURL      = "https://lols.bot/scammers.txt"
-	casExportURL     = "https://api.cas.chat/export.csv"
 	casCheckURL      = "https://api.cas.chat/check?user_id=%d"
 
 	accoutsAPIURLTemplate = "https://api.lols.bot/account?id=%v"
 
 	banServiceHTTPTimeout         = 10 * time.Second
+	banlistDownloadTimeout        = 2 * time.Minute
 	banServiceMaxRetries          = 3
 	banServiceRetryStep           = 300 * time.Millisecond
 	banlistHourlyTTL              = 26 * time.Hour
 	banlistOnlineTTL              = 24 * time.Hour
+	banlistShrinkThreshold        = 0.8
+	banlistShrinkConfirmDelay     = time.Hour
+	banlistObservationPruneBatch  = 10_000
+	banlistOnlineSourceSuffix     = "/online"
+	banlistMinParseCapacity       = 1_024
+	banlistSizeHintSlackDivisor   = 64
 	onlineBanQueueCapacity        = 1_024
 	moderationStatusTTL           = 5 * time.Minute
 	banServiceMaintenanceInterval = time.Hour
+	casKeyRejectedLogInterval     = 10 * time.Minute
+	casKeyRejectedLogMessage      = "CAS API key rejected; CAS online checks fail open"
 
-	banlistFeedDaily                = "daily"
-	banlistFeedHourly               = "hourly"
-	banlistFeedOnline               = "online"
 	retainedRecordsCleanupBatchSize = 500
 
-	kvKeyLastDailyFetch  = "last_daily_fetch"
-	kvKeyLastHourlyFetch = "last_hourly_fetch"
-	logFieldProvider     = "provider"
-	logFieldChatID       = "chat_id"
-	logFieldUserID       = "user_id"
-	logFieldError        = "error"
+	onlineCheckerLoLs = "lols"
+	onlineCheckerCAS  = "cas"
+
+	logFieldProvider = "provider"
+	logFieldSource   = "source"
+	logFieldChatID   = "chat_id"
+	logFieldUserID   = "user_id"
+	logFieldError    = "error"
 )
 
 type BanService interface {
@@ -66,12 +74,13 @@ type BanService interface {
 
 type banStore interface {
 	DeleteAuthorMessageContext(ctx context.Context, chatID int64, author db.MessageAuthor) error
-	GetKV(ctx context.Context, key string) (string, error)
-	SetKV(ctx context.Context, key string, value string) error
-	ApplyBanlistSource(ctx context.Context, provider, feedType, generation string, userIDs []int64, seenAt time.Time, expiresAt *time.Time, replace bool) (added, removed []int64, err error)
-	CleanupBanlistSources(ctx context.Context) error
+	BanlistSnapshots(ctx context.Context) ([]db.BanlistSnapshot, error)
+	SaveBanlistSnapshot(ctx context.Context, snapshot *db.BanlistSnapshot) error
+	TouchBanlistSnapshot(ctx context.Context, source string, etag, lastModified sql.NullString, checkedAt time.Time) (bool, error)
+	BanlistObservations(ctx context.Context, now time.Time) ([]db.BanlistObservation, error)
+	UpsertBanlistObservations(ctx context.Context, observations []db.BanlistObservation) error
+	DeleteExpiredBanlistObservations(ctx context.Context, now time.Time, limit int) (int64, error)
 	CleanupRetainedRecords(ctx context.Context, now time.Time, limit int) error
-	GetBanlist(ctx context.Context) (map[int64]struct{}, error)
 	AddRestriction(ctx context.Context, restriction *db.UserRestriction) error
 	EnsureRestrictionSnapshot(ctx context.Context, restriction *db.UserRestriction) (*db.UserRestriction, error)
 	RemoveRestriction(ctx context.Context, chatID int64, userID int64) error
@@ -80,53 +89,70 @@ type banStore interface {
 	RemoveExpiredRestrictions(ctx context.Context) error
 }
 
-type banlistProvider struct {
-	name       string
-	dailyURLs  []string
-	hourlyURLs []string
-	check      func(ctx context.Context, client *http.Client, userID int64) (bool, error)
-}
+type (
+	BanServiceOptions struct {
+		CASAPIKey string
+	}
 
-type defaultBanService struct {
-	bot        *api.BotAPI
-	db         banStore
-	httpClient *http.Client
-	providers  []banlistProvider
+	onlineBanChecker struct {
+		name  string
+		check func(ctx context.Context, client *http.Client, userID int64) (bool, error)
+	}
 
-	knownBanned    map[int64]struct{}
-	mapMutex       sync.RWMutex
-	banlistMutex   sync.Mutex
-	moderation     map[int64]moderationStatus
-	moderationM    sync.RWMutex
-	onlineBanQueue chan onlineBanObservation
+	defaultBanService struct {
+		bot            *api.BotAPI
+		db             banStore
+		httpClient     *http.Client
+		downloadClient *http.Client
+		sources        []banlistSourceSpec
+		onlineCheckers []onlineBanChecker
+		now            func() time.Time
 
-	runMutex            sync.Mutex
-	started             bool
-	runCancel           context.CancelFunc
-	workersWg           sync.WaitGroup
-	maintenanceInterval time.Duration
-}
+		index        *banlistIndex
+		observations map[int64]time.Time
+		mapMutex     sync.RWMutex
 
-type onlineBanObservation struct {
-	userID   int64
-	provider string
-}
+		refreshMutex   sync.Mutex
+		sourceStates   map[string]banlistSourceState
+		pendingShrinks map[string]pendingBanlistShrink
 
-type moderationStatus struct {
-	available bool
-	expiresAt time.Time
-}
+		moderation     map[int64]moderationStatus
+		moderationM    sync.RWMutex
+		onlineBanQueue chan db.BanlistObservation
 
-var ErrNoPrivileges = fmt.Errorf("no privileges")
+		casRejectionMutex    sync.Mutex
+		casRejectionLoggedAt time.Time
+		casRejections        int
 
-func NewBanService(bot *api.BotAPI, db banStore) BanService {
+		runMutex            sync.Mutex
+		started             bool
+		runCancel           context.CancelFunc
+		workersWg           sync.WaitGroup
+		maintenanceInterval time.Duration
+	}
+
+	moderationStatus struct {
+		available bool
+		expiresAt time.Time
+	}
+)
+
+var (
+	ErrNoPrivileges   = fmt.Errorf("no privileges")
+	errCASKeyRejected = errors.New("CAS API key rejected")
+)
+
+func NewBanService(bot *api.BotAPI, store banStore, options BanServiceOptions) BanService {
 	return &defaultBanService{
 		bot:                 bot,
-		db:                  db,
+		db:                  store,
 		httpClient:          &http.Client{Timeout: banServiceHTTPTimeout},
-		providers:           defaultBanlistProviders(),
-		knownBanned:         map[int64]struct{}{},
+		downloadClient:      &http.Client{Timeout: banlistDownloadTimeout},
+		sources:             defaultBanlistSources(),
+		onlineCheckers:      defaultOnlineBanCheckers(options.CASAPIKey),
+		now:                 time.Now,
 		moderation:          map[int64]moderationStatus{},
+		onlineBanQueue:      make(chan db.BanlistObservation, onlineBanQueueCapacity),
 		maintenanceInterval: banServiceMaintenanceInterval,
 	}
 }
@@ -176,24 +202,22 @@ func (s *defaultBanService) MarkModerationUnavailable(chatID int64) {
 	s.moderationM.Unlock()
 }
 
-func defaultBanlistProviders() []banlistProvider {
-	return []banlistProvider{
-		{
-			name:       "lols",
-			dailyURLs:  []string{scammersURL, banlistURL},
-			hourlyURLs: []string{banlistURLHourly},
-			check: func(ctx context.Context, client *http.Client, userID int64) (bool, error) {
-				return checkLoLsBan(ctx, client, accoutsAPIURLTemplate, userID)
-			},
+func defaultOnlineBanCheckers(casAPIKey string) []onlineBanChecker {
+	checkers := []onlineBanChecker{{
+		name: onlineCheckerLoLs,
+		check: func(ctx context.Context, client *http.Client, userID int64) (bool, error) {
+			return checkLoLsBan(ctx, client, accoutsAPIURLTemplate, userID)
 		},
-		{
-			name:      "cas",
-			dailyURLs: []string{casExportURL},
+	}}
+	if casAPIKey != "" {
+		checkers = append(checkers, onlineBanChecker{
+			name: onlineCheckerCAS,
 			check: func(ctx context.Context, client *http.Client, userID int64) (bool, error) {
-				return checkCASBan(ctx, client, casCheckURL, userID)
+				return checkCASBan(ctx, client, casCheckURL, casAPIKey, userID)
 			},
-		},
+		})
 	}
+	return checkers
 }
 
 func (s *defaultBanService) Start(ctx context.Context) error {
@@ -202,58 +226,55 @@ func (s *defaultBanService) Start(ctx context.Context) error {
 	if s.started {
 		return nil
 	}
-	if err := s.loadKnownBannedFromDB(ctx); err != nil {
-		return fmt.Errorf("load known banned from db: %w", err)
+	if err := s.loadBanlists(ctx); err != nil {
+		return fmt.Errorf("load banlists: %w", err)
 	}
 	if err := s.cleanupExpiredRestrictions(ctx); err != nil {
 		return err
 	}
-	if err := s.cleanupRetainedRecords(ctx, time.Now().UTC()); err != nil {
+	if err := s.cleanupRetainedRecords(ctx, s.currentTime().UTC()); err != nil {
 		return fmt.Errorf("clean retained records: %w", err)
 	}
 
 	runCtx, cancel := context.WithCancel(ctx)
 	s.runCancel = cancel
-	s.onlineBanQueue = make(chan onlineBanObservation, onlineBanQueueCapacity)
 	s.workersWg.Go(func() {
 		s.persistOnlineBanObservations(runCtx)
 	})
-
 	s.workersWg.Go(func() {
-		if err := s.refreshKnownBanned(runCtx); err != nil && !errorsIsCanceled(err) {
-			log.WithError(err).Error("Failed to bootstrap known banned users")
-		}
-	})
-
-	s.workersWg.Go(func() {
-		interval := s.maintenanceInterval
-		if interval <= 0 {
-			interval = banServiceMaintenanceInterval
-		}
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-runCtx.Done():
-				return
-			case <-ticker.C:
-				now := time.Now().UTC()
-				if err := s.cleanupExpiredRestrictions(runCtx); err != nil && !errorsIsCanceled(err) {
-					log.WithError(err).Error("Failed to clean up expired restrictions")
-				}
-				if err := s.cleanupRetainedRecords(runCtx, now); err != nil && !errorsIsCanceled(err) {
-					log.WithError(err).Error("Failed to clean retained records")
-				}
-				if err := s.refreshKnownBanned(runCtx); err != nil && !errorsIsCanceled(err) {
-					log.WithError(err).Error("Failed to refresh known banned users")
-				}
-			}
-		}
+		s.runMaintenance(runCtx)
 	})
 
 	s.started = true
 	return nil
+}
+
+func (s *defaultBanService) runMaintenance(ctx context.Context) {
+	interval := s.maintenanceInterval
+	if interval <= 0 {
+		interval = banServiceMaintenanceInterval
+	}
+	startedAt := s.currentTime()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	s.refreshDueSources(ctx, startedAt)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			now := s.currentTime()
+			if err := s.cleanupExpiredRestrictions(ctx); err != nil && !errorsIsCanceled(err) {
+				log.WithError(err).Error("Failed to clean up expired restrictions")
+			}
+			if err := s.cleanupRetainedRecords(ctx, now.UTC()); err != nil && !errorsIsCanceled(err) {
+				log.WithError(err).Error("Failed to clean retained records")
+			}
+			s.pruneObservations(ctx, now)
+			s.refreshDueSources(ctx, now)
+		}
+	}
 }
 
 func (s *defaultBanService) cleanupRetainedRecords(ctx context.Context, now time.Time) error {
@@ -301,38 +322,15 @@ func (s *defaultBanService) Stop(ctx context.Context) error {
 	}
 }
 
-func (s *defaultBanService) bootstrap(ctx context.Context) error {
-	if err := s.loadKnownBannedFromDB(ctx); err != nil {
-		return fmt.Errorf("load known banned from db: %w", err)
-	}
-	return s.refreshKnownBanned(ctx)
-}
-
-func (s *defaultBanService) refreshKnownBanned(ctx context.Context) error {
-	lastDailyFetch, err := s.getLastDailyFetch(ctx)
-	if err != nil {
-		log.WithError(err).Error("Failed to get last daily fetch time")
-	}
-
-	lastHourlyFetch, err := s.getLastHourlyFetch(ctx)
-	if err != nil {
-		log.WithError(err).Error("Failed to get last hourly fetch time")
-	}
-
-	if lastDailyFetch.IsZero() || time.Since(lastDailyFetch) >= 24*time.Hour {
-		return s.FetchKnownBannedDaily(ctx)
-	}
-	if lastHourlyFetch.IsZero() || time.Since(lastHourlyFetch) >= time.Hour {
-		return s.FetchKnownBanned(ctx)
-	}
-	return nil
-}
-
 func (s *defaultBanService) IsKnownBanned(userID int64) bool {
+	now := s.currentTime()
 	s.mapMutex.RLock()
 	defer s.mapMutex.RUnlock()
-	_, banned := s.knownBanned[userID]
-	return banned
+	if s.index.contains(userID) {
+		return true
+	}
+	expiresAt, observed := s.observations[userID]
+	return observed && now.Before(expiresAt)
 }
 
 func (s *defaultBanService) CheckBan(ctx context.Context, userID int64) (bool, error) {
@@ -346,13 +344,7 @@ func (s *defaultBanService) CheckBan(ctx context.Context, userID int64) (bool, e
 		return true, nil
 	}
 
-	providers := s.banlistProviders()
-	checkers := make([]banlistProvider, 0, len(providers))
-	for _, provider := range providers {
-		if provider.check != nil {
-			checkers = append(checkers, provider)
-		}
-	}
+	checkers := s.onlineCheckers
 	if len(checkers) == 0 {
 		return false, nil
 	}
@@ -367,12 +359,11 @@ func (s *defaultBanService) CheckBan(ctx context.Context, userID int64) (bool, e
 	}
 
 	results := make(chan checkResult, len(checkers))
-	for _, provider := range checkers {
-		provider := provider
+	for _, checker := range checkers {
 		go func() {
-			banned, err := provider.check(checkCtx, s.httpClient, userID)
+			banned, err := checker.check(checkCtx, s.httpClient, userID)
 			results <- checkResult{
-				provider: provider.name,
+				provider: checker.name,
 				banned:   banned,
 				err:      err,
 			}
@@ -384,6 +375,10 @@ func (s *defaultBanService) CheckBan(ctx context.Context, userID int64) (bool, e
 		if result.err != nil {
 			if errorsIsCanceled(result.err) && ctx.Err() != nil {
 				return false, ctx.Err()
+			}
+			if errors.Is(result.err, errCASKeyRejected) {
+				s.reportCASKeyRejected()
+				continue
 			}
 			log.WithFields(log.Fields{
 				logFieldProvider: result.provider,
@@ -435,13 +430,13 @@ func checkLoLsBan(ctx context.Context, client *http.Client, urlTemplate string, 
 	return banInfo.Banned, nil
 }
 
-func checkCASBan(ctx context.Context, client *http.Client, urlTemplate string, userID int64) (bool, error) {
-	url := fmt.Sprintf(urlTemplate, userID)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+func checkCASBan(ctx context.Context, client *http.Client, urlTemplate, apiKey string, userID int64) (bool, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf(urlTemplate, userID), nil)
 	if err != nil {
 		return false, fmt.Errorf("failed to create request: %w", err)
 	}
-	req.Header.Set("accept", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -449,43 +444,54 @@ func checkCASBan(ctx context.Context, client *http.Client, urlTemplate string, u
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+	switch {
+	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
+		return false, fmt.Errorf("%w: status %d", errCASKeyRejected, resp.StatusCode)
+	case resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices:
 		return false, fmt.Errorf("unexpected status code %d", resp.StatusCode)
 	}
 
 	var banInfo struct {
-		OK bool `json:"ok"`
+		OK     bool            `json:"ok"`
+		Result json.RawMessage `json:"result"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&banInfo); err != nil {
 		return false, fmt.Errorf("failed to decode response: %w", err)
 	}
-	return banInfo.OK, nil
+	return banInfo.OK && len(banInfo.Result) > 0 && string(banInfo.Result) != "null", nil
 }
 
-func (s *defaultBanService) banlistProviders() []banlistProvider {
-	if len(s.providers) > 0 {
-		return s.providers
+func (s *defaultBanService) reportCASKeyRejected() {
+	now := s.currentTime()
+	s.casRejectionMutex.Lock()
+	s.casRejections++
+	if !s.casRejectionLoggedAt.IsZero() && now.Sub(s.casRejectionLoggedAt) < casKeyRejectedLogInterval {
+		s.casRejectionMutex.Unlock()
+		return
 	}
-	return defaultBanlistProviders()
+	rejections := s.casRejections
+	s.casRejections = 0
+	s.casRejectionLoggedAt = now
+	s.casRejectionMutex.Unlock()
+	log.WithField("rejections", rejections).Error(casKeyRejectedLogMessage)
 }
 
-func (s *defaultBanService) loadKnownBannedFromDB(ctx context.Context) error {
-	if s.db == nil {
-		return nil
+func (s *defaultBanService) currentTime() time.Time {
+	if s.now != nil {
+		return s.now()
 	}
-	s.banlistMutex.Lock()
-	defer s.banlistMutex.Unlock()
-	fullBanlist, err := s.db.GetBanlist(ctx)
-	if err != nil {
-		return err
-	}
-	s.setKnownBanned(fullBanlist)
-	return nil
+	return time.Now()
 }
 
 func (s *defaultBanService) rememberKnownBanned(ctx context.Context, userID int64, provider string) {
-	s.markKnownBanned(userID)
-	observation := onlineBanObservation{userID: userID, provider: provider}
+	now := s.currentTime()
+	observation := db.BanlistObservation{
+		UserID:     userID,
+		Source:     provider + banlistOnlineSourceSuffix,
+		ObservedAt: now,
+		ExpiresAt:  now.Add(banlistOnlineTTL),
+	}
+	s.observe(userID, observation.ExpiresAt)
 	if s.onlineBanQueue != nil {
 		select {
 		case s.onlineBanQueue <- observation:
@@ -508,101 +514,46 @@ func (s *defaultBanService) persistOnlineBanObservations(ctx context.Context) {
 	}
 }
 
-func (s *defaultBanService) persistKnownBanned(ctx context.Context, observation onlineBanObservation) {
-	s.banlistMutex.Lock()
-	defer s.banlistMutex.Unlock()
+func (s *defaultBanService) persistKnownBanned(ctx context.Context, observation db.BanlistObservation) {
 	if s.db == nil {
 		return
 	}
-	seenAt := time.Now().UTC()
-	expiresAt := seenAt.Add(banlistOnlineTTL)
-	added, removed, err := s.db.ApplyBanlistSource(
-		ctx,
-		observation.provider,
-		banlistFeedOnline,
-		newBanlistGeneration(),
-		[]int64{observation.userID},
-		seenAt,
-		&expiresAt,
-		false,
-	)
-	if err != nil {
+	if err := s.db.UpsertBanlistObservations(ctx, []db.BanlistObservation{observation}); err != nil {
 		log.WithFields(log.Fields{
-			logFieldUserID:   observation.userID,
-			logFieldProvider: observation.provider,
-			logFieldError:    err.Error(),
+			logFieldUserID: observation.UserID,
+			logFieldSource: observation.Source,
+			logFieldError:  err.Error(),
 		}).Error("failed to persist online banned user")
-		return
-	}
-	s.applyKnownBannedDelta(added, removed)
-	s.cleanupBanlistSources(ctx)
-}
-
-func (s *defaultBanService) applyBanlistSource(
-	ctx context.Context,
-	provider, feedType, generation string,
-	userIDs []int64,
-	seenAt time.Time,
-	expiresAt *time.Time,
-	replace bool,
-) (added, removed []int64, err error) {
-	s.banlistMutex.Lock()
-	defer s.banlistMutex.Unlock()
-	added, removed, err = s.db.ApplyBanlistSource(
-		ctx,
-		provider,
-		feedType,
-		generation,
-		userIDs,
-		seenAt,
-		expiresAt,
-		replace,
-	)
-	if err != nil {
-		return nil, nil, err
-	}
-	s.applyKnownBannedDelta(added, removed)
-	s.cleanupBanlistSources(ctx)
-	return added, removed, nil
-}
-
-func (s *defaultBanService) cleanupBanlistSources(ctx context.Context) {
-	if err := s.db.CleanupBanlistSources(ctx); err != nil && !errorsIsCanceled(err) {
-		log.WithField(logFieldError, err.Error()).Warn("failed to clean inactive banlist generations")
 	}
 }
 
-func (s *defaultBanService) setKnownBanned(banned map[int64]struct{}) {
-	snapshot := make(map[int64]struct{}, len(banned))
-	for userID := range banned {
-		snapshot[userID] = struct{}{}
-	}
-	s.mapMutex.Lock()
-	s.knownBanned = snapshot
-	s.mapMutex.Unlock()
-}
-
-func (s *defaultBanService) markKnownBanned(userID int64) {
-	s.mapMutex.Lock()
-	s.knownBanned[userID] = struct{}{}
-	s.mapMutex.Unlock()
-}
-
-func (s *defaultBanService) applyKnownBannedDelta(added, removed []int64) {
+func (s *defaultBanService) observe(userID int64, expiresAt time.Time) {
 	s.mapMutex.Lock()
 	defer s.mapMutex.Unlock()
-	for _, userID := range removed {
-		delete(s.knownBanned, userID)
-	}
-	for _, userID := range added {
-		s.knownBanned[userID] = struct{}{}
+	s.observeLocked(userID, expiresAt)
+}
+
+func (s *defaultBanService) observeAll(userIDs []int64, expiresAt time.Time) {
+	s.mapMutex.Lock()
+	defer s.mapMutex.Unlock()
+	for _, userID := range userIDs {
+		s.observeLocked(userID, expiresAt)
 	}
 }
 
-func (s *defaultBanService) knownBannedCount() int {
-	s.mapMutex.RLock()
-	defer s.mapMutex.RUnlock()
-	return len(s.knownBanned)
+func (s *defaultBanService) observeLocked(userID int64, expiresAt time.Time) {
+	if s.observations == nil {
+		s.observations = make(map[int64]time.Time)
+	}
+	if current, ok := s.observations[userID]; !ok || expiresAt.After(current) {
+		s.observations[userID] = expiresAt
+	}
+}
+
+func (s *defaultBanService) publishSource(source string, ids []int64) {
+	s.mapMutex.Lock()
+	defer s.mapMutex.Unlock()
+	s.index = s.index.with(source, ids)
 }
 
 func errorsIsCanceled(err error) bool {
