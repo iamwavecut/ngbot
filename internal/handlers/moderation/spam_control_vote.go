@@ -202,7 +202,6 @@ func (sc *SpamControl) resolveClaimedCase(ctx context.Context, spamCase *db.Spam
 	case db.SpamCaseStatusResolvingFalsePositive:
 		if author.Kind == db.MessageAuthorUser && spamCase.PreVoteRestricted {
 			if err := sc.banService.UnmuteUser(ctx, spamCase.ChatID, spamCase.UserID); err != nil && !isSpamTelegramEffectAlreadyApplied(err) {
-				log.WithField("error", err.Error()).Error("failed to unmute user")
 				actionErr = err
 			}
 		}
@@ -210,6 +209,11 @@ func (sc *SpamControl) resolveClaimedCase(ctx context.Context, spamCase *db.Spam
 		return nil
 	}
 	if actionErr != nil {
+		var pending *restrictionRestorePendingError
+		if errors.As(actionErr, &pending) {
+			_, err := sc.store.ScheduleSpamCaseRetry(ctx, spamCase.ID, spamCase.Status, pending.until, "")
+			return err
+		}
 		if isTelegramPrivilegeError(actionErr) {
 			sc.banService.MarkModerationUnavailable(spamCase.ChatID)
 			return errors.Join(actionErr, sc.finalizeWithoutModeration(ctx, spamCase))

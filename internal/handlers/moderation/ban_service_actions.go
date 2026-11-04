@@ -12,12 +12,21 @@ import (
 )
 
 const (
-	restrictionRecoveryMargin = 5 * time.Minute
-	telegramMemberRestricted  = "restricted"
+	restrictionRecoveryMargin         = 5 * time.Minute
+	telegramMemberRestricted          = "restricted"
+	minimumRestrictionRestoreDuration = 30 * time.Second
 )
 
+type restrictionRestorePendingError struct {
+	until time.Time
+}
+
+func (e *restrictionRestorePendingError) Error() string {
+	return "prior personal restriction is too close to expiry to restore safely"
+}
+
 func (s *defaultBanService) MuteUser(ctx context.Context, chatID, userID int64, until time.Time) error {
-	priorPermissions, priorUntilDate, err := s.effectiveMemberPermissions(ctx, chatID, userID)
+	priorPermissions, priorMemberStatus, priorUntilDate, err := s.memberPermissionsBeforeRestriction(ctx, chatID, userID)
 	if err != nil {
 		return fmt.Errorf("capture permissions before restriction: %w", err)
 	}
@@ -27,11 +36,11 @@ func (s *defaultBanService) MuteUser(ctx context.Context, chatID, userID int64, 
 	}
 	expiresAt := until.Add(restrictionRecoveryMargin)
 	if until.IsZero() {
-		expiresAt = time.Now().Add(10 * time.Minute)
+		expiresAt = s.currentTime().Add(10 * time.Minute)
 	}
 	restriction, err := s.db.EnsureRestrictionSnapshot(ctx, &db.UserRestriction{
-		UserID: userID, ChatID: chatID, RestrictedAt: time.Now(), ExpiresAt: expiresAt,
-		Reason: "Spam suspect", PriorPermissionsJSON: string(priorPermissionsJSON), PriorUntilDate: priorUntilDate,
+		UserID: userID, ChatID: chatID, RestrictedAt: s.currentTime(), ExpiresAt: expiresAt,
+		Reason: "Spam suspect", PriorMemberStatus: priorMemberStatus, PriorPermissionsJSON: string(priorPermissionsJSON), PriorUntilDate: priorUntilDate,
 	})
 	if err != nil {
 		return fmt.Errorf("persist permissions before restriction: %w", err)
@@ -63,12 +72,18 @@ func (s *defaultBanService) UnmuteUser(ctx context.Context, chatID, userID int64
 	if err != nil {
 		return fmt.Errorf("load restriction permissions: %w", err)
 	}
-	permissions, err := s.permissionsBeforeRestriction(ctx, chatID, restriction)
+	permissions, untilDate, err := s.permissionsBeforeRestriction(restriction)
 	if err != nil {
 		return err
 	}
-	if err := s.restorePermissionsUntil(ctx, chatID, userID, permissions, restriction.PriorUntilDate); err != nil {
+	if err := s.restorePermissionsUntil(ctx, chatID, userID, permissions, untilDate); err != nil {
 		return err
+	}
+	if untilDate > 0 {
+		until := time.Unix(untilDate, 0).UTC()
+		if until.Sub(s.currentTime()) <= minimumRestrictionRestoreDuration {
+			return &restrictionRestorePendingError{until: until}
+		}
 	}
 
 	if err := s.db.RemoveRestriction(ctx, chatID, userID); err != nil {
@@ -167,45 +182,45 @@ func (s *defaultBanService) IsRestricted(ctx context.Context, chatID, userID int
 	return restriction != nil && restriction.ExpiresAt.After(time.Now()), nil
 }
 
-func (s *defaultBanService) effectiveMemberPermissions(ctx context.Context, chatID, userID int64) (*api.ChatPermissions, int64, error) {
+func (s *defaultBanService) memberPermissionsBeforeRestriction(ctx context.Context, chatID, userID int64) (*api.ChatPermissions, string, int64, error) {
 	member, err := bot.GetChatMember(ctx, s.bot, api.NewGetChatMember(chatID, userID))
 	if err != nil {
-		return nil, 0, err
+		return nil, "", 0, err
 	}
 	if member.Status == telegramMemberRestricted {
-		return chatMemberPermissions(member), member.UntilDate, nil
+		return chatMemberPermissions(member), member.Status, member.UntilDate, nil
 	}
-	chat, err := bot.GetChat(ctx, s.bot, api.ChatInfoConfig{ChatConfig: api.ChatConfig{ChatID: chatID}})
-	if err != nil {
-		return nil, 0, err
-	}
-	if chat.Permissions == nil {
-		return &api.ChatPermissions{}, 0, nil
-	}
-	permissions := *chat.Permissions
-	return &permissions, 0, nil
+	return bot.UnrestrictedChatPermissions(), member.Status, 0, nil
 }
 
-func (s *defaultBanService) permissionsBeforeRestriction(ctx context.Context, chatID int64, restriction *db.UserRestriction) (*api.ChatPermissions, error) {
+func (s *defaultBanService) permissionsBeforeRestriction(restriction *db.UserRestriction) (*api.ChatPermissions, int64, error) {
 	if restriction == nil {
-		return nil, fmt.Errorf("prior permissions are unavailable")
+		return nil, 0, fmt.Errorf("prior permissions are unavailable")
+	}
+	if restriction.PriorMemberStatus != "" && restriction.PriorMemberStatus != telegramMemberRestricted {
+		return bot.UnrestrictedChatPermissions(), 0, nil
+	}
+	if restriction.PriorUntilDate > 0 {
+		now := s.currentTime()
+		until := time.Unix(restriction.PriorUntilDate, 0).UTC()
+		if !now.Before(until) {
+			return bot.UnrestrictedChatPermissions(), 0, nil
+		}
+		if until.Sub(now) <= minimumRestrictionRestoreDuration {
+			return nil, 0, &restrictionRestorePendingError{until: until}
+		}
 	}
 	if restriction.PriorPermissionsJSON == "" {
-		chat, err := bot.GetChat(ctx, s.bot, api.ChatInfoConfig{ChatConfig: api.ChatConfig{ChatID: chatID}})
-		if err != nil {
-			return nil, fmt.Errorf("load effective chat permissions: %w", err)
+		if restriction.PriorMemberStatus == telegramMemberRestricted {
+			return nil, 0, fmt.Errorf("prior personal permissions are unavailable")
 		}
-		if chat.Permissions == nil {
-			return &api.ChatPermissions{}, nil
-		}
-		permissions := *chat.Permissions
-		return &permissions, nil
+		return bot.UnrestrictedChatPermissions(), 0, nil
 	}
 	permissions := &api.ChatPermissions{}
 	if err := json.Unmarshal([]byte(restriction.PriorPermissionsJSON), permissions); err != nil {
-		return nil, fmt.Errorf("decode prior permissions: %w", err)
+		return nil, 0, fmt.Errorf("decode prior permissions: %w", err)
 	}
-	return permissions, nil
+	return permissions, restriction.PriorUntilDate, nil
 }
 
 func chatMemberPermissions(member api.ChatMember) *api.ChatPermissions {

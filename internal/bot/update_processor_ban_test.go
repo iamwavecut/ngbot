@@ -73,7 +73,7 @@ func TestBanUserFromChatRevokesMessages(t *testing.T) {
 	}
 }
 
-func TestUnrestrictChattingRestoresRestrictiveChatDefaults(t *testing.T) {
+func TestUnrestrictChattingClearsPersonalRestrictions(t *testing.T) {
 	t.Parallel()
 
 	var restored api.ChatPermissions
@@ -97,6 +97,12 @@ func TestUnrestrictChattingRestoresRestrictiveChatDefaults(t *testing.T) {
 		case "restrictChatMember":
 			if err := r.ParseForm(); err != nil {
 				t.Fatalf("parse form: %v", err)
+			}
+			if got := r.Form.Get("until_date"); got != "" && got != "0" {
+				t.Fatalf("personal restriction deadline = %q, want none", got)
+			}
+			if r.Form.Get("use_independent_chat_permissions") != "true" {
+				t.Fatal("permissions must be independent")
 			}
 			if err := json.Unmarshal([]byte(r.Form.Get("permissions")), &restored); err != nil {
 				t.Fatalf("decode permissions: %v", err)
@@ -123,7 +129,7 @@ func TestUnrestrictChattingRestoresRestrictiveChatDefaults(t *testing.T) {
 	if err := UnrestrictChatting(t.Context(), botAPI, 200, -100); err != nil {
 		t.Fatalf("unrestrict user: %v", err)
 	}
-	if !restored.CanSendMessages || restored.CanSendPhotos || restored.CanInviteUsers {
+	if !restored.CanSendMessages || !restored.CanSendPhotos || !restored.CanInviteUsers || !restored.CanPinMessages || !restored.CanEditTag || !restored.CanReactToMessages {
 		t.Fatalf("restored permissions = %#v", restored)
 	}
 }

@@ -1,6 +1,9 @@
 package handlers
 
 const (
+	moderationTestJSONPermissionCanSendPhotos      = "can_send_photos"
+	moderationTestMemberStatusAdministrator        = "administrator"
+	moderationTestPersonalPermissionsJSON          = `{"can_send_messages":true,"can_send_photos":false}`
 	moderationTestMemberStatusLeft                 = "left"
 	moderationTestErrorBadGateway                  = "Bad Gateway"
 	moderationTestJSONIsBot                        = "is_bot"

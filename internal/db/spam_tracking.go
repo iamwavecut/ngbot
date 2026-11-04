@@ -16,6 +16,7 @@ type UserRestriction struct {
 	RestrictedAt         time.Time `db:"restricted_at"`
 	ExpiresAt            time.Time `db:"expires_at"`
 	Reason               string    `db:"reason"`
+	PriorMemberStatus    string    `db:"prior_member_status"`
 	PriorPermissionsJSON string    `db:"prior_permissions_json"`
 	PriorUntilDate       int64     `db:"prior_until_date"`
 }

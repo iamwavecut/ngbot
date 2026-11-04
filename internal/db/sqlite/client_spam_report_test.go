@@ -121,9 +121,9 @@ func TestRemoveExpiredRestrictionsPreservesActiveRows(t *testing.T) {
 	for _, restriction := range []*db.UserRestriction{
 		{ChatID: -100, UserID: 1, RestrictedAt: now.Add(-2 * time.Hour), ExpiresAt: now.Add(-time.Hour)},
 		{ChatID: -100, UserID: 2, RestrictedAt: now, ExpiresAt: now.Add(time.Hour)},
-		{ChatID: -100, UserID: 3, RestrictedAt: now.Add(-2 * time.Hour), ExpiresAt: now.Add(-time.Hour), PriorPermissionsJSON: `{"can_send_messages":false}`},
+		{ChatID: -100, UserID: 3, RestrictedAt: now.Add(-2 * time.Hour), ExpiresAt: now.Add(-time.Hour), PriorPermissionsJSON: testNoMessagePermissionsJSON},
 		{ChatID: -100, UserID: 4, RestrictedAt: now.Add(-32 * 24 * time.Hour), ExpiresAt: now.Add(-31 * 24 * time.Hour), PriorPermissionsJSON: `{"can_send_messages":true}`},
-		{ChatID: -100, UserID: 5, RestrictedAt: now.Add(-32 * 24 * time.Hour), ExpiresAt: now.Add(-31 * 24 * time.Hour), PriorPermissionsJSON: `{"can_send_messages":false}`},
+		{ChatID: -100, UserID: 5, RestrictedAt: now.Add(-32 * 24 * time.Hour), ExpiresAt: now.Add(-31 * 24 * time.Hour), PriorPermissionsJSON: testNoMessagePermissionsJSON},
 	} {
 		if err := client.AddRestriction(ctx, restriction); err != nil {
 			t.Fatalf("add restriction for user %d: %v", restriction.UserID, err)

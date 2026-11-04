@@ -22,12 +22,13 @@ func (s *sqliteClient) AddRestriction(ctx context.Context, restriction *db.UserR
 	defer s.mutex.Unlock()
 
 	query := `
-		INSERT INTO user_restrictions (user_id, chat_id, restricted_at, expires_at, reason, prior_permissions_json, prior_until_date)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO user_restrictions (user_id, chat_id, restricted_at, expires_at, reason, prior_member_status, prior_permissions_json, prior_until_date)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(chat_id, user_id) DO UPDATE SET
 			restricted_at = excluded.restricted_at,
 			expires_at = excluded.expires_at,
 			reason = excluded.reason,
+			prior_member_status = excluded.prior_member_status,
 			prior_permissions_json = excluded.prior_permissions_json,
 			prior_until_date = excluded.prior_until_date
 	`
@@ -38,6 +39,7 @@ func (s *sqliteClient) AddRestriction(ctx context.Context, restriction *db.UserR
 		restriction.RestrictedAt,
 		restriction.ExpiresAt,
 		restriction.Reason,
+		restriction.PriorMemberStatus,
 		restriction.PriorPermissionsJSON,
 		restriction.PriorUntilDate,
 	)
@@ -49,10 +51,10 @@ func (s *sqliteClient) EnsureRestrictionSnapshot(ctx context.Context, restrictio
 	defer s.mutex.Unlock()
 	if _, err := s.db.ExecContext(ctx, `
 		INSERT INTO user_restrictions (
-			user_id, chat_id, restricted_at, expires_at, reason, prior_permissions_json, prior_until_date
-		) VALUES (?, ?, ?, ?, ?, ?, ?)
+			user_id, chat_id, restricted_at, expires_at, reason, prior_member_status, prior_permissions_json, prior_until_date
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(chat_id, user_id) DO NOTHING
-	`, restriction.UserID, restriction.ChatID, restriction.RestrictedAt, restriction.ExpiresAt, restriction.Reason, restriction.PriorPermissionsJSON, restriction.PriorUntilDate); err != nil {
+	`, restriction.UserID, restriction.ChatID, restriction.RestrictedAt, restriction.ExpiresAt, restriction.Reason, restriction.PriorMemberStatus, restriction.PriorPermissionsJSON, restriction.PriorUntilDate); err != nil {
 		return nil, err
 	}
 	var stored db.UserRestriction

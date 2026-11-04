@@ -79,7 +79,7 @@ func TestMuteUserPersistsCapturedPermissionsBeforeTelegram(t *testing.T) {
 		case moderationTestTelegramMethodGetChat:
 			return map[string]any{
 				"id": -100, moderationTestJSONType: moderationTestSupergroup,
-				moderationTestJSONPermissions: map[string]any{moderationTestJSONPermissionCanSendMessages: true, "can_send_photos": true},
+				moderationTestJSONPermissions: map[string]any{moderationTestJSONPermissionCanSendMessages: true, moderationTestJSONPermissionCanSendPhotos: true},
 			}
 		case moderationTestTelegramMethodRestrictChatMember:
 			if err := r.ParseForm(); err != nil {
@@ -131,6 +131,9 @@ func (s *testBanStore) RemoveExpiredRestrictions(context.Context) error {
 func TestUnmuteUserRestoresCapturedRestrictivePermissions(t *testing.T) {
 	t.Parallel()
 
+	now := time.Date(2026, time.November, 4, 12, 0, 0, 0, time.UTC)
+	priorUntil := now.Add(time.Hour).Unix()
+
 	var permissions api.ChatPermissions
 	botAPI := newModerationTestBotAPI(t, func(method string, r *http.Request) any {
 		if method != moderationTestTelegramMethodRestrictChatMember {
@@ -145,8 +148,8 @@ func TestUnmuteUserRestoresCapturedRestrictivePermissions(t *testing.T) {
 		if got := r.Form.Get(logFieldUserID); got != "200" {
 			t.Fatalf("unexpected user_id: %q", got)
 		}
-		if got := r.Form.Get("until_date"); got != strconv.FormatInt(12345, 10) {
-			t.Fatalf("until_date = %q, want 12345", got)
+		if got := r.Form.Get("until_date"); got != strconv.FormatInt(priorUntil, 10) {
+			t.Fatalf("until_date = %q, want %d", got, priorUntil)
 		}
 		if err := json.Unmarshal([]byte(r.Form.Get("permissions")), &permissions); err != nil {
 			t.Fatalf("unmarshal permissions: %v", err)
@@ -173,9 +176,10 @@ func TestUnmuteUserRestoresCapturedRestrictivePermissions(t *testing.T) {
 		UserID:               200,
 		ExpiresAt:            time.Now().Add(time.Minute),
 		PriorPermissionsJSON: string(encoded),
-		PriorUntilDate:       12345,
+		PriorUntilDate:       priorUntil,
+		PriorMemberStatus:    telegramMemberRestricted,
 	}}
-	service := &defaultBanService{bot: botAPI, db: store}
+	service := &defaultBanService{bot: botAPI, db: store, now: func() time.Time { return now }}
 	if err := service.UnmuteUser(context.Background(), -100, 200); err != nil {
 		t.Fatalf("unmute user: %v", err)
 	}
@@ -194,7 +198,7 @@ func TestMuteUserUsesVotingDeadlineAndSnapshotSurvivesExpiry(t *testing.T) {
 		case moderationTestTelegramMethodGetChatMember:
 			return map[string]any{moderationTestJSONUser: map[string]any{"id": 200, moderationTestJSONIsBot: false, moderationTestJSONFirstName: moderationTestFirstNameUser}, moderationTestJSONStatus: moderationTestMemberStatusMember}
 		case moderationTestTelegramMethodGetChat:
-			return map[string]any{"id": -100, moderationTestJSONType: moderationTestSupergroup, moderationTestJSONPermissions: map[string]any{moderationTestJSONPermissionCanSendMessages: true, "can_send_photos": false}}
+			return map[string]any{"id": -100, moderationTestJSONType: moderationTestSupergroup, moderationTestJSONPermissions: map[string]any{moderationTestJSONPermissionCanSendMessages: true, moderationTestJSONPermissionCanSendPhotos: false}}
 		case moderationTestTelegramMethodRestrictChatMember:
 			if err := r.ParseForm(); err != nil {
 				t.Fatal(err)
@@ -216,7 +220,7 @@ func TestMuteUserUsesVotingDeadlineAndSnapshotSurvivesExpiry(t *testing.T) {
 		t.Fatalf("mute expiry = %v, deadline = %v", time.Unix(untilDate, 0), deadline)
 	}
 	store.restriction.ExpiresAt = time.Now().Add(-time.Minute)
-	if _, err := service.permissionsBeforeRestriction(t.Context(), -100, store.restriction); err != nil {
+	if _, _, err := service.permissionsBeforeRestriction(store.restriction); err != nil {
 		t.Fatalf("restore snapshot after expiry/restart: %v", err)
 	}
 }
@@ -264,7 +268,7 @@ func TestModerationAvailabilityCachesRightsAndExplicitFailureWins(t *testing.T) 
 				moderationTestJSONIsBot:     true,
 				moderationTestJSONFirstName: moderationTestFirstNameBot,
 			},
-			moderationTestJSONStatus: "administrator",
+			moderationTestJSONStatus: moderationTestMemberStatusAdministrator,
 			"can_restrict_members":   true,
 		}
 	})
