@@ -123,6 +123,9 @@ func (g *BanlistGuard) handleWithPrecheck(ctx context.Context, u *api.Update, ch
 	if !banned {
 		return true, precheck, nil
 	}
+	if u.ChatJoinRequest != nil {
+		return false, precheck, g.declineBanlistedJoinRequest(ctx, u.UpdateID, chat.ID, user.ID)
+	}
 
 	var outcome banlistedMessageOutcome
 	if actionStore, ok := g.store.(moderationActionStore); ok {
@@ -152,6 +155,58 @@ func (g *BanlistGuard) handleWithPrecheck(ctx context.Context, u *api.Update, ch
 		entry.Info("terminal banlist action applied")
 	}
 	return false, precheck, nil
+}
+
+func (g *BanlistGuard) declineBanlistedJoinRequest(ctx context.Context, updateID int, chatID, userID int64) error {
+	store, durable := g.store.(moderationActionStore)
+	if !durable {
+		return bot.DeclineJoinRequest(ctx, g.bot, userID, chatID)
+	}
+	now := time.Now().UTC()
+	owner := uuid.New()
+	action, err := store.BeginModerationAction(ctx, &db.ModerationActionFence{
+		ActionKey: fmt.Sprintf("banlist-join:%d:%d:%d", updateID, chatID, userID),
+		ChatID:    chatID, UserID: userID, BanUntil: now,
+	}, owner, now)
+	if err != nil {
+		return fmt.Errorf("persist join rejection: %w", err)
+	}
+	if action.Status == db.ModerationActionCompleted {
+		return nil
+	}
+	if action.Status == db.ModerationActionReconciliation || action.Owner != owner {
+		if action.Status == db.ModerationActionStarted && action.EffectStartedAt.Valid {
+			_, err = store.AdvanceModerationAction(ctx, action.ActionKey, action.Owner, action.Status, db.ModerationActionReconciliation, "join rejection outcome unknown", now)
+		}
+		return bot.NewTerminalUpdateFailure(bot.UpdateFailureRuntime, "join_rejection_ambiguous", errors.Join(err, errors.New("join rejection requires reconciliation")))
+	}
+	started, err := store.MarkModerationActionEffectStarted(ctx, action.ActionKey, owner, now)
+	if err != nil || !started {
+		return errors.Join(err, errors.New("join rejection effect fence changed"))
+	}
+	declineErr := bot.DeclineJoinRequest(ctx, g.bot, userID, chatID)
+	if isTelegramJoinDeclineAlreadyApplied(declineErr) {
+		declineErr = nil
+	}
+	nextStatus, lastError := db.ModerationActionCompleted, ""
+	if declineErr != nil {
+		lastError = db.SafeGatekeeperErrorCode(declineErr)
+		if moderation.IsTelegramPrivilegeError(declineErr) {
+			g.banService.MarkModerationUnavailable(chatID)
+			lastError = banlistActionPermissionDenied
+		} else {
+			nextStatus = db.ModerationActionReconciliation
+		}
+	}
+	changed, err := store.AdvanceModerationAction(ctx, action.ActionKey, owner, db.ModerationActionStarted, nextStatus, lastError, time.Now().UTC())
+	if err != nil || !changed {
+		return errors.Join(err, errors.New("join rejection completion fence changed"))
+	}
+	if nextStatus == db.ModerationActionReconciliation {
+		return bot.NewTerminalUpdateFailure(bot.UpdateFailureRuntime, "join_rejection_ambiguous", safeGatekeeperError(declineErr))
+	}
+	log.WithFields(log.Fields{logFieldObject: logObjectBanlistGuard, logFieldChatID: chatID, logFieldUserID: userID, "outcome": nextStatus, logFieldErrorCode: lastError}).Info("banlisted join request processed")
+	return nil
 }
 
 func (g *BanlistGuard) enforceDurableBanlistedMessage(ctx context.Context, store moderationActionStore, updateID int, msg *api.Message, chat *api.Chat, user *api.User) banlistedMessageOutcome {

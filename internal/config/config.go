@@ -40,10 +40,11 @@ type (
 	}
 
 	GatekeeperWebApp struct {
-		PublicURL         string `env:"GATEKEEPER_WEBAPP_PUBLIC_URL"`
-		ListenAddr        string `env:"GATEKEEPER_WEBAPP_LISTEN_ADDR,default=127.0.0.1:8080"`
-		MaxConcurrent     int    `env:"GATEKEEPER_WEBAPP_MAX_CONCURRENT,default=32"`
-		RequestsPerMinute int    `env:"GATEKEEPER_WEBAPP_REQUESTS_PER_MINUTE,default=120"`
+		JoinRequestsEnabled bool   `env:"GATEKEEPER_WEBAPP_JOIN_REQUESTS_ENABLED,default=false"`
+		PublicURL           string `env:"GATEKEEPER_WEBAPP_PUBLIC_URL"`
+		ListenAddr          string `env:"GATEKEEPER_WEBAPP_LISTEN_ADDR,default=127.0.0.1:8080"`
+		MaxConcurrent       int    `env:"GATEKEEPER_WEBAPP_MAX_CONCURRENT,default=32"`
+		RequestsPerMinute   int    `env:"GATEKEEPER_WEBAPP_REQUESTS_PER_MINUTE,default=120"`
 	}
 
 	LLM struct {

@@ -7,13 +7,13 @@
 1. Triggered by new chat members and **join requests**.
 2. Applies the chat's manual allowlist before checking known spammer sources. Non-allowlisted known spammers are declined/banned immediately and join artifacts are cleaned up.
 3. Restricts the newcomer while verification is active.
-4. Sends a CAPTCHA-style challenge with configurable option count and timeout.
+4. Sends join-request CAPTCHA in a private message to Telegram's `user_chat_id`, with configurable option count and timeout. The embedded Mini App is opt-in with `NG_GATEKEEPER_WEBAPP_JOIN_REQUESTS_ENABLED=true`; configuring its public URL alone does not enable it.
 5. On success, the newcomer is approved/unrestricted and the challenge message is cleaned up.
-6. On failure or timeout, the newcomer is banned for the configured reject timeout.
+6. An incorrect answer or a public CAPTCHA timeout uses the configured reject timeout. An unanswered private CAPTCHA leaves the join request pending. Private-message delivery failures are retained for operator review without banning or declining the applicant. Banlisted join requests are explicitly declined without a temporary ban.
 7. Optional greeting text can be shown immediately with the public CAPTCHA for direct joins, or after approval for join-request newcomers.
 
 ## Spam protection
-1. Message authors are identified per chat as either a user or a sender channel. Channel identity takes precedence over Telegram's technical sender. Group membership and reaction history do not grant message trust.
+1. Message authors are identified per chat as either a user or a sender channel. Channel identity takes precedence over Telegram's technical sender. Ordinary group membership and reaction history do not grant message trust. A human administrator's manual addition or approval grants trust in that chat for the configured author-trust duration and skips CAPTCHA. Telegram must identify the actor, and a fresh member lookup must confirm current administrator or owner status. Self-joins, bot approvals and unidentifiable actors do not grant trust. The admission timestamp survives trust revocation, so duplicate or older events cannot restore it. Banlists and pending moderation cases retain priority.
 2. By default, three distinct safe new texts, captions, or visible rich-message texts grant 30 days of trust. After expiry, one safe new message renews it. Commands, bot mentions, edits, reactions, and media without meaningful text never advance or renew trust. Safe checks and their message bindings are committed atomically; duplicates cannot advance the count twice.
 3. Manual user allowlists precede user banlist enforcement. Automatic trust never bypasses banlists or reports. Linked-channel posts and anonymous group administrators keep their existing exemptions. Without moderation rights, no provider-backed checks or punitive actions run.
 4. The classifier receives the direct reply/quote, source post, and up to five recent replies from the same thread. Context is limited to 24 hours, 2,000 characters per saved message, and 8,000 additional characters per request. Unknown discussion threads use only the available reply chain; ordinary groups can use recent group messages. Conversation is untrusted evidence; only the current message is classified. External replies have no automatic spam verdict.
@@ -58,7 +58,7 @@ The image runs as UID/GID `65532:65532`; set `NGBOT_DATA_PATH=/home/username/.ng
 ```bash
 docker compose up -d
 ```
-6. Optional for join-request Mini App CAPTCHA: set `NG_GATEKEEPER_WEBAPP_PUBLIC_URL=https://antifraud.rtfm.rsvp`, point Caddy at `deploy/caddy/ngbot-webapp.Caddyfile`, then restart Compose.
+6. Keep `NG_GATEKEEPER_WEBAPP_JOIN_REQUESTS_ENABLED=false` for private-message CAPTCHA. To opt into the Mini App, set it to `true`, configure `NG_GATEKEEPER_WEBAPP_PUBLIC_URL=https://antifraud.rtfm.rsvp`, point Caddy at `deploy/caddy/ngbot-webapp.Caddyfile`, then restart Compose.
 7. Add your bot to chat and give it **Ban**, **Delete**, and **Invite** permissions.
 8. Optional: Change bot language with `/lang <code>` (e.g., `/lang ru`).
 9. Optional: Set `NG_SPAM_DEBUG_USER_ID` to your Telegram user ID for private `/testspam` and `/skipreason`; source-chat administrators may use those diagnostics in their chat.
@@ -110,6 +110,7 @@ See [.env.example](.env.example) for a quick reference. `NGBOT_*` variables conf
 | | `NG_TELEGRAM_INBOX_MAX_DISPATCH_PENDING_BYTES` | Maximum pending/retry bytes for one dispatch key | `33554432` | Positive integer |
 | | `NG_TELEGRAM_INBOX_MIN_FREE_BYTES` | Minimum database filesystem free space for admission | `268435456` | Positive integer |
 | | `NG_GATEKEEPER_WEBAPP_PUBLIC_URL` | Public HTTPS origin for join-request CAPTCHA Mini App | | Absolute URL, e.g. `https://captcha.example.com` |
+| | `NG_GATEKEEPER_WEBAPP_JOIN_REQUESTS_ENABLED` | Use the Mini App instead of private-message CAPTCHA for new join requests | `false` | Existing WebApp challenges remain supported |
 | | `NG_GATEKEEPER_WEBAPP_LISTEN_ADDR` | Native embedded Mini App server listen address | `127.0.0.1:8080` | Compose enforces `0.0.0.0:8080` inside the container |
 | | `NG_GATEKEEPER_WEBAPP_MAX_CONCURRENT` | Maximum in-flight Mini App requests | `32` | Integer greater than zero; `0` is invalid |
 | | `NG_GATEKEEPER_WEBAPP_REQUESTS_PER_MINUTE` | Per-client Mini App request limit | `120` | Integer greater than zero; `0` is invalid |

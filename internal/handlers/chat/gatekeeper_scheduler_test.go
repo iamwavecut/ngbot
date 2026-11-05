@@ -18,6 +18,10 @@ type testGatekeeperStore struct {
 	isNotSpammer bool
 }
 
+func (*testGatekeeperStore) MessageTrust(context.Context, int64, db.MessageAuthor) (*db.MessageTrust, error) {
+	return nil, nil
+}
+
 func TestTelegramActionAlreadyAppliedDoesNotTreatUncertainJoinQueryAsSuccess(t *testing.T) {
 	t.Parallel()
 

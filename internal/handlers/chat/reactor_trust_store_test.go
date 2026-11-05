@@ -13,6 +13,22 @@ type authorTrustKey struct {
 	author db.MessageAuthor
 }
 
+func (s *testReactorStore) GrantAdminMemberTrust(ctx context.Context, chatID, userID int64, admittedAt time.Time, duration time.Duration) error {
+	author := db.MessageAuthor{Kind: db.MessageAuthorUser, ID: userID}
+	value, err := s.EnsureMessageTrust(ctx, chatID, author)
+	if err != nil {
+		return err
+	}
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	if !value.AdminAdmittedAt.Valid || value.AdminAdmittedAt.Time.Before(admittedAt) {
+		value.AdminAdmittedAt = sql.NullTime{Time: admittedAt, Valid: true}
+		value.TrustedUntil = sql.NullTime{Time: admittedAt.Add(duration), Valid: true}
+		s.trusts[authorTrustKey{chatID, author}] = *value
+	}
+	return nil
+}
+
 func (s *testReactorStore) MessageTrust(_ context.Context, chatID int64, author db.MessageAuthor) (*db.MessageTrust, error) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()

@@ -148,7 +148,7 @@ func TestJoinRequestWebAppPreEffectFailurePreservesQueryForRetry(t *testing.T) {
 	gatekeeper := &Gatekeeper{
 		s:          &gatekeeperTestService{settings: webAppSettings()},
 		store:      newGatekeeperFlowStore(),
-		config:     &config.Config{GatekeeperWebApp: config.GatekeeperWebApp{PublicURL: "%"}},
+		config:     &config.Config{GatekeeperWebApp: config.GatekeeperWebApp{JoinRequestsEnabled: true, PublicURL: "%"}},
 		banChecker: &testGatekeeperBanChecker{},
 	}
 	err := gatekeeper.handleChatJoinRequest(t.Context(), &api.Update{ChatJoinRequest: request}, webAppSettings())
@@ -691,7 +691,7 @@ func TestTestJoinCaptchaCommandSendsWebAppButton(t *testing.T) {
 		bot:    botAPI,
 		s:      &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI, language: "en"}, settings: webAppSettings()},
 		store:  store,
-		config: &config.Config{GatekeeperWebApp: config.GatekeeperWebApp{PublicURL: testWebAppURL}},
+		config: &config.Config{GatekeeperWebApp: config.GatekeeperWebApp{JoinRequestsEnabled: true, PublicURL: testWebAppURL}},
 	}
 
 	user := &api.User{ID: 42, FirstName: testFirstNameNeo}
@@ -726,7 +726,7 @@ func TestTestJoinCaptchaCommandSendsWebAppButton(t *testing.T) {
 func TestJoinCaptchaURLBuildsFromValidatedOrigin(t *testing.T) {
 	t.Parallel()
 
-	gatekeeper := &Gatekeeper{config: &config.Config{GatekeeperWebApp: config.GatekeeperWebApp{PublicURL: "https://guard.example/"}}}
+	gatekeeper := &Gatekeeper{config: &config.Config{GatekeeperWebApp: config.GatekeeperWebApp{JoinRequestsEnabled: true, PublicURL: "https://guard.example/"}}}
 	got, err := gatekeeper.joinCaptchaURL("a token&next=https://evil.example")
 	if err != nil {
 		t.Fatalf("joinCaptchaURL: %v", err)
@@ -1491,7 +1491,7 @@ func TestStartJoinRequestWebAppChallengeFallsBackDurablyOnSendFailure(t *testing
 			settings:       webAppSettings(),
 		},
 		store:      store,
-		config:     &config.Config{GatekeeperWebApp: config.GatekeeperWebApp{PublicURL: testWebAppURL}},
+		config:     &config.Config{GatekeeperWebApp: config.GatekeeperWebApp{JoinRequestsEnabled: true, PublicURL: testWebAppURL}},
 		banChecker: &testGatekeeperBanChecker{},
 	}
 

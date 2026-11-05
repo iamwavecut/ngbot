@@ -74,6 +74,10 @@ type gatekeeperFlowStore struct {
 	isNotSpammer bool
 }
 
+func (*gatekeeperFlowStore) MessageTrust(context.Context, int64, db.MessageAuthor) (*db.MessageTrust, error) {
+	return nil, nil
+}
+
 func newGatekeeperFlowStore() *gatekeeperFlowStore {
 	return &gatekeeperFlowStore{
 		challenges: make(map[string]*db.Challenge),
@@ -876,7 +880,7 @@ func TestBannedChatJoinRequestQueryDeclinesAndBansBeforeCaptcha(t *testing.T) {
 	}
 }
 
-func TestJoinRequestCaptchaUsesWebAppQueryWhenAvailable(t *testing.T) {
+func TestJoinRequestCaptchaUsesWebAppWhenExplicitlyEnabled(t *testing.T) {
 	t.Parallel()
 
 	recorder := &botRequestRecorder{}
@@ -908,7 +912,7 @@ func TestJoinRequestCaptchaUsesWebAppQueryWhenAvailable(t *testing.T) {
 		bot:        botAPI,
 		s:          &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI, language: "en"}, settings: settings},
 		store:      store,
-		config:     &config.Config{GatekeeperWebApp: config.GatekeeperWebApp{PublicURL: testWebAppURL}},
+		config:     &config.Config{GatekeeperWebApp: config.GatekeeperWebApp{JoinRequestsEnabled: true, PublicURL: testWebAppURL}},
 		banChecker: &testGatekeeperBanChecker{},
 	}
 
@@ -1841,7 +1845,7 @@ func TestJoinRequestQueryWithoutCaptchaQueuesManualReview(t *testing.T) {
 		bot:        botAPI,
 		s:          &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI, language: "en"}, settings: settings},
 		store:      store,
-		config:     &config.Config{GatekeeperWebApp: config.GatekeeperWebApp{PublicURL: testWebAppURL}},
+		config:     &config.Config{GatekeeperWebApp: config.GatekeeperWebApp{JoinRequestsEnabled: true, PublicURL: testWebAppURL}},
 		banChecker: &testGatekeeperBanChecker{},
 	}
 
@@ -2102,7 +2106,7 @@ func TestProcessExpiredOpenedJoinRequestChallengeFallsBackToDM(t *testing.T) {
 	}
 }
 
-func TestProcessExpiredJoinRequestRetainsDurableRejectWhenMembershipCheckFails(t *testing.T) {
+func TestProcessExpiredJoinRequestDoesNotRequireMembershipLookup(t *testing.T) {
 	t.Parallel()
 
 	botAPI := newTestBotAPI(t, func(method string, _ *http.Request) any {
@@ -2154,13 +2158,12 @@ func TestProcessExpiredJoinRequestRetainsDurableRejectWhenMembershipCheckFails(t
 	if err := gatekeeper.processExpiredChallenges(context.Background()); err != nil {
 		t.Fatalf("processExpiredChallenges returned error: %v", err)
 	}
-	retained := store.onlyChallenge(t)
-	if retained.Status != db.ChallengeStatusRejectPending || retained.AttemptCount != 1 || !retained.NextAttemptAt.Valid || retained.LastError == "" {
-		t.Fatalf("membership failure did not retain retryable rejection: %#v", retained)
+	if len(store.challenges) != 0 {
+		t.Fatal("expired private challenge was not cleaned up")
 	}
 }
 
-func TestProcessExpiredJoinRequestDMFallbackChallengeRejects(t *testing.T) {
+func TestProcessExpiredJoinRequestDMFallbackLeavesRequestForReview(t *testing.T) {
 	t.Parallel()
 
 	recorder := &botRequestRecorder{}
@@ -2231,11 +2234,11 @@ func TestProcessExpiredJoinRequestDMFallbackChallengeRejects(t *testing.T) {
 	if len(recorder.byMethod(testTelegramMethodDeleteMessage)) != 1 {
 		t.Fatalf("expected one DM challenge cleanup, got %d", len(recorder.byMethod(testTelegramMethodDeleteMessage)))
 	}
-	if len(recorder.byMethod(testTelegramMethodBanChatMember)) != 1 {
-		t.Fatalf("expected one ban, got %d", len(recorder.byMethod(testTelegramMethodBanChatMember)))
+	if len(recorder.byMethod(testTelegramMethodBanChatMember)) != 0 {
+		t.Fatalf("expected no ban, got %d", len(recorder.byMethod(testTelegramMethodBanChatMember)))
 	}
-	if len(recorder.byMethod(testTelegramMethodJoinRequestQuery)) != 1 {
-		t.Fatalf("expected one durable join request query decline, got %d", len(recorder.byMethod(testTelegramMethodJoinRequestQuery)))
+	if len(recorder.byMethod(testTelegramMethodJoinRequestQuery)) != 0 {
+		t.Fatalf("expected no join request decline, got %d", len(recorder.byMethod(testTelegramMethodJoinRequestQuery)))
 	}
 	if len(recorder.byMethod(testTelegramMethodSendMessage)) != 0 {
 		t.Fatalf("expected no non-durable reject message, got %d", len(recorder.byMethod(testTelegramMethodSendMessage)))
@@ -2643,7 +2646,7 @@ func TestFallbackClaimedWebAppChallengeRetriesWhenTargetChatUnavailable(t *testi
 	}
 }
 
-func TestDMFallbackForbiddenDeclinesWithoutDurableRetry(t *testing.T) {
+func TestDMFallbackForbiddenLeavesRequestForReviewWithoutDurableRetry(t *testing.T) {
 	t.Parallel()
 
 	recorder := &botRequestRecorder{}
@@ -2713,8 +2716,8 @@ func TestDMFallbackForbiddenDeclinesWithoutDurableRetry(t *testing.T) {
 		t.Fatalf("permanently unavailable DM fallback remained durable: %#v", store.challenges)
 	}
 	declines := recorder.byMethod(testTelegramMethodJoinRequestQuery)
-	if len(declines) != 1 || declines[0].form.Get("result") != testJoinRequestDecline {
-		t.Fatalf("expected one terminal join-request decline, got %#v", declines)
+	if len(declines) != 0 || len(recorder.byMethod(testTelegramMethodBanChatMember)) != 0 {
+		t.Fatalf("unavailable DM punished the applicant: declines=%#v", declines)
 	}
 }
 

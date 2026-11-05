@@ -68,6 +68,9 @@ func (m *ModerationRouter) Handle(ctx context.Context, update *api.Update, chat 
 	if m.content == nil || update == nil || chat == nil {
 		return true, nil
 	}
+	if err := m.content.trustAdminAddedMembers(ctx, update); err != nil {
+		return false, err
+	}
 	if update.Message == nil && update.EditedMessage == nil {
 		return true, nil
 	}

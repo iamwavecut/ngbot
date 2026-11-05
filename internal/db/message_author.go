@@ -18,12 +18,13 @@ type (
 	}
 
 	MessageTrust struct {
-		ChatID       int64        `db:"chat_id"`
-		AuthorKind   string       `db:"author_kind"`
-		AuthorID     int64        `db:"author_id"`
-		SafeMessages int          `db:"safe_messages"`
-		TrustedUntil sql.NullTime `db:"trusted_until"`
-		Suspended    bool         `db:"suspended"`
+		ChatID          int64        `db:"chat_id"`
+		AuthorKind      string       `db:"author_kind"`
+		AuthorID        int64        `db:"author_id"`
+		SafeMessages    int          `db:"safe_messages"`
+		TrustedUntil    sql.NullTime `db:"trusted_until"`
+		AdminAdmittedAt sql.NullTime `db:"admin_admitted_at"`
+		Suspended       bool         `db:"suspended"`
 	}
 
 	MessageContext struct {

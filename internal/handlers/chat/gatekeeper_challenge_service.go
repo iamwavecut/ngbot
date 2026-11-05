@@ -132,6 +132,10 @@ func (g *Gatekeeper) handleChallenge(ctx context.Context, u *api.Update, chat *a
 	}
 
 	if time.Now().After(challenge.ExpiresAt) {
+		if challenge.CommChatID != challenge.ChatID {
+			_, answerErr := b.RequestWithContext(ctx, api.NewCallbackWithAlert(cq.ID, i18n.Get("Session expired", language)))
+			return stderrors.Join(answerErr, g.cleanupChallengeWithoutPenalty(ctx, challenge))
+		}
 		if _, err := b.RequestWithContext(ctx, api.NewCallbackWithAlert(cq.ID, rejectText)); err != nil {
 			entry.WithField(logFieldError, err.Error()).Error("cant answer callback query")
 		}
@@ -399,27 +403,26 @@ func (g *Gatekeeper) processChallengeActionWithStats(ctx context.Context, challe
 		isNotSpammer, allowlistErr := g.store.IsChatNotSpammer(ctx, challenge.ChatID, challenge.UserID, challenge.Username)
 		if allowlistErr != nil {
 			entry.WithFields(log.Fields{logFieldUserID: challenge.UserID, logFieldErrorCode: db.SafeGatekeeperErrorCode(allowlistErr)}).Error("failed to recheck manual not-spammer override; continuing moderation")
-		} else if isNotSpammer {
-			deleted, deleteErr := g.store.DeleteLeasedChallengeActionVersion(ctx, challenge.ChallengeID, owner, challenge.ActionVersion, challenge.Status, challenge.ActionPhase, time.Now())
-			if deleteErr != nil || !deleted {
-				return stderrors.Join(deleteErr, errors.New("allowlisted ban-check cleanup fence lost"))
+			isNotSpammer = false
+		}
+		banned := false
+		if !isNotSpammer {
+			moderationAvailable, capabilityErr := g.moderationAvailable(ctx, challenge.ChatID)
+			if capabilityErr != nil {
+				return g.retryOrReconcileChallengeAction(ctx, challenge, owner, capabilityErr, entry)
 			}
-			return nil
-		}
-		moderationAvailable, capabilityErr := g.moderationAvailable(ctx, challenge.ChatID)
-		if capabilityErr != nil {
-			return g.retryOrReconcileChallengeAction(ctx, challenge, owner, capabilityErr, entry)
-		}
-		if !moderationAvailable {
-			deleted, deleteErr := g.store.DeleteLeasedChallengeActionVersion(ctx, challenge.ChallengeID, owner, challenge.ActionVersion, challenge.Status, challenge.ActionPhase, time.Now())
-			if deleteErr != nil || !deleted {
-				return stderrors.Join(deleteErr, errors.New("no-rights ban-check cleanup fence lost"))
+			if !moderationAvailable {
+				deleted, deleteErr := g.store.DeleteLeasedChallengeActionVersion(ctx, challenge.ChallengeID, owner, challenge.ActionVersion, challenge.Status, challenge.ActionPhase, time.Now())
+				if deleteErr != nil || !deleted {
+					return stderrors.Join(deleteErr, errors.New("no-rights ban-check cleanup fence lost"))
+				}
+				return nil
 			}
-			return nil
-		}
-		banned, checkErr := g.banChecker.CheckBan(ctx, challenge.UserID)
-		if checkErr != nil {
-			return g.retryOrReconcileChallengeAction(ctx, challenge, owner, checkErr, entry)
+			var checkErr error
+			banned, checkErr = g.banChecker.CheckBan(ctx, challenge.UserID)
+			if checkErr != nil {
+				return g.retryOrReconcileChallengeAction(ctx, challenge, owner, checkErr, entry)
+			}
 		}
 		settings, settingsErr := g.fetchAndValidateSettings(ctx, challenge.ChatID)
 		if settingsErr != nil {
@@ -466,6 +469,9 @@ func (g *Gatekeeper) processChallengeActionWithStats(ctx context.Context, challe
 		}
 		if nextStatus == db.ChallengeStatusPending {
 			return nil
+		}
+		if nextStatus == db.ChallengeStatusWebAppFallbackPending {
+			g.incrementChallengeStat(ctx, challenge.ChatID, handlersbase.StatChallengeStarted)
 		}
 		return g.processChallengeActionWithStats(ctx, challenge, recordStats)
 	case db.ChallengeStatusRestrictPending:
@@ -743,13 +749,12 @@ func (g *Gatekeeper) processChallengeActionWithStats(ctx context.Context, challe
 		return nil
 	}
 	if challenge.Status == db.ChallengeStatusWebAppFallbackPending && isTelegramConversationUnavailable(actionErr) {
-		entry.WithField(logFieldErrorCode, db.SafeGatekeeperErrorCode(actionErr)).Info("DM fallback is permanently unavailable; declining join request")
-		changed, err := g.store.CompleteLeasedChallengeActionVersion(ctx, challenge.ChallengeID, owner, challenge.ActionVersion, challenge.Status, challenge.ActionPhase, db.ChallengeStatusRejectPending, time.Time{}, time.Now())
+		entry.WithFields(log.Fields{logFieldChatID: challenge.ChatID, logFieldUserID: challenge.UserID, logFieldErrorCode: db.SafeGatekeeperErrorCode(actionErr)}).Warn("DM CAPTCHA is unavailable; leaving join request for manual review")
+		changed, err := g.store.ReconcileLeasedChallengeVersion(ctx, challenge.ChallengeID, owner, challenge.ActionVersion, challenge.Status, 0, db.SafeGatekeeperErrorCode(actionErr), time.Now())
 		if err != nil || !changed {
-			return err
+			return stderrors.Join(err, errors.New("manual-review reconciliation fence lost"))
 		}
-		challenge.Status = db.ChallengeStatusRejectPending
-		return g.processChallengeAction(ctx, challenge)
+		return nil
 	}
 	if moderation.IsTelegramPrivilegeError(actionErr) {
 		if g.banChecker != nil {

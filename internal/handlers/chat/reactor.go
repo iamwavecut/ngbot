@@ -83,6 +83,7 @@ type Reactor struct {
 }
 
 type reactorStore interface {
+	GrantAdminMemberTrust(ctx context.Context, chatID, userID int64, admittedAt time.Time, duration time.Duration) error
 	ListChatSpamExamples(ctx context.Context, chatID int64, classification int, limit int, offset int) ([]*db.ChatSpamExample, error)
 	IsChatNotSpammer(ctx context.Context, chatID int64, userID int64, username string) (bool, error)
 	MessageTrust(ctx context.Context, chatID int64, author db.MessageAuthor) (*db.MessageTrust, error)

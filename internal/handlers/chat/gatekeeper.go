@@ -102,6 +102,7 @@ type GatekeeperBanChecker interface {
 }
 
 type gatekeeperStore interface {
+	MessageTrust(ctx context.Context, chatID int64, author db.MessageAuthor) (*db.MessageTrust, error)
 	DeleteMessageContext(ctx context.Context, chatID int64, messageID int) error
 	DeleteAuthorMessageContext(ctx context.Context, chatID int64, author db.MessageAuthor) error
 	CreateChallenge(ctx context.Context, challenge *db.Challenge) (*db.Challenge, error)

@@ -315,7 +315,15 @@ func TestBanlistGuardChecksProviderBeforeJoinRequestFeatureRouting(t *testing.T)
 	t.Parallel()
 
 	banService := &testBanService{checkBan: true}
-	guard := NewBanlistGuard(&api.BotAPI{}, &testNotSpammerStore{}, banService)
+	declines := 0
+	botAPI := newTestBotAPI(t, func(method string, _ *http.Request) any {
+		if method != testTelegramMethodDeclineJoinRequest {
+			t.Fatalf("unexpected method %s", method)
+		}
+		declines++
+		return true
+	})
+	guard := NewBanlistGuard(botAPI, &testNotSpammerStore{}, banService)
 	chat := &api.Chat{ID: -100, Type: testChatTypeSupergroup}
 	user := &api.User{ID: 200, UserName: "provider_banned"}
 	update := &api.Update{ChatJoinRequest: &api.ChatJoinRequest{Chat: *chat, From: *user}}
@@ -327,8 +335,8 @@ func TestBanlistGuardChecksProviderBeforeJoinRequestFeatureRouting(t *testing.T)
 	if proceed {
 		t.Fatal("provider-banned join request reached feature routing")
 	}
-	if len(banService.bans) != 1 || banService.bans[0].userID != user.ID {
-		t.Fatalf("join request bans = %#v", banService.bans)
+	if declines != 1 || len(banService.bans) != 0 {
+		t.Fatalf("join request declines=%d bans=%#v", declines, banService.bans)
 	}
 }
 

@@ -157,7 +157,7 @@ func (g *Gatekeeper) processExpiredChallenges(ctx context.Context) error {
 			}
 			continue
 		}
-		if challenge.CommChatID != challenge.ChatID && challenge.JoinRequestQueryID == "" {
+		if challenge.CommChatID != challenge.ChatID {
 			if err := g.cleanupChallengeWithoutPenalty(ctx, challenge); err != nil {
 				entry.WithField(logFieldError, err.Error()).Error("failed to cleanup non-punitive challenge state")
 			}
@@ -256,7 +256,7 @@ func (g *Gatekeeper) attemptExpiredWebAppFallback(ctx context.Context, challenge
 func (g *Gatekeeper) fallbackClaimedWebAppChallenge(ctx context.Context, challenge *db.Challenge, owner string, settings *db.Settings) error {
 	privateChat, err := bot.GetChat(ctx, g.bot, api.ChatInfoConfig{ChatConfig: api.ChatConfig{ChatID: challenge.CommChatID}})
 	if err != nil {
-		return fmt.Errorf("get private chat for fallback: %w", err)
+		g.getLogEntry().WithFields(log.Fields{logFieldChatID: challenge.ChatID, logFieldUserID: challenge.UserID, logFieldErrorCode: db.SafeGatekeeperErrorCode(err)}).Debug("private chat metadata unavailable; sending CAPTCHA to join-request user_chat_id")
 	}
 	targetChat, err := bot.GetChat(ctx, g.bot, api.ChatInfoConfig{ChatConfig: api.ChatConfig{ChatID: challenge.ChatID}})
 	if err != nil {
@@ -270,7 +270,10 @@ func (g *Gatekeeper) fallbackClaimedWebAppChallenge(ctx context.Context, challen
 		LanguageCode: challenge.UserLanguage,
 	}
 	if user.FirstName == "" && user.UserName == "" {
-		user.FirstName = "friend"
+		user.UserName = challenge.Username
+		if user.UserName == "" {
+			user.FirstName = "friend"
+		}
 	}
 	if challenge.WebAppToken != "" || challenge.SuccessUUID == "" {
 		challenge.SuccessUUID = uuid.New()
@@ -331,6 +334,7 @@ func (g *Gatekeeper) fallbackClaimedWebAppChallenge(ctx context.Context, challen
 	}
 	if completed {
 		challenge.Status = db.ChallengeStatusPending
+		g.getLogEntry().WithFields(log.Fields{logFieldChatID: challenge.ChatID, logFieldUserID: challenge.UserID, challengeIDLogField: challenge.ChallengeID}).Info("private join CAPTCHA sent")
 	}
 	return nil
 }

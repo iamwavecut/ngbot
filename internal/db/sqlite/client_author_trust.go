@@ -127,10 +127,33 @@ func (c *sqliteClient) ResetMessageTrust(ctx context.Context, chatID int64, auth
 	return nil
 }
 
+func (c *sqliteClient) GrantAdminMemberTrust(ctx context.Context, chatID, userID int64, admittedAt time.Time, duration time.Duration) error {
+	if chatID >= 0 || userID <= 0 || admittedAt.IsZero() || duration <= 0 {
+		return errors.New("invalid administrator admission")
+	}
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	until := admittedAt.UTC().Add(duration)
+	if _, err := c.db.ExecContext(ctx, `
+		INSERT INTO chat_author_trust (chat_id, author_kind, author_id, trusted_until, admin_admitted_at)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(chat_id, author_kind, author_id) DO UPDATE SET
+			trusted_until = CASE WHEN chat_author_trust.trusted_until > excluded.trusted_until
+				THEN chat_author_trust.trusted_until ELSE excluded.trusted_until END,
+			admin_admitted_at = excluded.admin_admitted_at
+		WHERE chat_author_trust.admin_admitted_at IS NULL
+			OR chat_author_trust.admin_admitted_at < excluded.admin_admitted_at
+	`, chatID, db.MessageAuthorUser, userID, until, admittedAt.UTC()); err != nil {
+		return fmt.Errorf("grant administrator admission trust: %w", err)
+	}
+	return nil
+}
+
 func readMessageTrust(ctx context.Context, queryer sqlx.QueryerContext, chatID int64, author db.MessageAuthor) (*db.MessageTrust, error) {
 	trust := &db.MessageTrust{}
 	if err := sqlx.GetContext(ctx, queryer, trust, `
-		SELECT trust.chat_id, trust.author_kind, trust.author_id, trust.safe_messages, trust.trusted_until,
+		SELECT trust.chat_id, trust.author_kind, trust.author_id, trust.safe_messages, trust.trusted_until, trust.admin_admitted_at,
 			EXISTS (
 				SELECT 1 FROM spam_cases AS spam_case
 				WHERE spam_case.chat_id = trust.chat_id

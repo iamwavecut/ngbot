@@ -687,7 +687,7 @@ func TestBanCheckReplayStopsBeforeProviderForNewAllowlistOrNoRights(t *testing.T
 				}
 			}
 			checker := &testGatekeeperBanChecker{banned: true, moderationUnavailable: test.noRights}
-			gatekeeper := &Gatekeeper{store: client, config: &config.Config{}, banChecker: checker}
+			gatekeeper := &Gatekeeper{store: client, s: &gatekeeperTestService{settings: &db.Settings{GatekeeperEnabled: false}}, config: &config.Config{}, banChecker: checker}
 			if err := gatekeeper.processChallengeAction(t.Context(), challenge); err != nil {
 				t.Fatalf("process replay: %v", err)
 			}
@@ -787,7 +787,7 @@ func TestAmbiguousWebAppResponseWaitsForBanCheckAndNeverFallsBack(t *testing.T) 
 	})
 	botAPI.Client = methodErrorClient{base: botAPI.Client, method: testTelegramMethodSendJoinWebApp, err: context.DeadlineExceeded}
 	settings := webAppSettings()
-	gatekeeper := &Gatekeeper{bot: botAPI, s: &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI}, settings: settings}, store: client, config: &config.Config{GatekeeperWebApp: config.GatekeeperWebApp{PublicURL: testWebAppURL}}, banChecker: checker}
+	gatekeeper := &Gatekeeper{bot: botAPI, s: &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI}, settings: settings}, store: client, config: &config.Config{GatekeeperWebApp: config.GatekeeperWebApp{JoinRequestsEnabled: true, PublicURL: testWebAppURL}}, banChecker: checker}
 	request := &api.ChatJoinRequest{Chat: api.Chat{ID: -2020}, From: api.User{ID: 3020}, UserChatID: 3020, QueryID: "query-secret"}
 	done := make(chan error, 1)
 	go func() {
@@ -865,7 +865,7 @@ func TestWebAppCannotApproveWhileProviderBanCheckIsBlocked(t *testing.T) {
 	gatekeeper := &Gatekeeper{
 		bot:   botAPI,
 		s:     &gatekeeperTestService{testBotService: testBotService{botAPI: botAPI}, settings: settings},
-		store: client, config: &config.Config{GatekeeperWebApp: config.GatekeeperWebApp{PublicURL: testWebAppURL}}, banChecker: checker,
+		store: client, config: &config.Config{GatekeeperWebApp: config.GatekeeperWebApp{JoinRequestsEnabled: true, PublicURL: testWebAppURL}}, banChecker: checker,
 	}
 	request := &api.ChatJoinRequest{Chat: api.Chat{ID: -2002}, From: api.User{ID: 3002}, UserChatID: 3002, QueryID: testJoinRequestQuery}
 	done := make(chan error, 1)

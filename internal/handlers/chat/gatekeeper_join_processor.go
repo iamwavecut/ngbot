@@ -66,6 +66,11 @@ func (g *Gatekeeper) handleNewChatMembersV2(ctx context.Context, u *api.Update, 
 			continue
 		}
 		if !moderationAvailable {
+			if trusted, err := g.skipAdminAdmittedChallenge(ctx, chat.ID, member.ID); err != nil {
+				return err
+			} else if trusted {
+				continue
+			}
 			if !settings.GatekeeperEnabled {
 				continue
 			}
@@ -113,6 +118,11 @@ func (g *Gatekeeper) handleNewChatMembersV2(ctx context.Context, u *api.Update, 
 			continue
 		}
 		if !settings.GatekeeperEnabled {
+			continue
+		}
+		if trusted, err := g.skipAdminAdmittedChallenge(ctx, chat.ID, member.ID); err != nil {
+			return err
+		} else if trusted {
 			continue
 		}
 		if _, err := g.recordRecentJoiner(ctx, chat.ID, &member, u.Message.MessageID); err != nil {
@@ -173,6 +183,11 @@ func (g *Gatekeeper) handleChatMember(ctx context.Context, u *api.Update, settin
 		return err
 	}
 	if !moderationAvailable {
+		if trusted, err := g.skipAdminAdmittedChallenge(ctx, chat.ID, member.ID); err != nil {
+			return err
+		} else if trusted {
+			return g.sendGreeting(ctx, chat.ID, chat, member, settings)
+		}
 		if !settings.GatekeeperEnabled {
 			return nil
 		}
@@ -228,6 +243,11 @@ func (g *Gatekeeper) handleChatMember(ctx context.Context, u *api.Update, settin
 	}
 	if !settings.GatekeeperEnabled {
 		return nil
+	}
+	if trusted, err := g.skipAdminAdmittedChallenge(ctx, chat.ID, member.ID); err != nil {
+		return err
+	} else if trusted {
+		return g.sendGreeting(ctx, chat.ID, chat, member, settings)
 	}
 	if _, err := g.recordRecentJoiner(ctx, chat.ID, member, 0); err != nil {
 		entry.WithFields(log.Fields{
@@ -329,7 +349,7 @@ func (g *Gatekeeper) handleChatJoinRequest(ctx context.Context, u *api.Update, s
 	webAppResponseFailed := false
 	var queueBoundary *db.Challenge
 	var err error
-	if settings.GatekeeperEnabled && settings.GatekeeperCaptchaEnabled &&
+	if settings.GatekeeperEnabled && settings.GatekeeperCaptchaEnabled && g.config != nil && g.config.GatekeeperWebApp.JoinRequestsEnabled &&
 		u.ChatJoinRequest.QueryID != "" && g.joinCaptchaPublicURL() != "" {
 		if err := g.startJoinRequestWebAppChallenge(ctx, u.ChatJoinRequest, settings); err != nil {
 			if !joinWebAppEffectStarted(err) {
@@ -433,7 +453,7 @@ func (g *Gatekeeper) handleChatJoinRequest(ctx context.Context, u *api.Update, s
 			return err
 		}
 	}
-	if !isNotSpammer && moderationAvailable {
+	if isNotSpammer || moderationAvailable {
 		challenge, loadErr := g.store.GetChallengeByChatUser(ctx, u.ChatJoinRequest.Chat.ID, u.ChatJoinRequest.From.ID)
 		if loadErr != nil {
 			return loadErr
@@ -441,6 +461,8 @@ func (g *Gatekeeper) handleChatJoinRequest(ctx context.Context, u *api.Update, s
 		if challenge != nil && challenge.Status == db.ChallengeStatusBanCheckPending {
 			return g.processChallengeAction(ctx, challenge)
 		}
+	}
+	if !isNotSpammer && moderationAvailable {
 		banned, checkErr := g.banChecker.CheckBan(ctx, u.ChatJoinRequest.From.ID)
 		if checkErr != nil {
 			entry.WithFields(log.Fields{logFieldUserID: u.ChatJoinRequest.From.ID, logFieldErrorCode: db.SafeGatekeeperErrorCode(checkErr)}).Error("failed to check ban for chat join request")
@@ -486,24 +508,22 @@ func (g *Gatekeeper) handleChatJoinRequest(ctx context.Context, u *api.Update, s
 	default:
 	}
 
-	if _, err := bot.GetChat(ctx, g.bot, api.ChatInfoConfig{
-		ChatConfig: api.ChatConfig{
-			ChatID: u.ChatJoinRequest.UserChatID,
-		},
-	}); err != nil {
-		entry.WithField(logFieldErrorCode, db.SafeGatekeeperErrorCode(err)).Error("failed to get user private chat info")
-		return safeGatekeeperError(err)
+	now := time.Now().UTC()
+	challenge, err := g.store.CreateChallenge(ctx, &db.Challenge{
+		CommChatID:   u.ChatJoinRequest.UserChatID,
+		UserID:       u.ChatJoinRequest.From.ID,
+		Username:     u.ChatJoinRequest.From.UserName,
+		ChatID:       u.ChatJoinRequest.Chat.ID,
+		Status:       db.ChallengeStatusWebAppFallbackPending,
+		UserLanguage: strings.TrimSpace(u.ChatJoinRequest.From.LanguageCode),
+		CreatedAt:    now, ExpiresAt: now.Add(settings.GetChallengeTimeout()),
+		NextAttemptAt: sql.NullTime{Time: now, Valid: true},
+	})
+	if err != nil {
+		return fmt.Errorf("persist private join CAPTCHA: %w", err)
 	}
-
-	return g.startChallenge(
-		ctx,
-		u,
-		&u.ChatJoinRequest.From,
-		&u.ChatJoinRequest.Chat,
-		u.ChatJoinRequest.UserChatID,
-		u.ChatJoinRequest.UserChatID,
-		settings,
-	)
+	g.incrementChallengeStat(ctx, challenge.ChatID, handlersbase.StatChallengeStarted)
+	return g.processChallengeAction(ctx, challenge)
 }
 
 func (g *Gatekeeper) deleteJoinQueryBoundary(ctx context.Context, challenge *db.Challenge) {
