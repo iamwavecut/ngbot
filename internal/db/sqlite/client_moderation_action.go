@@ -44,6 +44,29 @@ func (c *sqliteClient) BeginModerationAction(ctx context.Context, action *db.Mod
 	return &result, nil
 }
 
+func (c *sqliteClient) ClaimBanlistedJoinEffect(ctx context.Context, effect *db.ModerationActionFence, now, reclaimBefore time.Time) (*db.ModerationActionFence, error) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	_, err := c.db.ExecContext(ctx, `
+		INSERT INTO moderation_action_fences
+		    (action_key, chat_id, user_id, message_id, status, owner, ban_until, created_at, updated_at, effect_started_at)
+		VALUES (?, ?, ?, 0, 'started', ?, ?, ?, ?, ?)
+		ON CONFLICT(action_key) DO UPDATE SET
+		    status = 'started', owner = excluded.owner, updated_at = excluded.updated_at, effect_started_at = excluded.effect_started_at
+		WHERE moderation_action_fences.status = 'pending' OR
+		      (moderation_action_fences.status = 'started' AND
+		       (moderation_action_fences.effect_started_at IS NULL OR moderation_action_fences.updated_at <= ?))
+	`, effect.ActionKey, effect.ChatID, effect.UserID, effect.Owner, time.Unix(0, 0).UTC(), now, now, now, reclaimBefore)
+	if err != nil {
+		return nil, fmt.Errorf("claim banlisted join effect: %w", err)
+	}
+	var current db.ModerationActionFence
+	if err := c.db.GetContext(ctx, &current, `SELECT * FROM moderation_action_fences WHERE action_key = ?`, effect.ActionKey); err != nil {
+		return nil, fmt.Errorf("read banlisted join effect: %w", err)
+	}
+	return &current, nil
+}
+
 func (c *sqliteClient) MarkModerationActionEffectStarted(ctx context.Context, actionKey, owner string, now time.Time) (bool, error) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()

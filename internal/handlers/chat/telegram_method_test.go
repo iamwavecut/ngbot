@@ -1,6 +1,7 @@
 package handlers
 
 const (
+	testMemberStatusKicked               = "kicked"
 	testTelegramMethodBanChatMember      = "banChatMember"
 	testTelegramMethodBanChatSenderChat  = "banChatSenderChat"
 	testTelegramMethodApproveJoinRequest = "approveChatJoinRequest"

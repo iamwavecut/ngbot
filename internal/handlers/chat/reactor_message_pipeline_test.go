@@ -70,6 +70,7 @@ func (s *testBotService) GetLanguage(context.Context, int64, *api.User) string {
 }
 
 type testReactorStore struct {
+	testJoinEffectStore
 	mutex          sync.Mutex
 	knownNonMember bool
 	upserted       []db.ChatKnownNonMember

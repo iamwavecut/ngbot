@@ -9,7 +9,7 @@
 3. Restricts the newcomer while verification is active.
 4. Sends join-request CAPTCHA in a private message to Telegram's `user_chat_id`, with configurable option count and timeout. The embedded Mini App is opt-in with `NG_GATEKEEPER_WEBAPP_JOIN_REQUESTS_ENABLED=true`; configuring its public URL alone does not enable it.
 5. On success, the newcomer is approved/unrestricted and the challenge message is cleaned up.
-6. An incorrect answer or a public CAPTCHA timeout uses the configured reject timeout. An unanswered private CAPTCHA leaves the join request pending. Private-message delivery failures are retained for operator review without banning or declining the applicant. Banlisted join requests are explicitly declined without a temporary ban.
+6. An incorrect answer or a public CAPTCHA timeout uses the configured reject timeout. An unanswered private CAPTCHA leaves the join request pending. Private-message delivery failures are retained for operator review without banning or declining the applicant. For a confirmed banlist match, the bot declines the request and permanently bans the applicant in that chat. It records each action separately so a retry can finish the outstanding action.
 7. Optional greeting text can be shown immediately with the public CAPTCHA for direct joins, or after approval for join-request newcomers.
 
 ## Spam protection

@@ -962,13 +962,7 @@ func (c *sqliteClient) CompleteExternalAction(
 	expiresAt time.Time,
 ) (bool, error) {
 	var nextAttemptAt time.Time
-	switch nextStatus {
-	case db.ChallengeStatusWebAppFallbackPending,
-		db.ChallengeStatusRestrictPending,
-		db.ChallengeStatusApproveQueryPending,
-		db.ChallengeStatusApproveMemberPending,
-		db.ChallengeStatusUnrestrictPending,
-		db.ChallengeStatusRejectPending:
+	if isDurableChallengeActionStatus(nextStatus) {
 		nextAttemptAt = time.Now()
 	}
 	return c.transitionChallenge(ctx, challengeID, expectedStatus, nextStatus, nextAttemptAt, expiresAt)

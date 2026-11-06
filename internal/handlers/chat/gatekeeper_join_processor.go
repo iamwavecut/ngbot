@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	stderrors "errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -469,7 +470,11 @@ func (g *Gatekeeper) handleChatJoinRequest(ctx context.Context, u *api.Update, s
 			return safeGatekeeperError(checkErr)
 		}
 		if banned {
-			return g.processKnownBannedJoinRequest(ctx, u.ChatJoinRequest)
+			if err := enforceBanlistedJoin(ctx, g.bot, g.store, g.banChecker, strconv.Itoa(u.UpdateID), u.ChatJoinRequest); err != nil {
+				return err
+			}
+			g.cleanupKnownBannedArtifacts(ctx, u.ChatJoinRequest.Chat.ID, u.ChatJoinRequest.From.ID, 0)
+			return nil
 		}
 	}
 	if webAppQueued {
@@ -720,50 +725,6 @@ func (g *Gatekeeper) recordRecentJoiner(ctx context.Context, chatID int64, user 
 		IsSpammer:     false,
 	}
 	return g.store.AddChatRecentJoiner(ctx, recentJoiner)
-}
-
-func (g *Gatekeeper) processKnownBannedJoinRequest(ctx context.Context, request *api.ChatJoinRequest) error {
-	if request == nil {
-		return nil
-	}
-
-	entry := g.getLogEntry().WithField(logFieldMethod, "processKnownBannedJoinRequest")
-	chatID := request.Chat.ID
-	userID := request.From.ID
-
-	var err error
-	if request.QueryID != "" {
-		err = bot.AnswerJoinRequestQuery(ctx, g.bot, request.QueryID, bot.JoinRequestQueryResultDecline)
-	} else {
-		err = bot.DeclineJoinRequest(ctx, g.bot, userID, chatID)
-	}
-	if err != nil {
-		entry.WithFields(log.Fields{
-			logFieldUserID:    userID,
-			logFieldErrorCode: db.SafeGatekeeperErrorCode(err),
-		}).Error("failed to decline banned join request")
-		if moderation.IsTelegramPrivilegeError(err) {
-			g.banChecker.MarkModerationUnavailable(chatID)
-			return nil
-		}
-		return gatekeeperUpdateFailure(err)
-	}
-	if g.banChecker != nil {
-		if err := g.banChecker.BanUserWithMessage(ctx, chatID, userID, 0); err != nil {
-			entry.WithFields(log.Fields{
-				logFieldUserID:    userID,
-				logFieldErrorCode: db.SafeGatekeeperErrorCode(err),
-			}).Error("failed to ban known banned join requester")
-			if moderation.IsTelegramPrivilegeError(err) {
-				g.banChecker.MarkModerationUnavailable(chatID)
-				return nil
-			}
-			return gatekeeperUpdateFailure(err)
-		}
-	}
-
-	g.cleanupKnownBannedArtifacts(ctx, chatID, userID, 0)
-	return nil
 }
 
 func (g *Gatekeeper) processKnownBannedJoinedUser(ctx context.Context, chatID, userID int64, joinMessageID int) error {

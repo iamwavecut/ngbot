@@ -1822,6 +1822,11 @@ func TestHandleJoinCaptchaAnswerDeclinesKnownBannedUser(t *testing.T) {
 		t.Fatalf("expected decline result for banned user, got %q", got)
 	}
 
+	bans := recorder.byMethod(testTelegramMethodBanChatMember)
+	if len(bans) != 1 || bans[0].form.Get("until_date") != "" && bans[0].form.Get("until_date") != "0" {
+		t.Fatalf("expected one permanent ban: %v", bans)
+	}
+
 	if len(store.challenges) != 0 {
 		t.Fatalf("expected challenge to be deleted after ban decline, got %d rows", len(store.challenges))
 	}

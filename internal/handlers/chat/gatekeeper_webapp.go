@@ -1171,7 +1171,7 @@ func (g *Gatekeeper) handleJoinCaptchaAnswer(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if banned {
-		if err := g.declineWebAppChallenge(r.Context(), challenge); err != nil {
+		if err := g.recheckBanlistedJoinChallenge(r.Context(), challenge); err != nil {
 			g.getLogEntry().WithField(logFieldError, err.Error()).Error("failed to decline banned web app challenge")
 		}
 		writeJoinCaptchaJSON(w, http.StatusForbidden, joinCaptchaAnswerResponse{Done: true, State: joinCaptchaStateRejected, Message: copy.Blocked})

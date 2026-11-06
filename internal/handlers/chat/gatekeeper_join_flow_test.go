@@ -69,6 +69,7 @@ func (s *gatekeeperTestService) GetSettings(context.Context, int64) (*db.Setting
 }
 
 type gatekeeperFlowStore struct {
+	testJoinEffectStore
 	challenges   map[string]*db.Challenge
 	joiners      map[string]*db.RecentJoiner
 	isNotSpammer bool
@@ -872,8 +873,8 @@ func TestBannedChatJoinRequestQueryDeclinesAndBansBeforeCaptcha(t *testing.T) {
 	if len(recorder.byMethod(testTelegramMethodDeclineJoinRequest)) != 1 {
 		t.Fatalf("expected queued request to be declined by chat/user, got %d", len(recorder.byMethod(testTelegramMethodDeclineJoinRequest)))
 	}
-	if len(banChecker.bans) != 1 {
-		t.Fatalf("expected one ban, got %d", len(banChecker.bans))
+	if bans := recorder.byMethod(testTelegramMethodBanChatMember); len(bans) != 1 {
+		t.Fatalf("expected one Telegram ban, got %d", len(bans))
 	}
 	if len(store.challenges) != 0 {
 		t.Fatalf("expected no challenge rows, got %d", len(store.challenges))

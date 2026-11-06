@@ -12,6 +12,21 @@ import (
 	"github.com/iamwavecut/ngbot/internal/db"
 )
 
+type testJoinEffectStore struct{}
+
+func (testJoinEffectStore) ClaimBanlistedJoinEffect(_ context.Context, effect *db.ModerationActionFence, now, _ time.Time) (*db.ModerationActionFence, error) {
+	effect.CreatedAt, effect.Status = now, db.ModerationActionStarted
+	return effect, nil
+}
+
+func (testJoinEffectStore) AdvanceModerationAction(context.Context, string, string, string, string, string, time.Time) (bool, error) {
+	return true, nil
+}
+
+func (testJoinEffectStore) ResetMessageTrust(context.Context, int64, db.MessageAuthor) error {
+	return nil
+}
+
 type testModerationFenceStore struct {
 	testNotSpammerStore
 	action          *db.ModerationActionFence
@@ -315,12 +330,19 @@ func TestBanlistGuardChecksProviderBeforeJoinRequestFeatureRouting(t *testing.T)
 	t.Parallel()
 
 	banService := &testBanService{checkBan: true}
-	declines := 0
-	botAPI := newTestBotAPI(t, func(method string, _ *http.Request) any {
-		if method != testTelegramMethodDeclineJoinRequest {
-			t.Fatalf("unexpected method %s", method)
+	declines, bans := 0, 0
+	botAPI := newTestBotAPI(t, func(method string, r *http.Request) any {
+		switch method {
+		case testTelegramMethodDeclineJoinRequest:
+			declines++
+		case testTelegramMethodBanChatMember:
+			bans++
+			if until := r.FormValue("until_date"); until != "" && until != "0" {
+				t.Errorf("ban expires at %s", until)
+			}
+		default:
+			t.Errorf("unexpected method %s", method)
 		}
-		declines++
 		return true
 	})
 	guard := NewBanlistGuard(botAPI, &testNotSpammerStore{}, banService)
@@ -335,8 +357,8 @@ func TestBanlistGuardChecksProviderBeforeJoinRequestFeatureRouting(t *testing.T)
 	if proceed {
 		t.Fatal("provider-banned join request reached feature routing")
 	}
-	if declines != 1 || len(banService.bans) != 0 {
-		t.Fatalf("join request declines=%d bans=%#v", declines, banService.bans)
+	if declines != 1 || bans != 1 {
+		t.Fatalf("join request declines=%d bans=%d", declines, bans)
 	}
 }
 
@@ -370,7 +392,7 @@ func TestBanlistGuardModeratesMemberUpdateSubjectInsteadOfAdministratorActor(t *
 func TestBanlistGuardIgnoresNonJoinMemberUpdates(t *testing.T) {
 	t.Parallel()
 
-	for _, oldStatus := range []string{"kicked", testMemberStatusLeft} {
+	for _, oldStatus := range []string{testMemberStatusKicked, testMemberStatusLeft} {
 		t.Run(oldStatus+"_to_kicked", func(t *testing.T) {
 			banService := &testBanService{knownBanned: true}
 			guard := NewBanlistGuard(&api.BotAPI{}, &testNotSpammerStore{}, banService)
@@ -381,7 +403,7 @@ func TestBanlistGuardIgnoresNonJoinMemberUpdates(t *testing.T) {
 				Chat:          *chat,
 				From:          *actor,
 				OldChatMember: api.ChatMember{User: subject, Status: oldStatus},
-				NewChatMember: api.ChatMember{User: subject, Status: "kicked"},
+				NewChatMember: api.ChatMember{User: subject, Status: testMemberStatusKicked},
 			}}
 
 			proceed, err := guard.Handle(t.Context(), update, chat, actor)

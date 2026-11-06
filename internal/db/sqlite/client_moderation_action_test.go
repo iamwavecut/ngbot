@@ -44,3 +44,33 @@ func TestModerationActionFencePersistsStableDeadlineAndPhases(t *testing.T) {
 		t.Fatalf("complete action: ok=%t err=%v", ok, err)
 	}
 }
+
+func TestBanlistedJoinEffectReclaimsOnlyExpiredWork(t *testing.T) {
+	const firstOwner, nextOwner = "initial-worker", "replacement-worker"
+	client, err := NewSQLiteClient(t.Context(), t.TempDir(), "join.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	now := time.Now().UTC()
+	effect := &db.ModerationActionFence{ActionKey: "banlist-join-ban:1:-100:200", ChatID: -100, UserID: 200, Owner: firstOwner}
+	claim := func(at time.Time, wantOwner string) {
+		t.Helper()
+		got, err := client.ClaimBanlistedJoinEffect(t.Context(), effect, at, at.Add(-16*time.Second))
+		if err != nil || got.Owner != wantOwner || !got.CreatedAt.Equal(now) {
+			t.Fatalf("claim %s: got %+v, err %v", effect.Owner, got, err)
+		}
+	}
+	claim(now, firstOwner)
+	effect.Owner = nextOwner
+	claim(now.Add(time.Second), firstOwner)
+	claim(now.Add(17*time.Second), nextOwner)
+	if ok, err := client.AdvanceModerationAction(t.Context(), effect.ActionKey, firstOwner, db.ModerationActionStarted, db.ModerationActionCompleted, "", now); err != nil || ok {
+		t.Fatalf("stale completion: %t %v", ok, err)
+	}
+	if ok, err := client.AdvanceModerationAction(t.Context(), effect.ActionKey, nextOwner, db.ModerationActionStarted, db.ModerationActionCompleted, "", now); err != nil || !ok {
+		t.Fatalf("current completion: %t %v", ok, err)
+	}
+	effect.Owner = "third"
+	claim(now.Add(time.Hour), nextOwner)
+}

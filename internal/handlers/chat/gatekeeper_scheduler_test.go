@@ -13,6 +13,7 @@ import (
 )
 
 type testGatekeeperStore struct {
+	testJoinEffectStore
 	joiners      []*db.RecentJoiner
 	processed    []testProcessedJoiner
 	isNotSpammer bool

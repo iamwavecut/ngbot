@@ -3,6 +3,7 @@ package bot
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	api "github.com/OvyFlash/telegram-bot-api"
 )
@@ -53,6 +54,17 @@ func RequestBool(ctx context.Context, botAPI *api.BotAPI, chattable api.Chattabl
 		return false, err
 	}
 	return result, nil
+}
+
+func requestTrue(ctx context.Context, botAPI *api.BotAPI, config api.Chattable) error {
+	confirmed, err := RequestBool(ctx, botAPI, config)
+	if err != nil {
+		return err
+	}
+	if !confirmed {
+		return fmt.Errorf("request was not confirmed by Telegram")
+	}
+	return nil
 }
 
 func GetUserPersonalChatMessages(ctx context.Context, botAPI *api.BotAPI, config api.UserPersonalChatMessagesConfig) ([]api.Message, error) {

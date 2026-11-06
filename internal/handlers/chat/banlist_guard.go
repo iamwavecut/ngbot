@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	api "github.com/OvyFlash/telegram-bot-api"
@@ -25,9 +26,13 @@ type BanlistGuard struct {
 	banService moderation.BanService
 }
 
-type banlistGuardStore interface {
-	ResetMessageTrust(ctx context.Context, chatID int64, author db.MessageAuthor) error
+type messageContextDeleter interface {
 	DeleteMessageContext(ctx context.Context, chatID int64, messageID int) error
+}
+
+type banlistGuardStore interface {
+	banlistedJoinStore
+	messageContextDeleter
 	IsChatNotSpammer(ctx context.Context, chatID int64, userID int64, username string) (bool, error)
 }
 
@@ -59,7 +64,14 @@ func (g *BanlistGuard) Handle(ctx context.Context, u *api.Update, chat *api.Chat
 
 func (g *BanlistGuard) handleWithPrecheck(ctx context.Context, u *api.Update, chat *api.Chat, user *api.User) (bool, moderation.BanlistPrecheck, error) {
 	precheck := moderation.BanlistPrecheck{}
-	if u == nil || chat == nil || g.banService == nil {
+	if u == nil || g.banService == nil {
+		return true, precheck, nil
+	}
+	if u.ChatJoinRequest != nil {
+		chat = &u.ChatJoinRequest.Chat
+		user = &u.ChatJoinRequest.From
+	}
+	if chat == nil {
 		return true, precheck, nil
 	}
 	user = moderationUpdateUser(u, user)
@@ -124,7 +136,7 @@ func (g *BanlistGuard) handleWithPrecheck(ctx context.Context, u *api.Update, ch
 		return true, precheck, nil
 	}
 	if u.ChatJoinRequest != nil {
-		return false, precheck, g.declineBanlistedJoinRequest(ctx, u.UpdateID, chat.ID, user.ID)
+		return false, precheck, enforceBanlistedJoin(ctx, g.bot, g.store, g.banService, strconv.Itoa(u.UpdateID), u.ChatJoinRequest)
 	}
 
 	var outcome banlistedMessageOutcome
@@ -155,58 +167,6 @@ func (g *BanlistGuard) handleWithPrecheck(ctx context.Context, u *api.Update, ch
 		entry.Info("terminal banlist action applied")
 	}
 	return false, precheck, nil
-}
-
-func (g *BanlistGuard) declineBanlistedJoinRequest(ctx context.Context, updateID int, chatID, userID int64) error {
-	store, durable := g.store.(moderationActionStore)
-	if !durable {
-		return bot.DeclineJoinRequest(ctx, g.bot, userID, chatID)
-	}
-	now := time.Now().UTC()
-	owner := uuid.New()
-	action, err := store.BeginModerationAction(ctx, &db.ModerationActionFence{
-		ActionKey: fmt.Sprintf("banlist-join:%d:%d:%d", updateID, chatID, userID),
-		ChatID:    chatID, UserID: userID, BanUntil: now,
-	}, owner, now)
-	if err != nil {
-		return fmt.Errorf("persist join rejection: %w", err)
-	}
-	if action.Status == db.ModerationActionCompleted {
-		return nil
-	}
-	if action.Status == db.ModerationActionReconciliation || action.Owner != owner {
-		if action.Status == db.ModerationActionStarted && action.EffectStartedAt.Valid {
-			_, err = store.AdvanceModerationAction(ctx, action.ActionKey, action.Owner, action.Status, db.ModerationActionReconciliation, "join rejection outcome unknown", now)
-		}
-		return bot.NewTerminalUpdateFailure(bot.UpdateFailureRuntime, "join_rejection_ambiguous", errors.Join(err, errors.New("join rejection requires reconciliation")))
-	}
-	started, err := store.MarkModerationActionEffectStarted(ctx, action.ActionKey, owner, now)
-	if err != nil || !started {
-		return errors.Join(err, errors.New("join rejection effect fence changed"))
-	}
-	declineErr := bot.DeclineJoinRequest(ctx, g.bot, userID, chatID)
-	if isTelegramJoinDeclineAlreadyApplied(declineErr) {
-		declineErr = nil
-	}
-	nextStatus, lastError := db.ModerationActionCompleted, ""
-	if declineErr != nil {
-		lastError = db.SafeGatekeeperErrorCode(declineErr)
-		if moderation.IsTelegramPrivilegeError(declineErr) {
-			g.banService.MarkModerationUnavailable(chatID)
-			lastError = banlistActionPermissionDenied
-		} else {
-			nextStatus = db.ModerationActionReconciliation
-		}
-	}
-	changed, err := store.AdvanceModerationAction(ctx, action.ActionKey, owner, db.ModerationActionStarted, nextStatus, lastError, time.Now().UTC())
-	if err != nil || !changed {
-		return errors.Join(err, errors.New("join rejection completion fence changed"))
-	}
-	if nextStatus == db.ModerationActionReconciliation {
-		return bot.NewTerminalUpdateFailure(bot.UpdateFailureRuntime, "join_rejection_ambiguous", safeGatekeeperError(declineErr))
-	}
-	log.WithFields(log.Fields{logFieldObject: logObjectBanlistGuard, logFieldChatID: chatID, logFieldUserID: userID, "outcome": nextStatus, logFieldErrorCode: lastError}).Info("banlisted join request processed")
-	return nil
 }
 
 func (g *BanlistGuard) enforceDurableBanlistedMessage(ctx context.Context, store moderationActionStore, updateID int, msg *api.Message, chat *api.Chat, user *api.User) banlistedMessageOutcome {
@@ -356,7 +316,7 @@ func messageID(msg *api.Message) int {
 func enforceBanlistedMessage(
 	ctx context.Context,
 	botAPI *api.BotAPI,
-	store banlistGuardStore,
+	store messageContextDeleter,
 	banService moderation.BanService,
 	msg *api.Message,
 	chat *api.Chat,

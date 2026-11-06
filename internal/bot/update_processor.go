@@ -246,7 +246,7 @@ func BanUserFromChat(ctx context.Context, bot *api.BotAPI, userID int64, chatID 
 	case <-ctx.Done():
 		return ctx.Err()
 	default:
-		if _, err := bot.RequestWithContext(ctx, api.BanChatMemberConfig{
+		if err := requestTrue(ctx, bot, api.BanChatMemberConfig{
 			ChatMemberConfig: api.ChatMemberConfig{
 				ChatConfig: api.ChatConfig{
 					ChatID: chatID,
@@ -341,7 +341,7 @@ func DeclineJoinRequest(ctx context.Context, bot *api.BotAPI, userID int64, chat
 	case <-ctx.Done():
 		return ctx.Err()
 	default:
-		if _, err := bot.RequestWithContext(ctx, api.DeclineChatJoinRequest{
+		if err := requestTrue(ctx, bot, api.DeclineChatJoinRequest{
 			ChatConfig: api.ChatConfig{
 				ChatID: chatID,
 			},
@@ -354,7 +354,7 @@ func DeclineJoinRequest(ctx context.Context, bot *api.BotAPI, userID int64, chat
 }
 
 func AnswerJoinRequestQuery(ctx context.Context, bot *api.BotAPI, queryID string, result string) error {
-	if _, err := bot.RequestWithContext(ctx, api.NewAnswerChatJoinRequestQuery(queryID, result)); err != nil {
+	if err := requestTrue(ctx, bot, api.NewAnswerChatJoinRequestQuery(queryID, result)); err != nil {
 		return errors.WithMessage(err, "cant answer join request query")
 	}
 	return nil

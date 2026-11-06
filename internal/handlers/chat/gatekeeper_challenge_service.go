@@ -165,6 +165,9 @@ func (g *Gatekeeper) handleChallenge(ctx context.Context, u *api.Update, chat *a
 		return err
 	}
 	if banned {
+		if challenge.CommChatID != challenge.ChatID {
+			return g.recheckBanlistedJoinChallenge(ctx, challenge)
+		}
 		return g.failChallenge(ctx, challenge, rejectText, rejectDuration)
 	}
 
@@ -248,6 +251,18 @@ func (g *Gatekeeper) completeChallenge(ctx context.Context, challenge *db.Challe
 		_ = tool.Err(bot.Send(ctx, g.bot, msg))
 	}
 	return nil
+}
+
+func (g *Gatekeeper) recheckBanlistedJoinChallenge(ctx context.Context, challenge *db.Challenge) error {
+	if isTestWebAppChallenge(challenge) {
+		_, err := g.store.DeleteChallengeInstance(ctx, challenge.ChallengeID, challenge.Status)
+		return err
+	}
+	claimed, err := g.store.CompleteExternalAction(ctx, challenge.ChallengeID, challenge.Status, db.ChallengeStatusBanCheckPending, time.Time{})
+	if err != nil || !claimed {
+		return err
+	}
+	return g.processChallengeAction(ctx, challenge)
 }
 
 func (g *Gatekeeper) failChallenge(ctx context.Context, challenge *db.Challenge, rejectText string, rejectDuration time.Duration) error {
@@ -418,28 +433,35 @@ func (g *Gatekeeper) processChallengeActionWithStats(ctx context.Context, challe
 				}
 				return nil
 			}
-			var checkErr error
-			banned, checkErr = g.banChecker.CheckBan(ctx, challenge.UserID)
-			if checkErr != nil {
-				return g.retryOrReconcileChallengeAction(ctx, challenge, owner, checkErr, entry)
+			banned = g.banChecker.IsKnownBanned(challenge.UserID)
+			if !banned {
+				var checkErr error
+				banned, checkErr = g.banChecker.CheckBan(ctx, challenge.UserID)
+				if checkErr != nil {
+					return g.retryOrReconcileChallengeAction(ctx, challenge, owner, checkErr, entry)
+				}
 			}
+		}
+		if banned {
+			request := &api.ChatJoinRequest{Chat: api.Chat{ID: challenge.ChatID}, From: api.User{ID: challenge.UserID}, QueryID: challenge.JoinRequestQueryID}
+			if err := enforceBanlistedJoin(ctx, g.bot, g.store, g.banChecker, challenge.ChallengeID, request); err != nil {
+				if bot.ClassifyUpdateFailure(err).Disposition == bot.UpdateFailureTerminal {
+					return g.reconcileAmbiguousChallengeEffect(ctx, challenge, owner, 0, err)
+				}
+				return g.retryOrReconcileChallengeAction(ctx, challenge, owner, err, entry)
+			}
+			g.deleteChallengeMessages(ctx, challenge)
+			deleted, err := g.store.DeleteLeasedChallengeActionVersion(ctx, challenge.ChallengeID, owner, challenge.ActionVersion, challenge.Status, challenge.ActionPhase, time.Now())
+			if err != nil || !deleted {
+				return stderrors.Join(err, errors.New("banlisted join cleanup fence lost"))
+			}
+			return nil
 		}
 		settings, settingsErr := g.fetchAndValidateSettings(ctx, challenge.ChatID)
 		if settingsErr != nil {
 			return g.retryOrReconcileChallengeAction(ctx, challenge, owner, settingsErr, entry)
 		}
-		if banned {
-			if err := g.beginChallengeEffect(ctx, challenge, owner, db.ChallengePhaseRejectBanStarted); err != nil {
-				return err
-			}
-			if err := g.banChecker.BanUserWithMessage(ctx, challenge.ChatID, challenge.UserID, challenge.JoinMessageID); err != nil {
-				return g.reconcileAmbiguousChallengeEffect(ctx, challenge, owner, 0, err)
-			}
-			if err := g.advanceChallengePhase(ctx, challenge, owner, db.ChallengePhaseRejectBanDone); err != nil {
-				return g.reconcileAmbiguousChallengeEffect(ctx, challenge, owner, 0, err)
-			}
-		}
-		if !banned && (!settings.GatekeeperEnabled || !settings.GatekeeperCaptchaEnabled) {
+		if !settings.GatekeeperEnabled || !settings.GatekeeperCaptchaEnabled {
 			deleted, deleteErr := g.store.DeleteLeasedChallengeActionVersion(ctx, challenge.ChallengeID, owner, challenge.ActionVersion, challenge.Status, challenge.ActionPhase, time.Now())
 			if deleteErr != nil || !deleted {
 				return stderrors.Join(deleteErr, errors.New("ban-check cleanup fence lost"))
@@ -447,9 +469,7 @@ func (g *Gatekeeper) processChallengeActionWithStats(ctx context.Context, challe
 			return nil
 		}
 		nextStatus := db.ChallengeStatusPending
-		if banned {
-			nextStatus = db.ChallengeStatusRejectPending
-		} else if challenge.WebAppToken == "" {
+		if challenge.WebAppToken == "" {
 			nextStatus = db.ChallengeStatusWebAppFallbackPending
 		}
 		changed, transitionErr := g.store.CompleteLeasedChallengeActionVersion(ctx, challenge.ChallengeID, owner, challenge.ActionVersion, challenge.Status, challenge.ActionPhase, nextStatus, time.Time{}, time.Now())
@@ -460,9 +480,6 @@ func (g *Gatekeeper) processChallengeActionWithStats(ctx context.Context, challe
 		challenge.ActionOwner = ""
 		challenge.ActionLeaseUntil = sql.NullTime{}
 		challenge.ActionPhase = db.ChallengePhaseReady
-		if nextStatus == db.ChallengeStatusRejectPending {
-			challenge.ActionPhase = db.ChallengePhaseRejectBanDone
-		}
 		challenge.ActionVersion++
 		if challenge.WebAppToken == "" {
 			challenge.JoinRequestQueryID = ""
